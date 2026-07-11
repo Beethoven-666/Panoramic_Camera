@@ -1,0 +1,33 @@
+capture:
+  width: 1280
+  height: 800
+  fps: 30
+  color_formats: [RGB, BGR, YUYV, MJPG]
+  align: software
+  frame_sync: true
+  warmup_frames: 30
+  warmup_timeout_seconds: 15
+  frame_timeout_seconds: 5
+  queue_size: 64
+  color_exposure_us: 800
+  color_gain: null
+  color_white_balance: null
+  color_anti_flicker: true
+  jpeg_quality: 95
+  depth_png_compression: 1
+  save_raw_depth: false
+
+stitch:
+  model: models/unistitch/epoch_best_model.pth
+  device: cuda:0
+  inference_width: 640
+  stride: 3
+  max_frames: 40
+  max_points: 2048
+  max_pair_canvas: 4000
+  max_canvas_megapixels: 250
+  min_matches: 40
+  max_unistitch_reprojection_px: 20.0
+  allow_magsac_fallback: true
+  sequence_motion_model: translation
+  save_pair_previews: true

@@ -1,0 +1,8 @@
+capture:
+  width: 640
+  height: 480
+  fps: 30
+  color_formats: [YUYV, RGB, BGR, MJPG]
+  warmup_frames: 10
+  warmup_timeout_seconds: 15
+  frame_timeout_seconds: 5

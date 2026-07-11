@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gemini305-unistitch-demo"
+version = "0.1.0"
+description = "Windows Gemini 305 RGB-D capture and UniStitch panorama demo"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "kornia>=0.7",
+    "numpy>=1.26",
+    "opencv-python>=4.8",
+    "PyYAML>=6.0",
+    "torch>=2.1",
+    "torchvision>=0.16",
+]
+
+[project.optional-dependencies]
+capture = ["pyorbbecsdk2>=2.1.1"]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+g305-capture = "panorama_demo.capture_orbbec:main"
+unistitch-pair = "panorama_demo.stitch_pair:main"
+unistitch-sequence = "panorama_demo.stitch_sequence:main"
+generate-panorama-demo = "panorama_demo.synthetic:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
