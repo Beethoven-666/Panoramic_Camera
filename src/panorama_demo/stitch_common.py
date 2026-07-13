@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cv2
 import numpy as np
 
 from .paths import PROJECT_ROOT
-from .unistitch_adapter import UniStitchAligner
+
+if TYPE_CHECKING:
+    from .unistitch_adapter import UniStitchAligner
 
 
 def read_bgr(path: str | Path) -> np.ndarray:
@@ -42,7 +44,11 @@ def resolve_model_path(value: str | Path) -> Path:
     return path.resolve()
 
 
-def build_aligner(stitch_config: dict[str, Any], **overrides: Any) -> UniStitchAligner:
+def build_aligner(
+    stitch_config: dict[str, Any], **overrides: Any
+) -> "UniStitchAligner":
+    from .unistitch_adapter import UniStitchAligner
+
     settings = dict(stitch_config)
     settings.update({key: value for key, value in overrides.items() if value is not None})
     return UniStitchAligner(

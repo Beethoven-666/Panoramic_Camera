@@ -9,8 +9,10 @@ capture:
   warmup_timeout_seconds: 15
   frame_timeout_seconds: 5
   queue_size: 64
+  # Let gain adapt to the room, but never let auto exposure create long motion blur.
   color_auto_exposure: true
   color_exposure_us: null
+  color_ae_max_exposure_us: 800
   color_gain: null
   color_white_balance: null
   color_anti_flicker: true
@@ -22,22 +24,33 @@ stitch:
   model: models/unistitch/epoch_best_model.pth
   device: cuda:0
   inference_width: 640
-  stride: 3
-  max_frames: 40
+  adaptive_layout: true
+  analysis_width: 320
+  layout_target_displacement_fraction: 0.18
+  layout_max_displacement_fraction: 0.28
+  layout_max_frames: 160
+  stride: 1
+  max_frames: 0
   max_points: 2048
   max_pair_canvas: 4000
-  max_canvas_megapixels: 250
+  max_canvas_megapixels: 50
   min_matches: 40
   max_unistitch_reprojection_px: 20.0
   allow_magsac_fallback: true
   prefer_magsac_layout: true
   min_magsac_inlier_ratio: 0.5
   sequence_motion_model: translation
-  translation_anchor_y: 0.85
+  translation_anchor_y: null
   sequence_blend_mode: scan_seam
-  scan_max_keyframes: 14
-  scan_seam_margin: 220
-  scan_multiband_levels: 7
+  scan_max_keyframes: 0
+  scan_target_spacing_fraction: 0.40
+  scan_seam_margin: 0
+  scan_multiband_levels: 5
   scan_exposure_mode: global_gain
   scan_seam_mask_sigma: 1.0
-  save_pair_previews: true
+  scan_auto_foreground: true
+  scan_quality_gate: true
+  input_quality_gate: true
+  color_exposure_unit_us: 100
+  maximum_motion_exposure_us: 1200
+  save_pair_previews: false

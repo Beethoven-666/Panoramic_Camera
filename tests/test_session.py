@@ -94,6 +94,9 @@ def test_discover_csv_prefers_capture_column_names(tmp_path: Path) -> None:
                 "depth_path",
                 "color_device_timestamp_us",
                 "timestamp_us",
+                "depth_scale_mm_per_unit",
+                "color_exposure",
+                "color_gain",
             ],
         )
         writer.writeheader()
@@ -105,11 +108,14 @@ def test_discover_csv_prefers_capture_column_names(tmp_path: Path) -> None:
                 "depth_path": "raw_depth/0001.png",
                 "color_device_timestamp_us": "800",
                 "timestamp_us": "700",
+                "depth_scale_mm_per_unit": "0.1",
+                "color_exposure": "8",
+                "color_gain": "24",
             }
         )
 
     assert discover_frames(tmp_path) == [
-        SessionFrame(4, color, aligned_depth, 800)
+        SessionFrame(4, color, aligned_depth, 800, 0.1, 8, 24)
     ]
 
 

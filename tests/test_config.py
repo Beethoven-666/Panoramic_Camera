@@ -7,6 +7,14 @@ import pytest
 from panorama_demo.config import load_config
 
 
+def test_default_capture_uses_motion_capped_auto_exposure() -> None:
+    config = load_config()
+
+    assert config["capture"]["color_auto_exposure"] is True
+    assert config["capture"]["color_exposure_us"] is None
+    assert config["capture"]["color_ae_max_exposure_us"] == 800
+
+
 @pytest.mark.parametrize(
     ("exposure_yaml", "expected_auto_exposure", "expected_exposure"),
     [

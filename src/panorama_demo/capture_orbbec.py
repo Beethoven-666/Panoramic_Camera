@@ -330,6 +330,7 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
     applied: dict[str, Any] = {}
     exposure = options.get("color_exposure_us")
     auto_exposure = options.get("color_auto_exposure")
+    ae_max_exposure = options.get("color_ae_max_exposure_us")
     if auto_exposure is None:
         auto_exposure = exposure is None
     if auto_exposure and exposure is not None:
@@ -340,20 +341,53 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
         raise ValueError(
             "color_exposure_us is required when color_auto_exposure is false"
         )
-    applied["auto_exposure"] = _set_bool_property(
+    effective_auto_exposure = bool(auto_exposure)
+    fallback_exposure_us: int | None = None
+    if auto_exposure and ae_max_exposure is not None:
+        ae_max_exposure_us = int(ae_max_exposure)
+        if ae_max_exposure_us <= 0:
+            raise ValueError("color_ae_max_exposure_us must be positive")
+        cap_units = max(
+            1, int(round(ae_max_exposure_us / COLOR_EXPOSURE_UNIT_US))
+        )
+        applied_cap = _set_int_property(
+            device, sdk, "OB_PROP_COLOR_AE_MAX_EXPOSURE_INT", cap_units
+        )
+        applied["ae_max_exposure"] = applied_cap
+        applied["ae_max_exposure_us"] = (
+            applied_cap * COLOR_EXPOSURE_UNIT_US
+            if applied_cap is not None
+            else None
+        )
+        if applied_cap is None or applied_cap > cap_units:
+            # A long unrestricted exposure irreversibly blurs a moving side scan.
+            # Fail safe on older firmware by using the requested cap manually.
+            effective_auto_exposure = False
+            fallback_exposure_us = ae_max_exposure_us
+    applied_auto_exposure = _set_bool_property(
         device,
         sdk,
         "OB_PROP_COLOR_AUTO_EXPOSURE_BOOL",
-        bool(auto_exposure),
+        effective_auto_exposure,
     )
-    if not auto_exposure and exposure is not None:
-        exposure_us = int(exposure)
+    applied["auto_exposure"] = applied_auto_exposure
+    if applied_auto_exposure is None or applied_auto_exposure != effective_auto_exposure:
+        raise RuntimeError("The camera did not apply the requested color exposure mode")
+    manual_exposure = fallback_exposure_us if fallback_exposure_us is not None else exposure
+    if not effective_auto_exposure and manual_exposure is not None:
+        exposure_us = int(manual_exposure)
         if exposure_us <= 0:
             raise ValueError("color_exposure_us must be positive")
         exposure_units = max(1, int(round(exposure_us / COLOR_EXPOSURE_UNIT_US)))
         applied_units = _set_int_property(
             device, sdk, "OB_PROP_COLOR_EXPOSURE_INT", exposure_units
         )
+        if fallback_exposure_us is not None and (
+            applied_units is None or applied_units > exposure_units
+        ):
+            raise RuntimeError(
+                "The camera cannot enforce the motion-safe color exposure limit"
+            )
         applied["exposure"] = applied_units
         applied["exposure_us"] = (
             applied_units * COLOR_EXPOSURE_UNIT_US
@@ -552,6 +586,7 @@ def run_capture(args: argparse.Namespace) -> Path:
     previous_color_timestamp: int | None = None
     started_monotonic = 0.0
     metadata_checked = False
+    unsafe_exposure_run = 0
     metadata_types = sdk.OBFrameMetadataType
     pipeline_started = False
     capture_exception: Exception | None = None
@@ -600,6 +635,23 @@ def run_capture(args: argparse.Namespace) -> Path:
             if previous_color_timestamp is not None and color_timestamp <= previous_color_timestamp:
                 timestamp_regressions += 1
             previous_color_timestamp = color_timestamp
+            color_exposure = _metadata(raw_color, metadata_types.EXPOSURE)
+            exposure_cap_us = options.get("color_ae_max_exposure_us")
+            if exposure_cap_us is not None and color_exposure is not None:
+                safe_units = max(
+                    1,
+                    int(np.ceil(float(exposure_cap_us) / COLOR_EXPOSURE_UNIT_US)),
+                )
+                unsafe_exposure_run = (
+                    unsafe_exposure_run + 1
+                    if int(color_exposure) > safe_units + 1
+                    else 0
+                )
+                if unsafe_exposure_run >= 3:
+                    raise RuntimeError(
+                        "Camera exposure exceeded the motion-safe limit for three "
+                        "consecutive frames; add lighting or update camera firmware"
+                    )
 
             if not metadata_checked:
                 manifest["metadata_support"] = {
@@ -647,7 +699,7 @@ def run_capture(args: argparse.Namespace) -> Path:
                 "color_system_timestamp_us": int(raw_color.get_system_timestamp_us()),
                 "depth_system_timestamp_us": int(raw_depth.get_system_timestamp_us()),
                 "host_timestamp_ns": time.time_ns(),
-                "color_exposure": _metadata(raw_color, metadata_types.EXPOSURE),
+                "color_exposure": color_exposure,
                 "depth_exposure": _metadata(raw_depth, metadata_types.EXPOSURE),
                 "color_gain": _metadata(raw_color, metadata_types.GAIN),
                 "depth_gain": _metadata(raw_depth, metadata_types.GAIN),
@@ -732,7 +784,7 @@ def build_parser() -> argparse.ArgumentParser:
     exposure.add_argument(
         "--auto-exposure",
         action="store_true",
-        help="Enable color auto exposure (the default demo mode)",
+        help="Enable color auto exposure with the configured motion-safe cap",
     )
     exposure.add_argument(
         "--exposure-us",

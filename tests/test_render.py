@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
+import panorama_demo.render as render_module
 from panorama_demo.render import (
     compute_canvas,
     largest_valid_rectangle,
@@ -156,7 +157,26 @@ def test_scan_renderer_round_trips_one_frame_and_reports_crop() -> None:
 
     assert panorama.shape == image.shape
     assert info.crop.as_dict() == {"x": 0, "y": 0, "width": 48, "height": 32}
+    assert info.quality_metrics["crop_height_ratio"] == 1.0
+    assert info.quality_metrics["crop_width_ratio"] == 1.0
     np.testing.assert_allclose(panorama, image, atol=2)
+
+
+def test_scan_renderer_measures_single_frame_crop_before_quality_pass() -> None:
+    image = _solid(100, 140, (40, 80, 120))
+    affine = cv2.getRotationMatrix2D((70.0, 50.0), 20.0, 1.0)
+    transform = np.vstack((affine, [0.0, 0.0, 1.0]))
+
+    _, info = render_scan_panorama(
+        [image], [transform], max_megapixels=1.0, quality_gate=False
+    )
+
+    assert info.quality_metrics["quality_pass"] is False
+    assert info.quality_metrics["crop_height_ratio"] < 0.90
+    with pytest.raises(RuntimeError, match="source height remains"):
+        render_scan_panorama(
+            [image], [transform], max_megapixels=1.0, quality_gate=True
+        )
 
 
 def test_scan_renderer_crops_shifted_solid_frames_without_voids() -> None:
@@ -169,11 +189,30 @@ def test_scan_renderer_crops_shifted_solid_frames_without_voids() -> None:
         max_megapixels=1.0,
         seam_margin=8,
         multiband_levels=2,
+        auto_foreground=False,
+        quality_gate=False,
     )
 
     assert panorama.shape == (28, 68, 3)
     assert info.crop.as_dict() == {"x": 0, "y": 4, "width": 68, "height": 28}
     assert np.all(panorama > 0)
+
+
+def test_scan_renderer_does_not_interpolate_black_at_fractional_edges() -> None:
+    white = _solid(40, 60, (255, 255, 255))
+
+    panorama, info = render_scan_panorama(
+        [white, white],
+        [IDENTITY, _translation(20.4, 0.35)],
+        max_megapixels=1.0,
+        seam_margin=12,
+        multiband_levels=2,
+        exposure_mode="none",
+        quality_gate=True,
+    )
+
+    assert info.quality_metrics["quality_pass"] is True
+    assert int(panorama.min()) >= 250
 
 
 def test_scan_renderer_enforces_aggregate_working_set_limit() -> None:
@@ -208,6 +247,7 @@ def test_scan_renderer_does_not_fall_back_to_overlap_averaging(monkeypatch) -> N
             max_megapixels=1.0,
             seam_margin=8,
             multiband_levels=2,
+            auto_foreground=False,
         )
 
 
@@ -224,6 +264,8 @@ def test_scan_renderer_reports_global_gain_and_protected_regions() -> None:
         exposure_mode="global_gain",
         seam_mask_sigma=1.0,
         protected_regions=[(1, 22, 6, 80, 40)],
+        auto_foreground=False,
+        quality_gate=False,
     )
 
     assert panorama.shape == (28, 68, 3)
@@ -243,3 +285,126 @@ def test_scan_renderer_rejects_protected_region_outside_canvas() -> None:
             max_megapixels=1.0,
             protected_regions=[(0, 100, 0, 110, 10)],
         )
+
+
+def test_scan_renderer_auto_protects_depth_disagreement_crossed_by_seam() -> None:
+    rng = np.random.default_rng(19)
+    background = rng.integers(150, 210, size=(80, 120, 3), dtype=np.uint8)
+    first = background.copy()
+    second = background.copy()
+    first[28:68, 42:72] = (20, 20, 220)
+    second[28:68, 54:84] = (20, 20, 220)
+    depth0 = np.full((80, 120), 2000.0, dtype=np.float32)
+    depth1 = depth0.copy()
+    depth0[28:68, 42:72] = 500.0
+    depth1[28:68, 54:84] = 500.0
+
+    panorama, info = render_scan_panorama(
+        [first, second],
+        [IDENTITY, IDENTITY],
+        max_megapixels=1.0,
+        seam_margin=24,
+        multiband_levels=2,
+        exposure_mode="none",
+        seam_mask_sigma=1.0,
+        depth_maps_mm=[depth0, depth1],
+        auto_foreground=True,
+        quality_gate=False,
+    )
+
+    hsv = cv2.cvtColor(panorama, cv2.COLOR_BGR2HSV)
+    red = ((hsv[:, :, 0] < 10) | (hsv[:, :, 0] > 170)) & (hsv[:, :, 1] > 120)
+    _, _, stats, _ = cv2.connectedComponentsWithStats(red.astype(np.uint8))
+    largest = stats[1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))]
+
+    assert info.automatic_protected_regions == ()
+    assert info.quality_metrics["automatic_dp_seam_count"] == 1
+    assert info.quality_metrics["strict_owner_partition"] is True
+    assert info.quality_metrics["final_owner_boundary_pair_count"] == 1
+    assert info.quality_metrics["unowned_valid_pixel_count"] == 0
+    assert info.quality_metrics["multiple_owner_pixel_count"] == 0
+    assert largest[cv2.CC_STAT_WIDTH] <= 34
+
+
+def test_monotonic_seam_uses_depth_when_rgb_has_no_disagreement() -> None:
+    image = _solid(72, 112, (90, 120, 150))
+    depth0 = np.full((72, 112), 2000.0, dtype=np.float32)
+    depth1 = depth0.copy()
+    depth0[20:60, 38:62] = 500.0
+    depth1[20:60, 50:74] = 500.0
+
+    _, info = render_scan_panorama(
+        [image, image],
+        [IDENTITY, IDENTITY],
+        max_megapixels=1.0,
+        seam_margin=24,
+        multiband_levels=2,
+        exposure_mode="none",
+        depth_maps_mm=[depth0, depth1],
+        quality_gate=False,
+    )
+
+    assert info.quality_metrics["automatic_dp_seam_count"] == 1
+    assert info.quality_metrics["final_owner_boundary_pair_count"] == 1
+    assert info.quality_metrics["seam_risk_fraction"] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("metric", "value", "message"),
+    [
+        (
+            "nonadjacent_owner_boundary_pixel_count",
+            4,
+            "non-adjacent frame boundary",
+        ),
+        ("final_owner_boundary_pair_count", 0, "boundaries disappeared"),
+    ],
+)
+def test_quality_gate_rejects_invalid_final_owner_adjacency(
+    monkeypatch, metric: str, value: int, message: str
+) -> None:
+    original = render_module._evaluate_final_owner_boundaries
+
+    def unsafe_metrics(*args, **kwargs):
+        metrics = original(*args, **kwargs)
+        metrics[metric] = value
+        return metrics
+
+    monkeypatch.setattr(
+        render_module, "_evaluate_final_owner_boundaries", unsafe_metrics
+    )
+    image = _solid(72, 112, (90, 120, 150))
+
+    with pytest.raises(RuntimeError, match=message):
+        render_scan_panorama(
+            [image, image],
+            [IDENTITY, _translation(36)],
+            max_megapixels=1.0,
+            seam_margin=24,
+            multiband_levels=2,
+            exposure_mode="none",
+            quality_gate=True,
+        )
+
+
+def test_owner_topology_detects_nonadjacent_contact_without_source_overlap() -> None:
+    shape = (10, 12)
+    images = [_solid(*shape, (80, 100, 120)) for _ in range(3)]
+    owners = [np.zeros(shape, dtype=np.uint8) for _ in range(3)]
+    owners[0][:, :4] = 255
+    owners[2][:, 4:8] = 255
+    owners[1][:, 8:] = 255
+    valid = [owner.copy() for owner in owners]
+
+    metrics = render_module._evaluate_final_owner_boundaries(
+        images,
+        valid,
+        [None, None, None],
+        owners,
+        np.array([1.0, 0.0], dtype=np.float64),
+        np.array([0, 1, 2], dtype=np.int64),
+        blend_guard_pixels=8,
+    )
+
+    assert metrics["strict_owner_partition"] is True
+    assert metrics["nonadjacent_owner_boundary_pixel_count"] > 0

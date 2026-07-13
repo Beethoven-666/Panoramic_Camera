@@ -3,9 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from panorama_demo.quality import MotionEstimate
 from panorama_demo.session import SessionFrame
 from panorama_demo.stitch_sequence import (
     _parse_protected_regions,
+    interpolate_motion_guided_transforms,
     interpolate_translation_transforms,
     regularize_pair_homography,
 )
@@ -86,6 +88,34 @@ def test_interpolate_translation_transforms_for_dense_render_frames(
         np.array([[1.0, 0.0, -50.0], [0.0, 1.0, 10.0], [0.0, 0.0, 1.0]]),
     )
 
+
+def test_motion_guided_interpolation_handles_variable_scan_speed(tmp_path) -> None:
+    scan_frames = [
+        SessionFrame(0, tmp_path / "0.jpg", timestamp_us=0),
+        SessionFrame(1, tmp_path / "1.jpg", timestamp_us=100_000),
+        SessionFrame(2, tmp_path / "2.jpg", timestamp_us=200_000),
+    ]
+    layout_frames = [scan_frames[0], scan_frames[2]]
+    transforms = [
+        np.eye(3),
+        np.array([[1.0, 0.0, -400.0], [0.0, 1.0, 8.0], [0.0, 0.0, 1.0]]),
+    ]
+    motions = [
+        MotionEstimate(10.0, 0.0, 40, 0.8, 0.5, "features"),
+        MotionEstimate(30.0, 0.0, 40, 0.8, 0.5, "features"),
+    ]
+
+    result = interpolate_motion_guided_transforms(
+        layout_frames,
+        transforms,
+        [scan_frames[1]],
+        scan_frames,
+        motions,
+        1,
+    )
+
+    assert result[0][0, 2] == pytest.approx(-100.0)
+    assert result[0][1, 2] == pytest.approx(2.0)
 
 def test_parse_protected_regions_maps_frame_ids_to_render_indices(tmp_path) -> None:
     frames = [

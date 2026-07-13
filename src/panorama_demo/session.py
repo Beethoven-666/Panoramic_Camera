@@ -14,6 +14,9 @@ class SessionFrame:
     color_path: Path
     depth_path: Path | None = None
     timestamp_us: int | None = None
+    depth_scale_mm_per_unit: float | None = None
+    color_exposure_raw: int | None = None
+    color_gain: int | None = None
 
 
 def _from_csv(root: Path, csv_path: Path) -> list[SessionFrame]:
@@ -28,12 +31,22 @@ def _from_csv(root: Path, csv_path: Path) -> list[SessionFrame]:
             depth = (root / Path(depth_value)).resolve() if depth_value else None
             frame_value = row.get("frame_id") or row.get("pair_id") or str(row_index)
             timestamp_value = row.get("color_device_timestamp_us") or row.get("timestamp_us")
+            depth_scale_value = row.get("depth_scale_mm_per_unit")
+            exposure_value = row.get("color_exposure")
+            gain_value = row.get("color_gain")
             frames.append(
                 SessionFrame(
                     frame_id=int(frame_value),
                     color_path=color,
                     depth_path=depth,
                     timestamp_us=int(timestamp_value) if timestamp_value else None,
+                    depth_scale_mm_per_unit=(
+                        float(depth_scale_value) if depth_scale_value else None
+                    ),
+                    color_exposure_raw=(
+                        int(exposure_value) if exposure_value else None
+                    ),
+                    color_gain=int(gain_value) if gain_value else None,
                 )
             )
     return frames

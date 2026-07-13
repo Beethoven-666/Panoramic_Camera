@@ -5,19 +5,37 @@ import json
 import math
 import sys
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable, TypeVar, cast
 
 import cv2
 import numpy as np
-import torch
 
+from .errors import AlignmentError
 from .paths import LIGHTGLUE_DIR, UNISTITCH_CODES_DIR
 
+if TYPE_CHECKING:
+    import torch
 
-class AlignmentError(RuntimeError):
-    """A pair could not be aligned without corrupting the sequence."""
+torch: Any = None
+_Function = TypeVar("_Function", bound=Callable[..., Any])
 
+
+def _load_torch() -> Any:
+    global torch
+    if torch is None:
+        torch = importlib.import_module("torch")
+    return torch
+
+
+def _inference_mode(function: _Function) -> _Function:
+    @wraps(function)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        with _load_torch().inference_mode():
+            return function(*args, **kwargs)
+
+    return cast(_Function, wrapped)
 
 @dataclass(frozen=True)
 class PairAlignment:
@@ -125,7 +143,7 @@ def _resize_for_inference(image: np.ndarray, target_width: int) -> np.ndarray:
 
 def _to_network_image(image_bgr: np.ndarray, device: torch.device) -> torch.Tensor:
     array = image_bgr.astype(np.float32) / 127.5 - 1.0
-    return torch.from_numpy(array.transpose(2, 0, 1)).unsqueeze(0).to(device)
+    return _load_torch().from_numpy(array.transpose(2, 0, 1)).unsqueeze(0).to(device)
 
 
 def _scale_homography(
@@ -169,6 +187,7 @@ class UniStitchAligner:
         prefer_magsac_layout: bool = True,
         min_magsac_inlier_ratio: float = 0.5,
     ) -> None:
+        _load_torch()
         self.model_path = Path(model_path).expanduser().resolve()
         self.device = torch.device(device)
         self.inference_width = inference_width
@@ -255,7 +274,7 @@ class UniStitchAligner:
         net.fuse()
         return net
 
-    @torch.inference_mode()
+    @_inference_mode
     def _matched_features(
         self, reference_bgr: np.ndarray, source_bgr: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray, torch.Tensor, torch.Tensor, np.ndarray]:
@@ -339,7 +358,7 @@ class UniStitchAligner:
         ) / total[valid, None]
         return np.clip(result, 0.0, 255.0).astype(np.uint8)
 
-    @torch.inference_mode()
+    @_inference_mode
     def _run_unistitch(
         self,
         reference_bgr: np.ndarray,
