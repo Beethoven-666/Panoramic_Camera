@@ -91,6 +91,16 @@ def test_diagnostic_force_writes_only_non_delivery_artifacts(
         step=120,
         seed=23,
     )
+    manifest_path = session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(
+        {
+            "capture_mode": "diagnostic_unrestricted_auto_exposure",
+            "diagnostic_only": True,
+            "formal_stitch_allowed": False,
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     output = tmp_path / "output"
     observed_config: dict[str, object] = {}
 
@@ -138,6 +148,7 @@ def test_diagnostic_force_writes_only_non_delivery_artifacts(
     assert not (output / "failure.json").exists()
     assert report["diagnostic_only"] is True
     assert report["deliverable_published"] is False
+    assert report["input_capture"]["diagnostic_only"] is True
     assert report["input_quality"]["quality_pass"] is False
     assert report["render"]["quality_metrics"]["quality_pass"] is False
     assert observed_config["allow_magsac_fallback"] is True

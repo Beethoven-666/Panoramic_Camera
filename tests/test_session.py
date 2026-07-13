@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from panorama_demo.session import SessionFrame, discover_frames, select_frames
+from panorama_demo.session import (
+    SessionFrame,
+    discover_frames,
+    load_session_manifest,
+    select_frames,
+)
 
 
 def _touch(path: Path) -> Path:
@@ -33,6 +38,36 @@ def test_discover_directory_uses_sorted_color_subdirectory(tmp_path: Path) -> No
     assert [frame.frame_id for frame in frames] == [0, 1]
     assert [frame.color_path for frame in frames] == [first, second]
     assert all(frame.depth_path is None for frame in frames)
+
+
+@pytest.mark.parametrize("input_kind", ["session", "csv", "color", "image"])
+def test_load_session_manifest_from_supported_session_inputs(
+    tmp_path: Path, input_kind: str
+) -> None:
+    color = _touch(tmp_path / "color" / "0001.jpg")
+    csv_path = tmp_path / "frames.csv"
+    csv_path.write_text("frame_id,color_path\n0,color/0001.jpg\n", encoding="utf-8")
+    (tmp_path / "manifest.json").write_text(
+        '{"diagnostic_only": true, "capture_mode": "test"}',
+        encoding="utf-8",
+    )
+    inputs = {
+        "session": tmp_path,
+        "csv": csv_path,
+        "color": tmp_path / "color",
+        "image": color,
+    }
+
+    manifest = load_session_manifest(inputs[input_kind])
+
+    assert manifest == {"diagnostic_only": True, "capture_mode": "test"}
+
+
+def test_load_session_manifest_rejects_invalid_json(tmp_path: Path) -> None:
+    (tmp_path / "manifest.json").write_text("not-json", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid session manifest"):
+        load_session_manifest(tmp_path)
 
 
 def test_discover_csv_supports_alias_columns_and_utf8_bom(tmp_path: Path) -> None:

@@ -13,7 +13,24 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
     assert config["capture"]["color_auto_exposure"] is True
     assert config["capture"]["color_exposure_us"] is None
     assert config["capture"]["color_ae_max_exposure_us"] == 800
+    assert config["capture"]["diagnostic_unrestricted_auto_exposure"] is False
+    assert config["capture"]["frame_sync"] is True
+    assert config["capture"]["external_sync_output"] is True
+    assert config["capture"]["fps"] == 30
     assert config["stitch"]["max_canvas_megapixels"] == 200
+
+
+def test_unrestricted_auto_exposure_config_is_explicitly_diagnostic() -> None:
+    config = load_config(
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "capture_unrestricted_auto_exposure.yaml"
+    )
+
+    assert config["capture"]["diagnostic_unrestricted_auto_exposure"] is True
+    assert config["capture"]["color_auto_exposure"] is True
+    assert config["capture"]["color_exposure_us"] is None
+    assert config["capture"]["color_ae_max_exposure_us"] == 800
 
 
 @pytest.mark.parametrize(

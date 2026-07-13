@@ -1,0 +1,6 @@
+capture:
+  # Diagnostic only: the capture command replaces the normal 800 us cap with
+  # the maximum range reported and verified by the camera.
+  diagnostic_unrestricted_auto_exposure: true
+  color_auto_exposure: true
+  color_exposure_us: null

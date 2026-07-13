@@ -326,6 +326,52 @@ def _set_bool_property(device: Any, sdk: Any, property_name: str, value: bool) -
         return None
 
 
+def _set_int_property_to_device_max(
+    device: Any,
+    sdk: Any,
+    property_name: str,
+    *,
+    minimum_exclusive: int | None = None,
+) -> tuple[int, int]:
+    """Request a device maximum and return its range maximum and applied value.
+
+    Firmware may clamp the generic property range to the maximum supported by
+    the active frame rate. That lower readback is valid as long as it actually
+    lifts the project cap being replaced.
+    """
+
+    try:
+        prop = getattr(sdk.OBPropertyID, property_name)
+        value_range = device.get_int_property_range(prop)
+        minimum = int(value_range.min)
+        maximum = int(value_range.max)
+        step = max(1, int(value_range.step))
+        if maximum <= 0:
+            raise ValueError(f"device reported invalid maximum {maximum}")
+        device.set_int_property(prop, maximum)
+        applied = int(device.get_int_property(prop))
+    except Exception as exc:
+        raise RuntimeError(
+            f"The camera cannot remove the project exposure cap via {property_name}"
+        ) from exc
+    if (
+        applied < minimum
+        or applied > maximum
+        or (applied - minimum) % step != 0
+    ):
+        raise RuntimeError(
+            "The camera returned an invalid maximum auto-exposure readback: "
+            f"device range {minimum}..{maximum} step {step}, applied {applied}"
+        )
+    if minimum_exclusive is not None and applied <= minimum_exclusive:
+        raise RuntimeError(
+            "The camera did not lift its auto-exposure limit above the project "
+            f"cap: requested device maximum {maximum}, applied {applied}, "
+            f"required above {minimum_exclusive}"
+        )
+    return maximum, applied
+
+
 def _uses_color_auto_exposure(options: dict[str, Any]) -> bool:
     configured = options.get("color_auto_exposure")
     if configured is None:
@@ -353,6 +399,8 @@ def _color_exposure_metadata_violation(
         return None
     measured_units = int(exposure_raw)
     if _uses_color_auto_exposure(options):
+        if bool(options.get("diagnostic_unrestricted_auto_exposure", False)):
+            return None
         cap_us = options.get("color_ae_max_exposure_us")
         if cap_us is None:
             return None
@@ -380,6 +428,9 @@ def _color_exposure_control_summary(
 ) -> dict[str, Any]:
     requested_auto = _uses_color_auto_exposure(options)
     applied_auto = bool(applied["auto_exposure"])
+    unrestricted_diagnostic = bool(
+        options.get("diagnostic_unrestricted_auto_exposure", False)
+    )
     return {
         "requested_mode": "auto" if requested_auto else "manual",
         "effective_mode": (
@@ -393,6 +444,19 @@ def _color_exposure_control_summary(
         ),
         "applied_exposure_us": applied.get("exposure_us"),
         "applied_auto_cap_us": applied.get("ae_max_exposure_us"),
+        "replaced_motion_safe_cap_us": options.get(
+            "diagnostic_replaced_auto_cap_us"
+        ),
+        "requested_device_max_auto_cap_us": applied.get(
+            "ae_max_exposure_requested_us"
+        ),
+        "device_clamped_auto_cap": applied.get("ae_max_exposure_device_clamped"),
+        "auto_exposure_policy": (
+            "device_max_diagnostic"
+            if unrestricted_diagnostic
+            else ("motion_safe_cap" if requested_auto else "manual")
+        ),
+        "diagnostic_only": unrestricted_diagnostic,
     }
 
 
@@ -401,6 +465,13 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
     exposure = options.get("color_exposure_us")
     auto_exposure = _uses_color_auto_exposure(options)
     ae_max_exposure = options.get("color_ae_max_exposure_us")
+    unrestricted_diagnostic = bool(
+        options.get("diagnostic_unrestricted_auto_exposure", False)
+    )
+    if unrestricted_diagnostic and (not auto_exposure or exposure is not None):
+        raise ValueError(
+            "diagnostic_unrestricted_auto_exposure requires automatic color exposure"
+        )
     if auto_exposure and exposure is not None:
         raise ValueError(
             "color_exposure_us must be null when color_auto_exposure is true"
@@ -414,7 +485,28 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
     )
     effective_auto_exposure = bool(auto_exposure)
     fallback_exposure_us: int | None = None
-    if auto_exposure and ae_max_exposure is not None:
+    if auto_exposure and unrestricted_diagnostic:
+        replaced_cap_us = options.get("diagnostic_replaced_auto_cap_us")
+        if replaced_cap_us is None:
+            raise ValueError(
+                "diagnostic unrestricted auto exposure requires the formal "
+                "auto-exposure cap it replaces"
+            )
+        replaced_cap_units = _color_exposure_units(replaced_cap_us)
+        requested_cap, applied_cap = _set_int_property_to_device_max(
+            device,
+            sdk,
+            "OB_PROP_COLOR_AE_MAX_EXPOSURE_INT",
+            minimum_exclusive=replaced_cap_units,
+        )
+        applied["ae_max_exposure_requested"] = requested_cap
+        applied["ae_max_exposure_requested_us"] = (
+            requested_cap * COLOR_EXPOSURE_UNIT_US
+        )
+        applied["ae_max_exposure"] = applied_cap
+        applied["ae_max_exposure_us"] = applied_cap * COLOR_EXPOSURE_UNIT_US
+        applied["ae_max_exposure_device_clamped"] = applied_cap < requested_cap
+    elif auto_exposure and ae_max_exposure is not None:
         ae_max_exposure_us = int(ae_max_exposure)
         if ae_max_exposure_us <= 0:
             raise ValueError("color_ae_max_exposure_us must be positive")
@@ -490,6 +582,135 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
     return applied
 
 
+def _apply_color_exposure_mode(
+    options: dict[str, Any], args: argparse.Namespace
+) -> bool:
+    """Apply CLI exposure selection and return whether capture is diagnostic-only."""
+
+    if bool(getattr(args, "diagnostic_unrestricted_auto_exposure", False)):
+        options["diagnostic_unrestricted_auto_exposure"] = True
+    elif bool(getattr(args, "auto_exposure", False)):
+        options["diagnostic_unrestricted_auto_exposure"] = False
+        options["color_auto_exposure"] = True
+        options["color_exposure_us"] = None
+    elif getattr(args, "exposure_us", None) is not None:
+        options["diagnostic_unrestricted_auto_exposure"] = False
+        options["color_auto_exposure"] = False
+        options["color_exposure_us"] = args.exposure_us
+
+    diagnostic_only = bool(
+        options.get("diagnostic_unrestricted_auto_exposure", False)
+    )
+    options["diagnostic_unrestricted_auto_exposure"] = diagnostic_only
+    if diagnostic_only:
+        options["color_auto_exposure"] = True
+        options["color_exposure_us"] = None
+        replaced_cap_us = options.get("color_ae_max_exposure_us")
+        if replaced_cap_us is None:
+            replaced_cap_us = options.get("diagnostic_replaced_auto_cap_us")
+        if replaced_cap_us is None:
+            raise ValueError(
+                "Diagnostic unrestricted auto exposure requires a positive "
+                "color_ae_max_exposure_us baseline in the merged configuration"
+            )
+        _color_exposure_units(replaced_cap_us)
+        options["diagnostic_replaced_auto_cap_us"] = replaced_cap_us
+        options["color_ae_max_exposure_us"] = None
+    elif (
+        _uses_color_auto_exposure(options)
+        and options.get("color_ae_max_exposure_us") is None
+    ):
+        raise ValueError(
+            "Uncapped color auto exposure is diagnostic-only; use "
+            "--diagnostic-unrestricted-auto-exposure"
+        )
+    else:
+        options.pop("diagnostic_replaced_auto_cap_us", None)
+    return diagnostic_only
+
+
+def _sync_mode_name(mode: Any) -> str:
+    name = getattr(mode, "name", None)
+    return str(name) if name is not None else str(mode).rsplit(".", 1)[-1]
+
+
+def _sync_config_to_dict(config: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "mode": _sync_mode_name(config.mode),
+        "trigger_out_enable": bool(config.trigger_out_enable),
+    }
+    for name in (
+        "color_delay_us",
+        "depth_delay_us",
+        "trigger_to_image_delay_us",
+        "trigger_out_delay_us",
+        "frames_per_trigger",
+    ):
+        try:
+            result[name] = int(getattr(config, name))
+        except (AttributeError, TypeError, ValueError):
+            result[name] = None
+    return result
+
+
+def _configure_external_sync_output(
+    device: Any, sdk: Any, options: dict[str, Any]
+) -> dict[str, Any]:
+    """Configure a continuous sync pulse tied to the active RGB-D frame rate."""
+
+    enabled = bool(options.get("external_sync_output", True))
+    if not enabled:
+        return {"enabled": False}
+
+    frame_rate_hz = int(options["fps"])
+    if frame_rate_hz <= 0:
+        raise ValueError("fps must be positive when external_sync_output is enabled")
+    try:
+        primary_mode = sdk.OBMultiDeviceSyncMode.PRIMARY
+        get_sync_config = device.get_multi_device_sync_config
+        set_sync_config = device.set_multi_device_sync_config
+    except AttributeError as exc:
+        raise RuntimeError(
+            "The camera SDK does not expose the required external sync output configuration"
+        ) from exc
+
+    try:
+        requested = get_sync_config()
+        requested.mode = primary_mode
+        requested.trigger_out_enable = True
+        # PRIMARY mode normally forces this delay to zero. Set it explicitly so
+        # the edge is deterministic even if firmware leaves it configurable.
+        requested.trigger_out_delay_us = 0
+        set_sync_config(requested)
+        applied = get_sync_config()
+    except Exception as exc:
+        raise RuntimeError(
+            "The camera did not apply the external sync output configuration"
+        ) from exc
+
+    applied_mode = getattr(applied, "mode", None)
+    if applied_mode != primary_mode:
+        raise RuntimeError(
+            "The camera did not enter PRIMARY sync mode: "
+            f"applied {_sync_mode_name(applied_mode)}"
+        )
+    if not bool(getattr(applied, "trigger_out_enable", False)):
+        raise RuntimeError("The camera did not enable its external sync trigger output")
+    if getattr(applied, "trigger_out_delay_us", None) != 0:
+        raise RuntimeError("The camera did not apply zero external sync output delay")
+
+    result = _sync_config_to_dict(applied)
+    result.update(
+        {
+            "enabled": True,
+            "readback_verified": True,
+            "expected_frequency_hz": frame_rate_hz,
+            "frequency_source": "capture_fps",
+        }
+    )
+    return result
+
+
 def _device_info(device: Any) -> dict[str, Any]:
     info = device.get_device_info()
     result: dict[str, Any] = {}
@@ -558,12 +779,7 @@ def run_capture(args: argparse.Namespace) -> Path:
         value = getattr(args, name, None)
         if value is not None:
             options[name] = value
-    if args.auto_exposure:
-        options["color_auto_exposure"] = True
-        options["color_exposure_us"] = None
-    elif args.exposure_us is not None:
-        options["color_auto_exposure"] = False
-        options["color_exposure_us"] = args.exposure_us
+    diagnostic_only = _apply_color_exposure_mode(options, args)
     if args.gain is not None:
         options["color_gain"] = args.gain
     if args.white_balance is not None:
@@ -599,6 +815,13 @@ def run_capture(args: argparse.Namespace) -> Path:
         "schema": "panorama-demo-session/v1",
         "started_utc": started_utc,
         "clean_shutdown": False,
+        "capture_mode": (
+            "diagnostic_unrestricted_auto_exposure"
+            if diagnostic_only
+            else "standard"
+        ),
+        "diagnostic_only": diagnostic_only,
+        "formal_stitch_allowed": not diagnostic_only,
         "capture_options": options,
     }
     _write_manifest(session_root, manifest)
@@ -619,6 +842,7 @@ def run_capture(args: argparse.Namespace) -> Path:
         manifest["python_wrapper_version"] = None
     try:
         applied_color_properties = _configure_color(device, sdk, options)
+        external_sync_output = _configure_external_sync_output(device, sdk, options)
     except Exception as exc:
         manifest.update(
             {
@@ -635,6 +859,7 @@ def run_capture(args: argparse.Namespace) -> Path:
     manifest["color_exposure_control"] = _color_exposure_control_summary(
         options, applied_color_properties
     )
+    manifest["external_sync_output"] = external_sync_output
     _write_manifest(session_root, manifest)
 
     # Keep profile selection, property writes, and streaming on the same device.
@@ -884,6 +1109,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-exposure",
         action="store_true",
         help="Enable color auto exposure with the configured motion-safe cap",
+    )
+    exposure.add_argument(
+        "--diagnostic-unrestricted-auto-exposure",
+        action="store_true",
+        help=(
+            "Diagnostic only: enable color auto exposure at the device-reported "
+            "maximum range; the session cannot publish an official panorama"
+        ),
     )
     exposure.add_argument(
         "--exposure-us",

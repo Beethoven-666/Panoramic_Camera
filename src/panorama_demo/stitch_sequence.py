@@ -25,7 +25,12 @@ from .quality import (
     select_render_indices_auto,
 )
 from .render import render_panorama, render_scan_panorama
-from .session import SessionFrame, discover_frames, select_frames
+from .session import (
+    SessionFrame,
+    discover_frames,
+    load_session_manifest,
+    select_frames,
+)
 from .stitch_common import build_aligner, read_bgr, write_bgr
 
 
@@ -41,6 +46,46 @@ _DIAGNOSTIC_FILES = (
     "diagnostic_panorama.jpg",
     "diagnostic_report.json",
 )
+
+
+def _capture_manifest_summary(
+    manifest: dict[str, Any] | None,
+) -> dict[str, object]:
+    if manifest is None:
+        return {
+            "capture_mode": "legacy_or_unknown",
+            "diagnostic_only": False,
+            "formal_stitch_allowed": True,
+        }
+
+    diagnostic_marker = manifest.get("diagnostic_only", False)
+    formal_allowed = manifest.get("formal_stitch_allowed", True)
+    if not isinstance(diagnostic_marker, bool):
+        raise ValueError("Session manifest diagnostic_only must be a boolean")
+    if not isinstance(formal_allowed, bool):
+        raise ValueError("Session manifest formal_stitch_allowed must be a boolean")
+    capture_mode = str(manifest.get("capture_mode", "legacy_or_unknown"))
+    capture_options = manifest.get("capture_options", {})
+    option_marker = False
+    if isinstance(capture_options, dict):
+        option_marker = capture_options.get(
+            "diagnostic_unrestricted_auto_exposure", False
+        )
+        if not isinstance(option_marker, bool):
+            raise ValueError(
+                "Session manifest diagnostic exposure marker must be a boolean"
+            )
+    diagnostic_only = bool(
+        diagnostic_marker
+        or not formal_allowed
+        or option_marker
+        or capture_mode == "diagnostic_unrestricted_auto_exposure"
+    )
+    return {
+        "capture_mode": capture_mode,
+        "diagnostic_only": diagnostic_only,
+        "formal_stitch_allowed": not diagnostic_only,
+    }
 
 
 def _clear_delivery_files(output: Path) -> None:
@@ -541,6 +586,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if motion_model not in {"translation", "similarity", "homography"}:
         raise ValueError(f"Unsupported sequence motion model: {motion_model}")
 
+    input_capture = _capture_manifest_summary(load_session_manifest(args.input))
+    if bool(input_capture["diagnostic_only"]) and not diagnostic_force:
+        raise RuntimeError(
+            "Input capture session is diagnostic-only because unrestricted auto "
+            "exposure was enabled; rerun with --diagnostic-force to write only "
+            "diagnostic artifacts"
+        )
+
     all_frames = discover_frames(args.input)
     frame_ids = [frame.frame_id for frame in all_frames]
     if len(frame_ids) != len(set(frame_ids)) or any(
@@ -839,6 +892,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "diagnostic_only": diagnostic_force,
         "deliverable_published": not diagnostic_force,
         "diagnostic_geometry": diagnostic_geometry,
+        "input_capture": input_capture,
         "frame_count": len(frames),
         "stride": None if adaptive_layout else stride,
         "layout_selection": layout_metadata,

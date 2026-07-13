@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
@@ -17,6 +19,32 @@ class SessionFrame:
     depth_scale_mm_per_unit: float | None = None
     color_exposure_raw: int | None = None
     color_gain: int | None = None
+
+
+def load_session_manifest(input_path: str | Path) -> dict[str, Any] | None:
+    """Load a capture manifest adjacent to a supported session input, if present."""
+
+    path = Path(input_path).expanduser().resolve()
+    candidates: list[Path] = []
+    if path.is_dir():
+        candidates.append(path / "manifest.json")
+        if path.name.lower() == "color":
+            candidates.append(path.parent / "manifest.json")
+    elif path.is_file():
+        candidates.append(path.parent / "manifest.json")
+        if path.parent.name.lower() == "color":
+            candidates.append(path.parent.parent / "manifest.json")
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Invalid session manifest: {candidate}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"Session manifest must contain a JSON object: {candidate}")
+        return payload
+    return None
 
 
 def _from_csv(root: Path, csv_path: Path) -> list[SessionFrame]:

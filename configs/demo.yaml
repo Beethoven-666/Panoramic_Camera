@@ -5,6 +5,9 @@ capture:
   color_formats: [RGB, BGR, YUYV, MJPG]
   align: software
   frame_sync: true
+  # PRIMARY mode emits one external synchronization pulse per RGB-D frame.
+  # With the default 30 fps profiles, the synchronization port outputs 30 Hz.
+  external_sync_output: true
   warmup_frames: 30
   warmup_timeout_seconds: 15
   frame_timeout_seconds: 5
@@ -14,6 +17,8 @@ capture:
   color_auto_exposure: true
   color_exposure_us: null
   color_ae_max_exposure_us: 800
+  # Explicitly unsafe-for-delivery opt-in. Prefer the CLI flag for one-off diagnostics.
+  diagnostic_unrestricted_auto_exposure: false
   color_gain: null
   color_white_balance: null
   color_anti_flicker: true

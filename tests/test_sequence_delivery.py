@@ -145,3 +145,44 @@ def test_manual_render_frame_cli_cannot_publish_partial_delivery(
     failure = json.loads((output / "failure.json").read_text(encoding="utf-8"))
     assert failure["deliverable_published"] is False
     assert "cannot publish a complete" in failure["message"]
+
+
+def test_unrestricted_auto_exposure_capture_cannot_publish_delivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = tmp_path / "session"
+    session.mkdir()
+    (session / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": "panorama-demo-session/v1",
+                "capture_mode": "diagnostic_unrestricted_auto_exposure",
+                "diagnostic_only": True,
+                "formal_stitch_allowed": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "delivery.json").write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "unistitch-sequence",
+            str(session),
+            "--output",
+            str(output),
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="1"):
+        main()
+
+    assert not (output / "delivery.json").exists()
+    assert not (output / "panorama.jpg").exists()
+    failure = json.loads((output / "failure.json").read_text(encoding="utf-8"))
+    assert failure["deliverable_published"] is False
+    assert "diagnostic-only" in failure["message"]
+    assert "--diagnostic-force" in failure["message"]
