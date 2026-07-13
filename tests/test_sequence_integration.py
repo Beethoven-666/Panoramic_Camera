@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import cv2
 import numpy as np
@@ -12,87 +14,149 @@ import panorama_demo.stitch_sequence as sequence
 from panorama_demo.synthetic import generate_sequence
 
 
-@dataclass
-class _FakeAlignment:
-    homography_source_to_reference: np.ndarray
-    preview_bgr: np.ndarray
-    layout_method: str = "synthetic_known_translation"
-    match_count: int = 200
-    median_reprojection_px: float = 0.0
+class _KnownTrajectoryRGBDBackend:
+    """Deterministic RGB-D backend driven by the synthetic manifest's SE(3)."""
 
-    def as_dict(self) -> dict[str, object]:
+    name = "synthetic_known_rgbd"
+
+    def __init__(
+        self,
+        session: Path,
+        *,
+        fitness: float = 0.99,
+        rmse_mm: float = 0.5,
+    ) -> None:
+        manifest = json.loads(
+            (session / "manifest.json").read_text(encoding="utf-8")
+        )
+        trajectory = manifest["known_trajectory"]
+        assert trajectory["transform"] == "camera_to_world"
+        assert trajectory["translation_unit"] == "millimetres"
+        self.poses = {
+            int(row["frame_id"]): np.asarray(
+                row["matrix_row_major"], dtype=np.float64
+            ).reshape(4, 4)
+            for row in trajectory["poses"]
+        }
+        self.fitness = float(fitness)
+        self.rmse_mm = float(rmse_mm)
+        self.estimated_pairs: list[tuple[int, int]] = []
+        self.optimized_node_ids: tuple[int, ...] = ()
+
+    def estimate_pair(self, *, reference, source, intrinsics, config):
+        del intrinsics, config
+        reference_id = int(reference.frame_id)
+        source_id = int(source.frame_id)
+        self.estimated_pairs.append((reference_id, source_id))
+        source_to_reference = (
+            np.linalg.inv(self.poses[reference_id]) @ self.poses[source_id]
+        )
         return {
-            "homography_source_to_reference": (
-                self.homography_source_to_reference.tolist()
-            ),
-            "match_count": self.match_count,
-            "layout_method": self.layout_method,
-            "median_reprojection_px": self.median_reprojection_px,
+            "source_to_reference": source_to_reference,
+            "converged": True,
+            "fitness": self.fitness,
+            "rmse_mm": self.rmse_mm,
+            "information": np.eye(6, dtype=np.float64) * 100.0,
+            "backend": self.name,
         }
 
-
-class _KnownTranslationAligner:
-    def __init__(self, step: int) -> None:
-        self.step = step
-
-    def align(self, reference: np.ndarray, source: np.ndarray) -> _FakeAlignment:
-        transform = np.array(
-            [[1.0, 0.0, self.step], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-            dtype=np.float64,
-        )
-        preview = np.hstack((reference, source))
-        return _FakeAlignment(transform, preview)
+    def optimize_pose_graph(
+        self, *, node_ids, initial_camera_to_world, edges, config
+    ):
+        del edges, config
+        self.optimized_node_ids = tuple(int(value) for value in node_ids)
+        # The synthetic measurements are exact, so the propagated initial poses
+        # are already the optimum. No image feature or 2-D transform is involved.
+        return tuple(np.asarray(pose).copy() for pose in initial_camera_to_world)
 
 
-def test_zero_parameter_sequence_publishes_one_complete_delivery(
-    tmp_path: Path, monkeypatch
-) -> None:
-    session = generate_sequence(
+def _make_session(tmp_path: Path, *, seed: int) -> Path:
+    return generate_sequence(
         tmp_path / "session",
-        frame_count=10,
-        frame_width=640,
-        frame_height=400,
-        step=120,
-        seed=19,
-    )
-    output = tmp_path / "output"
-    monkeypatch.setattr(
-        sequence,
-        "build_aligner",
-        lambda *_args, **_kwargs: _KnownTranslationAligner(120),
-    )
-    args = sequence._parser().parse_args(
-        [str(session), "--output", str(output)]
+        frame_count=7,
+        frame_width=320,
+        frame_height=200,
+        step=60,
+        seed=seed,
     )
 
-    report = sequence.run(args)
+
+def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
+    tmp_path: Path,
+) -> None:
+    session = _make_session(tmp_path, seed=19)
+    output = tmp_path / "output"
+    backend = _KnownTrajectoryRGBDBackend(session)
+    args = sequence._parser().parse_args([str(session), "--output", str(output)])
+
+    report = sequence.run(args, odometry_backend=backend)
 
     panorama = cv2.imread(str(output / "panorama.jpg"), cv2.IMREAD_COLOR)
     assert panorama is not None
-    assert panorama.shape[1] >= 1600
-    assert panorama.shape[0] >= 390
+    assert panorama.shape[1] > 320
+    assert panorama.shape[0] >= 180
     assert (output / "delivery.json").is_file()
     assert not (output / "failure.json").exists()
-    assert report["layout_selection"]["mode"] == "adaptive_visual_motion"
+    assert report["layout_selection"]["mode"] == "adaptive_rgbd_pose_nodes"
     assert report["render"]["quality_metrics"]["quality_pass"] is True
+    assert report["pose_quality"]["quality_pass"] is True
+    assert report["pose_graph"]["connected"] is True
+    assert report["render"]["selection"]["interpolated_pose_count"] == 0
+    assert len(backend.optimized_node_ids) >= 2
+    assert backend.estimated_pairs
+
+    transforms = json.loads(
+        (output / "transforms.json").read_text(encoding="utf-8")
+    )
+    assert transforms["pose_convention"].startswith("camera_to_world")
+    assert transforms["translation_unit"] == "mm"
+    assert all(
+        np.asarray(node["camera_to_world"]).shape == (4, 4)
+        for node in transforms["nodes"]
+    )
     delivery = json.loads((output / "delivery.json").read_text(encoding="utf-8"))
     assert delivery["quality_pass"] is True
+    assert delivery["pose_backend"] == "open3d_rgbd"
+    assert delivery["seam_backend"] == "graphcut_depth_constrained"
     assert np.all(np.max(panorama[[0, -1]], axis=2) > 0)
     assert np.all(np.max(panorama[:, [0, -1]], axis=2) > 0)
 
 
-@pytest.mark.parametrize("activation", ["cli", "config"])
-def test_diagnostic_mode_writes_only_non_delivery_artifacts(
-    tmp_path: Path, monkeypatch, activation: str
-) -> None:
-    session = generate_sequence(
-        tmp_path / "session",
-        frame_count=10,
-        frame_width=640,
-        frame_height=400,
-        step=120,
-        seed=23,
+def test_importing_formal_sequence_does_not_load_legacy_model_stack() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(project_root / "src")
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import panorama_demo.stitch_sequence; "
+                "blocked=('torch', 'kornia', 'lightglue', "
+                "'panorama_demo.unistitch_adapter', "
+                "'panorama_demo.stitch_common'); "
+                "loaded=[name for name in sys.modules "
+                "if any(name == item or name.startswith(item + '.') "
+                "for item in blocked)]; "
+                "assert not loaded, loaded"
+            ),
+        ],
+        cwd=project_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
     )
+    assert probe.returncode == 0, probe.stdout + probe.stderr
+
+
+@pytest.mark.parametrize("activation", ["cli", "config"])
+def test_diagnostic_mode_bypasses_quality_thresholds_but_never_publishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    activation: str,
+) -> None:
+    session = _make_session(tmp_path, seed=23)
     manifest_path = session / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest.update(
@@ -104,15 +168,11 @@ def test_diagnostic_mode_writes_only_non_delivery_artifacts(
     )
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     output = tmp_path / "output"
-    observed_config: dict[str, object] = {}
-
-    def diagnostic_aligner(settings, **_kwargs):
-        observed_config.update(settings)
-        return _KnownTranslationAligner(120)
-
-    monkeypatch.setattr(sequence, "build_aligner", diagnostic_aligner)
+    # Structurally valid but formally poor odometry must remain usable only in
+    # diagnostic mode; graph connectivity and finite SE(3) are still enforced.
+    backend = _KnownTrajectoryRGBDBackend(session, fitness=0.0, rmse_mm=500.0)
     original_capture_quality = sequence.assess_capture_quality
-    original_render = sequence.render_scan_panorama
+    original_render = sequence.render_projected_scan_panorama
 
     def failing_capture_quality(*args, **kwargs):
         result = original_capture_quality(*args, **kwargs)
@@ -127,7 +187,9 @@ def test_diagnostic_mode_writes_only_non_delivery_artifacts(
         return panorama, info
 
     monkeypatch.setattr(sequence, "assess_capture_quality", failing_capture_quality)
-    monkeypatch.setattr(sequence, "render_scan_panorama", failing_render)
+    monkeypatch.setattr(
+        sequence, "render_projected_scan_panorama", failing_render
+    )
     arguments = [str(session), "--output", str(output)]
     if activation == "cli":
         arguments.append("--diagnostic-force")
@@ -144,25 +206,27 @@ def test_diagnostic_mode_writes_only_non_delivery_artifacts(
         )
     args = sequence._parser().parse_args(arguments)
 
-    report = sequence.run(args)
+    report = sequence.run(args, odometry_backend=backend)
 
     panorama = cv2.imread(
         str(output / "diagnostic_panorama.jpg"), cv2.IMREAD_COLOR
     )
     assert panorama is not None
-    assert (output / "diagnostic_report.json").is_file()
-    assert not (output / "panorama.jpg").exists()
-    assert not (output / "report.json").exists()
-    assert not (output / "delivery.json").exists()
-    assert not (output / "failure.json").exists()
+    assert sorted(path.name for path in output.iterdir()) == [
+        "diagnostic_panorama.jpg",
+        "diagnostic_report.json",
+    ]
     assert report["diagnostic_only"] is True
     assert report["deliverable_published"] is False
     assert report["input_capture"]["diagnostic_only"] is True
     assert report["input_quality"]["quality_pass"] is False
+    assert report["pose_quality"]["quality_pass"] is False
     assert report["render"]["quality_metrics"]["quality_pass"] is False
-    assert observed_config["allow_magsac_fallback"] is True
-    assert observed_config["prefer_magsac_layout"] is True
-    assert observed_config["min_matches"] == 4
-    assert observed_config["min_magsac_inlier_ratio"] == 0.0
-    assert observed_config["max_unistitch_reprojection_px"] == 1_000_000.0
-    assert report["diagnostic_geometry"]["official_thresholds_bypassed"] is True
+    assert report["diagnostic_overrides"] == {
+        "input_quality_thresholds_bypassed": True,
+        "odometry_quality_thresholds_bypassed": True,
+        "pose_quality_thresholds_bypassed": True,
+        "final_image_quality_thresholds_bypassed": True,
+        "calibration_aligned_depth_finite_se3_graph_connectivity_"
+        "projection_topology_memory_atomic_safety_required": True,
+    }

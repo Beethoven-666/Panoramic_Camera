@@ -6,6 +6,9 @@ import cv2
 import numpy as np
 
 
+_PROJECTED_NEAR_FOREGROUND_MM = 1000.0
+
+
 @dataclass(frozen=True)
 class CanvasInfo:
     width: int
@@ -81,6 +84,43 @@ class ScanRenderInfo:
                 }
                 for owner, x0, y0, x1, y1 in self.automatic_protected_regions
             ],
+            "quality_metrics": self.quality_metrics,
+        }
+
+
+@dataclass(frozen=True)
+class ProjectedScanRenderInfo:
+    """Audit record for the formal, already-projected RGB-D render path."""
+
+    crop: CropInfo
+    canvas_width: int
+    canvas_height: int
+    source_count: int
+    source_order: tuple[int, ...]
+    color_gains: tuple[tuple[float, float, float], ...]
+    multiband_levels: int
+    blend_radius_pixels: int
+    blend_zone_pixel_count: int
+    hard_owner_component_count: int
+    owner_masks: tuple[np.ndarray, ...]
+    quality_metrics: dict[str, float | int | bool]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "backend": "graphcut_depth_constrained",
+            "blend_backend": "opencv_multiband_narrow_owner_boundary",
+            "crop": self.crop.as_dict(),
+            "canvas": {
+                "width": self.canvas_width,
+                "height": self.canvas_height,
+            },
+            "source_count": self.source_count,
+            "source_order": list(self.source_order),
+            "color_gains": [list(gain) for gain in self.color_gains],
+            "multiband_levels": self.multiband_levels,
+            "blend_radius_pixels": self.blend_radius_pixels,
+            "blend_zone_pixel_count": self.blend_zone_pixel_count,
+            "hard_owner_component_count": self.hard_owner_component_count,
             "quality_metrics": self.quality_metrics,
         }
 
@@ -292,6 +332,14 @@ def _pair_risk_mask(
     valid1: np.ndarray,
     depth0: np.ndarray | None,
     depth1: np.ndarray | None,
+    *,
+    depth_valid0: np.ndarray | None = None,
+    depth_valid1: np.ndarray | None = None,
+    camera_depth0: np.ndarray | None = None,
+    camera_depth1: np.ndarray | None = None,
+    camera_depth_valid0: np.ndarray | None = None,
+    camera_depth_valid1: np.ndarray | None = None,
+    world_surface_depth: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     common = (valid0 > 0) & (valid1 > 0)
     lab0 = cv2.cvtColor(image0, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -320,11 +368,27 @@ def _pair_risk_mask(
 
     depth_risk = np.zeros(common.shape, dtype=bool)
     if depth0 is not None and depth1 is not None:
-        depth_valid = common & (depth0 >= 400.0) & (depth1 >= 400.0)
+        if (depth_valid0 is None) != (depth_valid1 is None):
+            raise ValueError("Both surface-depth valid masks must be provided together")
+        if depth_valid0 is None:
+            # Legacy image-warp callers provide camera depth without a separate
+            # validity mask.  The RGB-D projection path always supplies explicit
+            # masks because world-normal depth may legitimately be below 400 mm
+            # or negative depending on the chosen world origin.
+            depth_valid = common & (depth0 >= 400.0) & (depth1 >= 400.0)
+        else:
+            if depth_valid0.shape != common.shape or depth_valid1.shape != common.shape:
+                raise ValueError("Surface-depth valid masks must match the canvas")
+            depth_valid = common & (depth_valid0 > 0) & (depth_valid1 > 0)
         minimum = np.minimum(depth0, depth1)
-        # A 100 mm / 10% threshold rejects ordinary sensor noise while still
-        # detecting the disparity created by a 0.5 m foreground object.
-        tolerance = np.maximum(100.0, minimum * 0.10)
+        # World-normal surface coordinates may be translated by an arbitrary
+        # world origin, so their disagreement threshold must be translation
+        # invariant.  Legacy camera-depth callers retain the relative term.
+        tolerance = (
+            np.full(common.shape, 100.0, dtype=np.float32)
+            if world_surface_depth
+            else np.maximum(100.0, minimum * 0.10)
+        )
         first_is_nearer = depth_valid & ((depth1 - depth0) >= tolerance)
         second_is_nearer = depth_valid & ((depth0 - depth1) >= tolerance)
         # In a textured scene, isolated depth mismatches are common on shiny
@@ -337,7 +401,7 @@ def _pair_risk_mask(
             and (not values.size or float(np.percentile(values, 90)) < 6.0)
         )
         depth_support = common
-        if not flat_scene:
+        if not flat_scene and not world_surface_depth:
             visual_seed = common & (
                 difference >= max(12.0, threshold * 0.45)
             )
@@ -353,14 +417,14 @@ def _pair_risk_mask(
         # scene; expanding every depth edge there tends to merge a whole desk
         # into one false obstacle.  Depth-only scenes do need surface growth to
         # bridge the two exposed sides of an otherwise invisible object.
-        if flat_scene:
+        if flat_scene and not world_surface_depth:
             depth_risk |= _expand_depth_occlusion_surface(
                 depth0, first_is_nearer, common
             )
             depth_risk |= _expand_depth_occlusion_surface(
                 depth1, second_is_nearer, common
             )
-        else:
+        elif not world_surface_depth:
             saturation0 = cv2.cvtColor(image0, cv2.COLOR_BGR2HSV)[:, :, 1]
             saturation1 = cv2.cvtColor(image1, cv2.COLOR_BGR2HSV)[:, :, 1]
             salient_color = common & (
@@ -377,7 +441,50 @@ def _pair_risk_mask(
                 depth1, second_is_nearer & salient_color, salient_support
             )
 
-    risk = (rgb_risk | depth_risk).astype(np.uint8) * 255
+    camera_values = (
+        camera_depth0,
+        camera_depth1,
+        camera_depth_valid0,
+        camera_depth_valid1,
+    )
+    near_risk = np.zeros(common.shape, dtype=bool)
+    if any(value is not None for value in camera_values):
+        if any(value is None for value in camera_values):
+            raise ValueError(
+                "Both projected camera-depth arrays and valid masks are required"
+            )
+        assert camera_depth0 is not None
+        assert camera_depth1 is not None
+        assert camera_depth_valid0 is not None
+        assert camera_depth_valid1 is not None
+        if any(
+            value.shape != common.shape
+            for value in (
+                camera_depth0,
+                camera_depth1,
+                camera_depth_valid0,
+                camera_depth_valid1,
+            )
+        ):
+            raise ValueError("Projected camera-depth arrays must match the canvas")
+        near_valid = (
+            common
+            & (camera_depth_valid0 > 0)
+            & (camera_depth_valid1 > 0)
+            & np.isfinite(camera_depth0)
+            & np.isfinite(camera_depth1)
+            & (camera_depth0 > 0.0)
+            & (camera_depth1 > 0.0)
+        )
+        # Protect close geometry independently of colour agreement.  At this
+        # range, a small lateral baseline causes large parallax even if two
+        # reprojected RGB samples happen to have similar Lab values.
+        near_risk = near_valid & (
+            np.minimum(camera_depth0, camera_depth1)
+            < _PROJECTED_NEAR_FOREGROUND_MM
+        )
+
+    risk = (rgb_risk | depth_risk | near_risk).astype(np.uint8) * 255
     risk = cv2.morphologyEx(
         risk,
         cv2.MORPH_CLOSE,
@@ -392,6 +499,7 @@ def _pair_risk_mask(
         common
         & (gradient0 < gradient_threshold)
         & (gradient1 < gradient_threshold)
+        & ~near_risk
     )
     return risk, difference, safe_background
 
@@ -764,15 +872,29 @@ def _evaluate_final_owner_boundaries(
     axis: np.ndarray,
     order: np.ndarray,
     blend_guard_pixels: int,
+    *,
+    depth_valid_masks: list[np.ndarray | None] | None = None,
+    camera_depth_maps: list[np.ndarray | None] | None = None,
+    camera_depth_valid_masks: list[np.ndarray | None] | None = None,
+    world_surface_depth: bool = False,
 ) -> dict[str, float | int | bool]:
     """Measure risk on the final masks after overrides and hole filling."""
 
     owned = np.stack([mask > 0 for mask in owner_masks], axis=0)
     valid = np.stack([mask > 0 for mask in valid_masks], axis=0)
+    if depth_valid_masks is not None and len(depth_valid_masks) != len(images):
+        raise ValueError("Surface-depth valid masks must match the source count")
+    if camera_depth_maps is not None and len(camera_depth_maps) != len(images):
+        raise ValueError("Camera-depth maps must match the source count")
+    if camera_depth_valid_masks is not None and len(camera_depth_valid_masks) != len(images):
+        raise ValueError("Camera-depth valid masks must match the source count")
+    if (camera_depth_maps is None) != (camera_depth_valid_masks is None):
+        raise ValueError("Camera-depth maps and valid masks must be provided together")
     union_valid = np.any(valid, axis=0)
     owner_count = np.sum(owned, axis=0)
     hole_count = int(np.count_nonzero(union_valid & (owner_count == 0)))
     overlap_count = int(np.count_nonzero(owner_count > 1))
+    invalid_owner_count = int(np.count_nonzero(owned & ~valid))
     horizontal = abs(float(axis[0])) >= abs(float(axis[1]))
     neighbor_kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
     exact_risks: list[float] = []
@@ -824,6 +946,37 @@ def _evaluate_final_owner_boundaries(
                 valid_masks[second],
                 depth_maps[first],
                 depth_maps[second],
+                depth_valid0=(
+                    depth_valid_masks[first]
+                    if depth_valid_masks is not None
+                    else None
+                ),
+                depth_valid1=(
+                    depth_valid_masks[second]
+                    if depth_valid_masks is not None
+                    else None
+                ),
+                camera_depth0=(
+                    camera_depth_maps[first]
+                    if camera_depth_maps is not None
+                    else None
+                ),
+                camera_depth1=(
+                    camera_depth_maps[second]
+                    if camera_depth_maps is not None
+                    else None
+                ),
+                camera_depth_valid0=(
+                    camera_depth_valid_masks[first]
+                    if camera_depth_valid_masks is not None
+                    else None
+                ),
+                camera_depth_valid1=(
+                    camera_depth_valid_masks[second]
+                    if camera_depth_valid_masks is not None
+                    else None
+                ),
+                world_surface_depth=world_surface_depth,
             )
             risk_bool = risk > 0
             exact_risks.append(float(np.mean(risk_bool[boundary])))
@@ -853,7 +1006,10 @@ def _evaluate_final_owner_boundaries(
 
     return {
         "automatic_protected_component_count": 0,
-        "automatic_dp_seam_count": max(0, len(order) - 1),
+        "automatic_dp_seam_count": (
+            0 if world_surface_depth else max(0, len(order) - 1)
+        ),
+        "validated_owner_boundary_count": boundary_pair_count,
         "final_owner_boundary_pair_count": boundary_pair_count,
         "final_owner_boundary_pixel_count": boundary_pixels,
         "nonadjacent_owner_boundary_pixel_count": nonadjacent_boundary_pixels,
@@ -864,7 +1020,10 @@ def _evaluate_final_owner_boundaries(
         "minimum_seam_cross_coverage_ratio": float(min(coverages, default=1.0)),
         "unowned_valid_pixel_count": hole_count,
         "multiple_owner_pixel_count": overlap_count,
-        "strict_owner_partition": hole_count == 0 and overlap_count == 0,
+        "invalid_owner_pixel_count": invalid_owner_count,
+        "strict_owner_partition": (
+            hole_count == 0 and overlap_count == 0 and invalid_owner_count == 0
+        ),
     }
 
 
@@ -1346,4 +1505,692 @@ def render_panorama(
     panorama[valid] = np.clip(
         accumulator[valid] / weights[valid, None], 0.0, 255.0
     ).astype(np.uint8)
+    return panorama, info
+
+
+def _projected_source_arrays(
+    source: object,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    tuple[float, float],
+]:
+    """Validate the public ``ProjectedRGBDSource`` structural contract."""
+
+    try:
+        image = np.asarray(getattr(source, "warped_rgb"))
+        valid = np.asarray(getattr(source, "valid_mask"))
+        depth = np.asarray(getattr(source, "surface_depth_mm"), dtype=np.float32)
+        depth_valid = np.asarray(getattr(source, "surface_depth_valid_mask"))
+        camera_depth = np.asarray(
+            getattr(source, "camera_depth_mm"), dtype=np.float32
+        )
+        camera_depth_valid = np.asarray(
+            getattr(source, "camera_depth_valid_mask")
+        )
+        center_value = getattr(source, "projected_center_xy")
+    except (AttributeError, TypeError) as exc:
+        raise TypeError(
+            "Each projected source must provide RGB, validity, world depth, "
+            "depth validity, camera depth, and projected centre"
+        ) from exc
+    if image.ndim != 3 or image.shape[2] != 3 or image.dtype != np.uint8:
+        raise ValueError("Projected RGB sources must be BGR uint8 images")
+    shape = image.shape[:2]
+    if any(
+        value.shape != shape
+        for value in (valid, depth, depth_valid, camera_depth, camera_depth_valid)
+    ):
+        raise ValueError("Projected RGB-D arrays must share one canvas shape")
+    if (
+        valid.dtype != np.uint8
+        or depth_valid.dtype != np.uint8
+        or camera_depth_valid.dtype != np.uint8
+    ):
+        raise ValueError("Projected validity masks must be uint8")
+    if np.any((valid > 0) != (depth_valid > 0)):
+        raise ValueError("Projected colour and world-depth validity must agree")
+    if np.any((valid > 0) != (camera_depth_valid > 0)):
+        raise ValueError("Projected colour and camera-depth validity must agree")
+    if not np.any(valid):
+        raise ValueError("A projected source contains no valid surface")
+    if not np.isfinite(depth[depth_valid > 0]).all():
+        raise ValueError("Projected world-surface depth contains non-finite values")
+    if (
+        not np.isfinite(camera_depth[camera_depth_valid > 0]).all()
+        or np.any(camera_depth[camera_depth_valid > 0] <= 0.0)
+    ):
+        raise ValueError("Projected camera depth must be finite and positive")
+    center = np.asarray(center_value, dtype=np.float64)
+    if center.shape != (2,) or not np.isfinite(center).all():
+        raise ValueError("Projected source centre must be a finite 2-vector")
+    return (
+        image,
+        valid,
+        depth,
+        depth_valid,
+        camera_depth,
+        camera_depth_valid,
+        (float(center[0]), float(center[1])),
+    )
+
+
+def _projected_exposure_compensation(
+    images: list[np.ndarray],
+    valid_masks: list[np.ndarray],
+    mode: str,
+) -> tuple[list[np.ndarray], np.ndarray]:
+    if mode not in {"none", "global_gain"}:
+        raise ValueError("Projected exposure mode must be none or global_gain")
+    adjusted = [image.copy() for image in images]
+    gains = np.ones((len(images), 3), dtype=np.float64)
+    if mode == "none" or len(images) < 2:
+        return adjusted, gains
+    compensator = cv2.detail.ExposureCompensator_createDefault(
+        cv2.detail.ExposureCompensator_GAIN
+    )
+    try:
+        compensator.feed([(0, 0)] * len(images), adjusted, valid_masks)
+        for index, (image, valid) in enumerate(
+            zip(adjusted, valid_masks, strict=True)
+        ):
+            compensator.apply(index, (0, 0), image, valid)
+    except cv2.error as exc:
+        raise RuntimeError(
+            "Projected global exposure compensation failed; no fallback is allowed"
+        ) from exc
+    scalar_gains = np.asarray(
+        [
+            float(np.asarray(value, dtype=np.float64).reshape(-1)[0])
+            for value in compensator.getMatGains()
+        ],
+        dtype=np.float64,
+    )
+    if scalar_gains.shape != (len(images),) or not np.isfinite(scalar_gains).all():
+        raise RuntimeError("OpenCV returned invalid projected exposure gains")
+    return adjusted, np.repeat(scalar_gains[:, None], 3, axis=1)
+
+
+def _risk_has_crossing_channel(
+    common: np.ndarray,
+    protected: np.ndarray,
+) -> bool:
+    """Return whether a vertical scan seam can pass around protected pixels."""
+
+    active_rows = np.flatnonzero(np.any(common, axis=1))
+    if active_rows.size < 2:
+        return False
+    first_row, last_row = int(active_rows[0]), int(active_rows[-1])
+    safe = common & ~protected
+    # A one-pixel sampling pinhole must not turn a physically continuous safe
+    # corridor into a false pass/fail decision.  This closing is used only for
+    # connectivity auditing; it never changes a GraphCut input mask.
+    safe_for_connectivity = cv2.morphologyEx(
+        safe.astype(np.uint8),
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
+    )
+    count, labels = cv2.connectedComponents(safe_for_connectivity, connectivity=8)
+    if count <= 1:
+        return False
+    top_stop = min(last_row + 1, first_row + 3)
+    bottom_start = max(first_row, last_row - 2)
+    top = set(int(value) for value in np.unique(labels[first_row:top_stop]) if value)
+    bottom = set(
+        int(value) for value in np.unique(labels[bottom_start : last_row + 1]) if value
+    )
+    return bool(top & bottom)
+
+
+def _source_preference(
+    source: object,
+    valid: np.ndarray,
+    component: np.ndarray,
+    rank: int,
+    sharpness: float,
+) -> tuple[float, float, float, int]:
+    stats = getattr(source, "sampling_stats", {})
+    sampling = 0.0
+    if isinstance(stats, dict):
+        sampling = float(
+            stats.get("projected_sampling_ratio", stats.get("valid_depth_fraction", 0.0))
+        )
+    distance = cv2.distanceTransform((valid > 0).astype(np.uint8), cv2.DIST_L2, 3)
+    edge_distance = float(np.percentile(distance[component], 25))
+    return sampling, edge_distance, float(sharpness), -rank
+
+
+def _apply_projected_hard_constraints(
+    sources: list[object],
+    images: list[np.ndarray],
+    valid_masks: list[np.ndarray],
+    depths: list[np.ndarray],
+    depth_valid_masks: list[np.ndarray],
+    camera_depths: list[np.ndarray],
+    camera_depth_valid_masks: list[np.ndarray],
+    first: int,
+    second: int,
+    first_allowed: np.ndarray,
+    second_allowed: np.ndarray,
+    blend_radius: int,
+    sharpness_scores: list[float],
+    first_rank: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    risk, _, _ = _pair_risk_mask(
+        images[first],
+        images[second],
+        first_allowed,
+        second_allowed,
+        depths[first],
+        depths[second],
+        depth_valid0=depth_valid_masks[first],
+        depth_valid1=depth_valid_masks[second],
+        camera_depth0=camera_depths[first],
+        camera_depth1=camera_depths[second],
+        camera_depth_valid0=camera_depth_valid_masks[first],
+        camera_depth_valid1=camera_depth_valid_masks[second],
+        world_surface_depth=True,
+    )
+    risk_bool = risk > 0
+    if not np.any(risk_bool):
+        return first_allowed, second_allowed, risk, 0
+    diameter = blend_radius * 2 + 1
+    protected = cv2.dilate(
+        risk,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (diameter, diameter)),
+    ) > 0
+    pair_union = (first_allowed > 0) | (second_allowed > 0)
+    common = (first_allowed > 0) & (second_allowed > 0)
+    protected &= pair_union
+    if not _risk_has_crossing_channel(common, protected & common):
+        raise RuntimeError(
+            "A high-risk RGB-D band crosses the complete adjacent-pair corridor"
+        )
+
+    constrained = [first_allowed.copy(), second_allowed.copy()]
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        protected.astype(np.uint8), connectivity=8
+    )
+    component_count = 0
+    for label in range(1, count):
+        if int(stats[label, cv2.CC_STAT_AREA]) <= 0:
+            continue
+        component = labels == label
+        candidates: list[tuple[tuple[float, float, float, int], int]] = []
+        for local, source_index in enumerate((first, second)):
+            if np.all(valid_masks[source_index][component] > 0):
+                candidates.append(
+                    (
+                        _source_preference(
+                            sources[source_index],
+                            valid_masks[source_index],
+                            component,
+                            first_rank + local,
+                            sharpness_scores[source_index],
+                        ),
+                        local,
+                    )
+                )
+        if not candidates:
+            raise RuntimeError(
+                "No single reliable projected source can own a protected RGB-D region"
+            )
+        winner = max(candidates, key=lambda item: item[0])[1]
+        loser = 1 - winner
+        constrained[loser][component] = 0
+        if not np.all(constrained[winner][component] > 0):
+            raise RuntimeError("Hard owner assignment removed its selected source")
+        component_count += 1
+    constrained_union = (constrained[0] > 0) | (constrained[1] > 0)
+    if np.any(pair_union & ~constrained_union):
+        raise RuntimeError("Depth hard constraints created an unowned corridor pixel")
+    return constrained[0], constrained[1], risk, component_count
+
+
+def _graphcut_pair_owner_masks(
+    first_image: np.ndarray,
+    second_image: np.ndarray,
+    first_mask: np.ndarray,
+    second_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    pair_union = (first_mask > 0) | (second_mask > 0)
+    x, y, width, height = cv2.boundingRect(pair_union.astype(np.uint8))
+    if width == 0 or height == 0:
+        raise RuntimeError("An adjacent projected pair has no permitted territory")
+    input_masks = [
+        np.ascontiguousarray(first_mask[y : y + height, x : x + width].copy()),
+        np.ascontiguousarray(second_mask[y : y + height, x : x + width].copy()),
+    ]
+    if not all(np.any(mask) for mask in input_masks):
+        raise RuntimeError("An adjacent source has no GraphCut corridor coverage")
+    seam_finder = cv2.detail_GraphCutSeamFinder("COST_COLOR_GRAD")
+    try:
+        result = seam_finder.find(
+            [
+                np.ascontiguousarray(
+                    first_image[y : y + height, x : x + width], dtype=np.float32
+                ),
+                np.ascontiguousarray(
+                    second_image[y : y + height, x : x + width], dtype=np.float32
+                ),
+            ],
+            [(x, y), (x, y)],
+            input_masks,
+        )
+    except cv2.error as exc:
+        raise RuntimeError(
+            "Depth-constrained GraphCut failed; no DP, feather, or averaging "
+            "fallback is allowed"
+        ) from exc
+    if result is None:
+        result = input_masks
+    if len(result) != 2:
+        raise RuntimeError("GraphCut returned an invalid adjacent-pair mask count")
+    outputs: list[np.ndarray] = []
+    for original, value in zip(input_masks, result, strict=True):
+        array = value.get() if hasattr(value, "get") else np.asarray(value)
+        array = np.ascontiguousarray(array, dtype=np.uint8)
+        if array.shape != original.shape:
+            raise RuntimeError("GraphCut changed an adjacent-pair mask shape")
+        if np.any((array > 0) & (original == 0)):
+            raise RuntimeError("GraphCut assigned pixels outside its allowed corridor")
+        full = np.zeros(first_mask.shape, dtype=np.uint8)
+        full[y : y + height, x : x + width] = np.where(array > 0, 255, 0)
+        outputs.append(full)
+    output_count = (outputs[0] > 0).astype(np.uint8) + (outputs[1] > 0).astype(
+        np.uint8
+    )
+    if np.any(pair_union & (output_count != 1)):
+        raise RuntimeError("GraphCut left a hole or multiple owners in a pair corridor")
+    if np.any((~pair_union) & (output_count != 0)):
+        raise RuntimeError("GraphCut assigned an invalid projected pixel")
+    return outputs[0], outputs[1]
+
+
+def _opencv_multiband_owner_boundary_blend(
+    images: list[np.ndarray],
+    valid_masks: list[np.ndarray],
+    owner_masks: list[np.ndarray],
+    depths: list[np.ndarray],
+    depth_valid_masks: list[np.ndarray],
+    camera_depths: list[np.ndarray],
+    camera_depth_valid_masks: list[np.ndarray],
+    order: np.ndarray,
+    levels: int,
+    radius: int,
+) -> tuple[np.ndarray, np.ndarray, int, float]:
+    height, width = owner_masks[0].shape
+    owned = [mask > 0 for mask in owner_masks]
+    owner_union = np.logical_or.reduce(owned)
+    direct = np.zeros((height, width, 3), dtype=np.uint8)
+    for image, owner in zip(images, owned, strict=True):
+        direct[owner] = image[owner]
+
+    blend_zone = np.zeros((height, width), dtype=bool)
+    maximum_zone_risk = 0.0
+    neighbor_kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+    diameter = radius * 2 + 1
+    zone_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (diameter, diameter))
+    pair_rows: list[tuple[int, int]] = []
+    zone_assignment = np.full((height, width), -1, dtype=np.int16)
+    best_boundary_distance = np.full((height, width), np.inf, dtype=np.float32)
+    for pair_rank, (first_value, second_value) in enumerate(
+        zip(order[:-1], order[1:], strict=True)
+    ):
+        first, second = int(first_value), int(second_value)
+        boundary = owned[first] & (
+            cv2.dilate(owned[second].astype(np.uint8), neighbor_kernel) > 0
+        )
+        boundary |= owned[second] & (
+            cv2.dilate(owned[first].astype(np.uint8), neighbor_kernel) > 0
+        )
+        if not np.any(boundary):
+            raise RuntimeError("An adjacent owner boundary disappeared before blending")
+        zone = cv2.dilate(boundary.astype(np.uint8), zone_kernel) > 0
+        pair_valid = (valid_masks[first] > 0) | (valid_masks[second] > 0)
+        zone &= pair_valid
+        distance = cv2.distanceTransform(
+            (~boundary).astype(np.uint8), cv2.DIST_L2, 3
+        )
+        replace = zone & (distance < best_boundary_distance)
+        zone_assignment[replace] = pair_rank
+        best_boundary_distance[replace] = distance[replace]
+        pair_rows.append((first, second))
+
+    del best_boundary_distance
+    blend_zone = zone_assignment >= 0
+    for pair_rank, (first, second) in enumerate(pair_rows):
+        zone = zone_assignment == pair_rank
+        if not np.any(zone):
+            raise RuntimeError("An adjacent owner boundary has no exclusive blend zone")
+
+        # Run one independent local blender per verified adjacent owner
+        # boundary.  A single global pyramid can leak low-frequency colour
+        # from source i+2 across a narrow source-i+1 territory even when its
+        # level-zero mask never touches the boundary.
+        support = cv2.dilate(zone.astype(np.uint8), zone_kernel) > 0
+        first_mask = support & (
+            owned[first] | (zone & (valid_masks[first] > 0))
+        )
+        second_mask = support & (
+            owned[second] | (zone & (valid_masks[second] > 0))
+        )
+        pair_expected = first_mask | second_mask
+        if not np.any(first_mask) or not np.any(second_mask):
+            raise RuntimeError("A strict owner source has no MultiBand contribution")
+        if np.any(zone & ~pair_expected):
+            raise RuntimeError("A MultiBand boundary zone lacks a real source")
+        x, y, local_width, local_height = cv2.boundingRect(
+            pair_expected.astype(np.uint8)
+        )
+        if local_width == 0 or local_height == 0:
+            raise RuntimeError("An adjacent owner boundary has no MultiBand support")
+        local_masks = [
+            np.ascontiguousarray(
+                mask[y : y + local_height, x : x + local_width].astype(np.uint8)
+                * 255
+            )
+            for mask in (first_mask, second_mask)
+        ]
+        blender = cv2.detail_MultiBandBlender()
+        blender.setNumBands(int(levels))
+        blender.prepare((0, 0, local_width, local_height))
+        try:
+            for source_index, mask in zip(
+                (first, second), local_masks, strict=True
+            ):
+                blender.feed(
+                    np.ascontiguousarray(
+                        images[source_index][
+                            y : y + local_height, x : x + local_width
+                        ],
+                        dtype=np.int16,
+                    ),
+                    mask,
+                    (0, 0),
+                )
+            blended, output_mask = blender.blend(None, None)
+        except cv2.error as exc:
+            raise RuntimeError(
+                "OpenCV MultiBand blending failed; no normalized or average "
+                "fallback is allowed"
+            ) from exc
+        if hasattr(output_mask, "get"):
+            output_mask = output_mask.get()
+        output_mask = np.asarray(output_mask, dtype=np.uint8)
+        expected_local = pair_expected[y : y + local_height, x : x + local_width]
+        if output_mask.shape != expected_local.shape:
+            raise RuntimeError("OpenCV MultiBand returned an invalid output mask shape")
+        if np.any(expected_local & (output_mask == 0)):
+            raise RuntimeError("OpenCV MultiBand produced a zero-weight owner wedge")
+        if np.any((output_mask > 0) & ~expected_local):
+            raise RuntimeError("OpenCV MultiBand wrote outside adjacent pair support")
+        if hasattr(blended, "get"):
+            blended = blended.get()
+        blended = np.clip(np.asarray(blended), 0, 255).astype(np.uint8)
+        if blended.shape != (local_height, local_width, 3):
+            raise RuntimeError("OpenCV MultiBand returned an invalid image shape")
+        local_zone = zone[y : y + local_height, x : x + local_width]
+        direct_view = direct[y : y + local_height, x : x + local_width]
+        direct_view[local_zone] = blended[local_zone]
+
+        risk, _, _ = _pair_risk_mask(
+            images[first],
+            images[second],
+            valid_masks[first],
+            valid_masks[second],
+            depths[first],
+            depths[second],
+            depth_valid0=depth_valid_masks[first],
+            depth_valid1=depth_valid_masks[second],
+            camera_depth0=camera_depths[first],
+            camera_depth1=camera_depths[second],
+            camera_depth_valid0=camera_depth_valid_masks[first],
+            camera_depth_valid1=camera_depth_valid_masks[second],
+            world_surface_depth=True,
+        )
+        audited = zone & (valid_masks[first] > 0) & (valid_masks[second] > 0)
+        if np.any(audited):
+            maximum_zone_risk = max(
+                maximum_zone_risk, float(np.mean((risk > 0)[audited]))
+            )
+    return (
+        direct,
+        owner_union.astype(np.uint8) * 255,
+        int(np.count_nonzero(blend_zone)),
+        maximum_zone_risk,
+    )
+
+
+def render_projected_scan_panorama(
+    projected_sources: list[object] | tuple[object, ...],
+    *,
+    max_megapixels: float = 200.0,
+    multiband_levels: int = 5,
+    exposure_mode: str = "global_gain",
+    quality_gate: bool = True,
+    sharpness_scores: list[float] | tuple[float, ...] | None = None,
+) -> tuple[np.ndarray, ProjectedScanRenderInfo]:
+    """Render full-canvas metric RGB-D projections with no geometric fallback.
+
+    Inputs have already been projected exactly once by ``rgbd_projection``.
+    Only adjacent scan-order sources compete, risky world-depth components are
+    hard-owned before GraphCut, and OpenCV MultiBand is confined to a narrow
+    band around the verified strict owner boundary.
+    """
+
+    sources = list(projected_sources)
+    if len(sources) < 2:
+        raise ValueError("Formal projected rendering requires at least two sources")
+    if len(sources) > 32:
+        raise ValueError("Formal projected rendering supports at most 32 sources")
+    if multiband_levels < 1:
+        raise ValueError("multiband_levels must be at least one")
+    if not np.isfinite(max_megapixels) or max_megapixels <= 0.0:
+        raise ValueError("max_megapixels must be finite and positive")
+
+    arrays = [_projected_source_arrays(source) for source in sources]
+    images = [item[0] for item in arrays]
+    geometric_valid = [item[1] for item in arrays]
+    depths = [item[2] for item in arrays]
+    depth_valid = [item[3] for item in arrays]
+    camera_depths = [item[4] for item in arrays]
+    camera_depth_valid = [item[5] for item in arrays]
+    centers = np.asarray([item[6] for item in arrays], dtype=np.float64)
+    shape = images[0].shape[:2]
+    if any(image.shape[:2] != shape for image in images):
+        raise ValueError("All projected sources must use one common canvas")
+    height, width = shape
+    aggregate_mp = width * height * len(sources) / 1_000_000.0
+    if aggregate_mp > max_megapixels:
+        raise MemoryError(
+            f"Projected render working set is {aggregate_mp:.1f} aggregate MP, "
+            f"above the {max_megapixels:.1f} MP limit"
+        )
+    sharpness = (
+        [float(value) for value in sharpness_scores]
+        if sharpness_scores is not None
+        else [float(getattr(source, "sharpness_score", 0.0)) for source in sources]
+    )
+    if len(sharpness) != len(sources) or not np.isfinite(sharpness).all():
+        raise ValueError("sharpness_scores must be finite and match projected sources")
+    corrected, gains = _projected_exposure_compensation(
+        images, geometric_valid, exposure_mode
+    )
+
+    order = np.argsort(centers[:, 0], kind="stable")
+    ordered_x = centers[order, 0]
+    if np.any(np.diff(ordered_x) <= 1e-6):
+        raise RuntimeError("Projected source centres are not strictly ordered")
+    boundary_centres = 0.5 * (ordered_x[:-1] + ordered_x[1:])
+    domain_edges = [0]
+    for left, right in zip(boundary_centres[:-1], boundary_centres[1:], strict=True):
+        domain_edges.append(
+            int(np.clip(np.floor(0.5 * (left + right)), 1, width - 1))
+        )
+    domain_edges.append(width)
+    if any(right <= left for left, right in zip(domain_edges[:-1], domain_edges[1:])):
+        raise RuntimeError("Adjacent-pair corridors collapse on the projected canvas")
+
+    owner_masks = [np.zeros(shape, dtype=np.uint8) for _ in sources]
+    corridor_valid = [np.zeros(shape, dtype=np.uint8) for _ in sources]
+    hard_components = 0
+    # Five OpenCV bands have an effective half-width of roughly 2**5 pixels.
+    # Cap that footprint on small diagnostic canvases so unrelated residual
+    # components cannot merge merely because the test/source is low resolution.
+    blend_radius = min(
+        64,
+        max(4, 1 << min(multiband_levels, 6)),
+        max(4, min(height, width) // 8),
+    )
+    x_grid = np.arange(width)[None, :]
+    for pair_rank, (first_value, second_value) in enumerate(
+        zip(order[:-1], order[1:], strict=True)
+    ):
+        first, second = int(first_value), int(second_value)
+        zone = (x_grid >= domain_edges[pair_rank]) & (
+            x_grid < domain_edges[pair_rank + 1]
+        )
+        first_allowed = np.where(zone & (geometric_valid[first] > 0), 255, 0).astype(
+            np.uint8
+        )
+        second_allowed = np.where(
+            zone & (geometric_valid[second] > 0), 255, 0
+        ).astype(np.uint8)
+        corridor_valid[first] = cv2.bitwise_or(corridor_valid[first], first_allowed)
+        corridor_valid[second] = cv2.bitwise_or(corridor_valid[second], second_allowed)
+        first_allowed, second_allowed, _, component_count = (
+            _apply_projected_hard_constraints(
+                sources,
+                corrected,
+                geometric_valid,
+                depths,
+                depth_valid,
+                camera_depths,
+                camera_depth_valid,
+                first,
+                second,
+                first_allowed,
+                second_allowed,
+                blend_radius,
+                sharpness,
+                pair_rank,
+            )
+        )
+        first_owner, second_owner = _graphcut_pair_owner_masks(
+            corrected[first],
+            corrected[second],
+            first_allowed,
+            second_allowed,
+        )
+        owner_masks[first] = cv2.bitwise_or(owner_masks[first], first_owner)
+        owner_masks[second] = cv2.bitwise_or(owner_masks[second], second_owner)
+        hard_components += component_count
+
+    quality_metrics = _evaluate_final_owner_boundaries(
+        corrected,
+        corridor_valid,
+        depths,
+        owner_masks,
+        np.array([1.0, 0.0], dtype=np.float64),
+        order,
+        blend_radius,
+        depth_valid_masks=depth_valid,
+        camera_depth_maps=camera_depths,
+        camera_depth_valid_masks=camera_depth_valid,
+        world_surface_depth=True,
+    )
+    structural_reasons: list[str] = []
+    if not bool(quality_metrics["strict_owner_partition"]):
+        structural_reasons.append("owner masks contain holes, overlaps, or invalid owners")
+    if int(quality_metrics["nonadjacent_owner_boundary_pixel_count"]) > 0:
+        structural_reasons.append("non-adjacent projected owners touch")
+    if int(quality_metrics["unsupported_owner_boundary_pixel_count"]) > 0:
+        structural_reasons.append("an owner boundary lacks real pair overlap")
+    if int(quality_metrics["final_owner_boundary_pair_count"]) != len(order) - 1:
+        structural_reasons.append("one or more adjacent owner boundaries are missing")
+    if any(not np.any(mask) for mask in owner_masks):
+        structural_reasons.append("one or more projected sources lost all ownership")
+    if structural_reasons:
+        raise RuntimeError(
+            "Projected owner topology validation failed: " + "; ".join(structural_reasons)
+        )
+
+    blended, blended_mask, blend_zone_pixels, zone_risk = (
+        _opencv_multiband_owner_boundary_blend(
+            corrected,
+            corridor_valid,
+            owner_masks,
+            depths,
+            depth_valid,
+            camera_depths,
+            camera_depth_valid,
+            order,
+            multiband_levels,
+            blend_radius,
+        )
+    )
+    quality_metrics["blend_zone_risk_fraction"] = float(zone_risk)
+    crop = largest_valid_rectangle(blended_mask > 0)
+    panorama = blended[crop.y : crop.y + crop.height, crop.x : crop.x + crop.width]
+    projected_heights = [
+        float(getattr(source, "projected_height_px", cv2.boundingRect(valid)[3]))
+        for source, valid in zip(sources, corridor_valid, strict=True)
+    ]
+    crop_height_ratio = crop.height / max(1.0, float(np.median(projected_heights)))
+    crop_width_ratio = crop.width / max(1.0, float(width))
+    gain_min = float(np.min(gains))
+    gain_max = float(np.max(gains))
+    quality_metrics.update(
+        {
+            "crop_height_ratio": float(crop_height_ratio),
+            "crop_width_ratio": float(crop_width_ratio),
+            "exposure_gain_min": gain_min,
+            "exposure_gain_max": gain_max,
+            "graphcut_pair_count": len(order) - 1,
+            "hard_owner_component_count": hard_components,
+            "multiband_output_mask_complete": True,
+            "near_foreground_threshold_mm": _PROJECTED_NEAR_FOREGROUND_MM,
+        }
+    )
+    failure_reasons: list[str] = []
+    if crop_height_ratio < 0.90:
+        failure_reasons.append("less than 90% of projected source height remains")
+    if crop_width_ratio < 0.95:
+        failure_reasons.append("less than 95% of the projected canvas remains")
+    if float(quality_metrics["seam_risk_fraction"]) > 0.10:
+        failure_reasons.append("a final GraphCut boundary crosses RGB-D risk")
+    if float(quality_metrics.get("blend_guard_risk_fraction", 0.0)) > 0.10:
+        failure_reasons.append("the MultiBand guard reaches RGB-D risk")
+    if zone_risk > 0.10:
+        failure_reasons.append("the actual MultiBand zone reaches RGB-D risk")
+    if float(quality_metrics["minimum_seam_cross_coverage_ratio"]) < 0.80:
+        failure_reasons.append("an owner boundary has insufficient cross coverage")
+    if float(quality_metrics["safe_seam_lab_residual_p95"]) > 48.0:
+        failure_reasons.append("safe GraphCut boundary Lab residual is too high")
+    if gain_min < 0.45 or gain_max > 2.20:
+        failure_reasons.append("exposure compensation gain is outside 0.45-2.20")
+    quality_metrics["quality_pass"] = not failure_reasons
+    if quality_gate and failure_reasons:
+        raise RuntimeError(
+            "Projected render quality gate failed: " + "; ".join(failure_reasons)
+        )
+    info = ProjectedScanRenderInfo(
+        crop=crop,
+        canvas_width=width,
+        canvas_height=height,
+        source_count=len(sources),
+        source_order=tuple(int(value) for value in order),
+        color_gains=tuple(tuple(float(value) for value in gain) for gain in gains),
+        multiband_levels=multiband_levels,
+        blend_radius_pixels=blend_radius,
+        blend_zone_pixel_count=blend_zone_pixels,
+        hard_owner_component_count=hard_components,
+        owner_masks=tuple(mask.copy() for mask in owner_masks),
+        quality_metrics=quality_metrics,
+    )
     return panorama, info

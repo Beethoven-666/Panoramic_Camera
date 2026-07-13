@@ -1,6 +1,8 @@
-name: gemini305-unistitch
+name: gemini305-rgbd-panorama
 channels:
   - defaults
 dependencies:
   - python=3.12
   - pip
+  - pip:
+      - -e .[capture,test]

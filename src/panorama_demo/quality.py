@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
+
+if TYPE_CHECKING:
+    from .rgbd_projection import (
+        EstimatedProjectionFootprint,
+        SideScanFootprintEstimate,
+    )
 
 
 @dataclass(frozen=True)
@@ -687,5 +695,320 @@ def select_render_indices_auto(
             np.max(np.diff(positions[selected]))
         ),
         "rejected_quality_bins": rejected_bins,
+        "quality_scores": [float(value) for value in scores],
+    }
+
+
+def _metric_render_eligible(
+    qualities: Sequence[FrameQuality], *, quality_gate: bool
+) -> np.ndarray:
+    if not quality_gate:
+        return np.ones(len(qualities), dtype=bool)
+    return np.asarray(
+        [
+            quality.dark_ratio <= 0.35
+            and quality.saturated_ratio <= 0.20
+            and quality.texture_coverage >= 0.08
+            and quality.detail_strength >= 5.4
+            and quality.tenengrad >= 18.0
+            for quality in qualities
+        ],
+        dtype=bool,
+    )
+
+
+def _interval_union_length(intervals: np.ndarray) -> float:
+    if not len(intervals):
+        return 0.0
+    ordered = intervals[np.argsort(intervals[:, 0], kind="stable")]
+    union = 0.0
+    left, right = (float(value) for value in ordered[0])
+    for next_left, next_right in ordered[1:]:
+        next_left = float(next_left)
+        next_right = float(next_right)
+        if next_left > right:
+            union += right - left
+            left, right = next_left, next_right
+        else:
+            right = max(right, next_right)
+    return union + right - left
+
+
+def _projected_interval_overlap_fraction(
+    first: np.ndarray, second: np.ndarray
+) -> float:
+    overlap = min(float(first[1]), float(second[1])) - max(
+        float(first[0]), float(second[0])
+    )
+    shorter = min(float(first[1] - first[0]), float(second[1] - second[0]))
+    return max(0.0, overlap) / max(shorter, 1e-12)
+
+
+def _validate_metric_render_poses(
+    camera_to_world: Sequence[np.ndarray],
+) -> np.ndarray:
+    centers: list[np.ndarray] = []
+    for pose_index, value in enumerate(camera_to_world):
+        pose = np.asarray(value, dtype=np.float64)
+        if pose.shape != (4, 4) or not np.isfinite(pose).all():
+            raise ValueError(
+                f"camera_to_world[{pose_index}] must be a finite 4x4 SE(3) matrix"
+            )
+        if not np.allclose(pose[3], [0.0, 0.0, 0.0, 1.0], atol=1e-5):
+            raise ValueError(
+                f"camera_to_world[{pose_index}] has an invalid homogeneous row"
+            )
+        rotation = pose[:3, :3]
+        if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-5):
+            raise ValueError(
+                f"camera_to_world[{pose_index}] rotation is not orthonormal"
+            )
+        if not np.isclose(np.linalg.det(rotation), 1.0, atol=1e-5):
+            raise ValueError(
+                f"camera_to_world[{pose_index}] rotation determinant is not +1"
+            )
+        centers.append(pose[:3, 3].copy())
+    return np.stack(centers, axis=0)
+
+
+def select_rgbd_render_indices_auto(
+    qualities: Sequence[FrameQuality],
+    camera_to_world: Sequence[np.ndarray],
+    footprints: Sequence[EstimatedProjectionFootprint] | SideScanFootprintEstimate,
+    *,
+    maximum_keyframes: int = 0,
+    quality_gate: bool = True,
+    minimum_coverage_ratio: float = 0.95,
+    minimum_overlap_fraction: float = 0.34,
+) -> tuple[list[int], dict[str, object]]:
+    """Select real metric RGB-D pose nodes with continuous projected coverage.
+
+    The selector consumes optimized ``camera_to_world`` nodes and their measured
+    projection footprints.  It never creates a transform or interpolates a pose.
+    Adjacent selected sources are connected only when their real world-strip
+    intervals retain the configured overlap.
+    """
+
+    if len(qualities) != len(camera_to_world) or len(qualities) < 2:
+        raise ValueError(
+            "RGB-D render qualities and camera_to_world poses must have equal length"
+        )
+    if maximum_keyframes == 1 or maximum_keyframes < 0:
+        raise ValueError("maximum_keyframes must be zero or at least two")
+    if not 0.90 <= minimum_coverage_ratio <= 1.0:
+        raise ValueError("minimum_coverage_ratio must be between 0.90 and 1.0")
+    if not 0.05 <= minimum_overlap_fraction <= 0.80:
+        raise ValueError("minimum_overlap_fraction is outside the safe range")
+
+    footprint_items = tuple(getattr(footprints, "footprints", footprints))
+    if len(footprint_items) != len(qualities):
+        raise ValueError(
+            "RGB-D render qualities, poses, and projection footprints must align"
+        )
+
+    pose_centers = _validate_metric_render_poses(camera_to_world)
+    frame_ids: list[int] = []
+    scan_positions: list[float] = []
+    interval_rows: list[tuple[float, float]] = []
+    for index, footprint in enumerate(footprint_items):
+        try:
+            frame_id = int(footprint.frame_id)
+            scan_position = float(footprint.camera_center_scan_x_mm)
+            interval = tuple(float(value) for value in footprint.scan_x_interval_mm)
+            footprint_center = np.asarray(
+                footprint.camera_center_world_mm, dtype=np.float64
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Projection footprint {index} lacks finite metric coverage metadata"
+            ) from exc
+        if (
+            len(interval) != 2
+            or footprint_center.shape != (3,)
+            or not np.isfinite([scan_position, *interval]).all()
+            or not np.isfinite(footprint_center).all()
+            or interval[1] <= interval[0]
+        ):
+            raise ValueError(
+                f"Projection footprint {index} has invalid metric coverage metadata"
+            )
+        if not np.allclose(
+            footprint_center, pose_centers[index], rtol=1e-9, atol=1e-3
+        ):
+            raise ValueError(
+                f"Projection footprint {index} does not match its camera_to_world center"
+            )
+        frame_ids.append(frame_id)
+        scan_positions.append(scan_position)
+        interval_rows.append((interval[0], interval[1]))
+    if len(set(frame_ids)) != len(frame_ids):
+        raise ValueError("Projection footprint frame_id values must be unique")
+
+    scan_axis_value = getattr(footprints, "scan_axis", None)
+    up_axis_value = getattr(footprints, "up_axis", None)
+    normal_axis_value = getattr(footprints, "normal_axis", None)
+    cross_track_span_mm: float | None = None
+    forward_span_mm: float | None = None
+    if scan_axis_value is not None:
+        axes = np.asarray(
+            [scan_axis_value, up_axis_value, normal_axis_value], dtype=np.float64
+        )
+        if (
+            axes.shape != (3, 3)
+            or not np.isfinite(axes).all()
+            or not np.allclose(axes @ axes.T, np.eye(3), atol=1e-5)
+        ):
+            raise ValueError("Side-scan footprint axes must be finite and orthonormal")
+        expected_scan_positions = pose_centers @ axes[0]
+        if not np.allclose(
+            expected_scan_positions,
+            np.asarray(scan_positions),
+            rtol=1e-9,
+            atol=1e-3,
+        ):
+            raise ValueError(
+                "Projection footprint scan centers do not match camera_to_world poses"
+            )
+        cross_track_span_mm = float(np.ptp(pose_centers @ axes[1]))
+        forward_span_mm = float(np.ptp(pose_centers @ axes[2]))
+
+    positions = np.asarray(scan_positions, dtype=np.float64)
+    intervals = np.asarray(interval_rows, dtype=np.float64)
+    interval_widths = intervals[:, 1] - intervals[:, 0]
+    center_span = float(positions[-1] - positions[0])
+    monotonic_epsilon = max(1e-6, abs(center_span) * 1e-9)
+    if np.any(np.diff(positions) < -monotonic_epsilon):
+        raise RuntimeError(
+            "Optimized RGB-D camera trajectory is not monotonic along the scan"
+        )
+    if center_span < 0.10 * float(np.median(interval_widths)):
+        raise RuntimeError("Optimized RGB-D camera trajectory is too short for a panorama")
+
+    reliable_left = float(np.min(intervals[:, 0]))
+    reliable_right = float(np.max(intervals[:, 1]))
+    reliable_span = reliable_right - reliable_left
+    reliable_union = _interval_union_length(intervals)
+    gap_tolerance = max(1e-6, reliable_span * 1e-6)
+    if reliable_span - reliable_union > gap_tolerance:
+        raise RuntimeError(
+            "Reliable RGB-D projection footprints contain an uncovered scan gap"
+        )
+
+    scores = relative_quality_scores(list(qualities))
+    eligible = _metric_render_eligible(qualities, quality_gate=quality_gate)
+    eligible_indices = np.flatnonzero(eligible).tolist()
+    if len(eligible_indices) < 2:
+        raise RuntimeError(
+            "Fewer than two exposure-safe, textured RGB-D render sources remain"
+        )
+    eligible_coverage = _interval_union_length(intervals[eligible]) / reliable_span
+    if eligible_coverage < minimum_coverage_ratio:
+        raise RuntimeError(
+            "Clear RGB-D render sources cover only "
+            f"{eligible_coverage:.1%} of the reliable projected scan"
+        )
+
+    # Each state is the shortest real-node path to one candidate.  Equal-length
+    # alternatives retain the clearer path; no synthetic bridge or pose is made.
+    best_solution: list[int] | None = None
+    best_solution_key: tuple[float, ...] | None = None
+    for start_offset, start in enumerate(eligible_indices):
+        paths: dict[int, list[int]] = {start: [start]}
+        for end in eligible_indices[start_offset + 1 :]:
+            end_path: list[int] | None = None
+            end_key: tuple[float, ...] | None = None
+            for previous in eligible_indices[start_offset:]:
+                if previous >= end:
+                    break
+                previous_path = paths.get(previous)
+                if previous_path is None:
+                    continue
+                if positions[end] <= positions[previous] + monotonic_epsilon:
+                    continue
+                overlap = _projected_interval_overlap_fraction(
+                    intervals[previous], intervals[end]
+                )
+                if overlap + 1e-12 < minimum_overlap_fraction:
+                    continue
+                candidate = [*previous_path, end]
+                candidate_coverage = _interval_union_length(intervals[candidate])
+                candidate_scores = scores[candidate]
+                candidate_key = (
+                    -float(len(candidate)),
+                    candidate_coverage,
+                    float(np.min(candidate_scores)),
+                    float(np.mean(candidate_scores)),
+                )
+                if end_key is None or candidate_key > end_key:
+                    end_path = candidate
+                    end_key = candidate_key
+            if end_path is not None:
+                paths[end] = end_path
+
+        for path in paths.values():
+            if len(path) < 2:
+                continue
+            coverage = _interval_union_length(intervals[path]) / reliable_span
+            if coverage + 1e-12 < minimum_coverage_ratio:
+                continue
+            path_scores = scores[path]
+            solution_key = (
+                -float(len(path)),
+                float(np.min(path_scores)),
+                float(np.mean(path_scores)),
+                coverage,
+            )
+            if best_solution_key is None or solution_key > best_solution_key:
+                best_solution = path
+                best_solution_key = solution_key
+
+    if best_solution is None:
+        raise RuntimeError(
+            "No real RGB-D render-source path preserves safe projected overlap"
+        )
+    if len(best_solution) > 32:
+        raise RuntimeError(
+            f"Automatic RGB-D render selection requires {len(best_solution)} sources, "
+            "above the hard limit of 32"
+        )
+    if maximum_keyframes > 0 and len(best_solution) > maximum_keyframes:
+        raise RuntimeError(
+            "The configured RGB-D render-frame budget cannot preserve safe overlap"
+        )
+
+    selected_coverage = _interval_union_length(intervals[best_solution])
+    coverage_ratio = selected_coverage / reliable_span
+    overlap_fractions = [
+        _projected_interval_overlap_fraction(intervals[first], intervals[second])
+        for first, second in zip(best_solution, best_solution[1:])
+    ]
+    selected_positions = positions[best_solution]
+    return best_solution, {
+        "mode": "rgbd_metric_quality_coverage",
+        "quality_gate": quality_gate,
+        "uses_only_optimized_pose_nodes": True,
+        "interpolated_pose_count": 0,
+        "coverage_ratio": float(coverage_ratio),
+        "minimum_coverage_ratio": minimum_coverage_ratio,
+        "reliable_scan_range_mm": [reliable_left, reliable_right],
+        "reliable_scan_span_mm": reliable_span,
+        "selected_coverage_mm": selected_coverage,
+        "camera_center_span_mm": center_span,
+        "cross_track_camera_span_mm": cross_track_span_mm,
+        "forward_camera_span_mm": forward_span_mm,
+        "minimum_required_overlap_fraction": minimum_overlap_fraction,
+        "minimum_selected_overlap_fraction": float(min(overlap_fractions)),
+        "maximum_adjacent_camera_spacing_mm": float(
+            np.max(np.diff(selected_positions))
+        ),
+        "selected_count": len(best_solution),
+        "selected_frame_ids": [frame_ids[index] for index in best_solution],
+        "selected_scan_centers_mm": [
+            float(positions[index]) for index in best_solution
+        ],
+        "selected_scan_intervals_mm": [
+            [float(value) for value in intervals[index]] for index in best_solution
+        ],
+        "eligible_source_count": int(np.count_nonzero(eligible)),
         "quality_scores": [float(value) for value in scores],
     }

@@ -9,8 +9,10 @@ from panorama_demo.render import (
     compute_canvas,
     largest_valid_rectangle,
     render_panorama,
+    render_projected_scan_panorama,
     render_scan_panorama,
 )
+from panorama_demo.rgbd_projection import ProjectedRGBDSource
 
 
 IDENTITY = np.eye(3, dtype=np.float64)
@@ -26,6 +28,143 @@ def _translation(x: float, y: float = 0.0) -> np.ndarray:
     return np.array(
         [[1.0, 0.0, x], [0.0, 1.0, y], [0.0, 0.0, 1.0]],
         dtype=np.float64,
+    )
+
+
+def _projected_source(
+    frame_id: int,
+    image: np.ndarray,
+    valid_mask: np.ndarray,
+    surface_depth_mm: np.ndarray,
+    center_x: float,
+    *,
+    sampling_ratio: float = 1.0,
+) -> ProjectedRGBDSource:
+    x, y, width, height = cv2.boundingRect(valid_mask)
+    return ProjectedRGBDSource(
+        frame_id=frame_id,
+        warped_rgb=image.copy(),
+        valid_mask=valid_mask.copy(),
+        surface_depth_mm=np.asarray(surface_depth_mm, dtype=np.float32).copy(),
+        surface_depth_valid_mask=valid_mask.copy(),
+        camera_depth_mm=np.asarray(surface_depth_mm, dtype=np.float32).copy(),
+        camera_depth_valid_mask=valid_mask.copy(),
+        projected_center_xy=(float(center_x), image.shape[0] * 0.5),
+        valid_bbox=(x, y, width, height),
+        projected_height_px=height,
+        sampling_stats={"projected_sampling_ratio": sampling_ratio},
+        camera_center_xy=(float(center_x), image.shape[0] * 0.5),
+    )
+
+
+def _full_projected_sources(
+    *,
+    count: int = 2,
+    shape: tuple[int, int] = (40, 80),
+    color: tuple[int, int, int] = (90, 120, 150),
+) -> list[ProjectedRGBDSource]:
+    height, width = shape
+    image = _solid(height, width, color)
+    valid = np.full(shape, 255, dtype=np.uint8)
+    depth = np.full(shape, 1000.0, dtype=np.float32)
+    return [
+        _projected_source(
+            index,
+            image,
+            valid,
+            depth,
+            (index + 0.5) * width / count,
+        )
+        for index in range(count)
+    ]
+
+
+class _DeterministicGraphCut:
+    def __init__(self, mode: str = "split", captured: list | None = None) -> None:
+        self.mode = mode
+        self.captured = captured
+
+    def find(self, _images, _corners, masks):
+        allowed0 = np.asarray(masks[0]) > 0
+        allowed1 = np.asarray(masks[1]) > 0
+        if self.captured is not None:
+            self.captured.append((allowed0.copy(), allowed1.copy()))
+        common = allowed0 & allowed1
+        only0 = allowed0 & ~allowed1
+        only1 = allowed1 & ~allowed0
+        columns = np.arange(allowed0.shape[1])[None, :]
+        split = allowed0.shape[1] // 2
+        owner0 = only0 | (common & (columns < split))
+        owner1 = only1 | (common & (columns >= split))
+        if self.mode == "first":
+            owner0 = allowed0.copy()
+            owner1 = allowed1 & ~owner0
+        elif self.mode == "second":
+            owner1 = allowed1.copy()
+            owner0 = allowed0 & ~owner1
+        elif self.mode in {"hole", "overlap"}:
+            row, column = np.argwhere(common)[len(np.argwhere(common)) // 2]
+            if self.mode == "hole":
+                owner0[row, column] = False
+                owner1[row, column] = False
+            else:
+                owner0[row, column] = True
+                owner1[row, column] = True
+        return [
+            np.where(owner0, 255, 0).astype(np.uint8),
+            np.where(owner1, 255, 0).astype(np.uint8),
+        ]
+
+
+class _DeterministicMultiBand:
+    def __init__(self, *, zero_weight_wedge: bool = False) -> None:
+        self.zero_weight_wedge = zero_weight_wedge
+
+    def setNumBands(self, _levels: int) -> None:
+        pass
+
+    def prepare(self, rectangle: tuple[int, int, int, int]) -> None:
+        _, _, width, height = rectangle
+        self.image = np.zeros((height, width, 3), dtype=np.int16)
+        self.mask = np.zeros((height, width), dtype=np.uint8)
+
+    def feed(
+        self,
+        image: np.ndarray,
+        mask: np.ndarray,
+        corner: tuple[int, int],
+    ) -> None:
+        x, y = corner
+        height, width = mask.shape
+        target = self.image[y : y + height, x : x + width]
+        selected = mask > 0
+        target[selected] = image[selected]
+        self.mask[y : y + height, x : x + width][selected] = 255
+
+    def blend(self, _destination, _destination_mask):
+        output_mask = self.mask.copy()
+        if self.zero_weight_wedge:
+            row, column = np.argwhere(output_mask > 0)[0]
+            output_mask[row, column] = 0
+        return self.image.copy(), output_mask
+
+
+def _install_projected_cv_stubs(
+    monkeypatch,
+    *,
+    graphcut_mode: str = "split",
+    captured: list | None = None,
+    zero_weight_wedge: bool = False,
+) -> None:
+    monkeypatch.setattr(
+        cv2,
+        "detail_GraphCutSeamFinder",
+        lambda _cost: _DeterministicGraphCut(graphcut_mode, captured),
+    )
+    monkeypatch.setattr(
+        cv2,
+        "detail_MultiBandBlender",
+        lambda: _DeterministicMultiBand(zero_weight_wedge=zero_weight_wedge),
     )
 
 
@@ -408,3 +547,374 @@ def test_owner_topology_detects_nonadjacent_contact_without_source_overlap() -> 
 
     assert metrics["strict_owner_partition"] is True
     assert metrics["nonadjacent_owner_boundary_pixel_count"] > 0
+
+
+def test_projected_graphcut_success_still_runs_strict_owner_audit(monkeypatch) -> None:
+    _install_projected_cv_stubs(monkeypatch)
+    original = render_module._evaluate_final_owner_boundaries
+    audited: list[dict[str, float | int | bool]] = []
+
+    def record_audit(*args, **kwargs):
+        metrics = original(*args, **kwargs)
+        audited.append(metrics.copy())
+        return metrics
+
+    monkeypatch.setattr(
+        render_module, "_evaluate_final_owner_boundaries", record_audit
+    )
+
+    panorama, info = render_projected_scan_panorama(
+        _full_projected_sources(),
+        exposure_mode="none",
+        multiband_levels=1,
+    )
+
+    owner_count = np.sum(np.stack(info.owner_masks) > 0, axis=0)
+    assert panorama.shape == (40, 80, 3)
+    assert len(audited) == 1
+    assert audited[0]["strict_owner_partition"] is True
+    assert audited[0]["final_owner_boundary_pair_count"] == 1
+    assert np.all(owner_count == 1)
+    assert info.quality_metrics["quality_pass"] is True
+
+
+def test_projected_graphcut_error_has_no_dp_or_average_fallback(monkeypatch) -> None:
+    class BrokenGraphCut:
+        def find(self, *_args):
+            raise cv2.error("synthetic projected GraphCut failure")
+
+    def forbidden_fallback(*_args, **_kwargs):
+        raise AssertionError("a forbidden fallback was called")
+
+    monkeypatch.setattr(
+        cv2, "detail_GraphCutSeamFinder", lambda _cost: BrokenGraphCut()
+    )
+    monkeypatch.setattr(render_module, "_monotonic_pair_seam", forbidden_fallback)
+    monkeypatch.setattr(
+        render_module, "_normalized_multiband_blend", forbidden_fallback
+    )
+    monkeypatch.setattr(
+        render_module,
+        "_opencv_multiband_owner_boundary_blend",
+        forbidden_fallback,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="no DP, feather, or averaging fallback is allowed",
+    ):
+        render_projected_scan_panorama(
+            _full_projected_sources(),
+            exposure_mode="none",
+            multiband_levels=1,
+        )
+
+
+def test_projected_high_risk_component_is_hard_owned_before_graphcut(
+    monkeypatch,
+) -> None:
+    captured: list[tuple[np.ndarray, np.ndarray]] = []
+    _install_projected_cv_stubs(monkeypatch, captured=captured)
+    shape = (64, 96)
+    image = _solid(*shape, (100, 100, 100))
+    valid = np.full(shape, 255, dtype=np.uint8)
+    depth0 = np.full(shape, 1000.0, dtype=np.float32)
+    depth1 = depth0.copy()
+    depth1[24:36, 16:28] = 1300.0
+    sources = [
+        _projected_source(
+            0, image, valid, depth0, 24.0, sampling_ratio=0.5
+        ),
+        _projected_source(
+            1, image, valid, depth1, 72.0, sampling_ratio=1.0
+        ),
+    ]
+
+    _, info = render_projected_scan_panorama(
+        sources,
+        exposure_mode="none",
+        multiband_levels=1,
+        quality_gate=False,
+    )
+
+    assert len(captured) == 1
+    assert not captured[0][0][30, 22]
+    assert captured[0][1][30, 22]
+    assert info.hard_owner_component_count == 1
+    assert info.owner_masks[0][30, 22] == 0
+    assert info.owner_masks[1][30, 22] == 255
+
+
+def test_world_surface_depth_conflict_is_hard_risk_in_textured_scene() -> None:
+    shape = (48, 72)
+    yy, xx = np.indices(shape)
+    checker = (((xx // 4) + (yy // 4)) % 2 * 255).astype(np.uint8)
+    image = cv2.merge((checker, 255 - checker, checker))
+    valid = np.full(shape, 255, dtype=np.uint8)
+    first = np.full(shape, 1000.0, dtype=np.float32)
+    second = first.copy()
+    second[14:34, 24:40] += 400.0
+
+    risk, _, _ = render_module._pair_risk_mask(
+        image,
+        image.copy(),
+        valid,
+        valid,
+        first,
+        second,
+        depth_valid0=valid,
+        depth_valid1=valid,
+        world_surface_depth=True,
+    )
+
+    assert np.all(risk[18:30, 28:36] > 0)
+
+
+def test_world_surface_depth_risk_is_world_origin_invariant() -> None:
+    shape = (40, 60)
+    image = _solid(*shape, (80, 120, 160))
+    valid = np.full(shape, 255, dtype=np.uint8)
+    first = np.full(shape, 1000.0, dtype=np.float32)
+    second = first.copy()
+    second[10:30, 20:40] += 200.0
+
+    def risk_at_offset(offset: float) -> np.ndarray:
+        risk, _, _ = render_module._pair_risk_mask(
+            image,
+            image,
+            valid,
+            valid,
+            first + offset,
+            second + offset,
+            depth_valid0=valid,
+            depth_valid1=valid,
+            world_surface_depth=True,
+        )
+        return risk
+
+    np.testing.assert_array_equal(risk_at_offset(0.0), risk_at_offset(10_000.0))
+
+
+def test_projected_near_foreground_is_risk_without_color_or_world_depth_error() -> None:
+    shape = (40, 60)
+    image = _solid(*shape, (80, 120, 160))
+    valid = np.full(shape, 255, dtype=np.uint8)
+    surface = np.full(shape, 2500.0, dtype=np.float32)
+    camera_depth = np.full(shape, 1500.0, dtype=np.float32)
+    camera_depth[12:28, 22:38] = 500.0
+
+    risk, _, _ = render_module._pair_risk_mask(
+        image,
+        image,
+        valid,
+        valid,
+        surface,
+        surface,
+        depth_valid0=valid,
+        depth_valid1=valid,
+        camera_depth0=camera_depth,
+        camera_depth1=camera_depth,
+        camera_depth_valid0=valid,
+        camera_depth_valid1=valid,
+        world_surface_depth=True,
+    )
+
+    assert np.all(risk[16:24, 26:34] > 0)
+
+
+def test_projected_high_risk_band_crossing_corridor_fails(monkeypatch) -> None:
+    _install_projected_cv_stubs(monkeypatch)
+    shape = (64, 96)
+    image = _solid(*shape, (100, 100, 100))
+    valid = np.full(shape, 255, dtype=np.uint8)
+    depth0 = np.full(shape, 1000.0, dtype=np.float32)
+    depth1 = depth0.copy()
+    depth1[28:36, :] = 1300.0
+    sources = [
+        _projected_source(0, image, valid, depth0, 24.0),
+        _projected_source(1, image, valid, depth1, 72.0),
+    ]
+
+    with pytest.raises(RuntimeError, match="crosses the complete adjacent-pair"):
+        render_projected_scan_panorama(
+            sources,
+            exposure_mode="none",
+            multiband_levels=1,
+        )
+
+
+@pytest.mark.parametrize("mode", ["hole", "overlap"])
+def test_projected_graphcut_rejects_owner_holes_and_overlaps(
+    monkeypatch, mode: str
+) -> None:
+    _install_projected_cv_stubs(monkeypatch, graphcut_mode=mode)
+
+    with pytest.raises(RuntimeError, match="hole or multiple owners"):
+        render_projected_scan_panorama(
+            _full_projected_sources(),
+            exposure_mode="none",
+            multiband_levels=1,
+        )
+
+
+def test_projected_three_frame_nonadjacent_owner_contact_fails(monkeypatch) -> None:
+    modes = iter(("first", "second"))
+    monkeypatch.setattr(
+        cv2,
+        "detail_GraphCutSeamFinder",
+        lambda _cost: _DeterministicGraphCut(next(modes)),
+    )
+
+    with pytest.raises(RuntimeError, match="non-adjacent projected owners touch"):
+        render_projected_scan_panorama(
+            _full_projected_sources(count=3, shape=(40, 90)),
+            exposure_mode="none",
+            multiband_levels=1,
+        )
+
+
+def test_projected_owner_boundary_requires_real_common_coverage(monkeypatch) -> None:
+    _install_projected_cv_stubs(monkeypatch)
+    shape = (40, 80)
+    image = _solid(*shape, (90, 120, 150))
+    depth = np.full(shape, 1000.0, dtype=np.float32)
+    left_valid = np.zeros(shape, dtype=np.uint8)
+    right_valid = np.zeros(shape, dtype=np.uint8)
+    left_valid[:, :40] = 255
+    right_valid[:, 40:] = 255
+    sources = [
+        _projected_source(0, image, left_valid, depth, 20.0),
+        _projected_source(1, image, right_valid, depth, 60.0),
+    ]
+
+    with pytest.raises(RuntimeError, match="lacks real pair overlap"):
+        render_projected_scan_panorama(
+            sources,
+            exposure_mode="none",
+            multiband_levels=1,
+        )
+
+
+def test_projected_missing_adjacent_owner_boundary_fails(monkeypatch) -> None:
+    _install_projected_cv_stubs(monkeypatch, graphcut_mode="first")
+
+    with pytest.raises(RuntimeError, match="adjacent owner boundaries are missing"):
+        render_projected_scan_panorama(
+            _full_projected_sources(),
+            exposure_mode="none",
+            multiband_levels=1,
+        )
+
+
+def test_projected_multiband_zero_weight_wedge_fails(monkeypatch) -> None:
+    _install_projected_cv_stubs(monkeypatch, zero_weight_wedge=True)
+
+    with pytest.raises(RuntimeError, match="zero-weight owner wedge"):
+        render_projected_scan_panorama(
+            _full_projected_sources(),
+            exposure_mode="none",
+            multiband_levels=1,
+        )
+
+
+def test_projected_multiband_partitions_overlapping_adjacent_zones() -> None:
+    shape = (24, 18)
+    images = [_solid(*shape, (100, 120, 140)) for _ in range(3)]
+    valid = [np.full(shape, 255, dtype=np.uint8) for _ in range(3)]
+    owners = [np.zeros(shape, dtype=np.uint8) for _ in range(3)]
+    owners[0][:, :6] = 255
+    owners[1][:, 6:12] = 255
+    owners[2][:, 12:] = 255
+    depths = [np.full(shape, 1000.0, dtype=np.float32) for _ in range(3)]
+
+    blended, output_mask, blend_pixels, _ = (
+        render_module._opencv_multiband_owner_boundary_blend(
+            images,
+            valid,
+            owners,
+            depths,
+            valid,
+            depths,
+            valid,
+            np.asarray([0, 1, 2]),
+            levels=1,
+            radius=7,
+        )
+    )
+
+    assert np.all(output_mask == 255)
+    assert blend_pixels > 0
+    assert blended.shape == (*shape, 3)
+
+
+def test_projected_pairwise_multiband_blocks_nonadjacent_low_frequency_color() -> None:
+    shape = (64, 256)
+    images = [
+        _solid(*shape, (0, 40, 80)),
+        _solid(*shape, (0, 100, 140)),
+        _solid(*shape, (255, 160, 200)),
+    ]
+    valid = [np.full(shape, 255, dtype=np.uint8) for _ in range(3)]
+    owners = [np.zeros(shape, dtype=np.uint8) for _ in range(3)]
+    owners[0][:, :80] = 255
+    owners[1][:, 80:176] = 255
+    owners[2][:, 176:] = 255
+    depths = [np.full(shape, 1000.0, dtype=np.float32) for _ in range(3)]
+
+    blended, output_mask, _, _ = (
+        render_module._opencv_multiband_owner_boundary_blend(
+            images,
+            valid,
+            owners,
+            depths,
+            valid,
+            depths,
+            valid,
+            np.asarray([0, 1, 2]),
+            levels=4,
+            radius=16,
+        )
+    )
+
+    assert np.all(output_mask == 255)
+    assert np.max(blended[:, 64:96, 0]) == 0
+
+
+def test_projected_actual_blend_zone_risk_is_quality_gated(monkeypatch) -> None:
+    _install_projected_cv_stubs(monkeypatch)
+
+    def report_risky_blend(images, _valid, owner_masks, *_args):
+        owner_union = np.logical_or.reduce([mask > 0 for mask in owner_masks])
+        output = np.zeros_like(images[0])
+        for image, owner in zip(images, owner_masks, strict=True):
+            output[owner > 0] = image[owner > 0]
+        return output, owner_union.astype(np.uint8) * 255, 64, 0.25
+
+    monkeypatch.setattr(
+        render_module,
+        "_opencv_multiband_owner_boundary_blend",
+        report_risky_blend,
+    )
+
+    with pytest.raises(RuntimeError, match="actual MultiBand zone reaches RGB-D risk"):
+        render_projected_scan_panorama(
+            _full_projected_sources(),
+            exposure_mode="none",
+            multiband_levels=1,
+        )
+
+
+def test_projected_renderer_treats_black_pixels_as_valid_content(monkeypatch) -> None:
+    _install_projected_cv_stubs(monkeypatch)
+
+    panorama, info = render_projected_scan_panorama(
+        _full_projected_sources(color=(0, 0, 0)),
+        exposure_mode="none",
+        multiband_levels=1,
+    )
+
+    assert panorama.shape == (40, 80, 3)
+    assert np.count_nonzero(panorama) == 0
+    assert info.crop.as_dict() == {"x": 0, "y": 0, "width": 80, "height": 40}
+    assert info.quality_metrics["strict_owner_partition"] is True
+    assert info.quality_metrics["multiband_output_mask_complete"] is True

@@ -1,138 +1,151 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 
-from panorama_demo.quality import MotionEstimate
-from panorama_demo.session import SessionFrame
-from panorama_demo.stitch_sequence import (
-    _parse_protected_regions,
-    interpolate_motion_guided_transforms,
-    interpolate_translation_transforms,
-    regularize_pair_homography,
-)
+import panorama_demo.stitch_sequence as sequence
+from panorama_demo.rgbd_odometry import RGBDOdometryConfig
+from panorama_demo.session import load_rgbd_session
+from panorama_demo.synthetic import generate_sequence
 
 
-def test_translation_regularization_removes_projective_drift() -> None:
-    homography = np.array(
-        [[0.97, 0.01, 101.0], [-0.01, 0.99, 2.0], [-0.00008, 0.00001, 1.0]]
+class _MetricTranslationBackend:
+    name = "test_metric_rgbd"
+
+    def __init__(self, poses: dict[int, np.ndarray]) -> None:
+        self.poses = poses
+        self.pairs: list[tuple[int, int]] = []
+
+    def estimate_pair(self, *, reference, source, intrinsics, config):
+        del intrinsics, config
+        reference_id = int(reference.frame_id)
+        source_id = int(source.frame_id)
+        self.pairs.append((reference_id, source_id))
+        return {
+            "source_to_reference": (
+                np.linalg.inv(self.poses[reference_id]) @ self.poses[source_id]
+            ),
+            "converged": True,
+            "fitness": 0.99,
+            "rmse_mm": 0.25,
+            "information": np.eye(6, dtype=np.float64) * 100.0,
+            "backend": self.name,
+        }
+
+
+def _synthetic_session(tmp_path: Path):
+    root = generate_sequence(
+        tmp_path / "session",
+        frame_count=5,
+        frame_width=160,
+        frame_height=100,
+        step=30,
+        seed=31,
     )
-    result = regularize_pair_homography(homography, (400, 640, 3), "translation")
-    assert np.allclose(result[:2, :2], np.eye(2))
-    assert np.allclose(result[2], [0.0, 0.0, 1.0])
-    assert 95.0 < result[0, 2] < 110.0
-    assert abs(result[1, 2]) < 10.0
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    poses = {
+        int(row["frame_id"]): np.asarray(
+            row["matrix_row_major"], dtype=np.float64
+        ).reshape(4, 4)
+        for row in manifest["known_trajectory"]["poses"]
+    }
+    return load_rgbd_session(root), poses
 
 
-def test_similarity_regularization_has_no_projective_terms() -> None:
-    angle = np.deg2rad(2.0)
-    expected = np.array(
-        [
-            [np.cos(angle), -np.sin(angle), 80.0],
-            [np.sin(angle), np.cos(angle), -3.0],
-            [0.0, 0.0, 1.0],
-        ]
-    )
-    result = regularize_pair_homography(expected, (400, 640, 3), "similarity")
-    assert np.allclose(result, expected, atol=1e-4)
+def test_formal_sequence_exposes_no_legacy_2d_motion_or_interpolation_api() -> None:
+    for name in (
+        "regularize_pair_homography",
+        "interpolate_translation_transforms",
+        "interpolate_motion_guided_transforms",
+        "_parse_protected_regions",
+    ):
+        assert not hasattr(sequence, name)
 
 
-def test_homography_mode_preserves_matrix() -> None:
-    matrix = np.array([[1.0, 0.0, 7.0], [0.0, 1.0, 2.0], [1e-5, 0.0, 1.0]])
-    assert np.allclose(
-        regularize_pair_homography(matrix, (100, 200, 3), "homography"), matrix
-    )
-
-
-def test_unknown_motion_model_is_rejected() -> None:
-    with pytest.raises(ValueError, match="Unsupported"):
-        regularize_pair_homography(np.eye(3), (100, 200, 3), "rigid")
-
-
-def test_translation_anchor_tracks_the_lower_scan_region() -> None:
-    homography = np.array(
-        [[1.0, 0.1, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-        dtype=np.float64,
-    )
-
-    centered = regularize_pair_homography(
-        homography, (800, 1280, 3), "translation", translation_anchor_y=0.5
-    )
-    lower = regularize_pair_homography(
-        homography, (800, 1280, 3), "translation", translation_anchor_y=0.85
-    )
-
-    assert centered[0, 2] == pytest.approx(40.0)
-    assert lower[0, 2] == pytest.approx(68.0)
-
-
-def test_interpolate_translation_transforms_for_dense_render_frames(
-    tmp_path,
+def test_pose_edge_estimation_connects_only_real_rgbd_pose_nodes(
+    tmp_path: Path,
 ) -> None:
-    layout_frames = [
-        SessionFrame(10, tmp_path / "10.jpg"),
-        SessionFrame(20, tmp_path / "20.jpg"),
-    ]
-    render_frames = [SessionFrame(15, tmp_path / "15.jpg")]
-    transforms = [
-        np.eye(3),
-        np.array([[1.0, 0.0, -100.0], [0.0, 1.0, 20.0], [0.0, 0.0, 1.0]]),
-    ]
+    session, poses = _synthetic_session(tmp_path)
+    selected = [session.frames[index] for index in (0, 2, 4)]
+    backend = _MetricTranslationBackend(poses)
 
-    result = interpolate_translation_transforms(
-        layout_frames, transforms, render_frames
+    edges, optional_failures = sequence._estimate_pose_edges(
+        selected,
+        session.calibration,
+        RGBDOdometryConfig(working_width=160),
+        backend=backend,
+        nonadjacent_gap=2,
     )
 
+    assert optional_failures == []
+    assert backend.pairs == [(0, 2), (2, 4), (0, 4)]
+    assert [
+        (edge.reference_node_id, edge.source_node_id) for edge in edges
+    ] == backend.pairs
+    assert all(edge.source_to_reference.shape == (4, 4) for edge in edges)
     np.testing.assert_allclose(
-        result[0],
-        np.array([[1.0, 0.0, -50.0], [0.0, 1.0, 10.0], [0.0, 0.0, 1.0]]),
+        edges[0].source_to_reference,
+        np.linalg.inv(poses[0]) @ poses[2],
     )
 
 
-def test_motion_guided_interpolation_handles_variable_scan_speed(tmp_path) -> None:
-    scan_frames = [
-        SessionFrame(0, tmp_path / "0.jpg", timestamp_us=0),
-        SessionFrame(1, tmp_path / "1.jpg", timestamp_us=100_000),
-        SessionFrame(2, tmp_path / "2.jpg", timestamp_us=200_000),
-    ]
-    layout_frames = [scan_frames[0], scan_frames[2]]
-    transforms = [
-        np.eye(3),
-        np.array([[1.0, 0.0, -400.0], [0.0, 1.0, 8.0], [0.0, 0.0, 1.0]]),
-    ]
-    motions = [
-        MotionEstimate(10.0, 0.0, 40, 0.8, 0.5, "features"),
-        MotionEstimate(30.0, 0.0, 40, 0.8, 0.5, "features"),
-    ]
+def test_full_resolution_projection_sources_keep_exact_optimized_se3(
+    tmp_path: Path,
+) -> None:
+    session, poses = _synthetic_session(tmp_path)
+    frames = [session.frames[index] for index in (0, 4)]
+    exact_poses = [poses[frame.frame_id] for frame in frames]
 
-    result = interpolate_motion_guided_transforms(
-        layout_frames,
-        transforms,
-        [scan_frames[1]],
-        scan_frames,
-        motions,
-        1,
-    )
+    projected = sequence._full_projection_frames(frames, exact_poses)
 
-    assert result[0][0, 2] == pytest.approx(-100.0)
-    assert result[0][1, 2] == pytest.approx(2.0)
-
-def test_parse_protected_regions_maps_frame_ids_to_render_indices(tmp_path) -> None:
-    frames = [
-        SessionFrame(111, tmp_path / "111.jpg"),
-        SessionFrame(188, tmp_path / "188.jpg"),
-    ]
-
-    result = _parse_protected_regions(
-        ["188:10:20:30:40", "111:1:2:3:4"],
-        frames,
-    )
-
-    assert result == [(1, 10, 20, 30, 40), (0, 1, 2, 3, 4)]
+    assert [frame.frame_id for frame in projected] == [0, 4]
+    for source, expected in zip(projected, exact_poses, strict=True):
+        assert source.camera_to_world.shape == (4, 4)
+        np.testing.assert_allclose(source.camera_to_world, expected)
+        assert source.depth_mm.shape == (
+            session.calibration.height,
+            session.calibration.width,
+        )
+        assert np.count_nonzero(source.depth_mm) > 0
 
 
-def test_parse_protected_regions_rejects_non_render_frame(tmp_path) -> None:
-    frames = [SessionFrame(111, tmp_path / "111.jpg")]
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"pose_backend": "unistitch"}, "pose_backend"),
+        ({"sequence_blend_mode": "feather"}, "scan_seam"),
+        (
+            {"rgbd_projection": {"mode": "homography"}},
+            "orthographic_side_scan",
+        ),
+        (
+            {
+                "rgbd_projection": {
+                    "mode": "orthographic_side_scan",
+                    "reject_depth_discontinuity": False,
+                }
+            },
+            "depth-discontinuity",
+        ),
+        ({"scan_seam": {"backend": "dp"}}, "graphcut_depth_constrained"),
+    ],
+)
+def test_formal_backend_configuration_rejects_legacy_paths(
+    override: dict[str, object], message: str
+) -> None:
+    config: dict[str, object] = {
+        "pose_backend": "open3d_rgbd",
+        "sequence_blend_mode": "scan_seam",
+        "rgbd_projection": {
+            "mode": "orthographic_side_scan",
+            "reject_depth_discontinuity": True,
+        },
+        "scan_seam": {"backend": "graphcut_depth_constrained"},
+    }
+    config.update(override)
 
-    with pytest.raises(ValueError, match="is not a render frame"):
-        _parse_protected_regions("188:10:20:30:40", frames)
+    with pytest.raises(ValueError, match=message):
+        sequence._validate_backend_config(config)

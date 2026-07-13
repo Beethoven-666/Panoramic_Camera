@@ -9,10 +9,11 @@ capture:
   diagnostic_replaced_auto_cap_us: 800
 
 stitch:
-  # Reusing this file with unistitch-sequence automatically produces diagnostic
-  # artifacts and bypasses application-level input, geometry and render-quality
-  # gates. Finite transforms and canvas/working-set memory protection remain.
+  # Reusing this file with g305-panorama automatically produces diagnostic
+  # artifacts. It may bypass input appearance, formal odometry thresholds and
+  # final image-quality gates, but never the strict RGB-D session contract,
+  # finite SE(3), connected graph, projection or memory-safety requirements.
   diagnostic_force: true
   input_quality_gate: false
-  scan_quality_gate: false
-  scan_max_keyframes: 0
+  scan_seam:
+    quality_gate: false

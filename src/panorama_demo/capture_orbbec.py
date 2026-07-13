@@ -286,6 +286,12 @@ def _calibration_to_dict(camera_param: Any) -> dict[str, Any]:
         }
 
     return {
+        "depth_alignment": {
+            "enabled": True,
+            "aligned_to": "color",
+            "method": "software",
+            "producer": "pyorbbecsdk.AlignFilter(COLOR_STREAM)",
+        },
         "depth_intrinsic": intrinsic(camera_param.depth_intrinsic),
         "color_intrinsic": intrinsic(camera_param.rgb_intrinsic),
         "depth_distortion": distortion(camera_param.depth_distortion),

@@ -33,6 +33,12 @@ def test_calibration_flattens_sdk_matrix_arrays() -> None:
         ),
     )
     result = _calibration_to_dict(camera)
+    assert result["depth_alignment"] == {
+        "enabled": True,
+        "aligned_to": "color",
+        "method": "software",
+        "producer": "pyorbbecsdk.AlignFilter(COLOR_STREAM)",
+    }
     assert result["depth_to_color"]["rotation_row_major"] == [
         1.0,
         0.0,

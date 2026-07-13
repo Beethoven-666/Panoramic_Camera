@@ -9,12 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import cv2
+import numpy as np
 
 from .config import load_config
-from .errors import AlignmentError
 from .quality import (
+    FrameQuality,
     MotionEstimate,
     assess_capture_quality,
     analyze_frame_quality,
@@ -22,19 +22,34 @@ from .quality import (
     resize_for_analysis,
     select_layout_from_motion_estimates,
     select_primary_scan_segment,
-    select_render_indices_auto,
+    select_rgbd_render_indices_auto,
 )
-from .render import render_panorama, render_scan_panorama
+from .render import render_projected_scan_panorama
+from .rgbd_odometry import (
+    PoseGraphConfig,
+    PoseQualityThresholds,
+    RGBDOdometryConfig,
+    estimate_pair_rgbd_odometry,
+    optimize_rgbd_pose_graph,
+    validate_pose_trajectory,
+)
+from .rgbd_projection import (
+    PinholeIntrinsics,
+    RGBDProjectionFrame,
+    estimate_projection_canvas,
+    estimate_side_scan_footprints,
+    project_selected_rgbd_sources,
+)
 from .session import (
-    SessionFrame,
-    discover_frames,
-    load_session_manifest,
-    select_frames,
+    CameraIntrinsics,
+    RGBDFrame,
+    load_rgbd_session,
+    read_aligned_depth_mm,
 )
-from .stitch_common import build_aligner, read_bgr, write_bgr
 
 
 _DELIVERY_FILES = (
+    # The success marker must be invalidated before every other cleanup.
     "delivery.json",
     "panorama.jpg",
     "report.json",
@@ -47,6 +62,17 @@ _DIAGNOSTIC_FILES = (
     "diagnostic_report.json",
 )
 
+_HARD_MAX_CANVAS_MEGAPIXELS = 200.0
+_HARD_MAX_LAYOUT_FRAMES = 160
+_HARD_MAX_RENDER_SOURCES = 32
+
+
+def _invalidate_delivery_marker(output: Path) -> None:
+    """Invalidate any previous success before performing other task work."""
+
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "delivery.json").unlink(missing_ok=True)
+
 
 def _capture_manifest_summary(
     manifest: dict[str, Any] | None,
@@ -57,7 +83,6 @@ def _capture_manifest_summary(
             "diagnostic_only": False,
             "formal_stitch_allowed": True,
         }
-
     diagnostic_marker = manifest.get("diagnostic_only", False)
     formal_allowed = manifest.get("formal_stitch_allowed", True)
     if not isinstance(diagnostic_marker, bool):
@@ -65,12 +90,10 @@ def _capture_manifest_summary(
     if not isinstance(formal_allowed, bool):
         raise ValueError("Session manifest formal_stitch_allowed must be a boolean")
     capture_mode = str(manifest.get("capture_mode", "legacy_or_unknown"))
-    capture_options = manifest.get("capture_options", {})
+    options = manifest.get("capture_options", {})
     option_marker = False
-    if isinstance(capture_options, dict):
-        option_marker = capture_options.get(
-            "diagnostic_unrestricted_auto_exposure", False
-        )
+    if isinstance(options, dict):
+        option_marker = options.get("diagnostic_unrestricted_auto_exposure", False)
         if not isinstance(option_marker, bool):
             raise ValueError(
                 "Session manifest diagnostic exposure marker must be a boolean"
@@ -89,8 +112,8 @@ def _capture_manifest_summary(
 
 
 def _clear_delivery_files(output: Path) -> None:
-    output.mkdir(parents=True, exist_ok=True)
-    for name in _DELIVERY_FILES:
+    _invalidate_delivery_marker(output)
+    for name in _DELIVERY_FILES[1:]:
         (output / name).unlink(missing_ok=True)
     for pending in output.glob(".*.pending.*"):
         if pending.is_file():
@@ -107,7 +130,7 @@ def _write_failure_report(output: Path, input_path: Path, exc: Exception) -> Non
     _clear_delivery_files(output)
     _clear_diagnostic_files(output)
     payload = {
-        "schema": "gemini305-panorama-failure/v1",
+        "schema": "gemini305-panorama-failure/v2",
         "failed_utc": datetime.now(timezone.utc).isoformat(),
         "input": str(input_path.expanduser().resolve()),
         "error_type": type(exc).__name__,
@@ -121,129 +144,31 @@ def _write_failure_report(output: Path, input_path: Path, exc: Exception) -> Non
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Build a side-scan panorama from original frames using UniStitch pair edges"
+        description=(
+            "Build a quality-gated side-scan panorama from a calibrated, "
+            "color-aligned Gemini 305 RGB-D session"
+        )
     )
-    parser.add_argument("input", type=Path, help="Capture session, frames.csv, or color folder")
+    parser.add_argument("input", type=Path, help="Calibrated RGB-D capture session")
     parser.add_argument("--output", type=Path, default=Path("outputs/sequence"))
     parser.add_argument("--config", type=Path)
-    parser.add_argument("--model", type=Path)
-    parser.add_argument("--device")
-    parser.add_argument("--inference-width", type=int)
-    parser.add_argument("--stride", type=int)
-    parser.add_argument("--max-frames", type=int)
-    parser.add_argument("--max-canvas-megapixels", type=float)
-    parser.add_argument(
-        "--blend-mode",
-        choices=("feather", "scan_seam"),
-        help="Final sequence renderer (scan_seam avoids averaging all overlaps)",
-    )
     parser.add_argument(
         "--render-frame-ids",
         help=(
-            "Reserved diagnostic override; the delivery command rejects manual "
-            "source selection"
+            "Diagnostic-only comma-separated pose-node override; formal delivery "
+            "always uses automatic full-coverage selection"
         ),
-    )
-    parser.add_argument(
-        "--translation-anchor-y",
-        type=float,
-        help="Vertical image fraction used to extract translation from each homography",
-    )
-    parser.add_argument("--scan-seam-margin", type=int)
-    parser.add_argument("--scan-multiband-levels", type=int)
-    parser.add_argument(
-        "--scan-exposure-mode",
-        choices=("none", "center_gain", "global_gain"),
-    )
-    parser.add_argument("--scan-seam-mask-sigma", type=float)
-    parser.add_argument(
-        "--scan-protect-region",
-        action="append",
-        metavar="FRAME_ID:X0:Y0:X1:Y1",
-        help=(
-            "Force one frame to own a near-field canvas rectangle; repeat for "
-            "multiple objects"
-        ),
-    )
-    parser.add_argument(
-        "--motion-model",
-        choices=("translation", "similarity", "homography"),
-        help="Constraint used when accumulating pair transforms (default: config value)",
-    )
-    parser.add_argument("--no-pair-previews", action="store_true")
-    parser.add_argument(
-        "--strict-unistitch",
-        action="store_true",
-        help="Reject instead of falling back to LightGlue+MAGSAC for sequence layout",
     )
     parser.add_argument(
         "--diagnostic-force",
         action="store_true",
         help=(
-            "Relax geometry and bypass input/render quality gates, writing only "
-            "diagnostic_panorama.jpg; may also be enabled by the selected config; "
-            "finite/canvas safety still applies"
+            "Bypass input, odometry-quality and final image-quality thresholds, "
+            "but keep calibration, aligned depth, finite SE(3), graph connectivity, "
+            "projection, topology, memory and atomic-delivery safety"
         ),
     )
     return parser
-
-
-def _normalise(matrix: np.ndarray) -> np.ndarray:
-    result = np.asarray(matrix, dtype=np.float64)
-    if result.shape != (3, 3) or not np.isfinite(result).all():
-        raise AlignmentError("Sequence transform is not a finite 3x3 matrix")
-    if abs(result[2, 2]) < 1e-10:
-        raise AlignmentError("Sequence transform is singular")
-    return result / result[2, 2]
-
-
-def regularize_pair_homography(
-    homography: np.ndarray,
-    image_shape: tuple[int, ...],
-    motion_model: str,
-    translation_anchor_y: float | None = None,
-) -> np.ndarray:
-    """Project a pair homography onto the cart's mechanical motion model."""
-
-    matrix = _normalise(homography)
-    if motion_model == "homography":
-        return matrix
-    height, width = image_shape[:2]
-    if translation_anchor_y is not None and not 0.0 <= translation_anchor_y <= 1.0:
-        raise ValueError("translation_anchor_y must be between zero and one")
-    if motion_model == "translation" and translation_anchor_y is not None:
-        xs = np.linspace(width * 0.25, width * 0.75, 3)[None, :]
-        ys = np.full_like(xs, height * translation_anchor_y)
-    else:
-        xs, ys = np.meshgrid(
-            np.linspace(width * 0.1, width * 0.9, 5),
-            np.linspace(height * 0.1, height * 0.9, 3),
-        )
-    source_grid = np.stack((xs.ravel(), ys.ravel()), axis=1).astype(np.float32)
-    reference_grid = cv2.perspectiveTransform(source_grid[None], matrix)[0]
-    if not np.isfinite(reference_grid).all():
-        raise AlignmentError("Pair transform produced non-finite regularization samples")
-
-    if motion_model == "translation":
-        displacement = np.median(reference_grid - source_grid, axis=0)
-        return np.array(
-            [
-                [1.0, 0.0, float(displacement[0])],
-                [0.0, 1.0, float(displacement[1])],
-                [0.0, 0.0, 1.0],
-            ],
-            dtype=np.float64,
-        )
-    if motion_model == "similarity":
-        affine, _ = cv2.estimateAffinePartial2D(
-            source_grid,
-            reference_grid,
-            method=cv2.LMEDS,
-        )
-        if affine is None:
-            raise AlignmentError("Could not project pair transform to a similarity model")
-        return _normalise(np.vstack((affine, [0.0, 0.0, 1.0])))
-    raise ValueError(f"Unsupported sequence motion model: {motion_model}")
 
 
 def _parse_frame_ids(value: object) -> list[int]:
@@ -264,13 +189,17 @@ def _parse_frame_ids(value: object) -> list[int]:
 
 
 def _ensure_publishable_quality(
-    capture_quality: dict[str, object], render_metadata: dict[str, Any]
+    capture_quality: dict[str, object],
+    render_metadata: dict[str, Any],
+    pose_quality: dict[str, Any] | None = None,
 ) -> None:
-    """Keep diagnostic gate overrides from publishing an official delivery."""
+    """Final assertion that diagnostic overrides can never publish a delivery."""
 
     failures: list[str] = []
     if not bool(capture_quality.get("quality_pass", False)):
         failures.append("input capture quality did not pass")
+    if pose_quality is not None and not bool(pose_quality.get("quality_pass", False)):
+        failures.append("RGB-D pose trajectory quality did not pass")
     render_quality = render_metadata.get("quality_metrics")
     if not isinstance(render_quality, dict) or not bool(
         render_quality.get("quality_pass", False)
@@ -280,371 +209,492 @@ def _ensure_publishable_quality(
         raise RuntimeError("Delivery quality gate failed: " + "; ".join(failures))
 
 
-def _parse_protected_regions(
-    values: object,
-    frames: list[SessionFrame],
-) -> list[tuple[int, int, int, int, int]]:
-    if values is None or values == "":
-        return []
-    rows = [values] if isinstance(values, str) else list(values)
-    frame_index = {frame.frame_id: index for index, frame in enumerate(frames)}
-    result: list[tuple[int, int, int, int, int]] = []
-    for row in rows:
-        parts = str(row).split(":")
-        if len(parts) != 5:
+def _read_bgr(path: Path) -> np.ndarray:
+    encoded = np.fromfile(path, dtype=np.uint8)
+    image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if image is None:
+        raise OSError(f"OpenCV could not decode color image: {path}")
+    return image
+
+
+def _write_bgr(path: Path, image: np.ndarray) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = path.suffix.lower() or ".jpg"
+    parameters = [cv2.IMWRITE_JPEG_QUALITY, 95] if suffix in {".jpg", ".jpeg"} else []
+    success, encoded = cv2.imencode(suffix, image, parameters)
+    if not success:
+        raise OSError(f"OpenCV could not encode panorama: {path}")
+    path.write_bytes(encoded.tobytes())
+    return path
+
+
+def _intrinsics_payload(intrinsics: CameraIntrinsics) -> dict[str, object]:
+    return {
+        "width": intrinsics.width,
+        "height": intrinsics.height,
+        "fx": intrinsics.fx,
+        "fy": intrinsics.fy,
+        "cx": intrinsics.cx,
+        "cy": intrinsics.cy,
+        "distortion": list(intrinsics.distortion),
+    }
+
+
+def _pinhole_intrinsics(intrinsics: CameraIntrinsics) -> PinholeIntrinsics:
+    return PinholeIntrinsics(
+        width=intrinsics.width,
+        height=intrinsics.height,
+        fx=intrinsics.fx,
+        fy=intrinsics.fy,
+        cx=intrinsics.cx,
+        cy=intrinsics.cy,
+        distortion=intrinsics.distortion,
+    )
+
+
+def _analyse_session(
+    frames: tuple[RGBDFrame, ...],
+    analysis_width: int,
+) -> tuple[list[FrameQuality], list[MotionEstimate], tuple[int, int, int]]:
+    qualities: list[FrameQuality] = []
+    motions: list[MotionEstimate] = []
+    previous: np.ndarray | None = None
+    shape: tuple[int, int, int] | None = None
+    for frame in frames:
+        analysis = resize_for_analysis(_read_bgr(frame.color_path), analysis_width)
+        if shape is None:
+            shape = analysis.shape
+        elif analysis.shape != shape:
             raise ValueError(
-                "scan_protect_region must be FRAME_ID:X0:Y0:X1:Y1"
+                f"Frame {frame.frame_id} has inconsistent analysis shape {analysis.shape}"
             )
-        frame_id, x0, y0, x1, y1 = (int(part) for part in parts)
-        if frame_id not in frame_index:
-            raise ValueError(
-                f"Protected-region frame {frame_id} is not a render frame"
-            )
-        result.append((frame_index[frame_id], x0, y0, x1, y1))
-    return result
+        qualities.append(analyze_frame_quality(analysis))
+        if previous is not None:
+            motions.append(estimate_translation(previous, analysis))
+        previous = analysis
+    if shape is None:
+        raise ValueError("RGB-D session contains no analysable color frame")
+    return qualities, motions, shape
 
 
-def interpolate_translation_transforms(
-    layout_frames: list[SessionFrame],
-    layout_transforms: list[np.ndarray],
-    render_frames: list[SessionFrame],
-) -> list[np.ndarray]:
-    """Interpolate a dense frame's translation from the verified layout trajectory."""
+def _select_pose_nodes(
+    frames: tuple[RGBDFrame, ...],
+    qualities: list[FrameQuality],
+    motions: list[MotionEstimate],
+    image_width: int,
+    stitch_config: dict[str, Any],
+) -> tuple[
+    list[RGBDFrame],
+    list[FrameQuality],
+    dict[str, Any],
+]:
+    segment = select_primary_scan_segment(
+        motions,
+        image_width=image_width,
+        maximum_fraction=float(
+            stitch_config.get("layout_max_displacement_fraction", 0.28)
+        ),
+    )
+    scan_frames = frames[segment.start_index : segment.end_index + 1]
+    scan_qualities = qualities[segment.start_index : segment.end_index + 1]
+    scan_motions = motions[segment.start_index : segment.end_index]
+    selection = select_layout_from_motion_estimates(
+        scan_motions,
+        frame_count=len(scan_frames),
+        image_width=image_width,
+        target_fraction=float(
+            stitch_config.get("layout_target_displacement_fraction", 0.18)
+        ),
+        maximum_fraction=float(
+            stitch_config.get("layout_max_displacement_fraction", 0.28)
+        ),
+        max_selected=int(stitch_config.get("layout_max_frames", 160)),
+    )
+    pose_frames = [scan_frames[index] for index in selection.indices]
+    pose_qualities = [scan_qualities[index] for index in selection.indices]
+    if len(pose_frames) < 2:
+        raise RuntimeError("Adaptive RGB-D layout selected fewer than two pose nodes")
+    metadata = selection.as_dict()
+    metadata.update(
+        {
+            "mode": "adaptive_rgbd_pose_nodes",
+            "frame_ids": [frame.frame_id for frame in pose_frames],
+            "segment": {
+                **segment.as_dict(),
+                "start_frame_id": scan_frames[0].frame_id,
+                "end_frame_id": scan_frames[-1].frame_id,
+            },
+            "motion": [motion.as_dict() for motion in scan_motions],
+        }
+    )
+    return pose_frames, pose_qualities, metadata
 
-    if len(layout_frames) != len(layout_transforms) or not layout_frames:
-        raise ValueError("Layout frames and transforms must be non-empty and equal length")
-    use_timestamps = all(frame.timestamp_us is not None for frame in layout_frames) and all(
-        frame.timestamp_us is not None for frame in render_frames
-    )
-    coordinates = np.asarray(
-        [
-            float(frame.timestamp_us) if use_timestamps else float(frame.frame_id)
-            for frame in layout_frames
-        ],
-        dtype=np.float64,
-    )
-    if np.any(np.diff(coordinates) <= 0):
-        raise ValueError("Layout frame ids must be strictly increasing")
-    matrices = [_normalise(transform) for transform in layout_transforms]
-    for matrix in matrices:
-        if not np.allclose(matrix[:2, :2], np.eye(2), atol=1e-6) or not np.allclose(
-            matrix[2], [0.0, 0.0, 1.0], atol=1e-8
-        ):
-            raise ValueError("Dense render-frame interpolation requires translation layout")
-    requested = np.asarray(
-        [
-            float(frame.timestamp_us) if use_timestamps else float(frame.frame_id)
-            for frame in render_frames
-        ],
-        dtype=np.float64,
-    )
-    if requested.size == 0:
-        raise ValueError("At least one render frame is required")
-    if requested.min() < coordinates[0] or requested.max() > coordinates[-1]:
-        raise ValueError(
-            "Render frame ids must lie inside the aligned layout frame range "
-            f"{int(coordinates[0])}-{int(coordinates[-1])}"
+
+def _estimate_pose_edges(
+    pose_frames: list[RGBDFrame],
+    intrinsics: CameraIntrinsics,
+    odometry_config: RGBDOdometryConfig,
+    *,
+    backend: object | None,
+    nonadjacent_gap: int,
+) -> tuple[list[Any], list[dict[str, object]]]:
+    edges: list[Any] = []
+    optional_failures: list[dict[str, object]] = []
+    pair_total = len(pose_frames) - 1
+    for index in range(1, len(pose_frames)):
+        reference = pose_frames[index - 1]
+        source = pose_frames[index]
+        started = time.perf_counter()
+        edge = estimate_pair_rgbd_odometry(
+            reference,
+            source,
+            intrinsics,
+            config=odometry_config,
+            backend=backend,
         )
-    tx = np.asarray([matrix[0, 2] for matrix in matrices], dtype=np.float64)
-    ty = np.asarray([matrix[1, 2] for matrix in matrices], dtype=np.float64)
-    result: list[np.ndarray] = []
-    for x, y in zip(
-        np.interp(requested, coordinates, tx),
-        np.interp(requested, coordinates, ty),
-        strict=True,
-    ):
+        edges.append(edge)
+        print(
+            f"[{index}/{pair_total}] RGB-D {reference.frame_id}->{source.frame_id}: "
+            f"fitness={edge.fitness:.3f}, rmse={edge.rmse_mm:.1f} mm, "
+            f"{time.perf_counter() - started:.2f}s"
+        )
+    maximum_gap = max(1, int(nonadjacent_gap))
+    for gap in range(2, maximum_gap + 1):
+        for source_index in range(gap, len(pose_frames)):
+            reference = pose_frames[source_index - gap]
+            source = pose_frames[source_index]
+            try:
+                edge = estimate_pair_rgbd_odometry(
+                    reference,
+                    source,
+                    intrinsics,
+                    config=odometry_config,
+                    backend=backend,
+                    uncertain=True,
+                )
+            except Exception as exc:
+                optional_failures.append(
+                    {
+                        "reference_node_id": reference.frame_id,
+                        "source_node_id": source.frame_id,
+                        "error_type": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                )
+                continue
+            edges.append(edge)
+    return edges, optional_failures
+
+
+def _working_projection_frames(
+    frames: list[RGBDFrame],
+    poses: list[np.ndarray],
+    intrinsics: CameraIntrinsics,
+    working_width: int,
+) -> tuple[list[RGBDProjectionFrame], PinholeIntrinsics]:
+    target_width = min(intrinsics.width, int(working_width))
+    if target_width < 64:
+        raise ValueError("RGB-D footprint working width must be at least 64")
+    scale = target_width / float(intrinsics.width)
+    target_height = max(1, int(round(intrinsics.height * scale)))
+    scaled = PinholeIntrinsics(
+        width=target_width,
+        height=target_height,
+        fx=intrinsics.fx * scale,
+        fy=intrinsics.fy * (target_height / float(intrinsics.height)),
+        cx=intrinsics.cx * scale,
+        cy=intrinsics.cy * (target_height / float(intrinsics.height)),
+        distortion=(),
+    )
+    placeholder = np.zeros((target_height, target_width, 3), dtype=np.uint8)
+    result: list[RGBDProjectionFrame] = []
+    for frame, pose in zip(frames, poses, strict=True):
+        depth = read_aligned_depth_mm(frame)
+        if depth.shape != (target_height, target_width):
+            depth = cv2.resize(
+                depth,
+                (target_width, target_height),
+                interpolation=cv2.INTER_NEAREST,
+            )
         result.append(
-            np.array(
-                [[1.0, 0.0, float(x)], [0.0, 1.0, float(y)], [0.0, 0.0, 1.0]],
-                dtype=np.float64,
+            RGBDProjectionFrame(
+                frame_id=frame.frame_id,
+                rgb=placeholder,
+                depth_mm=np.ascontiguousarray(depth),
+                camera_to_world=pose,
             )
         )
-    return result
+    return result, scaled
 
 
-def interpolate_motion_guided_transforms(
-    layout_frames: list[SessionFrame],
-    layout_transforms: list[np.ndarray],
-    render_frames: list[SessionFrame],
-    scan_frames: list[SessionFrame],
-    scan_motions: list[MotionEstimate],
-    scan_direction: int,
-) -> list[np.ndarray]:
-    """Interpolate dense poses by observed progress instead of assumed speed."""
-
-    if len(scan_motions) != len(scan_frames) - 1 or scan_direction not in {-1, 1}:
-        raise ValueError("Motion-guided interpolation inputs are inconsistent")
-    scan_index = {frame.frame_id: index for index, frame in enumerate(scan_frames)}
-    try:
-        layout_indices = [scan_index[frame.frame_id] for frame in layout_frames]
-        render_indices = [scan_index[frame.frame_id] for frame in render_frames]
-    except KeyError as exc:
-        raise ValueError("A dense render frame lies outside the selected scan segment") from exc
-    progress = np.zeros(len(scan_frames), dtype=np.float64)
-    recent_steps: list[float] = []
-    for index, motion in enumerate(scan_motions):
-        if motion.reliable:
-            step = max(0.0, float(motion.dx) * scan_direction)
-            recent_steps.append(step)
-        else:
-            step = float(np.median(recent_steps[-5:])) if recent_steps else 0.0
-        progress[index + 1] = progress[index] + step
-    anchor_progress = progress[layout_indices]
-    if np.any(np.diff(anchor_progress) <= 1e-6):
-        return interpolate_translation_transforms(
-            layout_frames, layout_transforms, render_frames
-        )
-    matrices = [_normalise(transform) for transform in layout_transforms]
-    for matrix in matrices:
-        if not np.allclose(matrix[:2, :2], np.eye(2), atol=1e-6) or not np.allclose(
-            matrix[2], [0.0, 0.0, 1.0], atol=1e-8
-        ):
-            raise ValueError("Motion-guided render interpolation requires translation layout")
-    requested_progress = progress[render_indices]
-    if (
-        requested_progress.min() < anchor_progress[0] - 1e-6
-        or requested_progress.max() > anchor_progress[-1] + 1e-6
-    ):
-        raise ValueError("Render frames must lie inside the aligned motion range")
-    tx = np.asarray([matrix[0, 2] for matrix in matrices], dtype=np.float64)
-    ty = np.asarray([matrix[1, 2] for matrix in matrices], dtype=np.float64)
+def _full_projection_frames(
+    frames: list[RGBDFrame], poses: list[np.ndarray]
+) -> list[RGBDProjectionFrame]:
     return [
-        np.array(
-            [[1.0, 0.0, float(x)], [0.0, 1.0, float(y)], [0.0, 0.0, 1.0]],
-            dtype=np.float64,
+        RGBDProjectionFrame(
+            frame_id=frame.frame_id,
+            rgb=_read_bgr(frame.color_path),
+            depth_mm=read_aligned_depth_mm(frame),
+            camera_to_world=pose,
         )
-        for x, y in zip(
-            np.interp(requested_progress, anchor_progress, tx),
-            np.interp(requested_progress, anchor_progress, ty),
+        for frame, pose in zip(frames, poses, strict=True)
+    ]
+
+
+def _validate_backend_config(stitch_config: dict[str, Any]) -> None:
+    if str(stitch_config.get("pose_backend", "open3d_rgbd")) != "open3d_rgbd":
+        raise ValueError("Formal pose_backend must be open3d_rgbd")
+    if str(stitch_config.get("sequence_blend_mode", "scan_seam")) != "scan_seam":
+        raise ValueError("scan_seam is the only formal sequence render mode")
+    projection = dict(stitch_config.get("rgbd_projection", {}))
+    if str(projection.get("mode", "orthographic_side_scan")) != (
+        "orthographic_side_scan"
+    ):
+        raise ValueError("Formal RGB-D projection mode must be orthographic_side_scan")
+    if not bool(projection.get("reject_depth_discontinuity", True)):
+        raise ValueError("Formal projection cannot disable depth-discontinuity rejection")
+    seam = dict(stitch_config.get("scan_seam", {}))
+    if str(seam.get("backend", "graphcut_depth_constrained")) != (
+        "graphcut_depth_constrained"
+    ):
+        raise ValueError("Formal scan seam backend must be graphcut_depth_constrained")
+
+
+def _validate_safety_envelope(
+    stitch_config: dict[str, Any], *, diagnostic_force: bool
+) -> None:
+    """Reject configuration values that relax non-bypassable safety bounds."""
+
+    canvas_limit = float(
+        stitch_config.get("max_canvas_megapixels", _HARD_MAX_CANVAS_MEGAPIXELS)
+    )
+    if not np.isfinite(canvas_limit) or not 0.0 < canvas_limit <= _HARD_MAX_CANVAS_MEGAPIXELS:
+        raise ValueError("max_canvas_megapixels cannot exceed the 200 MP hard limit")
+    layout_limit = int(
+        stitch_config.get("layout_max_frames", _HARD_MAX_LAYOUT_FRAMES)
+    )
+    if not 2 <= layout_limit <= _HARD_MAX_LAYOUT_FRAMES:
+        raise ValueError("layout_max_frames must remain within the 2-160 hard budget")
+
+    projection = dict(stitch_config.get("rgbd_projection", {}))
+    aggregate_limit = float(
+        projection.get("max_aggregate_megapixels", canvas_limit)
+    )
+    if (
+        not np.isfinite(aggregate_limit)
+        or not 0.0 < aggregate_limit <= _HARD_MAX_CANVAS_MEGAPIXELS
+    ):
+        raise ValueError(
+            "rgbd_projection.max_aggregate_megapixels cannot exceed 200 MP"
+        )
+    render_source_limit = int(
+        projection.get("max_render_sources", _HARD_MAX_RENDER_SOURCES)
+    )
+    if not 2 <= render_source_limit <= _HARD_MAX_RENDER_SOURCES:
+        raise ValueError("max_render_sources must remain within the 2-32 hard budget")
+
+    if diagnostic_force:
+        return
+
+    if not bool(stitch_config.get("adaptive_layout", True)):
+        raise ValueError("Formal delivery cannot disable adaptive_layout")
+    if not bool(stitch_config.get("input_quality_gate", True)):
+        raise ValueError("Formal delivery cannot disable input_quality_gate")
+    exposure_limit = float(
+        stitch_config.get("maximum_motion_exposure_us", 1200.0)
+    )
+    if not np.isfinite(exposure_limit) or not 0.0 < exposure_limit <= 1200.0:
+        raise ValueError("Formal exposure rejection limit cannot exceed 1200 us")
+    exposure_unit = float(stitch_config.get("color_exposure_unit_us", 100.0))
+    if not np.isclose(exposure_unit, 100.0):
+        raise ValueError("Formal color exposure metadata unit must remain 100 us")
+    if float(projection.get("minimum_coverage_ratio", 0.95)) < 0.95:
+        raise ValueError("Formal render-source coverage cannot be below 95%")
+    if float(projection.get("minimum_overlap_fraction", 0.34)) < 0.34:
+        raise ValueError("Formal render-source overlap cannot be below 0.34")
+    if int(projection.get("footprint_working_width", 640)) < 640:
+        raise ValueError("Formal projection footprint width cannot be below 640")
+
+    seam = dict(stitch_config.get("scan_seam", {}))
+    if not bool(seam.get("quality_gate", True)):
+        raise ValueError("Formal delivery cannot disable the scan-seam quality gate")
+    if int(seam.get("multiband_levels", 5)) != 5:
+        raise ValueError("Formal MultiBand level count is fixed at the validated value 5")
+    if str(seam.get("exposure_mode", "global_gain")) != "global_gain":
+        raise ValueError("Formal exposure compensation mode must be global_gain")
+
+    odometry = RGBDOdometryConfig.from_mapping(
+        stitch_config.get("rgbd_odometry")
+    )
+    baseline_odometry = RGBDOdometryConfig()
+    minimum_odometry = (
+        ("working_width", odometry.working_width, baseline_odometry.working_width),
+        (
+            "minimum_depth_mm",
+            odometry.minimum_depth_mm,
+            baseline_odometry.minimum_depth_mm,
+        ),
+        (
+            "minimum_valid_depth_ratio",
+            odometry.minimum_valid_depth_ratio,
+            baseline_odometry.minimum_valid_depth_ratio,
+        ),
+        ("minimum_fitness", odometry.minimum_fitness, baseline_odometry.minimum_fitness),
+    )
+    maximum_odometry = (
+        ("maximum_depth_mm", odometry.maximum_depth_mm, baseline_odometry.maximum_depth_mm),
+        (
+            "maximum_depth_difference_mm",
+            odometry.maximum_depth_difference_mm,
+            baseline_odometry.maximum_depth_difference_mm,
+        ),
+        (
+            "evaluation_distance_mm",
+            odometry.evaluation_distance_mm,
+            baseline_odometry.evaluation_distance_mm,
+        ),
+        (
+            "maximum_inlier_rmse_mm",
+            odometry.maximum_inlier_rmse_mm,
+            baseline_odometry.maximum_inlier_rmse_mm,
+        ),
+        (
+            "maximum_pair_translation_mm",
+            odometry.maximum_pair_translation_mm,
+            baseline_odometry.maximum_pair_translation_mm,
+        ),
+        (
+            "maximum_pair_vertical_mm",
+            odometry.maximum_pair_vertical_mm,
+            baseline_odometry.maximum_pair_vertical_mm,
+        ),
+        (
+            "maximum_pair_forward_mm",
+            odometry.maximum_pair_forward_mm,
+            baseline_odometry.maximum_pair_forward_mm,
+        ),
+        (
+            "maximum_pair_rotation_deg",
+            odometry.maximum_pair_rotation_deg,
+            baseline_odometry.maximum_pair_rotation_deg,
+        ),
+    )
+    for name, value, baseline in minimum_odometry:
+        if value < baseline:
+            raise ValueError(f"Formal rgbd_odometry.{name} cannot be relaxed")
+    for name, value, baseline in maximum_odometry:
+        if value > baseline:
+            raise ValueError(f"Formal rgbd_odometry.{name} cannot be relaxed")
+    if any(
+        value < baseline
+        for value, baseline in zip(
+            odometry.iteration_number_per_pyramid_level,
+            baseline_odometry.iteration_number_per_pyramid_level,
             strict=True,
         )
-    ]
-
-
-def _center_sharpness(image: np.ndarray) -> float:
-    height, width = image.shape[:2]
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    roi = gray[
-        int(round(height * 0.325)) : int(round(height * 0.95)),
-        int(round(width * 0.345)) : int(round(width * 0.655)),
-    ]
-    return float(cv2.Laplacian(roi, cv2.CV_64F).var())
-
-
-def _read_aligned_depth_mm(frame: SessionFrame) -> np.ndarray | None:
-    if frame.depth_path is None:
-        return None
-    if (
-        frame.depth_scale_mm_per_unit is None
-        or not np.isfinite(frame.depth_scale_mm_per_unit)
-        or frame.depth_scale_mm_per_unit <= 0.0
     ):
-        raise ValueError(
-            f"Frame {frame.frame_id} has aligned depth but no valid depth scale"
+        raise ValueError("Formal RGB-D odometry iteration schedule cannot be reduced")
+
+    pose_limits = PoseQualityThresholds.from_mapping(
+        stitch_config.get("pose_quality")
+    )
+    baseline_pose = PoseQualityThresholds()
+    if pose_limits.minimum_scan_span_mm < baseline_pose.minimum_scan_span_mm:
+        raise ValueError("Formal minimum pose scan span cannot be relaxed")
+    for name in (
+        "maximum_reverse_step_mm",
+        "maximum_reverse_fraction",
+        "maximum_step_translation_mm",
+        "maximum_step_vertical_mm",
+        "maximum_step_forward_mm",
+        "maximum_total_vertical_drift_mm",
+        "maximum_total_forward_drift_mm",
+        "maximum_step_rotation_deg",
+        "maximum_total_rotation_deg",
+        "maximum_edge_translation_residual_mm",
+        "maximum_edge_rotation_residual_deg",
+        "maximum_consecutive_unreliable_edges",
+    ):
+        if getattr(pose_limits, name) > getattr(baseline_pose, name):
+            raise ValueError(f"Formal pose_quality.{name} cannot be relaxed")
+    if not pose_limits.require_all_adjacent_edges:
+        raise ValueError("Formal pose graph requires every adjacent RGB-D edge")
+
+    graph_mapping = dict(stitch_config.get("pose_graph", {}))
+    graph_mapping.pop("nonadjacent_max_gap", None)
+    graph = PoseGraphConfig.from_mapping(graph_mapping)
+    baseline_graph = PoseGraphConfig()
+    if (
+        graph.maximum_correspondence_distance_mm
+        > baseline_graph.maximum_correspondence_distance_mm
+        or graph.edge_prune_threshold < baseline_graph.edge_prune_threshold
+        or not np.isclose(
+            graph.preference_loop_closure,
+            baseline_graph.preference_loop_closure,
         )
-    encoded = np.fromfile(frame.depth_path, dtype=np.uint8)
-    depth = cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
-    if depth is None or depth.ndim != 2:
-        raise OSError(f"OpenCV could not decode aligned depth: {frame.depth_path}")
-    return depth.astype(np.float32) * float(frame.depth_scale_mm_per_unit)
+    ):
+        raise ValueError("Formal pose-graph optimizer settings cannot be relaxed")
 
 
-def select_scan_keyframes(
-    frames: list[SessionFrame],
-    images: list[np.ndarray],
-    transforms: list[np.ndarray],
-    max_keyframes: int,
-) -> list[int]:
-    """Pick sharp sources near evenly spaced scan positions."""
-
-    if max_keyframes < 2:
-        raise ValueError("scan_max_keyframes must be at least two")
-    if len(frames) <= max_keyframes:
-        return list(range(len(frames)))
-    centers = []
-    for image, transform in zip(images, transforms, strict=True):
-        height, width = image.shape[:2]
-        point = _normalise(transform) @ np.array([width * 0.5, height * 0.5, 1.0])
-        centers.append(point[:2] / point[2])
-    center_array = np.asarray(centers, dtype=np.float64)
-    centered = center_array - center_array.mean(axis=0, keepdims=True)
-    _, _, vh = np.linalg.svd(centered, full_matrices=False)
-    axis = vh[0]
-    position = center_array @ axis
-    targets = np.linspace(position.min(), position.max(), max_keyframes)
-    spacing = max(float(np.ptp(position)) / max(1, max_keyframes - 1), 1.0)
-    sharpness = np.asarray([_center_sharpness(image) for image in images])
-    selected: list[int] = []
-    for target in targets:
-        distance = np.abs(position - target)
-        candidates = np.flatnonzero(distance <= spacing * 0.65)
-        if candidates.size == 0:
-            candidates = np.asarray([int(np.argmin(distance))])
-        score = sharpness[candidates] / (
-            1.0 + 0.3 * np.square(distance[candidates] / (spacing * 0.65))
-        )
-        selected.append(int(candidates[int(np.argmax(score))]))
-    return sorted(set(selected), key=lambda index: frames[index].frame_id)
-
-
-def run(args: argparse.Namespace) -> dict[str, Any]:
-    config = load_config(args.config)
-    stitch_config = dict(config["stitch"])
+def _run_pipeline(
+    args: argparse.Namespace,
+    *,
+    odometry_backend: object | None = None,
+) -> dict[str, Any]:
     output = args.output.expanduser().resolve()
+    # This is deliberately the first filesystem action in a task.  Even a
+    # malformed configuration must not leave a previous success marker live.
+    _invalidate_delivery_marker(output)
+    config = load_config(getattr(args, "config", None))
+    stitch_config = dict(config["stitch"])
+    _validate_backend_config(stitch_config)
     diagnostic_force = bool(
         getattr(args, "diagnostic_force", False)
         or stitch_config.get("diagnostic_force", False)
     )
+    _validate_safety_envelope(
+        stitch_config, diagnostic_force=diagnostic_force
+    )
     _clear_delivery_files(output)
     _clear_diagnostic_files(output)
     (output / "failure.json").unlink(missing_ok=True)
-    diagnostic_geometry: dict[str, object] | None = None
-    if diagnostic_force:
-        stitch_config["allow_magsac_fallback"] = True
-        stitch_config["prefer_magsac_layout"] = True
-        stitch_config["min_matches"] = 4
-        stitch_config["min_magsac_inlier_ratio"] = 0.0
-        stitch_config["max_unistitch_reprojection_px"] = 1_000_000.0
-        diagnostic_geometry = {
-            "official_thresholds_bypassed": True,
-            "minimum_feature_matches": 4,
-            "minimum_magsac_inlier_count": 4,
-            "minimum_magsac_inlier_ratio": 0.0,
-            "maximum_unistitch_reprojection_px": 1_000_000.0,
-            "finite_transform_and_canvas_safety_still_required": True,
-        }
-    elif args.strict_unistitch:
-        stitch_config["allow_magsac_fallback"] = False
-    adaptive_layout = bool(stitch_config.get("adaptive_layout", True)) and (
-        args.stride is None and args.max_frames is None
-    )
-    stride = args.stride if args.stride is not None else int(stitch_config.get("stride", 1))
-    max_frames = (
-        args.max_frames
-        if args.max_frames is not None
-        else int(stitch_config.get("max_frames", 0)) or None
-    )
-    max_canvas_megapixels = (
-        args.max_canvas_megapixels
-        if args.max_canvas_megapixels is not None
-        else float(stitch_config.get("max_canvas_megapixels", 250.0))
-    )
-    blend_mode = getattr(args, "blend_mode", None) or str(
-        stitch_config.get("sequence_blend_mode", "scan_seam")
-    )
-    if blend_mode not in {"feather", "scan_seam"}:
-        raise ValueError(f"Unsupported sequence blend mode: {blend_mode}")
-    if blend_mode == "feather":
-        raise ValueError(
-            "feather is a diagnostic renderer and cannot publish a quality-gated delivery"
-        )
-    translation_anchor_y_value = getattr(args, "translation_anchor_y", None)
-    configured_anchor = stitch_config.get("translation_anchor_y")
-    translation_anchor_y = (
-        float(translation_anchor_y_value)
-        if translation_anchor_y_value is not None
-        else (float(configured_anchor) if configured_anchor is not None else None)
-    )
-    scan_seam_margin_value = getattr(args, "scan_seam_margin", None)
-    scan_seam_margin = (
-        int(scan_seam_margin_value)
-        if scan_seam_margin_value is not None
-        else int(stitch_config.get("scan_seam_margin", 220))
-    )
-    scan_multiband_value = getattr(args, "scan_multiband_levels", None)
-    scan_multiband_levels = (
-        int(scan_multiband_value)
-        if scan_multiband_value is not None
-        else int(stitch_config.get("scan_multiband_levels", 4))
-    )
-    scan_exposure_mode = getattr(args, "scan_exposure_mode", None) or str(
-        stitch_config.get("scan_exposure_mode", "center_gain")
-    )
-    scan_seam_mask_sigma_value = getattr(args, "scan_seam_mask_sigma", None)
-    scan_seam_mask_sigma = (
-        float(scan_seam_mask_sigma_value)
-        if scan_seam_mask_sigma_value is not None
-        else float(stitch_config.get("scan_seam_mask_sigma", 0.0))
-    )
-    protected_region_specs = getattr(args, "scan_protect_region", None)
-    if protected_region_specs is None:
-        protected_region_specs = stitch_config.get("scan_protected_regions")
-    scan_auto_foreground = bool(stitch_config.get("scan_auto_foreground", True))
-    scan_quality_gate = bool(stitch_config.get("scan_quality_gate", True))
-    scan_max_keyframes = int(stitch_config.get("scan_max_keyframes", 14))
-    render_frame_ids = _parse_frame_ids(
-        getattr(args, "render_frame_ids", None)
-        or stitch_config.get("sequence_render_frame_ids")
-    )
-    if render_frame_ids:
-        raise ValueError(
-            "render_frame_ids is a diagnostic override and cannot publish a "
-            "complete quality-gated delivery"
-        )
-    save_pair_previews = not args.no_pair_previews and bool(
-        stitch_config.get("save_pair_previews", True)
-    )
-    motion_model = args.motion_model or str(
-        stitch_config.get("sequence_motion_model", "translation")
-    )
-    if motion_model not in {"translation", "similarity", "homography"}:
-        raise ValueError(f"Unsupported sequence motion model: {motion_model}")
 
-    input_capture = _capture_manifest_summary(load_session_manifest(args.input))
-    if bool(input_capture["diagnostic_only"]) and not diagnostic_force:
+    session = load_rgbd_session(args.input)
+    capture_summary = _capture_manifest_summary(session.manifest)
+    if bool(capture_summary["diagnostic_only"]) and not diagnostic_force:
         raise RuntimeError(
-            "Input capture session is diagnostic-only because unrestricted auto "
-            "exposure was enabled; rerun with --diagnostic-force or the matching "
-            "diagnostic config to write only diagnostic artifacts"
+            "Input capture session is diagnostic-only; rerun with "
+            "--diagnostic-force to write only diagnostic artifacts"
+        )
+    manual_render_ids = _parse_frame_ids(
+        getattr(args, "render_frame_ids", None)
+        or stitch_config.get("render_frame_ids")
+    )
+    if manual_render_ids and not diagnostic_force:
+        raise ValueError(
+            "render_frame_ids cannot publish a complete quality-gated delivery"
         )
 
-    all_frames = discover_frames(args.input)
-    frame_ids = [frame.frame_id for frame in all_frames]
-    if len(frame_ids) != len(set(frame_ids)) or any(
-        later <= earlier for earlier, later in zip(frame_ids, frame_ids[1:])
-    ):
-        raise ValueError("Input frame ids must be unique and strictly increasing")
     analysis_width = int(stitch_config.get("analysis_width", 320))
-    frame_qualities = []
-    motion_estimates = []
-    previous_analysis: np.ndarray | None = None
-    analysis_shape: tuple[int, ...] | None = None
-    for frame in all_frames:
-        analysis = resize_for_analysis(read_bgr(frame.color_path), analysis_width)
-        if analysis_shape is None:
-            analysis_shape = analysis.shape
-        elif analysis.shape != analysis_shape:
-            raise ValueError(
-                f"Frame {frame.frame_id} has inconsistent analysis shape {analysis.shape}"
-            )
-        frame_qualities.append(analyze_frame_quality(analysis))
-        if adaptive_layout and previous_analysis is not None:
-            motion_estimates.append(estimate_translation(previous_analysis, analysis))
-        previous_analysis = analysis
-    scan_frames = all_frames
-    scan_qualities = frame_qualities
-    scan_motions = motion_estimates
-    segment_metadata: dict[str, Any] | None = None
-    if adaptive_layout:
-        assert analysis_shape is not None
-        segment = select_primary_scan_segment(
-            motion_estimates,
-            image_width=analysis_shape[1],
-            maximum_fraction=float(
-                stitch_config.get("layout_max_displacement_fraction", 0.28)
-            ),
-        )
-        scan_frames = all_frames[segment.start_index : segment.end_index + 1]
-        scan_qualities = frame_qualities[
-            segment.start_index : segment.end_index + 1
-        ]
-        scan_motions = motion_estimates[segment.start_index : segment.end_index]
-        segment_metadata = segment.as_dict()
-        segment_metadata["start_frame_id"] = scan_frames[0].frame_id
-        segment_metadata["end_frame_id"] = scan_frames[-1].frame_id
+    qualities, motions, analysis_shape = _analyse_session(
+        session.frames, analysis_width
+    )
+    pose_frames, pose_qualities, layout_metadata = _select_pose_nodes(
+        session.frames,
+        qualities,
+        motions,
+        analysis_shape[1],
+        stitch_config,
+    )
+    segment_row = layout_metadata["segment"]
+    segment_start = int(segment_row["start_index"])
+    segment_stop = int(segment_row["end_index"]) + 1
     capture_quality = assess_capture_quality(
-        scan_qualities,
-        [frame.color_exposure_raw for frame in scan_frames],
+        qualities[segment_start:segment_stop],
+        [
+            frame.color_exposure_raw
+            for frame in session.frames[segment_start:segment_stop]
+        ],
         exposure_unit_us=float(stitch_config.get("color_exposure_unit_us", 100.0)),
         maximum_exposure_us=float(
             stitch_config.get("maximum_motion_exposure_us", 1200.0)
@@ -655,272 +705,286 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         and bool(stitch_config.get("input_quality_gate", True))
         and not bool(capture_quality["quality_pass"])
     ):
-        reasons = "; ".join(str(value) for value in capture_quality["failure_reasons"])
+        reasons = "; ".join(
+            str(value) for value in capture_quality["failure_reasons"]
+        )
         raise RuntimeError("Input capture quality gate failed: " + reasons)
-    quality_by_id = {
-        frame.frame_id: quality
-        for frame, quality in zip(all_frames, frame_qualities, strict=True)
-    }
-    layout_metadata: dict[str, Any]
-    if adaptive_layout:
-        assert analysis_shape is not None
-        adaptive_selection = select_layout_from_motion_estimates(
-            scan_motions,
-            frame_count=len(scan_frames),
-            image_width=analysis_shape[1],
-            target_fraction=float(
-                stitch_config.get("layout_target_displacement_fraction", 0.18)
-            ),
-            maximum_fraction=float(
-                stitch_config.get("layout_max_displacement_fraction", 0.28)
-            ),
-            max_selected=int(stitch_config.get("layout_max_frames", 160)),
-        )
-        frames = [scan_frames[index] for index in adaptive_selection.indices]
-        layout_metadata = adaptive_selection.as_dict()
-        layout_metadata["mode"] = "adaptive_visual_motion"
-        layout_metadata["frame_ids"] = [frame.frame_id for frame in frames]
-        layout_metadata["segment"] = segment_metadata
-        layout_metadata["motion"] = [motion.as_dict() for motion in scan_motions]
-    else:
-        frames = select_frames(all_frames, stride=stride, max_frames=max_frames)
-        layout_metadata = {
-            "mode": "fixed_stride_override",
-            "stride": stride,
-            "max_frames": max_frames,
-            "frame_ids": [frame.frame_id for frame in frames],
-        }
-    if len(frames) < 2:
-        raise ValueError("Sequence stitching requires at least two selected color frames")
-    images = [read_bgr(frame.color_path) for frame in frames]
-    expected_shape = images[0].shape
-    for frame, image in zip(frames, images, strict=True):
-        if image.shape != expected_shape:
-            raise ValueError(
-                f"Frame {frame.frame_id} has shape {image.shape}; expected {expected_shape}"
-            )
-    if scan_seam_margin <= 0:
-        scan_seam_margin = max(48, int(round(expected_shape[1] * 0.17)))
 
-    pair_dir = output / "pairs"
-    if save_pair_previews:
-        pair_dir.mkdir(parents=True, exist_ok=True)
-
-    aligner = build_aligner(
-        stitch_config,
-        model=args.model,
-        device=args.device,
-        inference_width=args.inference_width,
+    odometry_config = RGBDOdometryConfig.from_mapping(
+        stitch_config.get("rgbd_odometry")
     )
-    transforms = [np.eye(3, dtype=np.float64)]
-    pair_reports: list[dict[str, Any]] = []
+    graph_mapping = dict(stitch_config.get("pose_graph", {}))
+    nonadjacent_gap = int(graph_mapping.pop("nonadjacent_max_gap", 2))
+    graph_config = PoseGraphConfig.from_mapping(graph_mapping)
+    pose_thresholds = PoseQualityThresholds.from_mapping(
+        stitch_config.get("pose_quality")
+    )
     started = time.perf_counter()
-    for index in range(1, len(images)):
-        pair_started = time.perf_counter()
-        alignment = aligner.align(images[index - 1], images[index])
-        sequence_pair_h = regularize_pair_homography(
-            alignment.homography_source_to_reference,
-            images[index].shape,
-            motion_model,
-            translation_anchor_y=translation_anchor_y,
+    edges, optional_edge_failures = _estimate_pose_edges(
+        pose_frames,
+        session.calibration,
+        odometry_config,
+        backend=odometry_backend,
+        nonadjacent_gap=nonadjacent_gap,
+    )
+    pose_graph = optimize_rgbd_pose_graph(
+        pose_frames,
+        edges,
+        config=graph_config,
+        backend=odometry_backend,
+        enforce_edge_quality=not diagnostic_force,
+    )
+    pose_quality_result = validate_pose_trajectory(
+        pose_graph, thresholds=pose_thresholds
+    )
+    pose_quality = pose_quality_result.as_dict()
+    if not diagnostic_force and not pose_quality_result.quality_pass:
+        raise RuntimeError(
+            "RGB-D pose trajectory quality gate failed: "
+            + "; ".join(pose_quality_result.failure_reasons)
         )
-        global_transform = _normalise(
-            transforms[-1] @ sequence_pair_h
-        )
-        transforms.append(global_transform)
-        pair_report: dict[str, Any] = {
-            "pair_index": index - 1,
-            "reference_frame_id": frames[index - 1].frame_id,
-            "source_frame_id": frames[index].frame_id,
-            "reference_path": str(frames[index - 1].color_path),
-            "source_path": str(frames[index].color_path),
-            "elapsed_seconds": time.perf_counter() - pair_started,
-            "sequence_homography_source_to_reference": sequence_pair_h.tolist(),
-            **alignment.as_dict(),
-        }
-        if save_pair_previews:
-            preview_path = write_bgr(
-                pair_dir / f"{index - 1:04d}_{index:04d}.jpg",
-                alignment.preview_bgr,
+    pose_values = [pose_graph.pose_for(frame.frame_id) for frame in pose_frames]
+
+    projection_config = dict(stitch_config.get("rgbd_projection", {}))
+    footprint_frames, footprint_intrinsics = _working_projection_frames(
+        pose_frames,
+        pose_values,
+        session.calibration,
+        int(
+            projection_config.get(
+                "footprint_working_width", odometry_config.working_width
             )
-            pair_report["preview_path"] = str(preview_path)
-        pair_reports.append(pair_report)
-        print(
-            f"[{index}/{len(images) - 1}] frames "
-            f"{frames[index - 1].frame_id}->{frames[index].frame_id}: "
-            f"{alignment.layout_method}, {alignment.match_count} matches, "
-            f"{alignment.median_reprojection_px:.2f}px"
+        ),
+    )
+    footprint_estimate = estimate_side_scan_footprints(
+        footprint_frames,
+        footprint_intrinsics,
+        working_width=footprint_intrinsics.width,
+    )
+    footprint_canvas = estimate_projection_canvas(
+        footprint_frames,
+        footprint_intrinsics,
+        max_canvas_megapixels=1_000_000.0,
+        max_aggregate_megapixels=1_000_000_000.0,
+    )
+    full_resolution_scale = (
+        session.calibration.width / float(footprint_intrinsics.width)
+    )
+    estimated_full_canvas_mp = (
+        footprint_canvas.canvas_megapixels * full_resolution_scale**2
+    )
+    del footprint_frames
+
+    if manual_render_ids:
+        index_by_id = {frame.frame_id: index for index, frame in enumerate(pose_frames)}
+        missing = [frame_id for frame_id in manual_render_ids if frame_id not in index_by_id]
+        if missing:
+            raise ValueError(
+                "Manual diagnostic render ids are not optimized pose nodes: "
+                f"{missing}"
+            )
+        render_indices = [index_by_id[frame_id] for frame_id in manual_render_ids]
+        render_selection: dict[str, object] = {
+            "mode": "diagnostic_manual_pose_nodes",
+            "frame_ids": manual_render_ids,
+            "interpolated_pose_count": 0,
+        }
+    else:
+        maximum_render_sources = int(
+            projection_config.get("max_render_sources", 0)
+        )
+        try:
+            render_indices, render_selection = select_rgbd_render_indices_auto(
+                pose_qualities,
+                pose_values,
+                footprint_estimate,
+                maximum_keyframes=maximum_render_sources,
+                quality_gate=not diagnostic_force,
+                minimum_coverage_ratio=float(
+                    projection_config.get("minimum_coverage_ratio", 0.95)
+                ),
+                minimum_overlap_fraction=float(
+                    projection_config.get("minimum_overlap_fraction", 0.34)
+                ),
+            )
+        except (RuntimeError, ValueError) as exc:
+            if not diagnostic_force:
+                raise
+            # Diagnostic force may bypass formal monotonicity, absolute
+            # sharpness and coverage thresholds, but it still uses only real,
+            # finite optimized pose nodes.  No timestamp/frame interpolation or
+            # synthetic pose is introduced by this audit fallback.
+            aggregate_limit = float(
+                projection_config.get(
+                    "max_aggregate_megapixels",
+                    stitch_config.get("max_canvas_megapixels", 200.0),
+                )
+            )
+            # The sparse/working-resolution canvas uses the same metric bounds
+            # and density scaled by image width.  Scale its area back to full
+            # resolution and retain a 5% guard before choosing how many real
+            # pose nodes can fit the non-bypassable aggregate budget.
+            budget_count = int(
+                np.floor(
+                    aggregate_limit
+                    / max(estimated_full_canvas_mp * 1.05, 1e-9)
+                )
+            )
+            if budget_count < 2:
+                raise MemoryError(
+                    "Diagnostic optimized poses require a canvas too large for "
+                    "two projected sources within the aggregate memory limit"
+                ) from exc
+            limit = min(maximum_render_sources or 32, budget_count)
+            if len(pose_frames) <= limit:
+                render_indices = list(range(len(pose_frames)))
+            else:
+                render_indices = sorted(
+                    set(
+                        int(value)
+                        for value in np.linspace(
+                            0, len(pose_frames) - 1, limit
+                        ).round()
+                    )
+                )
+            if len(render_indices) < 2:
+                raise RuntimeError(
+                    "Diagnostic projection still requires two optimized pose nodes"
+                ) from exc
+            render_selection = {
+                "mode": "diagnostic_optimized_pose_nodes",
+                "frame_ids": [pose_frames[index].frame_id for index in render_indices],
+                "interpolated_pose_count": 0,
+                "formal_selection_failure": str(exc),
+                "formal_selection_thresholds_bypassed": True,
+                "estimated_full_canvas_megapixels": estimated_full_canvas_mp,
+                "aggregate_budget_source_count": budget_count,
+            }
+    render_frames = [pose_frames[index] for index in render_indices]
+    render_poses = [pose_values[index] for index in render_indices]
+    render_qualities = [pose_qualities[index] for index in render_indices]
+    full_projection_frames = _full_projection_frames(render_frames, render_poses)
+    max_canvas_megapixels = float(
+        stitch_config.get("max_canvas_megapixels", 200.0)
+    )
+    projection = project_selected_rgbd_sources(
+        full_projection_frames,
+        _pinhole_intrinsics(session.calibration),
+        max_canvas_megapixels=max_canvas_megapixels,
+        max_aggregate_megapixels=float(
+            projection_config.get(
+                "max_aggregate_megapixels", max_canvas_megapixels
+            )
+        ),
+        chunk_rows=int(projection_config.get("chunk_rows", 128)),
+    )
+    del full_projection_frames
+
+    seam_config = dict(stitch_config.get("scan_seam", {}))
+    panorama, render_info = render_projected_scan_panorama(
+        projection.sources,
+        max_megapixels=float(
+            projection_config.get(
+                "max_aggregate_megapixels", max_canvas_megapixels
+            )
+        ),
+        multiband_levels=int(seam_config.get("multiband_levels", 5)),
+        exposure_mode=str(seam_config.get("exposure_mode", "global_gain")),
+        quality_gate=(
+            not diagnostic_force and bool(seam_config.get("quality_gate", True))
+        ),
+        sharpness_scores=[quality.sharpness for quality in render_qualities],
+    )
+    render_metadata = render_info.as_dict()
+    render_metadata["frame_ids"] = [frame.frame_id for frame in render_frames]
+    render_metadata["selection"] = render_selection
+    render_metadata["source_quality"] = {
+        str(frame.frame_id): quality.as_dict()
+        for frame, quality in zip(render_frames, render_qualities, strict=True)
+    }
+    if not diagnostic_force:
+        _ensure_publishable_quality(
+            capture_quality,
+            render_metadata,
+            pose_quality,
         )
 
-    render_metadata: dict[str, Any]
-    if blend_mode == "scan_seam":
-        if render_frame_ids:
-            by_id = {frame.frame_id: frame for frame in all_frames}
-            missing_ids = [frame_id for frame_id in render_frame_ids if frame_id not in by_id]
-            if missing_ids:
-                raise ValueError(f"Render frame ids are missing from the input: {missing_ids}")
-            render_frames = [by_id[frame_id] for frame_id in render_frame_ids]
-            render_transforms = (
-                interpolate_motion_guided_transforms(
-                    frames,
-                    transforms,
-                    render_frames,
-                    scan_frames,
-                    scan_motions,
-                    adaptive_selection.scan_direction,
-                )
-                if adaptive_layout
-                else interpolate_translation_transforms(
-                    frames, transforms, render_frames
-                )
-            )
-            render_images = [read_bgr(frame.color_path) for frame in render_frames]
-        else:
-            dense_frames = [
-                frame
-                for frame in all_frames
-                if frames[0].frame_id <= frame.frame_id <= frames[-1].frame_id
-            ]
-            dense_transforms = (
-                interpolate_motion_guided_transforms(
-                    frames,
-                    transforms,
-                    dense_frames,
-                    scan_frames,
-                    scan_motions,
-                    adaptive_selection.scan_direction,
-                )
-                if adaptive_layout
-                else interpolate_translation_transforms(
-                    frames,
-                    transforms,
-                    dense_frames,
-                )
-            )
-            dense_qualities = [quality_by_id[frame.frame_id] for frame in dense_frames]
-            indices, render_selection = select_render_indices_auto(
-                dense_qualities,
-                dense_transforms,
-                expected_shape,
-                maximum_keyframes=scan_max_keyframes,
-                target_spacing_fraction=float(
-                    stitch_config.get("scan_target_spacing_fraction", 0.28)
-                ),
-                quality_gate=not diagnostic_force,
-            )
-            render_frames = [dense_frames[index] for index in indices]
-            render_images = [read_bgr(frame.color_path) for frame in render_frames]
-            render_transforms = [dense_transforms[index] for index in indices]
-        for frame, image in zip(render_frames, render_images, strict=True):
-            if image.shape != expected_shape:
-                raise ValueError(
-                    f"Render frame {frame.frame_id} has shape {image.shape}; "
-                    f"expected {expected_shape}"
-                )
-        protected_regions = _parse_protected_regions(
-            protected_region_specs,
-            render_frames,
-        )
-        render_depths = [_read_aligned_depth_mm(frame) for frame in render_frames]
-        panorama, scan_render = render_scan_panorama(
-            render_images,
-            render_transforms,
-            max_megapixels=max_canvas_megapixels,
-            seam_margin=scan_seam_margin,
-            multiband_levels=scan_multiband_levels,
-            exposure_mode=scan_exposure_mode,
-            seam_mask_sigma=scan_seam_mask_sigma,
-            protected_regions=protected_regions,
-            depth_maps_mm=render_depths,
-            auto_foreground=scan_auto_foreground,
-            quality_gate=scan_quality_gate and not diagnostic_force,
-        )
-        canvas = scan_render.canvas
-        render_metadata = scan_render.as_dict()
-        render_metadata["frame_ids"] = [frame.frame_id for frame in render_frames]
-        if not render_frame_ids:
-            render_metadata["selection"] = render_selection
-        render_metadata["source_quality"] = {
-            str(frame.frame_id): quality_by_id[frame.frame_id].as_dict()
-            for frame in render_frames
-        }
-        for region in render_metadata["protected_regions"]:
-            region["owner_frame_id"] = render_frames[
-                int(region["owner_index"])
-            ].frame_id
-        for region in render_metadata["automatic_protected_regions"]:
-            region["owner_frame_id"] = render_frames[
-                int(region["owner_index"])
-            ].frame_id
-        render_transform_rows = [
-            {
-                "frame_id": frame.frame_id,
-                "color_path": str(frame.color_path),
-                "image_to_world": transform.tolist(),
-            }
-            for frame, transform in zip(
-                render_frames, render_transforms, strict=True
-            )
-        ]
-    else:
-        panorama, canvas = render_panorama(
-            images,
-            transforms,
-            max_megapixels=max_canvas_megapixels,
-        )
-        render_metadata = {
-            "source_count": len(images),
-            "frame_ids": [frame.frame_id for frame in frames],
-        }
-        render_transform_rows = None
-    if not diagnostic_force:
-        _ensure_publishable_quality(capture_quality, render_metadata)
     panorama_path = output / (
         "diagnostic_panorama.jpg" if diagnostic_force else "panorama.jpg"
     )
     report_path = output / (
         "diagnostic_report.json" if diagnostic_force else "report.json"
     )
-    transform_rows = [
-        {
-            "frame_id": frame.frame_id,
-            "color_path": str(frame.color_path),
-            "image_to_world": transform.tolist(),
-        }
-        for frame, transform in zip(frames, transforms, strict=True)
-    ]
+    transforms_payload = pose_graph.as_dict()
+    transforms_payload["layout_selection"] = layout_metadata
+    transforms_payload["optional_edge_failures"] = optional_edge_failures
+    render_transforms_payload = {
+        "schema": "rgbd-side-scan-projection/v1",
+        "translation_unit": "mm",
+        "projection": projection.as_dict(),
+        "selection": render_selection,
+        "sources": [
+            {
+                "frame_id": frame.frame_id,
+                "color_path": str(frame.color_path),
+                "aligned_depth_path": str(frame.aligned_depth_path),
+                "camera_to_world": pose.tolist(),
+                "projection": projected.as_dict(),
+            }
+            for frame, pose, projected in zip(
+                render_frames, render_poses, projection.sources, strict=True
+            )
+        ],
+    }
     report: dict[str, Any] = {
-        "schema": "gemini305-unistitch-sequence/v2",
+        "schema": "gemini305-rgbd-side-scan/v3",
         "input": str(args.input.expanduser().resolve()),
         "panorama": str(panorama_path),
         "report": str(report_path),
         "diagnostic_only": diagnostic_force,
         "deliverable_published": not diagnostic_force,
-        "diagnostic_geometry": diagnostic_geometry,
-        "input_capture": input_capture,
-        "frame_count": len(frames),
-        "stride": None if adaptive_layout else stride,
-        "layout_selection": layout_metadata,
+        "input_capture": capture_summary,
+        "rgbd_session": {
+            "root": str(session.root),
+            "frame_count": len(session.frames),
+            "depth_alignment": session.depth_alignment,
+            "depth_unit": "mm",
+            "calibration": _intrinsics_payload(session.calibration),
+        },
         "input_quality": capture_quality,
-        "sequence_motion_model": motion_model,
-        "translation_anchor_y": translation_anchor_y,
-        "elapsed_seconds_excluding_model_load": time.perf_counter() - started,
-        "canvas": canvas.as_dict(),
-        "render_strategy": blend_mode,
+        "layout_selection": layout_metadata,
+        "odometry": {
+            "backend": "open3d_rgbd",
+            "config": {
+                "working_width": odometry_config.working_width,
+                "require_aligned_depth": odometry_config.require_aligned_depth,
+                "require_calibration": odometry_config.require_calibration,
+            },
+            "edges": [edge.as_dict() for edge in edges],
+            "optional_edge_failures": optional_edge_failures,
+        },
+        "pose_graph": transforms_payload,
+        "pose_quality": pose_quality,
+        "projection": render_transforms_payload,
+        "render_strategy": "graphcut_depth_constrained",
         "render": render_metadata,
-        "pair_local_warp": "UniStitch FFD/TPS previews",
-        "sequence_layout": (
-            "Validated UniStitch global homography with preferred lower-error "
-            f"LightGlue/MAGSAC layout, projected to {motion_model} motion"
+        "diagnostic_overrides": (
+            {
+                "input_quality_thresholds_bypassed": True,
+                "odometry_quality_thresholds_bypassed": True,
+                "pose_quality_thresholds_bypassed": True,
+                "final_image_quality_thresholds_bypassed": True,
+                "calibration_aligned_depth_finite_se3_graph_connectivity_"
+                "projection_topology_memory_atomic_safety_required": True,
+            }
+            if diagnostic_force
+            else None
         ),
-        "depth_used": bool(
-            blend_mode == "scan_seam"
-            and any(depth is not None for depth in render_depths)
-        ),
-        "pairs": pair_reports,
+        "elapsed_seconds": time.perf_counter() - started,
     }
+
     if diagnostic_force:
-        pending_panorama = write_bgr(
+        pending_panorama = _write_bgr(
             output / ".diagnostic_panorama.pending.jpg", panorama
         )
         pending_report = output / ".diagnostic_report.pending.json"
@@ -928,29 +992,31 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         os.replace(pending_panorama, panorama_path)
         os.replace(pending_report, report_path)
         return report
-    pending_panorama = write_bgr(output / ".panorama.pending.jpg", panorama)
+
+    pending_panorama = _write_bgr(output / ".panorama.pending.jpg", panorama)
     pending_transforms = output / ".transforms.pending.json"
+    pending_render_transforms = output / ".render_transforms.pending.json"
     pending_report = output / ".report.pending.json"
     pending_transforms.write_text(
-        json.dumps(transform_rows, indent=2), encoding="utf-8"
+        json.dumps(transforms_payload, indent=2), encoding="utf-8"
+    )
+    pending_render_transforms.write_text(
+        json.dumps(render_transforms_payload, indent=2), encoding="utf-8"
     )
     pending_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    pending_render_transforms: Path | None = None
-    if render_transform_rows is not None:
-        pending_render_transforms = output / ".render_transforms.pending.json"
-        pending_render_transforms.write_text(
-            json.dumps(render_transform_rows, indent=2), encoding="utf-8"
-        )
-    os.replace(pending_panorama, panorama_path)
+    os.replace(pending_panorama, output / "panorama.jpg")
     os.replace(pending_transforms, output / "transforms.json")
-    if pending_render_transforms is not None:
-        os.replace(pending_render_transforms, output / "render_transforms.json")
+    os.replace(pending_render_transforms, output / "render_transforms.json")
     os.replace(pending_report, output / "report.json")
     delivery = {
-        "schema": "gemini305-panorama-delivery/v1",
+        "schema": "gemini305-panorama-delivery/v2",
         "published_utc": datetime.now(timezone.utc).isoformat(),
         "quality_pass": True,
-        "panorama": str(panorama_path),
+        "pose_backend": "open3d_rgbd",
+        "projection": "orthographic_side_scan",
+        "seam_backend": "graphcut_depth_constrained",
+        "blend_backend": "opencv_multiband_narrow_owner_boundary",
+        "panorama": str(output / "panorama.jpg"),
         "report": str(output / "report.json"),
     }
     pending_delivery = output / ".delivery.pending.json"
@@ -959,12 +1025,32 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     return report
 
 
+def run(
+    args: argparse.Namespace,
+    *,
+    odometry_backend: object | None = None,
+) -> dict[str, Any]:
+    """Run one task and persist fail-closed state for every ordinary error."""
+
+    output = args.output.expanduser().resolve()
+    try:
+        return _run_pipeline(args, odometry_backend=odometry_backend)
+    except Exception as exc:
+        _write_failure_report(output, args.input, exc)
+        raise
+
+
 def main() -> None:
     args = _parser().parse_args()
+    if "unistitch-sequence" in Path(sys.argv[0]).name.lower():
+        print(
+            "WARNING: unistitch-sequence is deprecated; use g305-panorama. "
+            "Both commands run the same RGB-D Open3D pipeline.",
+            file=sys.stderr,
+        )
     try:
         report = run(args)
     except Exception as exc:
-        _write_failure_report(args.output.expanduser().resolve(), args.input, exc)
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     print(f"Panorama: {report['panorama']}")

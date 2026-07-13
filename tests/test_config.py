@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from panorama_demo.config import load_config
+from panorama_demo.stitch_sequence import _validate_safety_envelope
 
 
 def test_default_capture_uses_motion_capped_auto_exposure() -> None:
@@ -19,6 +20,32 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
     assert config["capture"]["fps"] == 30
     assert config["stitch"]["max_canvas_megapixels"] == 200
     assert config["stitch"]["diagnostic_force"] is False
+    assert config["stitch"]["pose_backend"] == "open3d_rgbd"
+    assert config["stitch"]["pose_graph"]["enabled"] is True
+    assert config["stitch"]["rgbd_projection"]["mode"] == (
+        "orthographic_side_scan"
+    )
+    assert config["stitch"]["rgbd_projection"]["minimum_coverage_ratio"] == 0.95
+    assert config["stitch"]["scan_seam"]["backend"] == (
+        "graphcut_depth_constrained"
+    )
+    assert config["stitch"]["scan_seam"]["multiband_levels"] == 5
+    legacy_formal_keys = {
+        "model",
+        "device",
+        "inference_width",
+        "max_points",
+        "max_pair_canvas",
+        "min_matches",
+        "max_unistitch_reprojection_px",
+        "allow_magsac_fallback",
+        "prefer_magsac_layout",
+        "min_magsac_inlier_ratio",
+        "sequence_motion_model",
+        "translation_anchor_y",
+        "save_pair_previews",
+    }
+    assert legacy_formal_keys.isdisjoint(config["stitch"])
 
 
 def test_unrestricted_auto_exposure_config_is_explicitly_diagnostic() -> None:
@@ -35,8 +62,7 @@ def test_unrestricted_auto_exposure_config_is_explicitly_diagnostic() -> None:
     assert config["capture"]["diagnostic_replaced_auto_cap_us"] == 800
     assert config["stitch"]["diagnostic_force"] is True
     assert config["stitch"]["input_quality_gate"] is False
-    assert config["stitch"]["scan_quality_gate"] is False
-    assert config["stitch"]["scan_max_keyframes"] == 0
+    assert config["stitch"]["scan_seam"]["quality_gate"] is False
     # Process-survival protection is intentionally inherited by diagnostics.
     assert config["stitch"]["max_canvas_megapixels"] == 200
 
@@ -79,3 +105,42 @@ def test_explicit_auto_exposure_mode_is_not_overridden(tmp_path: Path) -> None:
 
     assert config["capture"]["color_auto_exposure"] is True
     assert config["capture"]["color_exposure_us"] == 800
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        (("maximum_motion_exposure_us",), 1201, "1200 us"),
+        (("color_exposure_unit_us",), 1, "metadata unit"),
+        (("max_canvas_megapixels",), 201, "200 MP"),
+        (("rgbd_projection", "minimum_coverage_ratio"), 0.94, "95%"),
+        (("rgbd_projection", "max_aggregate_megapixels"), 201, "200 MP"),
+        (("rgbd_odometry", "minimum_fitness"), 0.14, "cannot be relaxed"),
+        (("pose_quality", "maximum_total_rotation_deg"), 11.0, "cannot be relaxed"),
+        (("scan_seam", "quality_gate"), False, "cannot disable"),
+    ],
+)
+def test_formal_stitch_config_cannot_relax_safety_envelope(
+    path: tuple[str, ...], value: object, message: str
+) -> None:
+    config = load_config()["stitch"]
+    target = config
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    with pytest.raises(ValueError, match=message):
+        _validate_safety_envelope(config, diagnostic_force=False)
+
+
+def test_diagnostic_threshold_bypass_keeps_resource_hard_limits() -> None:
+    config = load_config()["stitch"]
+    config["maximum_motion_exposure_us"] = 60_000
+    config["rgbd_odometry"]["minimum_fitness"] = 0.0
+    config["pose_quality"]["maximum_total_rotation_deg"] = 180.0
+
+    _validate_safety_envelope(config, diagnostic_force=True)
+
+    config["rgbd_projection"]["max_aggregate_megapixels"] = 201
+    with pytest.raises(ValueError, match="200 MP"):
+        _validate_safety_envelope(config, diagnostic_force=True)

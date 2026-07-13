@@ -1,115 +1,88 @@
-# Gemini 305 + UniStitch 移动侧扫 Demo
+# Gemini 305 RGB-D 移动侧扫全景
 
-本项目面向 Windows 上的奥比中光 Gemini 305 侧向移动采集：相机安装在水平小车上，光轴朝向小车前进方向的侧面，连续记录同步 RGB、深度、标定参数和时间戳，并使用 UniStitch 完成双图预览和序列 RGB 长图构建。
-
-当前目标是先完成可复现的离线 Demo，而不是承诺无限长度、零漂移或实时三维建图。采集默认保留对齐到 RGB 的深度，原始深度可按需额外保存，便于后续增加 RGB-D 位姿估计、点云或 TSDF；UniStitch 本身只处理 RGB 与二维关键点，不读取深度，也不输出三维位姿。
-
-默认路径面向“最近物体约 0.5 m、相机连续单向侧移、场景基本静止”的交付条件，用户无需修改曝光、步长、帧号、保护框、接缝或裁剪参数。程序只有在输入清晰度、重叠、运动方向、深度接缝和无黑边裁剪全部通过时才发布完整图；严重欠光、动态遮挡、镜面、无纹理或所有源帧已经拖影时，会自动拒绝劣图并写明原因。二维算法无法从这类缺失信息中恢复真实细节。
-
-## 当前实现状态
-
-| 模块 | 命令 | 状态 |
-|---|---|---|
-| Gemini 305 RGB-D 采集 | `g305-capture` | 已实现 |
-| 无相机合成侧扫数据 | `generate-panorama-demo` | 已实现 |
-| UniStitch 双图拼接 | `unistitch-pair` | 已实现，使用完整 FFD/TPS 生成双图预览 |
-| UniStitch 序列拼接 | `unistitch-sequence` | 已实现，使用 UniStitch global 分支布局并一次渲染原图 |
-| 彩色点云、TSDF、网格 | 暂无 | 不在当前 Demo 中 |
-
-## 处理流程
+本项目在 Windows 上使用奥比中光 Gemini 305 采集同步、标定且对齐到彩色坐标系的 RGB-D 序列，并生成移动侧扫全景图。正式序列流程是：
 
 ```text
-Gemini 305
-  └─ g305-capture
-       ├─ RGB JPEG
-       ├─ D2C 对齐深度 PNG
-       ├─ 可选原始深度 PNG
-       ├─ 时间戳和 metadata
-       └─ 相机内参、畸变和 RGB-D 外参
-
-RGB 会话或合成会话
-  ├─ unistitch-pair
-  │    └─ 完整双图 homography + FFD/TPS 预览和质量报告
-  └─ unistitch-sequence
-       ├─ UniStitch global 门限验证与可用 MAGSAC 同支持集择优/回退
-       └─ 累积布局后从原始帧一次性渲染 RGB 长图
+Open3D RGB-D Odometry + Pose Graph
+  → 全分辨率深度重投影正射侧扫条带
+  → 深度硬约束的 OpenCV GraphCut
+  → 严格单 owner 分区验证
+  → owner 边界窄带 OpenCV MultiBand
+  → 裁剪、质量门禁和原子交付
 ```
 
-## 50 cm、1.5 m/s 工况的建议参数
+正式流程不使用 UniStitch、LightGlue、MAGSAC、二维单应矩阵或二维位姿插值，也不会在 RGB-D 位姿、GraphCut 或 MultiBand 失败后回退到旧 DP、Feather 或整片重叠平均。无法可靠恢复的模糊、错误位姿、高视差接缝、覆盖缺口和黑边会产生明确失败；没有 `delivery.json` 就不是有效交付。
 
-默认配置位于 [`configs/demo.yaml`](configs/demo.yaml)，针对 50 cm 拍摄距离和最高 1.5 m/s 速度给出了一组保守起点：
+默认工况是相机连续单向水平侧移、场景基本静止、最近物体约 `0.5 m`、最高速度约 `1.5 m/s`。用户只需提供采集目录和输出目录，不需要调整曝光、步长、帧号、位姿、接缝或裁剪参数。
 
-| 参数 | 默认/建议值 | 说明 |
-|---|---:|---|
-| RGB 与深度 | `1280×800 @ 30 fps` | 必须以实机能同时开启的精确流配置为准 |
-| D2C | `software` | 当前采集器只支持软件对齐到彩色坐标系 |
-| 帧同步 | 开启 | SDK 不支持时会记录警告，而不是伪造同步成功 |
-| 外部同步输出 | Primary，`30 Hz` | 每个 RGB-D 帧周期在同步端口输出一次脉冲；设备配置无法回读验证时停止采集 |
-| 彩色曝光 | 自动曝光，上限 `800 µs` | 自动适应亮度，同时针对最近约 0.5 m 的移动侧扫限制拖影；过暗时应补光 |
-| 防闪烁 | 开启 | 大棚使用交流补光时尤其重要 |
-| 采集写队列 | 64 帧 | 磁盘持续写入不足时会统计丢弃数 |
-| 序列选帧 | 自动 | 根据相邻帧实测位移、覆盖和清晰度自适应，不使用固定步长 |
-| UniStitch 推理宽度 | 640 px | 控制显存；先验证稳定性，再尝试原分辨率 |
-| 最大关键点 | 2048 | 与公开 UniStitch 模型输入约定一致 |
-| 布局安全上限 | 160 帧 | 超过时要求拆分路线，避免无界内存和累计漂移 |
+## 命令概览
 
-按约 88° 的 RGB-D 公共水平视场估算，50 cm 处横向覆盖约 0.97 m。小车以 1.5 m/s、30 fps 行驶时，相邻原始帧位移约 50 mm，重叠约 95%；每 3 帧选一张时位移约 150 mm、重叠约 84%，每 4 帧约 200 mm、重叠约 79%。
+| 命令 | 用途 |
+|---|---|
+| `g305-capture` | 采集同步 Gemini 305 RGB-D 会话 |
+| `g305-panorama` | 正式 RGB-D 序列全景入口 |
+| `unistitch-sequence` | 一个版本内保留的弃用别名；运行同一 RGB-D 流程，不含 UniStitch 回退 |
+| `generate-panorama-demo` | 生成带标定、对齐深度和已知 SE(3) 轨迹的合成会话 |
+| `unistitch-pair` | 独立历史双图诊断工具，不进入正式序列流程 |
 
-默认配置使用带 `800 µs` 上限的自动曝光，用户不需要再设置曝光参数；按 1.5 m/s 运行时，小车在一次曝光内最多移动约 1.2 mm，对应约 1.6 个原始图像像素。相机会在上限内自动适应亮度，程序再自动选帧并执行质量门禁。若固件不支持自动曝光上限，采集器会自动退回固定 `800 µs`，而不会放任长曝光；现场仍过暗时应增加连续补光。需要固定曝光时可传 `--exposure-us`（或同义的 `--manual-exposure-us`），这会关闭自动曝光并验证设备回读值；不传则继续使用自动模式。
+正式零参数命令：
 
-确需观察设备原生长曝光行为时，可显式使用 `--diagnostic-unrestricted-auto-exposure`。该模式会解除项目的 `800 µs` 上限，请求把相机 AE 上限写到属性范围最大值并回读验证；固件可能根据当前帧率把实际值钳制得更低，例如 `30 fps` 下通用范围 `1990` 可能回读为约 `300–301`（约 `30.0–30.1 ms`）。只要回读值确实高于被替换的正式安全上限，就视为设备当前工作模式允许的最大值，并在 `manifest.json` 中同时记录请求值、实际值和是否发生钳制。“无限制”不代表没有硬件上限，曝光仍受设备、固件和帧周期约束。生成的会话会标记为 `diagnostic_only=true`，只能使用同一诊断配置或 `unistitch-sequence --diagnostic-force` 生成诊断全景，不能发布正式交付件。
+```powershell
+g305-capture --output .\data\captures
 
-Gemini 305 的彩色曝光控制原始单位是 100 µs；采集器会把手动微秒值四舍五入到最近的 100 µs 后写入，并将请求模式、实际模式和实际值记录在 `manifest.json` 的 `color_exposure_control`。`frames.csv` 的 `color_exposure` 保留设备原始值，例如 `301` 表示约 30.1 ms，而不是 301 µs。手动值超过 `1200 µs` 可用于静态诊断采集，但移动序列的正式拼接会按质量门禁拒绝交付。
+g305-panorama `
+  .\data\captures\run_YYYYMMDD_HHMMSS `
+  --output .\outputs\greenhouse_sequence
+```
 
-现有温室会话 `run_20260711_213054` 的峰值正是 `301`（约 30.1 ms），超过默认 `1200 µs` 移动输入门禁，因此只能作为失败回归样本，不能交付。曝光期间已经丢失的纹理无法靠后处理恢复，必须使用新曝光上限重新采集。
+`unistitch-sequence` 会打印弃用提示，但调用与 `g305-panorama` 完全相同的 RGB-D `main`。它不会加载 UniStitch、Torch、LightGlue 或 MAGSAC。
 
-50 cm 处公共垂直覆盖约 0.64 m。若铁架需要扫描的高度更大，应改变安装距离或采用不同高度的多趟扫描。相机应刚性固定，图像水平轴与小车运动方向平行，光轴尽量垂直于铁架。
-
-## 目录结构
+## 正式处理流程
 
 ```text
-Panoramic_Camera/
-├─ configs/demo.yaml                  默认采集和拼接配置
-├─ configs/capture_unrestricted_auto_exposure.yaml  无曝光上限的采集/拼接一体化诊断配置
-├─ environment.yml                    Conda 环境定义（Python 3.12）
-├─ scripts/
-│  ├─ bootstrap_conda.ps1             首选：创建项目内 Conda 环境
-│  ├─ bootstrap_windows.ps1           备选：创建 Python venv
-│  ├─ register_orbbec_metadata.ps1    注册 Windows UVC metadata
-│  └─ download_unistitch_weights.py   下载并校验官方 UniStitch 权重
-├─ configs/capture_640x480.yaml        低带宽 YUYV 采集回退配置
-├─ src/panorama_demo/
-│  ├─ capture_orbbec.py               RGB-D 采集
-│  ├─ synthetic.py                    确定性合成侧扫序列
-│  ├─ session.py                      会话和帧发现
-│  ├─ unistitch_adapter.py             LightGlue + UniStitch 内存适配器
-│  ├─ stitch_pair.py                  完整双图 FFD/TPS 命令
-│  ├─ stitch_sequence.py              序列布局和报告命令
-│  ├─ stitch_common.py                拼接公共配置和图像 I/O
-│  └─ render.py                       原始帧单源分区接缝或羽化渲染
-├─ third_party/UniStitch/             固定版本的上游研究代码
-├─ third_party/LightGlue/             固定版本的关键点匹配代码
-└─ THIRD_PARTY_NOTICES.md             第三方来源和许可证说明
+Gemini 305 同步 RGB-D 会话
+  ↓
+会话、标定、对齐深度、深度比例和图像尺寸硬校验
+  ↓
+曝光、清晰度、纹理、主扫描段与相邻视觉运动分析
+  ↓
+自适应选择 RGB-D pose nodes
+  ↓
+相邻 RGB-D odometry；真实重叠的非相邻节点可增加弱 RGB-D 边
+  ↓
+仅由 RGB-D 边构建并优化 pose graph
+  ↓
+有限、连通、连续单向的 camera_to_world 4×4 SE(3)
+  ↓
+按真实相机中心、投影足迹、清晰度和覆盖选择渲染源
+  ↓
+原始全分辨率 RGB-D 各重投影一次到统一正射世界条带
+  ↓
+相邻 pair corridor + 深度高风险区硬 owner + GraphCut
+  ↓
+严格 owner 拓扑、真实重叠、边界风险与跨向覆盖验证
+  ↓
+只在 owner 边界窄带执行 OpenCV MultiBand
+  ↓
+最大有效矩形裁剪、最终门禁和原子发布
 ```
+
+缩略图视觉运动只用于主扫描段和 pose-node 布局，不产生正式几何变换。渲染源必须具有 pose graph 中真实优化出的位姿；程序不会按时间戳或二维运动伪造中间位姿。
 
 ## Windows 安装
 
-### 1. 前置条件
+### 前置条件
 
 - Windows 10/11 x64；
-- 首选方案需要 Miniconda 或 Anaconda，且 `conda` 已加入当前 PowerShell；未安装时可使用后文 venv 备选方案；
+- Python `3.10–3.12`，推荐 Conda Python 3.12；
 - Git；
-- Gemini 305 连接到主机 USB 3 端口，避免无源 Hub；
-- 采集建议使用 SSD/NVMe；
-- 运行 UniStitch 需要 NVIDIA CUDA GPU。采集和合成数据生成不依赖 GPU。
+- Gemini 305 通过 USB 3 直接连接，采集建议使用 SSD/NVMe；
+- 实机采集需要 `pyorbbecsdk2`；
+- 正式序列依赖 Open3D 0.19，不依赖 Torch 或 CUDA。Open3D 0.19 的官方预编译包支持到 Python 3.12，详见 [Open3D 安装说明](https://www.open3d.org/docs/release/getting_started.html)。
 
-首选 Conda 方案由 `environment.yml` 创建项目内的 Python 3.12 环境。备选 venv 方案支持 `pyproject.toml` 声明的 Python `3.10–3.13`。
+Open3D 在首次执行 RGB-D odometry 时才延迟导入。采集、会话检查和不需要默认 Open3D backend 的单元测试不会因模型库或 CUDA 不可用而提前失败。
 
-`pyproject.toml` 要求 PyTorch 2.1 及以上。两个初始化脚本会先从 PyTorch 官方 CUDA 13.0 wheel 源安装锁定的 `torch 2.13.0+cu130` 与 `torchvision 0.28.0+cu130`，再安装其余依赖；当前 RTX 5060 Laptop 与驱动 610.62 已实际验证。若目标电脑驱动不支持 CUDA 13.0，应先升级 NVIDIA 驱动，或按 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/) 改成该电脑支持的 CUDA wheel，并确认 `torch.cuda.is_available()` 为 `True`。
-
-### 2. Conda 初始化（首选）
-
-在项目根目录打开 PowerShell：
+### Conda（首选）
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -117,47 +90,20 @@ Set-ExecutionPolicy -Scope Process Bypass
 conda activate .\.conda
 ```
 
-脚本会：
-
-1. 根据 `environment.yml` 在项目根目录创建 `.conda`，使用 Python 3.12；
-2. 以 editable 模式安装项目、采集依赖和测试依赖；
-3. 在第三方目录不存在时检出固定版本的 UniStitch 与 LightGlue；
-4. 下载并校验官方 UniStitch 模型。
-
-可选参数：
+脚本使用 [`environment.yml`](environment.yml) 创建项目内 `.conda`，并安装基础项目、Open3D、采集依赖和测试依赖。默认不会安装 Torch/Kornia/torchvision，不会克隆 UniStitch/LightGlue，也不会下载模型。
 
 ```powershell
-# 暂不下载约 321 MiB 的模型
-.\scripts\bootstrap_conda.ps1 -SkipModel
-
-# 删除已有 .conda 并完整重建；会移除该环境内已安装的包
+# 明确删除并重建项目环境；会移除该环境中已有的包
 .\scripts\bootstrap_conda.ps1 -Recreate
-```
 
-如果当前 PowerShell 不能执行 `conda activate`，先运行一次 `conda init powershell` 并重新打开 PowerShell；也可以不激活环境，改用 `conda run --prefix .\.conda ...`。
-
-检查环境：
-
-```powershell
-python -c "import torch; print('torch=', torch.__version__, 'cuda=', torch.cuda.is_available())"
+# 检查正式入口
+python -c "import open3d; print(open3d.__version__)"
 g305-capture --help
+g305-panorama --help
 generate-panorama-demo --help
-unistitch-pair --help
-unistitch-sequence --help
 ```
 
-不激活 Conda 环境时，等价检查命令例如：
-
-```powershell
-conda run --prefix .\.conda python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-conda run --prefix .\.conda unistitch-sequence --help
-```
-
-如果只进行采集、合成数据或 CPU 单元测试，`cuda=False` 不影响这些功能。`unistitch-pair` 和 `unistitch-sequence` 在真正开始对齐时会明确拒绝 CPU 设备。
-
-### 3. venv 初始化（备选）
-
-未安装 Conda 时，可以使用系统 Python 创建 `.venv`：
+### venv（备选）
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -165,192 +111,100 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\.venv\Scripts\Activate.ps1
 ```
 
-可选参数：
+也可以手工安装：
 
 ```powershell
-# 暂不下载模型
-.\scripts\bootstrap_windows.ps1 -SkipModel
-
-# 仅当系统 Python 已有可用的 CUDA PyTorch，且 .venv 尚不存在时使用
-.\scripts\bootstrap_windows.ps1 -ReuseSystemPackages
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e ".[capture,test]"
 ```
 
-如果 `.venv` 已存在，`-ReuseSystemPackages` 不会改变它；需要切换环境策略时应先自行移走旧环境。
+### 可选历史 UniStitch 双图诊断
 
-### 4. 手动下载模型
-
-初始化时使用了 `-SkipModel`，或者需要重新校验模型时执行：
+只有确实需要 `unistitch-pair` 时才安装旧诊断依赖：
 
 ```powershell
-python .\scripts\download_unistitch_weights.py
+.\scripts\bootstrap_conda.ps1 -WithUnistitchDiagnostic
 
-# 覆盖校验失败或损坏的已有文件
-python .\scripts\download_unistitch_weights.py --force
+# 或在 venv 中
+.\scripts\bootstrap_windows.ps1 -WithUnistitchDiagnostic
 ```
 
-模型保存到 `models/unistitch/epoch_best_model.pth`。下载器验证文件大小 `336,715,309` 字节和 SHA-256：
+该开关才会安装指定 CUDA PyTorch、`unistitch-diagnostic` extra、检出固定版本的 UniStitch/LightGlue，并下载权重。可同时传 `-SkipModel` 暂不下载权重。手工安装 extra 时，应先按目标机器驱动选择合适的 PyTorch wheel，再执行：
 
-```text
-c7c4184c3ec63e15ed483f7066afdd4ed2fcd12f1178ae27183c9838f9083c19
+```powershell
+python -m pip install -e ".[unistitch-diagnostic]"
 ```
 
-模型不会随本项目再分发。Hugging Face 模型卡目前把权重标记为 `license: other`，且没有提供完整许可文本；商业使用或再次分发前应向作者确认。详见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+这些依赖和模型只服务于历史双图工具。它们不会成为 `g305-panorama` 的正式依赖、几何来源或失败回退。
 
-## 注册 Windows metadata
+### 注册 Windows metadata
 
-先完成环境初始化并连接相机。下面的脚本会优先使用项目内 `.conda`，不存在时再使用 `.venv`，也可通过 `-Python` 显式指定解释器：
+首次在一台电脑上使用相机时运行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\register_orbbec_metadata.ps1
-
-# 可选：明确指定 Python
-powershell -ExecutionPolicy Bypass -File .\scripts\register_orbbec_metadata.ps1 `
-  -Python D:\Panoramic_Camera\.conda\python.exe
 ```
 
-脚本最终运行 `pyorbbecsdk2` 自带的 `shared/setup_env.py`，并可能请求管理员/UAC 权限。每台新的物理相机通常需要执行一次。完成后重新插拔相机；若系统提示需要重启，则先重启再采集。
-
-注册是否生效不能只看脚本退出码。完成一次短采集后检查：
-
-- `manifest.json` 中的 `metadata_support`；
-- `frames.csv` 中的曝光、增益、帧号和 sensor timestamp 字段是否持续存在；
-- device timestamp 是否单调递增。
-
-未注册 metadata 时，RGB 和深度图仍可能保存成功，但时间同步分析和掉帧诊断不可信。
-
-## 无相机的合成数据测试
-
-下面的命令生成一段确定性的侧扫 RGB 序列，包含重复铁架、随机纹理、文字标记和轻微亮度变化：
-
-```powershell
-generate-panorama-demo `
-  --output .\data\synthetic\demo `
-  --frames 10 `
-  --width 640 `
-  --height 400 `
-  --step 120
-```
-
-640 px 画面每帧移动 120 px，对应约 81% 重叠。输出结构为：
-
-```text
-data/synthetic/demo/
-├─ manifest.json
-├─ frames.csv
-└─ color/
-   ├─ 00000000.jpg
-   ├─ 00000001.jpg
-   └─ ...
-```
-
-这条路径不需要相机或 Orbbec SDK，适合验证安装、会话发现、图像读取和未来的序列拼接入口。它不生成深度，也不能验证真实相机同步、曝光或深度质量。
+脚本会优先使用项目内 `.conda`，必要时请求管理员权限。完成后重新插拔相机。短采集后应检查 `manifest.json` 的 `metadata_support`，以及 `frames.csv` 中曝光、增益、帧号、sensor timestamp 和 RGB-D 时间差是否持续有效。
 
 ## 采集 Gemini 305 RGB-D
 
-### 安装检查
-
-采集前确认：
-
-- 相机直接连接 USB 3；
-- 相机与支架无松动；
-- 拍摄距离约 50 cm；
-- 现场补光不会频闪；
-- 关闭同时占用相机的 OrbbecViewer 或其他程序；
-- 已执行 metadata 注册。
-
-### 推荐命令
+正式采集使用 [`configs/demo.yaml`](configs/demo.yaml)：
 
 ```powershell
-g305-capture `
-  --output .\data\captures
+g305-capture --output .\data\captures
 ```
 
-程序会在输出目录下新建 `run_YYYYMMDD_HHMMSS` 会话。预览窗口中按 `Q` 或 `Esc` 停止，也可以使用 `Ctrl+C`。无预览模式同样监听控制台的 `Q`/`Esc`。
+默认配置：
 
-启动数据流前，采集器会把 Gemini 305 配置为 `PRIMARY` 同步模式、开启 trigger out，并读取设备配置回验。同步脉冲与采集帧率一一对应，所以默认 RGB 和深度均为 30 fps 时，同步端口在采集期间持续输出 30 Hz；停止数据流后脉冲停止。`manifest.json` 的 `external_sync_output` 会记录模式、trigger out 回读值和期望频率。若 SDK、固件或设备拒绝该配置，命令会明确失败，不会在没有同步输出的情况下继续采集。
+- RGB 与对齐深度均为 `1280×800@30`；
+- 软件 D2C 对齐和帧同步开启；
+- `PRIMARY` 外部同步输出开启，默认输出与帧率一致的 30 Hz 脉冲；
+- 彩色自动曝光开启，上限 `800 µs`；固件不支持 AE 上限时退回固定 `800 µs`；
+- JPEG 质量 95，只默认保存对齐深度，原始深度仅供显式诊断；
+- 异步写盘队列为 64 帧，丢帧和写入错误会记录到 manifest。
 
-`--fps` 仍可用于诊断其它实机 profile，但同步输出频率会随该值变化；要求固定 30 Hz 时不要覆盖默认 `--fps 30`。确有不需要外部脉冲的自定义诊断配置，可显式设置 `capture.external_sync_output: false`，这不会关闭相机内部的 RGB-D `frame_sync`。
-
-先录制 300 帧做约 10 秒冒烟测试：
+先采 300 帧进行约 10 秒冒烟测试：
 
 ```powershell
 g305-capture `
-  --config .\configs\demo.yaml `
   --output .\data\captures `
   --max-frames 300
 ```
 
-常用覆盖参数：
+无预览固定时长采集：
 
 ```powershell
-# 固定录制 20 秒，不显示预览；默认只保存对齐深度
 g305-capture `
-  --config .\configs\demo.yaml `
   --output .\data\captures `
   --duration 20 `
   --no-preview
+```
 
-# 短期标定/诊断时额外保存原始深度
-g305-capture `
-  --config .\configs\demo.yaml `
-  --output .\data\captures `
-  --duration 5 `
-  --raw-depth
+预览窗口中按 `Q` 或 `Esc` 停止，也可使用 `Ctrl+C`。采集器会回读验证同步输出和曝光属性；无法验证时明确失败，不会伪造成功。
 
-# 本次采集固定为 1000 µs；不修改默认自动曝光配置
-g305-capture `
-  --output .\data\captures `
-  --exposure-us 1000
+### 曝光边界
 
-# 如果自定义配置采用手动曝光，可临时强制切回自动曝光
-g305-capture `
-  --config .\configs\custom.yaml `
-  --output .\data\captures `
-  --auto-exposure
+Gemini 305 彩色曝光 metadata 的原始单位按 `100 µs/单位` 解释。`frames.csv` 中的 `color_exposure` 保留设备原始值，例如 `8` 表示 `800 µs`，`301` 表示约 `30.1 ms`，不是 `301 µs`。
 
-# 解除项目曝光上限，仅采集诊断会话
+正式移动序列的输入拒绝上限是 `1200 µs`。在 `1.5 m/s` 下，`800 µs` 内相机移动约 `1.2 mm`；现场仍过暗时应增加连续补光，而不是提高正式曝光门限。连续三帧曝光超过采集安全上限时，正式采集器应停止。
+
+需要观察设备原生长曝光行为时，必须显式进入诊断模式：
+
+```powershell
 g305-capture `
   --output .\data\captures `
   --diagnostic-unrestricted-auto-exposure
-```
 
-默认配置已经采用适合移动扫描的“自动曝光 + `800 µs` 上限”，无需手动传入参数。`--auto-exposure`、`--exposure-us` 与 `--diagnostic-unrestricted-auto-exposure` 三种模式互斥；手动曝光只固定曝光时长，增益仍可用 `--gain` 单独指定。还可通过命令行覆盖 `--warmup-frames`、`--queue-size` 和 `--white-balance`。
-
-需要重复执行无限制自动曝光诊断时，也可以使用独立的一体化诊断配置：
-
-```powershell
+# 等价的一体化诊断配置
 g305-capture `
   --config .\configs\capture_unrestricted_auto_exposure.yaml `
   --output .\data\captures
 ```
 
-诊断模式仍逐帧记录 `color_exposure`，但不会因超过 `800 µs` 连续三帧而停止。若相机不支持设置和回读 AE 最大范围，或回读值仍未高于被替换的正式上限，命令会明确失败，避免把仍受旧上限约束的数据误标为“无限制”。该文件也把 `stitch.diagnostic_force` 设为 `true`，因此后续拼接只要再次传入同一个 `--config`，就会自动绕过应用层输入、几何和最终质量门禁，并且只写诊断文件；配置文件不会自动随采集会话传给拼接命令。
+该模式会解除项目的 `800 µs` AE 上限、请求并回读设备当前 profile 允许的最大值，并把会话标记为 `diagnostic_only=true`、`formal_stitch_allowed=false`。它只用于诊断，不能发布正式交付。
 
-若要在自定义配置中长期使用手动曝光，可设置：
-
-```yaml
-capture:
-  color_auto_exposure: false
-  color_exposure_us: 1000
-```
-
-恢复自动曝光时设为 `color_auto_exposure: true`、`color_exposure_us: null`。
-
-采集器要求彩色和深度都存在与配置完全一致的分辨率和帧率，深度格式为 Y16。如果实机不支持，程序会列出枚举到的 profile；请选择列表中可同时运行的组合。当前仅支持 `align: software`，其它值会明确报错。
-
-当前 Gemini 305（固件 1.0.70、USB 3.2）已实测可同时运行 RGB `1280×800@30` 与 Y16 `1280×800@30`。如果现场电脑或 USB 链路无法稳定运行该组合，可先使用低带宽回退配置验证链路：
-
-```powershell
-g305-capture `
-  --config .\configs\capture_640x480.yaml `
-  --output .\data\captures `
-  --max-frames 30 `
-  --no-preview
-```
-
-该配置使用 YUYV `640×480@30` 与 Y16 `640×480@30`。它适合诊断，不应在没有记录的情况下替代正式分辨率。采集器还会用 `warmup_timeout_seconds` 和 `frame_timeout_seconds` 拒绝“不出帧但无限等待”的会话。
-
-### 采集输出
+### 会话输出
 
 ```text
 data/captures/run_YYYYMMDD_HHMMSS/
@@ -361,317 +215,286 @@ data/captures/run_YYYYMMDD_HHMMSS/
 │  └─ 00000000.jpg
 ├─ depth_aligned/
 │  └─ 00000000.png
-└─ depth_raw/           仅使用 --raw-depth 时生成
+└─ depth_raw/                 仅显式 --raw-depth 时存在
    └─ 00000000.png
 ```
 
-- `manifest.json`：设备、Python wrapper、SDK 版本、采集模式与 `diagnostic_only` 标记、请求和实际 profile、外部同步输出回读、属性设置结果、metadata 支持情况、接收/写入/丢弃统计及是否正常结束；
-- `calibration.json`：彩色和深度内参、畸变、深度到彩色外参；
-- `frames.csv`：帧 ID、device/system/host 时间戳、原始 sensor timestamp、曝光、增益、帧号、同步差、深度比例和相对文件路径；
-- `color/*.jpg`：JPEG 质量 95 的 BGR 彩色帧；
-- `depth_aligned/*.png`：软件对齐到彩色坐标系的 16 位深度；
-- `depth_raw/*.png`：可选的原始 16 位深度，仅使用 `--raw-depth` 时生成。
+`depth_aligned/*.png` 是 16 位设备深度单位，不可直接假定为毫米。必须使用每行 `depth_scale_mm_per_unit` 转换；项目内部投影与报告始终使用毫米。
 
-深度 PNG 保存的是相机深度单位，不应直接假定每单位就是 1 mm；应使用 `frames.csv` 中的 `depth_scale_mm_per_unit` 换算。
+## 严格 RGB-D 会话契约
 
-短采集验收建议：
+`g305-panorama` 只接受会话目录或该会话的 `frames.csv`。只含 RGB 图片的目录、单独 `color/`、旧合成 RGB 序列和任意图片列表都不能进入正式流程。
 
-- `timestamp_regressions == 0`；
-- `queue_drops == 0`；
-- `write_errors == 0`；
-- RGB 与深度时间差稳定；
-- 50 cm 目标区域深度连续；
-- 最大速度下铁杆边缘运动模糊不超过约 2 px。
+每个正式源帧必须具备：
 
-## UniStitch 双图拼接
+- 可解码的 RGB 图；
+- `frames.csv` 中明确且非空、位于 `depth_aligned/` 的 `aligned_depth_path`；
+- 有限、正数的 `depth_scale_mm_per_unit`；
+- 每帧非负彩色时间戳和正数 `color_exposure` 元数据；
+- 与 RGB 和彩色内参尺寸完全相同的对齐深度；
+- `calibration.json` 中有限、有效的彩色内参和畸变；
+- 标定中明确的 color-target 对齐声明，或本项目 v1 捕获器的严格 `software → COLOR_STREAM` provenance；
+- 有效的相对路径，路径不得逃逸会话目录。
 
-双图命令的两个位置参数依次是“参考/前一张图”和“来源/后一张图”。两张图必须具有相同尺寸：
+`raw_depth_path` 不能替代 `aligned_depth_path`；即使文件尺寸相同也会拒绝。缺少标定、标定损坏、主点越界、RGB/深度尺寸不一致、深度比例错误、深度未对齐或 raw depth 冒充 aligned depth 都是结构性失败，`--diagnostic-force` 也不能绕过。
+
+RGB 使用线性插值去畸变，对齐深度使用最近邻。无效边缘由独立几何 `valid_mask` 表示；RGB 像素为黑色不代表无效。深度进入项目代码时先明确换算为毫米，只有 Open3D 适配层临时转换为米，适配层返回时再换回毫米。
+
+## RGB-D odometry 与 Pose Graph
+
+正式 backend 固定为 `open3d_rgbd`，参考 [Open3D RGB-D odometry](https://www.open3d.org/docs/latest/tutorial/pipelines/rgbd_odometry.html) 和 [Open3D multiway registration](https://www.open3d.org/docs/latest/tutorial/Advanced/multiway_registration.html)。
+
+相邻 pose node 必须有可靠 RGB-D 边；预计仍有真实重叠的非相邻节点最多跨两个节点增加弱边。这些边仍由 RGB-D odometry 得到，不能用特征匹配补边。每条边审计：
+
+- `source_to_reference` 4×4 SE(3)；
+- 收敛状态、fitness、RMSE 与有限、对称、正定的 6×6 信息矩阵；
+- 两端有效深度比例；
+- 有限性、旋转正交性和行列式；
+- 平移、垂直/前后漂移、旋转与扫描方向；
+- 图优化后的边残差。
+
+坐标与单位约定：
+
+- 彩色相机坐标采用 OpenCV/Open3D 约定：`+x` 向右、`+y` 向下、`+z` 向前；
+- `camera_to_world` 把相机坐标映射到第一个 pose node 的相机坐标系；
+- 所有项目侧平移和 RMSE 使用毫米；
+- `transforms.json` 中不会出现 3×3 homography，也不会有插值位姿。
+
+正式流程拒绝必需相邻边失败、图不连通、非有限 SE(3)、逆向运动、明显上下/前后漂移、过大旋转或残差、可靠节点不足两帧，以及清晰渲染源覆盖不足 `95%`。
+
+## 深度重投影侧扫条带
+
+优化位姿不会伪装为二维单应矩阵。每个选中的原始全分辨率 RGB-D 源只处理一次：
+
+```text
+(u, v, depth_device_unit)
+  → depth_mm
+  → 彩色相机三维点
+  → camera_to_world
+  → 统一世界正射条带坐标
+  → 每源 point-splat z-buffer
+```
+
+扫描方向规范为画布 `x`，相机上方向规范为画布 `y`，世界法向记录为 `z`。像素密度由投影足迹自动估计，用户不设置比例。每源输出：
+
+- `warped_rgb`；
+- 独立 `valid_mask`；
+- 同一世界法向定义的 `surface_depth_mm`；
+- `surface_depth_valid_mask`；
+- 与 z-buffer 最终样本对应的源彩色相机 `camera_depth_mm` 及独立 valid mask；
+- 投影中心、有效包围盒、投影高度和采样统计。
+
+投影使用 point splat 而不是跨相邻深度样本连三角形，因此不会把前景/背景断层拉成连续表面。同一源落到同一画布像素时用世界法向 z-buffer 保留可见表面；深度空洞不会补造几何，必须由另一张真实源覆盖，否则后续门禁失败。
+
+画布超过 `200 MP`，或所有投影源的 aggregate working set 超过 `200 MP`，会在分配大数组前失败。正式最多选择 32 个渲染源，仍必须维持至少 `95%` 可靠扫描覆盖和 `34%` 相邻投影足迹重叠；预算不足时拒绝，不会发布部分扫描。
+
+## 深度约束 GraphCut
+
+正式接缝 backend 固定为 `graphcut_depth_constrained`。OpenCV [`GraphCutSeamFinder`](https://docs.opencv.org/4.x/d2/d7c/classcv_1_1detail_1_1GraphCutSeamFinder-members.html) 的公开 API 只接受颜色、梯度和 mask，不能接收任意深度代价，所以本项目不会宣称原生 GraphCut “天然深度感知”。
+
+深度约束在 GraphCut 前转成硬 mask：
+
+1. 按投影中心排序，只给相邻帧建立互不允许非相邻帧共同竞争的 `pair corridor`。
+2. 在真实共同有效区计算 Lab 色差、梯度差、与世界原点无关的固定毫米世界表面深度差，以及源相机深度小于 `1 m` 的近景/遮挡风险和 MultiBand 保护带风险。
+3. 对高风险连通域，根据有效覆盖、投影采样质量、离无效边缘距离、清晰度和确定性帧序选择唯一可靠 owner。
+4. 从另一帧的 GraphCut mask 中移除该区域；绝不从双方同时删除。
+5. 若没有唯一 owner、风险带横断走廊或已无连续安全通道，直接失败。
+6. 对剩余走廊调用 `cv2.detail_GraphCutSeamFinder("COST_COLOR_GRAD")`。
+
+GraphCut 输出必须转换为严格全画布 owner mask。有效区域每个像素恰好一个 owner，单源区只能归该源，非相邻 owner 不得接触，每对相邻源必须存在由真实共同有效区支撑的边界。空洞、多 owner、无效区 owner、缺失边界或 GraphCut 异常都会失败；禁止“按离中心最近帧补洞”，也没有 DP、Feather 或平均回退。
+
+## owner 边界窄带 MultiBand
+
+只有完整 owner 拓扑验证通过后，才运行 OpenCV `MultiBandBlender`；实现参考 [OpenCV stitching detailed sample](https://docs.opencv.org/4.x/d9/dd8/samples_2cpp_2stitching_detailed_8cpp-example.html)。默认 `multiband_levels=5`。
+
+程序从最终 owner 边界生成保守的窄 `blend_zone`：区外直接复制唯一 owner 的全局增益校色 RGB，区内才采用 MultiBand 输出。每一对相邻 owner 使用独立的局部 `MultiBandBlender`，不会把所有源送入同一个全局金字塔；相邻保护带重叠时按离哪条 owner 边界更近分成互斥区域，避免 `i+2` 源的低频颜色串入 `i/i+1` 边界。每个局部 blender 的 output mask 必须完整覆盖它的真实 pair support，不能出现零权重 wedge、黑洞或写入无效区。融合带触及高风险区的比例仍会复核；失败时不会回退到自定义归一化 MultiBand 或整片平均。
+
+最终无条件执行的门禁包括：
+
+- owner 空洞、重叠和无效区 owner；
+- 非相邻 owner 接触；
+- 边界缺失或没有真实重叠支撑；
+- 精确接缝风险和融合保护带风险均不高于 `0.10`；
+- 最小跨向覆盖不低于 `0.80`；
+- 安全接缝 Lab 残差 P95 不高于 `48`；
+- 曝光增益必须保持在 `0.45–2.20`；
+- 裁剪保留高度不低于源图中值高度的 `90%`，宽度不低于扫描画布的 `95%`；
+- 独立 valid mask 定义的最终区域不能有黑边或缺口。
+
+## 配置安全默认值
+
+普通用户不需要修改 [`configs/demo.yaml`](configs/demo.yaml)。关键内部默认值如下；它们是 fail-closed 安全起点，仍需通过合成数据和现场静止、`0.5`、`1.0`、`1.5 m/s` 验收后才能确认具体硬件/场景的交付范围。
+
+| 项目 | 默认值 |
+|---|---:|
+| pose backend | `open3d_rgbd` |
+| odometry working width | `640` |
+| 有效深度比例下限 | `0.10` |
+| RGB-D fitness 下限 | `0.15` |
+| RGB-D RMSE 上限 | `50 mm` |
+| 单边平移 / 垂直 / 前后上限 | `750 / 80 / 120 mm` |
+| 单边旋转上限 | `6°` |
+| 总垂直 / 前后漂移上限 | `120 / 150 mm` |
+| 总旋转上限 | `10°` |
+| 边平移 / 旋转残差上限 | `30 mm / 2°` |
+| pose node 硬预算 | `160` |
+| 渲染源上限 | `32` |
+| 渲染覆盖 / 相邻足迹重叠下限 | `0.95 / 0.34` |
+| 画布 / aggregate working set 上限 | `200 / 200 MP` |
+| seam backend | `graphcut_depth_constrained` |
+| MultiBand 层数 | `5` |
+| 曝光补偿 | `global_gain` |
+
+配置中的 `pose_backend`、`rgbd_projection.mode`、`scan_seam.backend`、标定/对齐要求和 pose graph 开关是正式结构约束，不能改为其它值发布交付。正式模式的曝光、覆盖、odometry、pose、GraphCut 和 MultiBand 阈值只能等于或收紧默认安全包络；试图放宽会直接失败。诊断模式可以绕过质量阈值，但 `200 MP` 画布/aggregate、160 pose nodes 和 32 render sources 等资源硬限仍不可放宽。手工 `render_frame_ids` 只允许诊断；正式命令会拒绝它。
+
+## 产物、报告和原子交付
+
+正式成功目录：
+
+```text
+outputs/greenhouse_sequence/
+├─ panorama.jpg
+├─ transforms.json
+├─ render_transforms.json
+├─ report.json
+└─ delivery.json
+```
+
+- `transforms.json`：`rgbd-pose-graph/v1`，包含坐标约定、毫米单位、pose nodes 的 4×4 `camera_to_world`、RGB-D 边、信息矩阵、残差、优化和连通状态；
+- `render_transforms.json`：`rgbd-side-scan-projection/v1`，包含正射模式、扫描/上/法向轴、像素密度、世界范围、渲染源选择和每帧投影足迹；
+- `report.json`：`gemini305-rgbd-side-scan/v3`，汇总 RGB-D 会话、输入质量、布局、odometry、pose graph、pose quality、投影、GraphCut、owner 和 MultiBand 审计；
+- `delivery.json`：`gemini305-panorama-delivery/v2`，最后发布，且只有 `quality_pass=true` 才代表有效交付。
+
+每次任务先删除旧 `delivery.json`，正式文件先写隐藏 pending 文件，再用 `os.replace` 原子发布；`delivery.json` 最后写入。普通异常会清除正式文件并写 `failure.json`。强制终止可能来不及写失败报告，但没有有效 `delivery.json` 仍表示失败。
+
+旧诊断文件会在新的正式或失败任务开始时清除。历史 `pairs/` 不是交付目录，不能用于判断本次任务是否成功。
+
+## `--diagnostic-force` 的边界
+
+无限制自动曝光会话只能生成诊断结果：
 
 ```powershell
-unistitch-pair `
-  .\data\synthetic\demo\color\00000000.jpg `
-  .\data\synthetic\demo\color\00000001.jpg `
-  --config .\configs\demo.yaml `
-  --output .\outputs\pair
+g305-panorama `
+  .\data\captures\run_20260713_184519 `
+  --output .\outputs\run_20260713_184519_diagnostic `
+  --diagnostic-force
 ```
 
-完整参数：
-
-```text
-unistitch-pair [--output DIR] [--config YAML] [--model PTH]
-               [--device DEVICE] [--inference-width PIXELS]
-               [--strict-unistitch]
-               REFERENCE SOURCE
-```
-
-- `--output` 默认是 `outputs/pair`；
-- `--config` 未指定时自动读取 `configs/demo.yaml`；
-- `--model`、`--device`、`--inference-width` 可覆盖配置文件；
-- `--inference-width` 最小为 128，默认 640，并按原图宽高比确定推理高度；
-- `--strict-unistitch` 禁用 MAGSAC 的择优比较和回退：只接受通过重投影门限的 UniStitch global 分支。
-
-适配器直接在内存中运行 SuperPoint + LightGlue，不使用上游面向训练数据集的 LMDB 流程。它把最多 2048 个已匹配的关键点和描述子送入官方模型，并执行完整的全局 homography 与局部 FFD/TPS。双图输出为：
-
-```text
-outputs/pair/
-├─ pair_unistitch.jpg   完整 FFD/TPS 双向中间平面融合预览
-└─ pair_report.json     变换、匹配数、误差、画布、耗时和布局方法
-```
-
-`pair_unistitch.jpg` 使用推理分辨率生成，不是原始全分辨率计量图。`pair_report.json` 同时保存 UniStitch 原始 global homography 和最终采用的 `homography_source_to_reference`；`layout_method` 可能为 `unistitch_global`、`magsac_preferred` 或 `magsac_fallback`。MAGSAC 候选只有在内点数不少于 `min_matches` 且内点率至少为 50% 时才可用；择优时会在同一组 MAGSAC 内点上分别计算 MAGSAC 与 UniStitch 的中值重投影误差，避免拿不同支持集的误差直接比较。`magsac_preferred` 表示可用 MAGSAC 在该统一支持集上误差更低；`magsac_fallback` 表示 UniStitch 未通过自身的全匹配门限后采用可用 MAGSAC。无论最终布局方法是哪一种，双图预览都仍由完整 UniStitch FFD/TPS 产生。
-
-匹配少于 `min_matches`、FFD 画布超过安全上限、CUDA 不可用或两图尺寸不同都会返回非零退出码，不会把未对齐图片静默标记为成功。
-
-## UniStitch 序列拼接
-
-输入可以是完整采集会话、`frames.csv`，或者直接包含图片的 `color` 目录。合成数据本身每帧已移动 120 px，应使用 `--stride 1`：
+也可以传入一体化诊断配置：
 
 ```powershell
-unistitch-sequence `
-  .\data\synthetic\demo `
-  --config .\configs\demo.yaml `
-  --output .\outputs\synthetic_sequence `
-  --stride 1 `
-  --max-frames 10
+g305-panorama `
+  .\data\captures\run_20260713_184519 `
+  --config .\configs\capture_unrestricted_auto_exposure.yaml `
+  --output .\outputs\run_20260713_184519_diagnostic
 ```
 
-真实相机序列默认不需要设置步长、帧号、接缝位置或裁剪范围；程序会自动分割主扫描段、按实测像素位移布局并选择清晰渲染帧：
+诊断模式可以绕过：
+
+- 输入绝对清晰度、曝光和整体画质门限；
+- 正式 RGB-D odometry 边质量门限；
+- pose 轨迹质量门限；
+- 最终图像画质门限。
+
+它不能绕过：
+
+- 有效标定、彩色对齐深度和深度单位；
+- 有限 SE(3) 和 pose graph 连通；
+- 有效重投影；
+- 严格 owner 拓扑；
+- 画布和 aggregate working-set 限制；
+- 原子交付语义。
+
+诊断成功只写 `diagnostic_panorama.jpg` 和 `diagnostic_report.json`，绝不写 `panorama.jpg`、正式 JSON 或 `delivery.json`。即使使用了 `--diagnostic-force`，结构性失败仍会明确报错，而不是强行出图。
+
+`run_20260713_184519` 的 `color_exposure=301`，约 `30.1 ms`，远高于 `1200 µs` 正式移动安全门限，因此只能按上面的诊断命令测试。旧温室会话 `run_20260711_213054` 同样只适合作为输入门禁应拒绝的回归样本。源帧已经丢失的纹理不能靠融合恢复。
+
+2026-07-13 使用 Open3D 0.19 和上述 `--diagnostic-force` 命令复测 `run_20260713_184519`：12 条必需相邻 RGB-D 边均收敛，fitness 为 `0.613–0.856`、RMSE 为 `17.4–26.2 mm`；随后深度硬约束发现高风险带横断完整相邻 pair corridor，任务按结构门禁失败。输出目录只留下 `failure.json`，没有诊断图、正式文件或 `delivery.json`。这不是算法回退点，应通过补光、降低速度并重新采集解决。
+
+## 无相机合成 RGB-D 数据
 
 ```powershell
-unistitch-sequence `
-  .\data\captures\run_YYYYMMDD_HHMMSS `
-  --output .\outputs\greenhouse_sequence
+generate-panorama-demo `
+  --output .\data\synthetic\demo `
+  --frames 10 `
+  --width 640 `
+  --height 400 `
+  --step 120 `
+  --scene layered
 ```
 
-完整参数：
+可选场景：
 
-```text
-unistitch-sequence [--output DIR] [--config YAML] [--model PTH]
-                    [--device DEVICE] [--inference-width PIXELS]
-                    [--stride N] [--max-frames N]
-                    [--max-canvas-megapixels MP]
-                    [--blend-mode {feather,scan_seam}]
-                    [--render-frame-ids ID,ID,...]
-                    [--translation-anchor-y FRACTION]
-                    [--scan-seam-margin PIXELS]
-                    [--scan-multiband-levels N]
-                    [--scan-exposure-mode {none,center_gain,global_gain}]
-                    [--scan-seam-mask-sigma PIXELS]
-                    [--scan-protect-region FRAME_ID:X0:Y0:X1:Y1]
-                    [--motion-model {translation,similarity,homography}]
-                    [--no-pair-previews] [--strict-unistitch]
-                    [--diagnostic-force]
-                    INPUT
-```
+- `plane`：单平面；
+- `layered`：近远两层与真实横移视差；
+- `occlusion`：遮挡边界；
+- `depth_hole`：对齐深度空洞；
+- `dynamic_object`：动态物体失败/风险回归。
 
-- `--stride` 和 `--max-frames` 仅用于诊断时显式覆盖自动布局；不传时按实测运动自适应选帧；
-- `--max-canvas-megapixels` 始终限制单个几何画布；`scan_seam` 还以“画布 MP × 最终渲染源帧数”检查 aggregate working-set，任一预算超限都会在全分辨率 warp 前失败。这是对同时常驻工作量的保守约束，不是输出 JPEG 大小；
-- `--blend-mode scan_seam` 是唯一可发布交付件的序列模式：沿扫描轴给每帧分配单源区域，在相邻重叠带内以颜色、梯度和对齐深度构造风险图，再用单调动态规划让接缝绕开近物体、深度断层和高残差区域，最后执行有限多频段融合。找不到安全接缝时拒绝发布；`feather` 仅为代码级诊断渲染器，命令行不会把它发布为交付件；
-- `--render-frame-ids` 是保留的诊断覆盖项，正式序列命令会拒绝用手选帧发布交付件，防止通过少量帧绕过完整覆盖和清晰度选择；默认始终从完整输入自动选帧；
-- `--translation-anchor-y` 是诊断用高级覆盖项；默认 `null`，从全画面鲁棒提取平移；
-- `--scan-seam-margin` 是诊断用高级覆盖项；默认 `0` 时按图像宽度自动确定，`--scan-multiband-levels` 控制接缝低频平滑层数；
-- `--scan-exposure-mode global_gain` 在完整重叠区求解每帧全局亮度增益，减少自动曝光造成的低频亮度带；`center_gain` 保留旧的中心块中值校正；
-- `--scan-seam-mask-sigma` 对最终单源 owner mask 做窄高斯软化，默认 `1 px`，只柔化边界而不恢复整片重叠平均；
-- `--scan-protect-region FRAME_ID:X0:Y0:X1:Y1` 仅保留为诊断用高级覆盖项；默认流程使用对齐深度自动避开近景，不需要用户画框；
-- `--motion-model` 控制长序列累计约束：固定水平侧扫默认使用 `translation`，允许小旋转/尺度变化时使用 `similarity`，一般自由视角才使用 `homography`；
-- `--no-pair-previews` 不保存逐对 FFD/TPS 诊断图；
-- `--strict-unistitch` 禁用 LightGlue + MAGSAC 的择优比较和回退，任一 UniStitch global 边不合格即终止；
-- `--diagnostic-force`（或配置中的 `stitch.diagnostic_force: true`）仅用于查看失败场景：放宽 UniStitch/MAGSAC 正式几何门限，并绕过输入和最终渲染质量门禁；仍保留有限矩阵、画布和内存安全限制，只写 `diagnostic_panorama.jpg` 与 `diagnostic_report.json`，永不写正式全景或 `delivery.json`；
-- 所有选中帧必须具有相同尺寸，任一相邻对失败都会使本次序列命令返回非零退出码。
+合成会话包含 `calibration.json`、`color/`、`depth_aligned/`、带 `aligned_depth_path` 与 `depth_scale_mm_per_unit` 的 `frames.csv`，以及 manifest 中已知的毫米 `camera_to_world` 轨迹。它适合验证单位、SE(3) 组合、z-buffer、深度断层、黑色有效内容、owner 和原子交付语义，但不能代替 Gemini 305、Open3D 实机 odometry、现场照明或速度验收。
 
-序列实现明确区分“局部双图预览”和“可组合全局布局”：
+## 现场验收
 
-1. 在相邻原始关键帧上运行 LightGlue 和完整 UniStitch；
-2. 以匹配点验证 UniStitch global homography 的方向和重投影误差；
-3. 同时拟合 USAC/MAGSAC；只有内点数不少于 `min_matches` 且内点率至少为 50% 时才把它视为可用候选。默认在同一组 MAGSAC 内点上比较两种变换，若 MAGSAC 中值误差更低则记录 `magsac_preferred`；
-4. 若未触发择优，UniStitch 的全匹配中值误差通过门限时记录 `unistitch_global`；否则采用可用 MAGSAC 并记录 `magsac_fallback`，两者均不可用则终止；
-5. 将通过验证的变换投影到配置的运动模型；默认 `translation` 从全画面鲁棒提取平移，同时拒绝方向反转、相邻大跳和过大垂直运动；
-6. 将每条受约束的 `source_to_reference` 变换累积到第一帧坐标系；
-7. `scan_seam` 从原始全分辨率帧中按覆盖与绝对清晰度选择关键帧，先补偿全局曝光，再以扫描轴分配单源区域；颜色、梯度和对齐深度共同引导单调 DP 接缝绕开近物体与高视差区。最终只对 owner 边界做窄 mask 软化与多频段融合，并按有效 mask 的最大内接矩形自动裁剪黑边；任一输入、几何、接缝或裁剪质量门禁失败都不会发布 `panorama.jpg`。
+新采集数据至少分别验证静止、`0.5 m/s`、`1.0 m/s` 和 `1.5 m/s`：
 
-它不会把不断变宽的累计全景再次输入 UniStitch，也不会把局部 FFD/TPS 网格错误地当作可直接连乘的全局变换。逐对 FFD/TPS 只用于 `pairs/*.jpg` 视觉诊断；最终长图使用经过运动模型约束的 global 布局和原图单次渲染，避免递归重采样。
+- `queue_drops == 0`、`write_errors == 0`，写盘队列无持续堆积；
+- RGB-D 时间戳同步且没有回退；
+- 彩色曝光 metadata 保持在正式上限内；
+- 对齐深度有效率、尺寸和单位正确；
+- pose graph 连通，位姿和残差满足报告阈值；
+- 最近约 `0.5 m` 物体没有明显重影或前景拉伸；
+- GraphCut 边界、亮度带、上下抖动和最终四边通过人工复核；
+- 输出目录存在且只存在最后发布的有效 `delivery.json`。
 
-输出结构：
-
-```text
-outputs/sequence/
-├─ panorama.jpg       原始帧一次性渲染的 RGB 长图
-├─ transforms.json    每帧到第一帧坐标系的 3×3 累计变换
-├─ render_transforms.json  最终清晰关键帧及其插值变换（scan_seam）
-├─ report.json        画布、选帧、耗时、逐对质量和实际布局方法
-├─ delivery.json      最后原子写入的交付成功标记；只有存在它才可使用本次全景
-└─ pairs/             非交付诊断目录；开启预览时写入，也可能保留上一次诊断内容
-   ├─ 0000_0001.jpg
-   └─ ...
-```
-
-若质量门禁或普通运行异常失败，正式交付文件会被清除并写入 `failure.json`，其中包含失败原因；旧的 `panorama.jpg` 不会被误当成本次结果。即使进程被强制终止而来不及写失败报告，只要没有 `delivery.json` 就不得把目录视为交付成功。
-
-仅查看不合格结果时，可以显式加入 `--diagnostic-force`，也可以复用一体化诊断配置。诊断成功后输出结构为：
-
-无限制自动曝光采集得到的会话必须启用其中一种诊断入口；使用一体化配置时的完整命令为：
-
-```powershell
-unistitch-sequence `
-  .\data\captures\run_YYYYMMDD_HHMMSS `
-  --output .\outputs\unrestricted_exposure_diagnostic `
-  --config .\configs\capture_unrestricted_auto_exposure.yaml
-```
-
-诊断配置关闭的是应用层质量拒绝，不会也不能关闭相机固件的帧周期上限。有限矩阵检查以及画布/aggregate working-set 内存保护仍然保留，避免异常变换导致进程崩溃或耗尽内存。
-
-```text
-outputs/diagnostic/
-├─ diagnostic_panorama.jpg
-└─ diagnostic_report.json
-```
-
-诊断模式不会生成 `panorama.jpg`、`report.json` 或 `delivery.json`，其图像不得作为交付件。
-
-`configs/demo.yaml` 中的保护参数已经由真实 CLI 使用：
-
-- `min_matches: 40`：LightGlue 的最低匹配数量，也是 MAGSAC 候选的最低内点数；MAGSAC 还必须达到至少 50% 的内点率；
-- `max_unistitch_reprojection_px: 20.0`：推理分辨率下 UniStitch global 分支的中值重投影拒绝门限；
-- `allow_magsac_fallback: true`：允许构造 LightGlue + USAC/MAGSAC 候选；这个历史名称同时控制 `magsac_preferred` 的择优路径和 `magsac_fallback` 的回退路径；
-- `prefer_magsac_layout: true`：可用 MAGSAC 与 UniStitch 在同一组 MAGSAC 内点上比较时，MAGSAC 中值残差更低便直接采用，而不是等 UniStitch 超阈值后才回退；
-- `sequence_motion_model: translation`：按固定水平侧扫模型累计位移，避免自由单应的投影项产生长程梯形漂移；
-- `translation_anchor_y: null`：自动从全画面鲁棒提取平移，不绑定某一固定高度的物体层；
-- `sequence_blend_mode: scan_seam`：禁止几十张重叠帧整幅平均；
-- `scan_max_keyframes: 0`、`scan_seam_margin: 0`：关键帧数量和接缝搜索带宽均按轨迹、清晰度和图像宽度自动确定；`scan_multiband_levels` 控制多频段融合层数；
-- `scan_exposure_mode: global_gain`、`scan_seam_mask_sigma: 1.0`：先校正关键帧的全局亮度，再只对最终 owner 边界做约 1 px 的软化；
-- `diagnostic_force: false`：正式默认不绕过任何质量门禁；只有独立诊断配置将其设为 `true`，且该模式绝不发布 `delivery.json`；
-- `max_pair_canvas: 4000`：限制逐对 FFD/TPS 异常画布；
-- `max_canvas_megapixels: 200`：同时限制单个最终几何画布和“画布 MP × 最终渲染源帧数”的工作集，为显式归一化多频段金字塔保留内存余量；
-- `save_pair_previews: false`：默认不写大量逐对诊断图，降低长序列 I/O；调试时可在自定义配置中开启。
-
-## RGB 与三维输出的边界
-
-当前采集会话已经保留构建彩色三维地图所需的基础数据：对齐深度、深度比例、内外参和时间戳；需要研究原生深度坐标时可用 `--raw-depth` 额外保存原始深度。但当前仓库没有 RGB-D 3D-3D RANSAC、ICP、位姿图、点云融合或 TSDF 模块，因此不能声称已经输出三维地图。
-
-UniStitch 的 FFD/TPS 是为了视觉对齐而设计的二维非刚性变形，会改变局部形状和尺度。它不能：
-
-- 作为相机 SE(3) 位姿；
-- 直接用于扭曲深度图后进行米制测量；
-- 为任意长度路线提供无漂移三维轨迹；
-- 把多深度层场景变成严格无失真的正射图。
-
-后续三维板块应独立使用有效 RGB-D 对应点估计 SE(3)，再通过 ICP/位姿图和分块点云或 TSDF 融合；RGB 长图可以与三维地图共享经过验证的全局轨迹，但不能用非刚性 RGB warp 代替三维几何。
-
-## 已知限制与风险
-
-- **无编码器、无外接 IMU**：系统完全依赖图像重叠，匀速距离和长期尺度没有独立观测。
-- **没有真实闭环**：沿一列铁架单向前进通常不会回到旧区域，位姿图只能平滑，不能凭空消除系统性漂移。
-- **周期性铁架**：非常容易错配到相邻重复单元。方向、最大位移、匹配覆盖和全局一致性必须同时检查；宁可断开子地图，也不要接受整周期错误。
-- **叶片运动**：风机、人员和自然摆动会引起双影或错误局部变形。
-- **金属和深度边缘**：细铁杆、遮挡边界和反射表面可能产生空洞或飞点。
-- **域外数据**：公开模型主要使用 UDIS-D 图像对训练，并未证明能可靠处理温室无限侧扫序列。
-- **显存**：FFD 输出显存随分辨率快速增加。默认 640 px 推理宽度用于降低风险；原始 `1280×800` 可能需要约 10 GB 级显存。
-- **行程长度**：默认不再固定截取 40 帧，而是自动分割连续单向主扫描段并按位移选帧；`layout_max_frames: 160` 和 `max_canvas_megapixels: 200` 分别约束布局规模和渲染工作集。超过预算会明确要求拆分路线，而不是降质输出。
-- **二维结果不是计量正射图**：铁架、叶片和背景分处不同深度，视觉全景不能保证各深度层同时保持真实尺寸。
+合成测试通过不等于实机验收完成。动态物体、镜面反射、完全无纹理、严重欠光、深度大面积空洞或源帧已拖影的场景可能被拒绝；这是 fail-closed 设计，不应通过放宽门限或回退平均来掩盖。
 
 ## 常见问题
 
-### PowerShell 不允许执行脚本
+### `Open3D is required ... but could not be imported`
 
-仅对当前窗口放开：
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-```
-
-也可以使用 `powershell -ExecutionPolicy Bypass -File ...` 直接运行指定脚本。
-
-### `No Orbbec camera found`
-
-检查 USB 3 连接、线材、设备管理器，并关闭所有可能占用设备的程序。不要同时运行 OrbbecViewer 和本采集程序。
-
-### 找不到精确的流配置
-
-错误信息会列出实机 profile。修改 `configs/demo.yaml` 或使用 `--width`、`--height`、`--fps`，选择彩色和 Y16 深度都能工作的组合。
-
-### 同步端口没有 30 Hz 脉冲
-
-先确认本次会话 `manifest.json` 中 `external_sync_output.enabled`、`readback_verified` 和 `trigger_out_enable` 均为 `true`，`mode` 为 `PRIMARY`，且 `expected_frequency_hz` 为 `30`。这些字段证明 SDK 配置已经写入并回读，但不能代替端口电气测量；仍无脉冲时，应检查 Gemini 305 对应的同步转接线、VSYNC_OUT/GND 接线、探头阈值和固件版本。不要同时打开 OrbbecViewer，因为同一设备被其它程序占用时配置或开流可能异常。
-
-### `frames.csv` 的 metadata 字段为空
-
-重新运行 `scripts/register_orbbec_metadata.ps1`，重新插拔相机，再录制一段短数据检查 `manifest.json` 的 `metadata_support`。
-
-### 写队列出现丢帧
-
-优先使用本地 NVMe，关闭实时杀毒扫描和其他高磁盘负载程序。默认只保存对齐深度，当前电脑已实测 300 帧零丢失；同时加 `--raw-depth` 会多编码一张 16 位 PNG，当前单写盘线程可能跟不上 30 fps，因此仅建议短期标定/诊断使用。不要在不记录原因的情况下忽略 `queue_drops`。
-
-### Windows 报 `0xc00d3704` 或硬件 MFT 资源不足
-
-先关闭所有相机程序并重新插拔 Gemini 305。若上一次采集进程被强制结束，相机/UVC 资源可能没有正常释放；重新插拔或通过 SDK 重启相机后再测试。不要因为该错误就盲目优先 MJPG：当前电脑的 MJPG Media Foundation 路径曾触发该错误，而 RGB 和低带宽 YUYV 在相机重启后均已实测成功。
-
-### `torch.cuda.is_available()` 为 `False`
-
-采集和合成仍可使用；UniStitch 不可用。根据 NVIDIA 驱动重新安装匹配的 CUDA PyTorch，再次运行检查命令。
-
-若导入 PyTorch 时提示 Windows App Control/WDAC 阻止 `c10.dll`，需要由系统策略放行该已安装运行库或改用组织认可的签名环境；这不是调低拼接参数可以解决的问题。当前开发机仍受此策略限制，解除前尚未完成真实 CUDA 模型验收。
-
-### CUDA out of memory
-
-把 `stitch.inference_width` 保持在 640 或进一步降低，减少一次处理的帧数，关闭其他 GPU 程序。不要直接用累计长图作为 UniStitch 输入。
-
-### 找不到 `unistitch-pair` 或 `unistitch-sequence` 命令
-
-确认已执行 editable 安装并激活正确环境。Conda 用户可直接运行：
+确认正在使用项目环境，并重新安装基础依赖：
 
 ```powershell
-conda run --prefix .\.conda unistitch-pair --help
+.\.conda\python.exe -m pip install -e ".[capture,test]"
+.\.conda\python.exe -c "import open3d; print(open3d.__version__)"
 ```
 
-### 匹配数不足或 global 分支验证失败
+### 找不到 `g305-panorama`
 
-先检查运动模糊、曝光、相邻帧重叠和图片尺寸；默认自动布局会根据实测位移选帧。若仍失败，应补光、降低运动速度或重新采集，不要靠显式 `--stride` 关闭自动布局并强行接受错误边。默认模式同时验证 UniStitch global 与 LightGlue + MAGSAC；MAGSAC 必须满足最低内点数和至少 50% 的内点率，并且择优比较会让两种变换使用同一组 MAGSAC 内点。使用 `--strict-unistitch` 会禁用 MAGSAC 的择优与回退路径。周期铁架场景不要通过盲目放宽误差阈值来强行接受错误边。
+重新执行 editable 安装：
+
+```powershell
+.\.conda\python.exe -m pip install -e ".[capture,test]"
+```
+
+### 正式目录没有 `delivery.json`
+
+任务失败或只运行了诊断模式。检查 `failure.json`、标准错误或 `diagnostic_report.json`；不要把 `panorama.jpg` 是否存在、旧 `pairs/` 或 JPEG 黑色像素当作成功判断。
+
+### GraphCut 或 MultiBand 报错
+
+这是正式失败，没有自动 fallback。检查报告中的真实共同覆盖、深度高风险带、owner 拓扑、输出 mask 和 aggregate working set；若源数据不足，应补光、降低速度或重新采集。
+
+### Windows App Control 阻止 `c10.dll`
+
+`c10.dll` 属于可选历史 Torch/UniStitch 诊断依赖，不应进入正式 `g305-panorama`。若只运行正式 RGB-D 流程，请使用未安装 `unistitch-diagnostic` 的基础环境；若确需历史双图工具，需要由系统策略放行组织认可的签名 Python/PyTorch 环境。
 
 ## 测试
 
-安装测试依赖后运行：
-
 ```powershell
-python -m pytest
+.\.conda\python.exe -m pytest -q
+ruff check src tests
+.\.conda\python.exe -m compileall -q src tests
+git diff --check
 ```
 
-当前开发机已完成以下 smoke：
-
-- 完整纯离线测试套件全部通过（具体数量以当前 `pytest` 输出为准）；
-- 合成 6 帧序列的真值步长为 100 px，默认平移约束得到累计位置约 `0, 100.6, 201.6, 302.2, 402.6, 503.7 px`；
-- Gemini 305 以 RGB + Y16 `1280×800@30` 连续采集 30 帧，实测约 30.022 fps，写入/丢帧/时间戳回退为 `30/0/0`，RGB-D 设备时间戳差为 0–1 µs；
-- 仅保存 RGB 与对齐深度时连续采集 300 帧，写入/丢帧为 `300/0`，写盘队列保持在约 1–2 帧；
-- 5 张真实静态 RGB 帧的 UniStitch 匹配数为 470–487，中值重投影误差为 1.15–1.29 px，累计平移保持在约 1 px 内。
-
-这些数字只说明当前电脑和当前静态场景的链路已经跑通，不替代温室运动数据验收。
-
-合成数据测试不能替代实机验收。相机采集至少应分别验证静止、0.5 m/s、1.0 m/s 和 1.5 m/s，并检查时间戳、写入丢帧、深度有效率和运动模糊。
+修改相机、Open3D、GraphCut、MultiBand、性能或交付语义时，必须明确区分：纯单元/合成验证、历史失败数据回归、真实 Open3D 运行和 Gemini 305 现场验收。
 
 ## 第三方项目与许可证
 
-- [UniStitch 代码](https://github.com/MmelodYy/UniStitch)，固定到提交 `78ebe7c07d516c591810337475ccdd4f2beff384`；
-- [UniStitch 论文](https://arxiv.org/abs/2603.10568)；
-- [UniStitch 模型](https://huggingface.co/Y5Y/UniStitch_model)；
-- [LightGlue](https://github.com/cvg/LightGlue)，固定到提交 `746fac2c042e05d1865315b1413419f1c1e7ba55`；
-- [Orbbec Python SDK v2](https://github.com/orbbec/pyorbbecsdk)。
+- [Open3D](https://github.com/isl-org/Open3D) 提供正式 RGB-D odometry 与 pose graph 能力；
+- [OpenCV](https://opencv.org/) 提供图像处理、GraphCut seam finder 和 MultiBand blender；
+- [OrbbecSDK v2 Python wrapper](https://github.com/orbbec/pyorbbecsdk2) 提供 Gemini 305 采集；
+- UniStitch 与 LightGlue 仅为可选历史双图诊断依赖。
 
-第三方代码来源、固定版本和许可证说明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
-
-
-`conda activate .\.conda
-g305-capture --output .\data\captures`
-
-``unistitch-sequence `
-  .\data\captures\run_20260713_152721 `
-  --output .\outputs\greenhouse_sequence `
-  --diagnostic-force``
-
-
-``g305-capture `
-  --config .\configs\capture_unrestricted_auto_exposure.yaml `
-  --output .\data\captures``
-
-``unistitch-sequence `
-  .\data\captures\run_YYYYMMDD_HHMMSS `
-  --config .\configs\capture_unrestricted_auto_exposure.yaml `
-  --output .\outputs\exposure_diagnostic``
+UniStitch、LightGlue 与 Orbbec wrapper 的固定来源和许可证说明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)；Open3D 与 OpenCV 许可证以各自上游发布为准。

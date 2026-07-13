@@ -27,38 +27,72 @@ capture:
   save_raw_depth: false
 
 stitch:
-  model: models/unistitch/epoch_best_model.pth
-  device: cuda:0
-  inference_width: 640
+  pose_backend: open3d_rgbd
   adaptive_layout: true
   analysis_width: 320
   layout_target_displacement_fraction: 0.18
   layout_max_displacement_fraction: 0.28
   layout_max_frames: 160
-  stride: 1
-  max_frames: 0
-  max_points: 2048
-  max_pair_canvas: 4000
   max_canvas_megapixels: 200
-  min_matches: 40
-  max_unistitch_reprojection_px: 20.0
-  allow_magsac_fallback: true
-  prefer_magsac_layout: true
-  min_magsac_inlier_ratio: 0.5
-  sequence_motion_model: translation
-  translation_anchor_y: null
   sequence_blend_mode: scan_seam
-  scan_max_keyframes: 0
-  scan_target_spacing_fraction: 0.40
-  scan_seam_margin: 0
-  scan_multiband_levels: 5
-  scan_exposure_mode: global_gain
-  scan_seam_mask_sigma: 1.0
-  scan_auto_foreground: true
-  scan_quality_gate: true
   input_quality_gate: true
   # Diagnostic profiles may set this to true; formal defaults must remain false.
   diagnostic_force: false
   color_exposure_unit_us: 100
   maximum_motion_exposure_us: 1200
-  save_pair_previews: false
+
+  rgbd_odometry:
+    working_width: 640
+    require_aligned_depth: true
+    require_calibration: true
+    minimum_depth_mm: 150.0
+    maximum_depth_mm: 10000.0
+    maximum_depth_difference_mm: 70.0
+    evaluation_distance_mm: 50.0
+    minimum_valid_depth_ratio: 0.10
+    minimum_fitness: 0.15
+    maximum_inlier_rmse_mm: 50.0
+    maximum_pair_translation_mm: 750.0
+    maximum_pair_vertical_mm: 80.0
+    maximum_pair_forward_mm: 120.0
+    maximum_pair_rotation_deg: 6.0
+    iteration_number_per_pyramid_level: [20, 10, 5]
+
+  pose_graph:
+    enabled: true
+    nonadjacent_max_gap: 2
+    maximum_correspondence_distance_mm: 50.0
+    edge_prune_threshold: 0.25
+    preference_loop_closure: 0.10
+
+  pose_quality:
+    minimum_scan_span_mm: 20.0
+    maximum_reverse_step_mm: 5.0
+    maximum_reverse_fraction: 0.02
+    maximum_step_translation_mm: 750.0
+    maximum_step_vertical_mm: 80.0
+    maximum_step_forward_mm: 120.0
+    maximum_total_vertical_drift_mm: 120.0
+    maximum_total_forward_drift_mm: 150.0
+    maximum_step_rotation_deg: 6.0
+    maximum_total_rotation_deg: 10.0
+    maximum_edge_translation_residual_mm: 30.0
+    maximum_edge_rotation_residual_deg: 2.0
+    maximum_consecutive_unreliable_edges: 2
+    require_all_adjacent_edges: true
+
+  rgbd_projection:
+    mode: orthographic_side_scan
+    footprint_working_width: 640
+    reject_depth_discontinuity: true
+    max_render_sources: 32
+    minimum_coverage_ratio: 0.95
+    minimum_overlap_fraction: 0.34
+    max_aggregate_megapixels: 200
+    chunk_rows: 128
+
+  scan_seam:
+    backend: graphcut_depth_constrained
+    multiband_levels: 5
+    exposure_mode: global_gain
+    quality_gate: true

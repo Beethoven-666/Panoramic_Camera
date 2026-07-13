@@ -13,7 +13,12 @@ from panorama_demo.quality import (
     select_layout_from_motion_estimates,
     select_layout_indices_adaptive,
     select_primary_scan_segment,
+    select_rgbd_render_indices_auto,
     select_render_indices_auto,
+)
+from panorama_demo.rgbd_projection import (
+    EstimatedProjectionFootprint,
+    SideScanFootprintEstimate,
 )
 
 
@@ -188,6 +193,98 @@ def test_render_selection_rejects_one_frame_budget() -> None:
             [np.eye(3), np.array([[1, 0, 100], [0, 1, 0], [0, 0, 1]])],
             (200, 320, 3),
             maximum_keyframes=1,
+        )
+
+
+def _metric_pose(scan_x_mm: float) -> np.ndarray:
+    pose = np.eye(4, dtype=np.float64)
+    pose[0, 3] = scan_x_mm
+    return pose
+
+
+def _metric_footprints(
+    scan_centers_mm: list[float], *, width_mm: float = 200.0
+) -> SideScanFootprintEstimate:
+    half_width = 0.5 * width_mm
+    return SideScanFootprintEstimate(
+        scan_axis=(1.0, 0.0, 0.0),
+        up_axis=(0.0, 1.0, 0.0),
+        normal_axis=(0.0, 0.0, 1.0),
+        footprints=tuple(
+            EstimatedProjectionFootprint(
+                frame_id=100 + index,
+                camera_center_world_mm=(scan_x, 0.0, 0.0),
+                camera_center_scan_x_mm=scan_x,
+                scan_x_interval_mm=(scan_x - half_width, scan_x + half_width),
+                projected_height_mm=120.0,
+                sampled_world_bounds_mm=(
+                    scan_x - half_width,
+                    -60.0,
+                    scan_x + half_width,
+                    60.0,
+                ),
+                sample_count=500,
+                valid_depth_fraction=0.9,
+            )
+            for index, scan_x in enumerate(scan_centers_mm)
+        ),
+        working_width=320,
+    )
+
+
+def test_rgbd_render_selection_uses_real_se3_nodes_and_prefers_clear_bridge() -> None:
+    positions = [0.0, 90.0, 110.0, 200.0]
+    qualities = [
+        FrameQuality(value, 25.0, 0.5, 0.0, 0.0, 0.4, 6.0)
+        for value in (20.0, 6.0, 60.0, 20.0)
+    ]
+
+    selected, report = select_rgbd_render_indices_auto(
+        qualities,
+        [_metric_pose(value) for value in positions],
+        _metric_footprints(positions),
+    )
+
+    assert selected == [0, 2, 3]
+    assert report["selected_frame_ids"] == [100, 102, 103]
+    assert report["coverage_ratio"] >= 0.95
+    assert report["minimum_selected_overlap_fraction"] >= 0.34
+    assert report["uses_only_optimized_pose_nodes"] is True
+    assert report["interpolated_pose_count"] == 0
+
+
+def test_rgbd_render_selection_rejects_insufficient_clear_footprint_coverage() -> None:
+    positions = [0.0, 90.0, 110.0, 200.0]
+    rejected = FrameQuality(1.0, 2.0, 0.01, 0.8, 0.0, 0.1, 1.0)
+    qualities = [rejected, _quality(), _quality(), rejected]
+
+    with pytest.raises(RuntimeError, match="cover only"):
+        select_rgbd_render_indices_auto(
+            qualities,
+            [_metric_pose(value) for value in positions],
+            _metric_footprints(positions),
+        )
+
+
+def test_rgbd_render_selection_rejects_non_monotonic_camera_centers() -> None:
+    positions = [0.0, 100.0, 80.0, 200.0]
+
+    with pytest.raises(RuntimeError, match="not monotonic"):
+        select_rgbd_render_indices_auto(
+            [_quality() for _ in positions],
+            [_metric_pose(value) for value in positions],
+            _metric_footprints(positions),
+        )
+
+
+def test_rgbd_render_selection_requires_real_safe_projected_overlap() -> None:
+    positions = [0.0, 100.0, 200.0]
+
+    with pytest.raises(RuntimeError, match="safe projected overlap"):
+        select_rgbd_render_indices_auto(
+            [_quality() for _ in positions],
+            [_metric_pose(value) for value in positions],
+            _metric_footprints(positions, width_mm=100.0),
         )
 
 
