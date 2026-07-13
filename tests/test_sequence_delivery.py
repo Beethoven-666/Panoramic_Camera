@@ -24,11 +24,15 @@ def test_failure_report_removes_stale_deliverables(tmp_path: Path) -> None:
         "delivery.json",
     ):
         (tmp_path / name).write_bytes(b"stale")
+    (tmp_path / "diagnostic_panorama.jpg").write_bytes(b"stale")
+    (tmp_path / "diagnostic_report.json").write_bytes(b"stale")
 
     _write_failure_report(tmp_path, tmp_path / "input", RuntimeError("bad seam"))
 
     assert not (tmp_path / "panorama.jpg").exists()
     assert not (tmp_path / "delivery.json").exists()
+    assert not (tmp_path / "diagnostic_panorama.jpg").exists()
+    assert not (tmp_path / "diagnostic_report.json").exists()
     failure = json.loads((tmp_path / "failure.json").read_text(encoding="utf-8"))
     assert failure["deliverable_published"] is False
     assert failure["message"] == "bad seam"

@@ -9,7 +9,8 @@ capture:
   warmup_timeout_seconds: 15
   frame_timeout_seconds: 5
   queue_size: 64
-  # Let gain adapt to the room, but never let auto exposure create long motion blur.
+  # Default: capped automatic exposure. For a fixed manual duration, set
+  # color_auto_exposure: false and color_exposure_us to a positive microsecond value.
   color_auto_exposure: true
   color_exposure_us: null
   color_ae_max_exposure_us: 800
@@ -33,7 +34,7 @@ stitch:
   max_frames: 0
   max_points: 2048
   max_pair_canvas: 4000
-  max_canvas_megapixels: 50
+  max_canvas_megapixels: 200
   min_matches: 40
   max_unistitch_reprojection_px: 20.0
   allow_magsac_fallback: true

@@ -37,6 +37,11 @@ _DELIVERY_FILES = (
     "render_transforms.json",
 )
 
+_DIAGNOSTIC_FILES = (
+    "diagnostic_panorama.jpg",
+    "diagnostic_report.json",
+)
+
 
 def _clear_delivery_files(output: Path) -> None:
     output.mkdir(parents=True, exist_ok=True)
@@ -47,8 +52,15 @@ def _clear_delivery_files(output: Path) -> None:
             pending.unlink()
 
 
+def _clear_diagnostic_files(output: Path) -> None:
+    output.mkdir(parents=True, exist_ok=True)
+    for name in _DIAGNOSTIC_FILES:
+        (output / name).unlink(missing_ok=True)
+
+
 def _write_failure_report(output: Path, input_path: Path, exc: Exception) -> None:
     _clear_delivery_files(output)
+    _clear_diagnostic_files(output)
     payload = {
         "schema": "gemini305-panorama-failure/v1",
         "failed_utc": datetime.now(timezone.utc).isoformat(),
@@ -118,6 +130,14 @@ def _parser() -> argparse.ArgumentParser:
         "--strict-unistitch",
         action="store_true",
         help="Reject instead of falling back to LightGlue+MAGSAC for sequence layout",
+    )
+    parser.add_argument(
+        "--diagnostic-force",
+        action="store_true",
+        help=(
+            "Relax geometry and bypass input/render quality gates, writing only "
+            "diagnostic_panorama.jpg; finite/canvas safety still applies"
+        ),
     )
     return parser
 
@@ -425,9 +445,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     config = load_config(args.config)
     stitch_config = dict(config["stitch"])
     output = args.output.expanduser().resolve()
+    diagnostic_force = bool(getattr(args, "diagnostic_force", False))
     _clear_delivery_files(output)
+    _clear_diagnostic_files(output)
     (output / "failure.json").unlink(missing_ok=True)
-    if args.strict_unistitch:
+    diagnostic_geometry: dict[str, object] | None = None
+    if diagnostic_force:
+        stitch_config["allow_magsac_fallback"] = True
+        stitch_config["prefer_magsac_layout"] = True
+        stitch_config["min_magsac_inlier_ratio"] = 0.0
+        stitch_config["max_unistitch_reprojection_px"] = 1_000_000.0
+        diagnostic_geometry = {
+            "official_thresholds_bypassed": True,
+            "minimum_magsac_inlier_count": int(
+                stitch_config.get("min_matches", 40)
+            ),
+            "minimum_magsac_inlier_ratio": 0.0,
+            "maximum_unistitch_reprojection_px": 1_000_000.0,
+            "finite_transform_and_canvas_safety_still_required": True,
+        }
+    elif args.strict_unistitch:
         stitch_config["allow_magsac_fallback"] = False
     adaptive_layout = bool(stitch_config.get("adaptive_layout", True)) and (
         args.stride is None and args.max_frames is None
@@ -556,8 +593,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             stitch_config.get("maximum_motion_exposure_us", 1200.0)
         ),
     )
-    if bool(stitch_config.get("input_quality_gate", True)) and not bool(
-        capture_quality["quality_pass"]
+    if (
+        not diagnostic_force
+        and bool(stitch_config.get("input_quality_gate", True))
+        and not bool(capture_quality["quality_pass"])
     ):
         reasons = "; ".join(str(value) for value in capture_quality["failure_reasons"])
         raise RuntimeError("Input capture quality gate failed: " + reasons)
@@ -736,7 +775,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             protected_regions=protected_regions,
             depth_maps_mm=render_depths,
             auto_foreground=scan_auto_foreground,
-            quality_gate=scan_quality_gate,
+            quality_gate=scan_quality_gate and not diagnostic_force,
         )
         canvas = scan_render.canvas
         render_metadata = scan_render.as_dict()
@@ -776,8 +815,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "frame_ids": [frame.frame_id for frame in frames],
         }
         render_transform_rows = None
-    _ensure_publishable_quality(capture_quality, render_metadata)
-    panorama_path = output / "panorama.jpg"
+    if not diagnostic_force:
+        _ensure_publishable_quality(capture_quality, render_metadata)
+    panorama_path = output / (
+        "diagnostic_panorama.jpg" if diagnostic_force else "panorama.jpg"
+    )
+    report_path = output / (
+        "diagnostic_report.json" if diagnostic_force else "report.json"
+    )
     transform_rows = [
         {
             "frame_id": frame.frame_id,
@@ -790,6 +835,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "schema": "gemini305-unistitch-sequence/v2",
         "input": str(args.input.expanduser().resolve()),
         "panorama": str(panorama_path),
+        "report": str(report_path),
+        "diagnostic_only": diagnostic_force,
+        "deliverable_published": not diagnostic_force,
+        "diagnostic_geometry": diagnostic_geometry,
         "frame_count": len(frames),
         "stride": None if adaptive_layout else stride,
         "layout_selection": layout_metadata,
@@ -811,6 +860,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "pairs": pair_reports,
     }
+    if diagnostic_force:
+        pending_panorama = write_bgr(
+            output / ".diagnostic_panorama.pending.jpg", panorama
+        )
+        pending_report = output / ".diagnostic_report.pending.json"
+        pending_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        os.replace(pending_panorama, panorama_path)
+        os.replace(pending_report, report_path)
+        return report
     pending_panorama = write_bgr(output / ".panorama.pending.jpg", panorama)
     pending_transforms = output / ".transforms.pending.json"
     pending_report = output / ".report.pending.json"
@@ -851,7 +909,9 @@ def main() -> None:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     print(f"Panorama: {report['panorama']}")
-    print(f"Report: {args.output.expanduser().resolve() / 'report.json'}")
+    print(f"Report: {report['report']}")
+    if bool(report.get("diagnostic_only", False)):
+        print("Diagnostic only: no delivery.json was published")
 
 
 if __name__ == "__main__":

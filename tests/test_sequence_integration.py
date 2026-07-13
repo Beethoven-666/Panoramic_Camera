@@ -78,3 +78,70 @@ def test_zero_parameter_sequence_publishes_one_complete_delivery(
     assert delivery["quality_pass"] is True
     assert np.all(np.max(panorama[[0, -1]], axis=2) > 0)
     assert np.all(np.max(panorama[:, [0, -1]], axis=2) > 0)
+
+
+def test_diagnostic_force_writes_only_non_delivery_artifacts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    session = generate_sequence(
+        tmp_path / "session",
+        frame_count=10,
+        frame_width=640,
+        frame_height=400,
+        step=120,
+        seed=23,
+    )
+    output = tmp_path / "output"
+    observed_config: dict[str, object] = {}
+
+    def diagnostic_aligner(settings, **_kwargs):
+        observed_config.update(settings)
+        return _KnownTranslationAligner(120)
+
+    monkeypatch.setattr(sequence, "build_aligner", diagnostic_aligner)
+    original_capture_quality = sequence.assess_capture_quality
+    original_render = sequence.render_scan_panorama
+
+    def failing_capture_quality(*args, **kwargs):
+        result = original_capture_quality(*args, **kwargs)
+        result["quality_pass"] = False
+        result["failure_reasons"] = ["forced test input failure"]
+        return result
+
+    def failing_render(*args, **kwargs):
+        assert kwargs["quality_gate"] is False
+        panorama, info = original_render(*args, **kwargs)
+        info.quality_metrics["quality_pass"] = False
+        return panorama, info
+
+    monkeypatch.setattr(sequence, "assess_capture_quality", failing_capture_quality)
+    monkeypatch.setattr(sequence, "render_scan_panorama", failing_render)
+    args = sequence._parser().parse_args(
+        [
+            str(session),
+            "--output",
+            str(output),
+            "--diagnostic-force",
+        ]
+    )
+
+    report = sequence.run(args)
+
+    panorama = cv2.imread(
+        str(output / "diagnostic_panorama.jpg"), cv2.IMREAD_COLOR
+    )
+    assert panorama is not None
+    assert (output / "diagnostic_report.json").is_file()
+    assert not (output / "panorama.jpg").exists()
+    assert not (output / "report.json").exists()
+    assert not (output / "delivery.json").exists()
+    assert not (output / "failure.json").exists()
+    assert report["diagnostic_only"] is True
+    assert report["deliverable_published"] is False
+    assert report["input_quality"]["quality_pass"] is False
+    assert report["render"]["quality_metrics"]["quality_pass"] is False
+    assert observed_config["allow_magsac_fallback"] is True
+    assert observed_config["prefer_magsac_layout"] is True
+    assert observed_config["min_magsac_inlier_ratio"] == 0.0
+    assert observed_config["max_unistitch_reprojection_px"] == 1_000_000.0
+    assert report["diagnostic_geometry"]["official_thresholds_bypassed"] is True

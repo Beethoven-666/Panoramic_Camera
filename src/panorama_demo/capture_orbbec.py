@@ -326,13 +326,81 @@ def _set_bool_property(device: Any, sdk: Any, property_name: str, value: bool) -
         return None
 
 
+def _uses_color_auto_exposure(options: dict[str, Any]) -> bool:
+    configured = options.get("color_auto_exposure")
+    if configured is None:
+        return options.get("color_exposure_us") is None
+    return bool(configured)
+
+
+def _color_exposure_units(exposure_us: object) -> int:
+    if exposure_us is None:
+        raise ValueError(
+            "color_exposure_us is required when color_auto_exposure is false"
+        )
+    value = int(exposure_us)
+    if value <= 0:
+        raise ValueError("color_exposure_us must be positive")
+    return max(1, int(np.floor(value / COLOR_EXPOSURE_UNIT_US + 0.5)))
+
+
+def _color_exposure_metadata_violation(
+    options: dict[str, Any], exposure_raw: int | None
+) -> str | None:
+    """Validate streaming metadata against the active auto/manual exposure mode."""
+
+    if exposure_raw is None:
+        return None
+    measured_units = int(exposure_raw)
+    if _uses_color_auto_exposure(options):
+        cap_us = options.get("color_ae_max_exposure_us")
+        if cap_us is None:
+            return None
+        cap_units = _color_exposure_units(cap_us)
+        if measured_units > cap_units + 1:
+            return (
+                "Camera exposure exceeded the motion-safe auto-exposure limit; "
+                "add lighting or update camera firmware"
+            )
+        return None
+    requested_us = options.get("color_exposure_us")
+    if requested_us is None:
+        return "Manual color exposure mode has no requested exposure duration"
+    requested_units = _color_exposure_units(requested_us)
+    if abs(measured_units - requested_units) > 1:
+        return (
+            "Camera did not maintain the requested manual color exposure "
+            f"({requested_units * COLOR_EXPOSURE_UNIT_US} us)"
+        )
+    return None
+
+
+def _color_exposure_control_summary(
+    options: dict[str, Any], applied: dict[str, Any]
+) -> dict[str, Any]:
+    requested_auto = _uses_color_auto_exposure(options)
+    applied_auto = bool(applied["auto_exposure"])
+    return {
+        "requested_mode": "auto" if requested_auto else "manual",
+        "effective_mode": (
+            "auto"
+            if applied_auto
+            else ("manual_fallback" if requested_auto else "manual")
+        ),
+        "requested_exposure_us": options.get("color_exposure_us"),
+        "requested_auto_cap_us": (
+            options.get("color_ae_max_exposure_us") if requested_auto else None
+        ),
+        "applied_exposure_us": applied.get("exposure_us"),
+        "applied_auto_cap_us": applied.get("ae_max_exposure_us"),
+    }
+
+
 def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str, Any]:
     applied: dict[str, Any] = {}
     exposure = options.get("color_exposure_us")
-    auto_exposure = options.get("color_auto_exposure")
+    auto_exposure = _uses_color_auto_exposure(options)
     ae_max_exposure = options.get("color_ae_max_exposure_us")
-    if auto_exposure is None:
-        auto_exposure = exposure is None
     if auto_exposure and exposure is not None:
         raise ValueError(
             "color_exposure_us must be null when color_auto_exposure is true"
@@ -341,15 +409,16 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
         raise ValueError(
             "color_exposure_us is required when color_auto_exposure is false"
         )
+    requested_manual_units = (
+        _color_exposure_units(exposure) if not auto_exposure else None
+    )
     effective_auto_exposure = bool(auto_exposure)
     fallback_exposure_us: int | None = None
     if auto_exposure and ae_max_exposure is not None:
         ae_max_exposure_us = int(ae_max_exposure)
         if ae_max_exposure_us <= 0:
             raise ValueError("color_ae_max_exposure_us must be positive")
-        cap_units = max(
-            1, int(round(ae_max_exposure_us / COLOR_EXPOSURE_UNIT_US))
-        )
+        cap_units = _color_exposure_units(ae_max_exposure_us)
         applied_cap = _set_int_property(
             device, sdk, "OB_PROP_COLOR_AE_MAX_EXPOSURE_INT", cap_units
         )
@@ -376,17 +445,26 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
     manual_exposure = fallback_exposure_us if fallback_exposure_us is not None else exposure
     if not effective_auto_exposure and manual_exposure is not None:
         exposure_us = int(manual_exposure)
-        if exposure_us <= 0:
-            raise ValueError("color_exposure_us must be positive")
-        exposure_units = max(1, int(round(exposure_us / COLOR_EXPOSURE_UNIT_US)))
+        exposure_units = (
+            _color_exposure_units(exposure_us)
+            if fallback_exposure_us is not None
+            else requested_manual_units
+        )
+        assert exposure_units is not None
         applied_units = _set_int_property(
             device, sdk, "OB_PROP_COLOR_EXPOSURE_INT", exposure_units
         )
-        if fallback_exposure_us is not None and (
-            applied_units is None or applied_units > exposure_units
-        ):
+        if applied_units is None:
+            raise RuntimeError("The camera did not apply the requested color exposure")
+        if fallback_exposure_us is not None and applied_units > exposure_units:
             raise RuntimeError(
                 "The camera cannot enforce the motion-safe color exposure limit"
+            )
+        if fallback_exposure_us is None and applied_units != exposure_units:
+            raise RuntimeError(
+                "The camera did not apply the requested manual color exposure: "
+                f"requested {exposure_units * COLOR_EXPOSURE_UNIT_US} us, "
+                f"applied {applied_units * COLOR_EXPOSURE_UNIT_US} us"
             )
         applied["exposure"] = applied_units
         applied["exposure_us"] = (
@@ -467,14 +545,13 @@ def _console_key() -> int | None:
         return None
 
 
-def run_capture(args: argparse.Namespace) -> Path:
-    try:
-        import pyorbbecsdk as sdk
-    except ImportError as exc:
-        raise RuntimeError(
-            "pyorbbecsdk2 is not installed. Run: python -m pip install pyorbbecsdk2"
-        ) from exc
+def _write_manifest(session_root: Path, manifest: dict[str, Any]) -> None:
+    (session_root / "manifest.json").write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
 
+
+def run_capture(args: argparse.Namespace) -> Path:
     config_file = load_config(args.config)
     options = dict(config_file.get("capture", {}))
     for name in ("width", "height", "fps", "warmup_frames", "queue_size"):
@@ -504,6 +581,15 @@ def run_capture(args: argparse.Namespace) -> Path:
             f"Unsupported align mode {align_mode!r}; this capture command currently supports 'software'"
         )
     options["align"] = align_mode
+    if not _uses_color_auto_exposure(options):
+        _color_exposure_units(options.get("color_exposure_us"))
+
+    try:
+        import pyorbbecsdk as sdk
+    except ImportError as exc:
+        raise RuntimeError(
+            "pyorbbecsdk2 is not installed. Run: python -m pip install pyorbbecsdk2"
+        ) from exc
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session_root = (args.output / f"run_{timestamp}").resolve()
@@ -515,7 +601,7 @@ def run_capture(args: argparse.Namespace) -> Path:
         "clean_shutdown": False,
         "capture_options": options,
     }
-    (session_root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    _write_manifest(session_root, manifest)
 
     context = sdk.Context()
     device_list = context.query_devices()
@@ -531,7 +617,25 @@ def run_capture(args: argparse.Namespace) -> Path:
         manifest["python_wrapper_version"] = importlib_metadata.version("pyorbbecsdk2")
     except importlib_metadata.PackageNotFoundError:
         manifest["python_wrapper_version"] = None
-    manifest["applied_color_properties"] = _configure_color(device, sdk, options)
+    try:
+        applied_color_properties = _configure_color(device, sdk, options)
+    except Exception as exc:
+        manifest.update(
+            {
+                "ended_utc": datetime.now(timezone.utc).isoformat(),
+                "capture_error": {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                },
+            }
+        )
+        _write_manifest(session_root, manifest)
+        raise
+    manifest["applied_color_properties"] = applied_color_properties
+    manifest["color_exposure_control"] = _color_exposure_control_summary(
+        options, applied_color_properties
+    )
+    _write_manifest(session_root, manifest)
 
     # Keep profile selection, property writes, and streaming on the same device.
     pipeline = sdk.Pipeline(device)
@@ -586,7 +690,7 @@ def run_capture(args: argparse.Namespace) -> Path:
     previous_color_timestamp: int | None = None
     started_monotonic = 0.0
     metadata_checked = False
-    unsafe_exposure_run = 0
+    exposure_violation_run = 0
     metadata_types = sdk.OBFrameMetadataType
     pipeline_started = False
     capture_exception: Exception | None = None
@@ -636,22 +740,17 @@ def run_capture(args: argparse.Namespace) -> Path:
                 timestamp_regressions += 1
             previous_color_timestamp = color_timestamp
             color_exposure = _metadata(raw_color, metadata_types.EXPOSURE)
-            exposure_cap_us = options.get("color_ae_max_exposure_us")
-            if exposure_cap_us is not None and color_exposure is not None:
-                safe_units = max(
-                    1,
-                    int(np.ceil(float(exposure_cap_us) / COLOR_EXPOSURE_UNIT_US)),
+            exposure_violation = _color_exposure_metadata_violation(
+                options, color_exposure
+            )
+            exposure_violation_run = (
+                exposure_violation_run + 1 if exposure_violation is not None else 0
+            )
+            if exposure_violation_run >= 3:
+                assert exposure_violation is not None
+                raise RuntimeError(
+                    exposure_violation + " for three consecutive frames"
                 )
-                unsafe_exposure_run = (
-                    unsafe_exposure_run + 1
-                    if int(color_exposure) > safe_units + 1
-                    else 0
-                )
-                if unsafe_exposure_run >= 3:
-                    raise RuntimeError(
-                        "Camera exposure exceeded the motion-safe limit for three "
-                        "consecutive frames; add lighting or update camera firmware"
-                    )
 
             if not metadata_checked:
                 manifest["metadata_support"] = {
@@ -764,7 +863,7 @@ def run_capture(args: argparse.Namespace) -> Path:
             "type": type(capture_exception).__name__,
             "message": str(capture_exception),
         }
-    (session_root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    _write_manifest(session_root, manifest)
     if capture_exception is not None:
         raise capture_exception
     print(f"Session saved to: {session_root}")
@@ -788,8 +887,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     exposure.add_argument(
         "--exposure-us",
+        "--manual-exposure-us",
+        dest="exposure_us",
         type=int,
-        help="Disable color auto exposure and use this fixed exposure",
+        help=(
+            "Disable color auto exposure and use this duration in microseconds "
+            "(Gemini 305 applies 100 us units; moving-sequence delivery still "
+            "enforces its configured exposure limit)"
+        ),
     )
     parser.add_argument("--gain", type=int)
     parser.add_argument("--white-balance", type=int)

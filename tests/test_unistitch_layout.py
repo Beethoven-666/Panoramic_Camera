@@ -42,6 +42,15 @@ def test_layout_uses_magsac_as_fallback_for_invalid_unistitch() -> None:
     ) == ("magsac_fallback", 2.0)
 
 
+def test_diagnostic_threshold_accepts_best_magsac_below_official_ratio() -> None:
+    assert _choose(
+        unistitch_median=50.72,
+        magsac_inlier_ratio=0.487,
+        min_magsac_inlier_ratio=0.0,
+        max_unistitch_reprojection_px=1_000_000.0,
+    ) == ("magsac_preferred", 2.0)
+
+
 def test_strict_layout_rejects_invalid_unistitch_without_running_fallback() -> None:
     with pytest.raises(AlignmentError, match="failed validation"):
         _choose(

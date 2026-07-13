@@ -13,6 +13,7 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
     assert config["capture"]["color_auto_exposure"] is True
     assert config["capture"]["color_exposure_us"] is None
     assert config["capture"]["color_ae_max_exposure_us"] == 800
+    assert config["stitch"]["max_canvas_megapixels"] == 200
 
 
 @pytest.mark.parametrize(
