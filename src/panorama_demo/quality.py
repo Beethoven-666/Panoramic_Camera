@@ -513,6 +513,7 @@ def select_render_indices_auto(
     *,
     maximum_keyframes: int = 0,
     target_spacing_fraction: float = 0.28,
+    quality_gate: bool = True,
 ) -> tuple[list[int], dict[str, object]]:
     """Pick sharp dense render sources while preserving scan coverage."""
 
@@ -552,16 +553,20 @@ def select_render_indices_auto(
     scores = relative_quality_scores(qualities)
     targets = np.linspace(positions.min(), positions.max(), count)
     spacing = max(float(targets[1] - targets[0]), 1.0)
-    eligible = np.asarray(
-        [
-            quality.dark_ratio <= 0.35
-            and quality.saturated_ratio <= 0.20
-            and quality.texture_coverage >= 0.08
-            and quality.detail_strength >= 5.4
-            and quality.tenengrad >= 18.0
-            for quality in qualities
-        ],
-        dtype=bool,
+    eligible = (
+        np.asarray(
+            [
+                quality.dark_ratio <= 0.35
+                and quality.saturated_ratio <= 0.20
+                and quality.texture_coverage >= 0.08
+                and quality.detail_strength >= 5.4
+                and quality.tenengrad >= 18.0
+                for quality in qualities
+            ],
+            dtype=bool,
+        )
+        if quality_gate
+        else np.ones(len(qualities), dtype=bool)
     )
     selected: list[int] = []
     rejected_bins: list[int] = []
@@ -606,28 +611,56 @@ def select_render_indices_auto(
             cursor = max(0, cursor - 1)
         else:
             cursor += 1
+    bridge_count = 0
     cursor = 0
     while cursor + 1 < len(selected):
         left, right = selected[cursor], selected[cursor + 1]
-        if positions[right] - positions[left] > 0.66 * width:
-            midpoint = 0.5 * (positions[left] + positions[right])
+        left_position = float(positions[left])
+        right_position = float(positions[right])
+        gap = right_position - left_position
+        if gap > 0.66 * width:
+            midpoint = 0.5 * (left_position + right_position)
             candidates = np.arange(left + 1, right)
             candidates = candidates[eligible[candidates]]
+            progress_epsilon = max(1e-6, 0.002 * width)
+            candidates = candidates[
+                (positions[candidates] > left_position + progress_epsilon)
+                & (positions[candidates] < right_position - progress_epsilon)
+            ]
             if candidates.size == 0:
                 raise RuntimeError(
                     "No clear render source can bridge a required overlap gap"
                 )
-            utility = scores[candidates] - 0.20 * np.square(
-                np.abs(positions[candidates] - midpoint) / spacing
+            midpoint_distance = np.abs(positions[candidates] - midpoint)
+            near_midpoint = candidates[
+                midpoint_distance
+                <= float(midpoint_distance.min()) + max(1.0, 0.03 * width)
+            ]
+            utility = scores[near_midpoint] - 0.05 * np.square(
+                np.abs(positions[near_midpoint] - midpoint) / spacing
             )
             utility -= 0.18 * np.square(
-                np.abs(cross_positions[candidates] - cross_reference) / cross_scale
+                np.abs(cross_positions[near_midpoint] - cross_reference) / cross_scale
             )
-            selected.insert(cursor + 1, int(candidates[int(np.argmax(utility))]))
+            chosen = int(near_midpoint[int(np.argmax(utility))])
+            chosen_position = float(positions[chosen])
+            if not (
+                left_position + progress_epsilon
+                < chosen_position
+                < right_position - progress_epsilon
+            ):
+                raise RuntimeError(
+                    "Automatic overlap bridging did not make geometric progress"
+                )
+            selected.insert(cursor + 1, chosen)
+            bridge_count += 1
         else:
             cursor += 1
     if len(selected) > 32:
-        raise RuntimeError("Automatic render selection exceeds 32 keyframes")
+        raise RuntimeError(
+            f"Automatic render selection requires {len(selected)} keyframes, "
+            "above the hard limit of 32"
+        )
     if maximum_keyframes > 0 and len(selected) > maximum_keyframes:
         raise RuntimeError(
             "The configured render-frame budget cannot preserve safe overlap"
@@ -644,9 +677,15 @@ def select_render_indices_auto(
         )
     return selected, {
         "mode": "dense_quality_coverage",
+        "quality_gate": quality_gate,
         "target_spacing_pixels": target_spacing,
         "scan_span_pixels": span,
         "coverage_ratio": coverage,
+        "selected_count": len(selected),
+        "overlap_bridge_count": bridge_count,
+        "maximum_adjacent_spacing_pixels": float(
+            np.max(np.diff(positions[selected]))
+        ),
         "rejected_quality_bins": rejected_bins,
         "quality_scores": [float(value) for value in scores],
     }

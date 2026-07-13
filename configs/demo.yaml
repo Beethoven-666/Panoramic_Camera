@@ -57,6 +57,8 @@ stitch:
   scan_auto_foreground: true
   scan_quality_gate: true
   input_quality_gate: true
+  # Diagnostic profiles may set this to true; formal defaults must remain false.
+  diagnostic_force: false
   color_exposure_unit_us: 100
   maximum_motion_exposure_us: 1200
   save_pair_previews: false

@@ -126,6 +126,61 @@ def test_render_selection_picks_covered_clear_sources() -> None:
     assert report["coverage_ratio"] >= 0.95
 
 
+def test_diagnostic_render_selection_bypasses_absolute_quality_filter() -> None:
+    qualities = [
+        FrameQuality(1.0, 1.0, 0.01, 0.9, 0.0, 0.0, 0.0)
+        for _ in range(5)
+    ]
+    transforms = [
+        np.array([[1.0, 0.0, x], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        for x in (0.0, 60.0, 120.0, 180.0, 240.0)
+    ]
+
+    with pytest.raises(RuntimeError, match="No exposure-safe"):
+        select_render_indices_auto(qualities, transforms, (80, 200, 3))
+
+    selected, report = select_render_indices_auto(
+        qualities,
+        transforms,
+        (80, 200, 3),
+        quality_gate=False,
+    )
+
+    assert len(selected) >= 2
+    assert report["quality_gate"] is False
+    assert report["coverage_ratio"] >= 0.95
+
+
+def test_render_selection_does_not_bridge_with_reverse_progress_candidate() -> None:
+    positions = np.asarray(
+        [0.0, 40.0, 70.0, 69.0, 68.0, 67.0, 100.0, 130.0, 160.0]
+    )
+    sharpness = [20.0, 1.0, 90.0, 80.0, 70.0, 100.0, 20.0, 30.0, 20.0]
+    qualities = [
+        FrameQuality(value, 25.0, 0.5, 0.0, 0.0, 0.4, 6.0)
+        for value in sharpness
+    ]
+    transforms = [
+        np.array([[1.0, 0.0, x], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        for x in positions
+    ]
+
+    selected, report = select_render_indices_auto(
+        qualities,
+        transforms,
+        (80, 100, 3),
+        maximum_keyframes=5,
+        target_spacing_fraction=0.55,
+    )
+
+    selected_positions = positions[selected]
+    assert len(selected) <= 5
+    assert np.all(np.diff(selected_positions) > 0.0)
+    assert float(np.max(np.diff(selected_positions))) <= 66.0 + 1e-6
+    assert report["coverage_ratio"] >= 0.95
+    assert report["maximum_adjacent_spacing_pixels"] <= 66.0 + 1e-6
+
+
 def test_render_selection_rejects_one_frame_budget() -> None:
     with pytest.raises(ValueError, match="zero or at least two"):
         select_render_indices_auto(

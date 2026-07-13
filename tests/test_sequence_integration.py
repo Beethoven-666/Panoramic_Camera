@@ -6,6 +6,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 import panorama_demo.stitch_sequence as sequence
 from panorama_demo.synthetic import generate_sequence
@@ -80,8 +81,9 @@ def test_zero_parameter_sequence_publishes_one_complete_delivery(
     assert np.all(np.max(panorama[:, [0, -1]], axis=2) > 0)
 
 
-def test_diagnostic_force_writes_only_non_delivery_artifacts(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("activation", ["cli", "config"])
+def test_diagnostic_mode_writes_only_non_delivery_artifacts(
+    tmp_path: Path, monkeypatch, activation: str
 ) -> None:
     session = generate_sequence(
         tmp_path / "session",
@@ -126,14 +128,21 @@ def test_diagnostic_force_writes_only_non_delivery_artifacts(
 
     monkeypatch.setattr(sequence, "assess_capture_quality", failing_capture_quality)
     monkeypatch.setattr(sequence, "render_scan_panorama", failing_render)
-    args = sequence._parser().parse_args(
-        [
-            str(session),
-            "--output",
-            str(output),
-            "--diagnostic-force",
-        ]
-    )
+    arguments = [str(session), "--output", str(output)]
+    if activation == "cli":
+        arguments.append("--diagnostic-force")
+    else:
+        arguments.extend(
+            [
+                "--config",
+                str(
+                    Path(__file__).resolve().parents[1]
+                    / "configs"
+                    / "capture_unrestricted_auto_exposure.yaml"
+                ),
+            ]
+        )
+    args = sequence._parser().parse_args(arguments)
 
     report = sequence.run(args)
 
@@ -153,6 +162,7 @@ def test_diagnostic_force_writes_only_non_delivery_artifacts(
     assert report["render"]["quality_metrics"]["quality_pass"] is False
     assert observed_config["allow_magsac_fallback"] is True
     assert observed_config["prefer_magsac_layout"] is True
+    assert observed_config["min_matches"] == 4
     assert observed_config["min_magsac_inlier_ratio"] == 0.0
     assert observed_config["max_unistitch_reprojection_px"] == 1_000_000.0
     assert report["diagnostic_geometry"]["official_thresholds_bypassed"] is True

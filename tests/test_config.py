@@ -18,6 +18,7 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
     assert config["capture"]["external_sync_output"] is True
     assert config["capture"]["fps"] == 30
     assert config["stitch"]["max_canvas_megapixels"] == 200
+    assert config["stitch"]["diagnostic_force"] is False
 
 
 def test_unrestricted_auto_exposure_config_is_explicitly_diagnostic() -> None:
@@ -30,7 +31,14 @@ def test_unrestricted_auto_exposure_config_is_explicitly_diagnostic() -> None:
     assert config["capture"]["diagnostic_unrestricted_auto_exposure"] is True
     assert config["capture"]["color_auto_exposure"] is True
     assert config["capture"]["color_exposure_us"] is None
-    assert config["capture"]["color_ae_max_exposure_us"] == 800
+    assert config["capture"]["color_ae_max_exposure_us"] is None
+    assert config["capture"]["diagnostic_replaced_auto_cap_us"] == 800
+    assert config["stitch"]["diagnostic_force"] is True
+    assert config["stitch"]["input_quality_gate"] is False
+    assert config["stitch"]["scan_quality_gate"] is False
+    assert config["stitch"]["scan_max_keyframes"] == 0
+    # Process-survival protection is intentionally inherited by diagnostics.
+    assert config["stitch"]["max_canvas_megapixels"] == 200
 
 
 @pytest.mark.parametrize(

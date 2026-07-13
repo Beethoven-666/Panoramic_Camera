@@ -51,6 +51,25 @@ def test_diagnostic_threshold_accepts_best_magsac_below_official_ratio() -> None
     ) == ("magsac_preferred", 2.0)
 
 
+def test_diagnostic_match_floor_is_four_homography_points() -> None:
+    assert _choose(
+        unistitch_median=25.0,
+        magsac_inliers=4,
+        magsac_inlier_ratio=0.0,
+        min_matches=4,
+        min_magsac_inlier_ratio=0.0,
+    ) == ("magsac_preferred", 2.0)
+
+    with pytest.raises(AlignmentError, match="failed validation"):
+        _choose(
+            unistitch_median=25.0,
+            magsac_inliers=3,
+            magsac_inlier_ratio=0.0,
+            min_matches=4,
+            min_magsac_inlier_ratio=0.0,
+        )
+
+
 def test_strict_layout_rejects_invalid_unistitch_without_running_fallback() -> None:
     with pytest.raises(AlignmentError, match="failed validation"):
         _choose(

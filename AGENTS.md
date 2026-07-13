@@ -44,7 +44,7 @@ git diff --check
 |---|---|
 | `configs/demo.yaml` | 正式零调参采集和序列拼接默认值 |
 | `configs/capture_640x480.yaml` | 低带宽链路诊断配置，不是正式交付默认值 |
-| `configs/capture_unrestricted_auto_exposure.yaml` | 解除项目曝光上限的诊断采集覆盖，不能用于正式交付 |
+| `configs/capture_unrestricted_auto_exposure.yaml` | 解除项目曝光上限、并自动启用非交付拼接的一体化诊断配置 |
 | `src/panorama_demo/capture_orbbec.py` | Gemini 305 配置、同步 RGB-D 采集、曝光限制、异步写盘和采集元数据 |
 | `src/panorama_demo/session.py` | 读取 `frames.csv`、颜色帧、对齐深度和曝光等会话字段 |
 | `src/panorama_demo/quality.py` | 输入质量、相邻视觉运动、主扫描段、自适应布局和清晰渲染源选择 |
@@ -135,7 +135,7 @@ unistitch-sequence `
 
 - 默认自动曝光上限：`800 µs`。
 - 序列输入曝光拒绝上限：`1200 µs`。
-- 无限自动曝光只能通过显式诊断模式启用；正式序列必须拒绝该会话，只有 `--diagnostic-force` 可以生成非交付诊断图。
+- 无限自动曝光只能通过显式诊断模式启用；正式序列必须拒绝该会话，只有 `--diagnostic-force` 或同一配置中的 `stitch.diagnostic_force: true` 可以生成非交付诊断图。
 - 运动模糊与 `速度 × 曝光时间` 成正比；物体越近，视差越明显。
 - 连续三对缺少可靠视觉重叠、方向反转、过大水平跳变或过大垂直运动必须拒绝。
 - 全局已经模糊、无足够纹理、严重欠曝或严重过曝时必须拒绝。
@@ -152,7 +152,7 @@ unistitch-sequence `
 
 - `scan_seam` 是唯一可发布的正式序列渲染模式。
 - `feather` 仅用于诊断，不能生成成功交付标记。
-- `--diagnostic-force` 可放宽正式 UniStitch/MAGSAC 几何门限，并绕过输入和最终渲染质量门禁；有限矩阵、画布和内存安全限制仍必须保留。它只能写 `diagnostic_panorama.jpg` 和 `diagnostic_report.json`，绝不能写正式文件或成功标记。
+- `--diagnostic-force` 或配置中的 `stitch.diagnostic_force: true` 可把匹配要求降到单应估计的数学下限、放宽正式 UniStitch/MAGSAC 几何门限，并绕过输入、渲染源绝对画质和最终渲染质量门禁；有限矩阵、画布和内存安全限制仍必须保留。它只能写 `diagnostic_panorama.jpg` 和 `diagnostic_report.json`，绝不能写正式文件或成功标记。
 - RGB Lab 残差、梯度、深度不一致和近景共同构成接缝风险。
 - 最终 owner mask 必须形成严格单一归属：不能有有效区空洞或多 owner 重叠。
 - 只允许扫描顺序中相邻帧形成边界；非相邻 owner 接触必须拒绝。

@@ -181,7 +181,8 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Relax geometry and bypass input/render quality gates, writing only "
-            "diagnostic_panorama.jpg; finite/canvas safety still applies"
+            "diagnostic_panorama.jpg; may also be enabled by the selected config; "
+            "finite/canvas safety still applies"
         ),
     )
     return parser
@@ -490,7 +491,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     config = load_config(args.config)
     stitch_config = dict(config["stitch"])
     output = args.output.expanduser().resolve()
-    diagnostic_force = bool(getattr(args, "diagnostic_force", False))
+    diagnostic_force = bool(
+        getattr(args, "diagnostic_force", False)
+        or stitch_config.get("diagnostic_force", False)
+    )
     _clear_delivery_files(output)
     _clear_diagnostic_files(output)
     (output / "failure.json").unlink(missing_ok=True)
@@ -498,13 +502,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if diagnostic_force:
         stitch_config["allow_magsac_fallback"] = True
         stitch_config["prefer_magsac_layout"] = True
+        stitch_config["min_matches"] = 4
         stitch_config["min_magsac_inlier_ratio"] = 0.0
         stitch_config["max_unistitch_reprojection_px"] = 1_000_000.0
         diagnostic_geometry = {
             "official_thresholds_bypassed": True,
-            "minimum_magsac_inlier_count": int(
-                stitch_config.get("min_matches", 40)
-            ),
+            "minimum_feature_matches": 4,
+            "minimum_magsac_inlier_count": 4,
             "minimum_magsac_inlier_ratio": 0.0,
             "maximum_unistitch_reprojection_px": 1_000_000.0,
             "finite_transform_and_canvas_safety_still_required": True,
@@ -590,8 +594,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if bool(input_capture["diagnostic_only"]) and not diagnostic_force:
         raise RuntimeError(
             "Input capture session is diagnostic-only because unrestricted auto "
-            "exposure was enabled; rerun with --diagnostic-force to write only "
-            "diagnostic artifacts"
+            "exposure was enabled; rerun with --diagnostic-force or the matching "
+            "diagnostic config to write only diagnostic artifacts"
         )
 
     all_frames = discover_frames(args.input)
@@ -802,6 +806,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 target_spacing_fraction=float(
                     stitch_config.get("scan_target_spacing_fraction", 0.28)
                 ),
+                quality_gate=not diagnostic_force,
             )
             render_frames = [dense_frames[index] for index in indices]
             render_images = [read_bgr(frame.color_path) for frame in render_frames]

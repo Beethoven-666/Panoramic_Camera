@@ -1,6 +1,18 @@
 capture:
-  # Diagnostic only: the capture command replaces the normal 800 us cap with
-  # the maximum range reported and verified by the camera.
+  # Diagnostic only: request the maximum auto-exposure range supported by the
+  # active camera profile. The 800 us value below is only the formal baseline
+  # whose removal must be verified; it is not applied in this mode.
   diagnostic_unrestricted_auto_exposure: true
   color_auto_exposure: true
   color_exposure_us: null
+  color_ae_max_exposure_us: null
+  diagnostic_replaced_auto_cap_us: 800
+
+stitch:
+  # Reusing this file with unistitch-sequence automatically produces diagnostic
+  # artifacts and bypasses application-level input, geometry and render-quality
+  # gates. Finite transforms and canvas/working-set memory protection remain.
+  diagnostic_force: true
+  input_quality_gate: false
+  scan_quality_gate: false
+  scan_max_keyframes: 0

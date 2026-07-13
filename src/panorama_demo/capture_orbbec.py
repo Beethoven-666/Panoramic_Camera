@@ -593,6 +593,10 @@ def _apply_color_exposure_mode(
         options["diagnostic_unrestricted_auto_exposure"] = False
         options["color_auto_exposure"] = True
         options["color_exposure_us"] = None
+        if options.get("color_ae_max_exposure_us") is None:
+            options["color_ae_max_exposure_us"] = options.get(
+                "diagnostic_replaced_auto_cap_us"
+            )
     elif getattr(args, "exposure_us", None) is not None:
         options["diagnostic_unrestricted_auto_exposure"] = False
         options["color_auto_exposure"] = False
