@@ -56,4 +56,8 @@ def build_aligner(stitch_config: dict[str, Any], **overrides: Any) -> UniStitchA
             settings.get("max_unistitch_reprojection_px", 20.0)
         ),
         allow_magsac_fallback=bool(settings.get("allow_magsac_fallback", True)),
+        prefer_magsac_layout=bool(settings.get("prefer_magsac_layout", True)),
+        min_magsac_inlier_ratio=float(
+            settings.get("min_magsac_inlier_ratio", 0.5)
+        ),
     )

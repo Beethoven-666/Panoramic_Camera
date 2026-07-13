@@ -28,4 +28,16 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     custom_path = Path(path).expanduser().resolve()
     with custom_path.open("r", encoding="utf-8") as handle:
         custom = yaml.safe_load(handle) or {}
+    custom_capture = custom.get("capture")
+    if (
+        isinstance(custom_capture, dict)
+        and "color_exposure_us" in custom_capture
+        and "color_auto_exposure" not in custom_capture
+    ):
+        # Before color_auto_exposure was configurable, a non-null exposure in a
+        # custom file unambiguously selected manual exposure. Preserve that
+        # behavior when merging the custom file over today's auto-exposure default.
+        custom_capture["color_auto_exposure"] = (
+            custom_capture["color_exposure_us"] is None
+        )
     return _merge(config, custom)

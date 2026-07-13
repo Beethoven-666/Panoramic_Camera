@@ -20,6 +20,9 @@ import numpy as np
 from .config import load_config
 
 
+COLOR_EXPOSURE_UNIT_US = 100
+
+
 CSV_FIELDS = [
     "frame_id",
     "color_index",
@@ -326,12 +329,36 @@ def _set_bool_property(device: Any, sdk: Any, property_name: str, value: bool) -
 def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str, Any]:
     applied: dict[str, Any] = {}
     exposure = options.get("color_exposure_us")
-    if exposure is not None:
-        applied["auto_exposure"] = _set_bool_property(
-            device, sdk, "OB_PROP_COLOR_AUTO_EXPOSURE_BOOL", False
+    auto_exposure = options.get("color_auto_exposure")
+    if auto_exposure is None:
+        auto_exposure = exposure is None
+    if auto_exposure and exposure is not None:
+        raise ValueError(
+            "color_exposure_us must be null when color_auto_exposure is true"
         )
-        applied["exposure"] = _set_int_property(
-            device, sdk, "OB_PROP_COLOR_EXPOSURE_INT", int(exposure)
+    if not auto_exposure and exposure is None:
+        raise ValueError(
+            "color_exposure_us is required when color_auto_exposure is false"
+        )
+    applied["auto_exposure"] = _set_bool_property(
+        device,
+        sdk,
+        "OB_PROP_COLOR_AUTO_EXPOSURE_BOOL",
+        bool(auto_exposure),
+    )
+    if not auto_exposure and exposure is not None:
+        exposure_us = int(exposure)
+        if exposure_us <= 0:
+            raise ValueError("color_exposure_us must be positive")
+        exposure_units = max(1, int(round(exposure_us / COLOR_EXPOSURE_UNIT_US)))
+        applied_units = _set_int_property(
+            device, sdk, "OB_PROP_COLOR_EXPOSURE_INT", exposure_units
+        )
+        applied["exposure"] = applied_units
+        applied["exposure_us"] = (
+            applied_units * COLOR_EXPOSURE_UNIT_US
+            if applied_units is not None
+            else None
         )
     gain = options.get("color_gain")
     if gain is not None:
@@ -420,7 +447,11 @@ def run_capture(args: argparse.Namespace) -> Path:
         value = getattr(args, name, None)
         if value is not None:
             options[name] = value
-    if args.exposure_us is not None:
+    if args.auto_exposure:
+        options["color_auto_exposure"] = True
+        options["color_exposure_us"] = None
+    elif args.exposure_us is not None:
+        options["color_auto_exposure"] = False
         options["color_exposure_us"] = args.exposure_us
     if args.gain is not None:
         options["color_gain"] = args.gain
@@ -697,7 +728,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fps", type=int)
     parser.add_argument("--warmup-frames", type=int)
     parser.add_argument("--queue-size", type=int)
-    parser.add_argument("--exposure-us", type=int)
+    exposure = parser.add_mutually_exclusive_group()
+    exposure.add_argument(
+        "--auto-exposure",
+        action="store_true",
+        help="Enable color auto exposure (the default demo mode)",
+    )
+    exposure.add_argument(
+        "--exposure-us",
+        type=int,
+        help="Disable color auto exposure and use this fixed exposure",
+    )
     parser.add_argument("--gain", type=int)
     parser.add_argument("--white-balance", type=int)
     parser.add_argument("--duration", type=float, help="Stop after this many seconds")

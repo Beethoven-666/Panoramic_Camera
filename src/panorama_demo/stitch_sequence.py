@@ -11,8 +11,8 @@ import numpy as np
 import cv2
 
 from .config import load_config
-from .render import render_panorama
-from .session import discover_frames, select_frames
+from .render import render_panorama, render_scan_panorama
+from .session import SessionFrame, discover_frames, select_frames
 from .stitch_common import build_aligner, read_bgr, write_bgr
 from .unistitch_adapter import AlignmentError
 
@@ -30,6 +30,36 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--stride", type=int)
     parser.add_argument("--max-frames", type=int)
     parser.add_argument("--max-canvas-megapixels", type=float)
+    parser.add_argument(
+        "--blend-mode",
+        choices=("feather", "scan_seam"),
+        help="Final sequence renderer (scan_seam avoids averaging all overlaps)",
+    )
+    parser.add_argument(
+        "--render-frame-ids",
+        help="Comma-separated sharp source frame ids used by scan_seam",
+    )
+    parser.add_argument(
+        "--translation-anchor-y",
+        type=float,
+        help="Vertical image fraction used to extract translation from each homography",
+    )
+    parser.add_argument("--scan-seam-margin", type=int)
+    parser.add_argument("--scan-multiband-levels", type=int)
+    parser.add_argument(
+        "--scan-exposure-mode",
+        choices=("none", "center_gain", "global_gain"),
+    )
+    parser.add_argument("--scan-seam-mask-sigma", type=float)
+    parser.add_argument(
+        "--scan-protect-region",
+        action="append",
+        metavar="FRAME_ID:X0:Y0:X1:Y1",
+        help=(
+            "Force one frame to own a near-field canvas rectangle; repeat for "
+            "multiple objects"
+        ),
+    )
     parser.add_argument(
         "--motion-model",
         choices=("translation", "similarity", "homography"),
@@ -57,6 +87,7 @@ def regularize_pair_homography(
     homography: np.ndarray,
     image_shape: tuple[int, ...],
     motion_model: str,
+    translation_anchor_y: float | None = None,
 ) -> np.ndarray:
     """Project a pair homography onto the cart's mechanical motion model."""
 
@@ -64,10 +95,16 @@ def regularize_pair_homography(
     if motion_model == "homography":
         return matrix
     height, width = image_shape[:2]
-    xs, ys = np.meshgrid(
-        np.linspace(width * 0.1, width * 0.9, 5),
-        np.linspace(height * 0.1, height * 0.9, 3),
-    )
+    if translation_anchor_y is not None and not 0.0 <= translation_anchor_y <= 1.0:
+        raise ValueError("translation_anchor_y must be between zero and one")
+    if motion_model == "translation" and translation_anchor_y is not None:
+        xs = np.linspace(width * 0.25, width * 0.75, 3)[None, :]
+        ys = np.full_like(xs, height * translation_anchor_y)
+    else:
+        xs, ys = np.meshgrid(
+            np.linspace(width * 0.1, width * 0.9, 5),
+            np.linspace(height * 0.1, height * 0.9, 3),
+        )
     source_grid = np.stack((xs.ravel(), ys.ravel()), axis=1).astype(np.float32)
     reference_grid = cv2.perspectiveTransform(source_grid[None], matrix)[0]
     if not np.isfinite(reference_grid).all():
@@ -95,6 +132,136 @@ def regularize_pair_homography(
     raise ValueError(f"Unsupported sequence motion model: {motion_model}")
 
 
+def _parse_frame_ids(value: object) -> list[int]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        result = [int(part) for part in parts]
+    elif isinstance(value, (list, tuple)):
+        result = [int(item) for item in value]
+    else:
+        raise ValueError("render_frame_ids must be a comma-separated string or list")
+    if len(result) != len(set(result)):
+        raise ValueError("render_frame_ids cannot contain duplicates")
+    return sorted(result)
+
+
+def _parse_protected_regions(
+    values: object,
+    frames: list[SessionFrame],
+) -> list[tuple[int, int, int, int, int]]:
+    if values is None or values == "":
+        return []
+    rows = [values] if isinstance(values, str) else list(values)
+    frame_index = {frame.frame_id: index for index, frame in enumerate(frames)}
+    result: list[tuple[int, int, int, int, int]] = []
+    for row in rows:
+        parts = str(row).split(":")
+        if len(parts) != 5:
+            raise ValueError(
+                "scan_protect_region must be FRAME_ID:X0:Y0:X1:Y1"
+            )
+        frame_id, x0, y0, x1, y1 = (int(part) for part in parts)
+        if frame_id not in frame_index:
+            raise ValueError(
+                f"Protected-region frame {frame_id} is not a render frame"
+            )
+        result.append((frame_index[frame_id], x0, y0, x1, y1))
+    return result
+
+
+def interpolate_translation_transforms(
+    layout_frames: list[SessionFrame],
+    layout_transforms: list[np.ndarray],
+    render_frames: list[SessionFrame],
+) -> list[np.ndarray]:
+    """Interpolate a dense frame's translation from the verified layout trajectory."""
+
+    if len(layout_frames) != len(layout_transforms) or not layout_frames:
+        raise ValueError("Layout frames and transforms must be non-empty and equal length")
+    coordinates = np.asarray([frame.frame_id for frame in layout_frames], dtype=np.float64)
+    if np.any(np.diff(coordinates) <= 0):
+        raise ValueError("Layout frame ids must be strictly increasing")
+    matrices = [_normalise(transform) for transform in layout_transforms]
+    for matrix in matrices:
+        if not np.allclose(matrix[:2, :2], np.eye(2), atol=1e-6) or not np.allclose(
+            matrix[2], [0.0, 0.0, 1.0], atol=1e-8
+        ):
+            raise ValueError("Dense render-frame interpolation requires translation layout")
+    requested = np.asarray([frame.frame_id for frame in render_frames], dtype=np.float64)
+    if requested.size == 0:
+        raise ValueError("At least one render frame is required")
+    if requested.min() < coordinates[0] or requested.max() > coordinates[-1]:
+        raise ValueError(
+            "Render frame ids must lie inside the aligned layout frame range "
+            f"{int(coordinates[0])}-{int(coordinates[-1])}"
+        )
+    tx = np.asarray([matrix[0, 2] for matrix in matrices], dtype=np.float64)
+    ty = np.asarray([matrix[1, 2] for matrix in matrices], dtype=np.float64)
+    result: list[np.ndarray] = []
+    for x, y in zip(
+        np.interp(requested, coordinates, tx),
+        np.interp(requested, coordinates, ty),
+        strict=True,
+    ):
+        result.append(
+            np.array(
+                [[1.0, 0.0, float(x)], [0.0, 1.0, float(y)], [0.0, 0.0, 1.0]],
+                dtype=np.float64,
+            )
+        )
+    return result
+
+
+def _center_sharpness(image: np.ndarray) -> float:
+    height, width = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    roi = gray[
+        int(round(height * 0.325)) : int(round(height * 0.95)),
+        int(round(width * 0.345)) : int(round(width * 0.655)),
+    ]
+    return float(cv2.Laplacian(roi, cv2.CV_64F).var())
+
+
+def select_scan_keyframes(
+    frames: list[SessionFrame],
+    images: list[np.ndarray],
+    transforms: list[np.ndarray],
+    max_keyframes: int,
+) -> list[int]:
+    """Pick sharp sources near evenly spaced scan positions."""
+
+    if max_keyframes < 2:
+        raise ValueError("scan_max_keyframes must be at least two")
+    if len(frames) <= max_keyframes:
+        return list(range(len(frames)))
+    centers = []
+    for image, transform in zip(images, transforms, strict=True):
+        height, width = image.shape[:2]
+        point = _normalise(transform) @ np.array([width * 0.5, height * 0.5, 1.0])
+        centers.append(point[:2] / point[2])
+    center_array = np.asarray(centers, dtype=np.float64)
+    centered = center_array - center_array.mean(axis=0, keepdims=True)
+    _, _, vh = np.linalg.svd(centered, full_matrices=False)
+    axis = vh[0]
+    position = center_array @ axis
+    targets = np.linspace(position.min(), position.max(), max_keyframes)
+    spacing = max(float(np.ptp(position)) / max(1, max_keyframes - 1), 1.0)
+    sharpness = np.asarray([_center_sharpness(image) for image in images])
+    selected: list[int] = []
+    for target in targets:
+        distance = np.abs(position - target)
+        candidates = np.flatnonzero(distance <= spacing * 0.65)
+        if candidates.size == 0:
+            candidates = np.asarray([int(np.argmin(distance))])
+        score = sharpness[candidates] / (
+            1.0 + 0.3 * np.square(distance[candidates] / (spacing * 0.65))
+        )
+        selected.append(int(candidates[int(np.argmax(score))]))
+    return sorted(set(selected), key=lambda index: frames[index].frame_id)
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     config = load_config(args.config)
     stitch_config = dict(config["stitch"])
@@ -111,6 +278,46 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if args.max_canvas_megapixels is not None
         else float(stitch_config.get("max_canvas_megapixels", 250.0))
     )
+    blend_mode = getattr(args, "blend_mode", None) or str(
+        stitch_config.get("sequence_blend_mode", "scan_seam")
+    )
+    if blend_mode not in {"feather", "scan_seam"}:
+        raise ValueError(f"Unsupported sequence blend mode: {blend_mode}")
+    translation_anchor_y_value = getattr(args, "translation_anchor_y", None)
+    translation_anchor_y = (
+        float(translation_anchor_y_value)
+        if translation_anchor_y_value is not None
+        else float(stitch_config.get("translation_anchor_y", 0.5))
+    )
+    scan_seam_margin_value = getattr(args, "scan_seam_margin", None)
+    scan_seam_margin = (
+        int(scan_seam_margin_value)
+        if scan_seam_margin_value is not None
+        else int(stitch_config.get("scan_seam_margin", 220))
+    )
+    scan_multiband_value = getattr(args, "scan_multiband_levels", None)
+    scan_multiband_levels = (
+        int(scan_multiband_value)
+        if scan_multiband_value is not None
+        else int(stitch_config.get("scan_multiband_levels", 4))
+    )
+    scan_exposure_mode = getattr(args, "scan_exposure_mode", None) or str(
+        stitch_config.get("scan_exposure_mode", "center_gain")
+    )
+    scan_seam_mask_sigma_value = getattr(args, "scan_seam_mask_sigma", None)
+    scan_seam_mask_sigma = (
+        float(scan_seam_mask_sigma_value)
+        if scan_seam_mask_sigma_value is not None
+        else float(stitch_config.get("scan_seam_mask_sigma", 0.0))
+    )
+    protected_region_specs = getattr(args, "scan_protect_region", None)
+    if protected_region_specs is None:
+        protected_region_specs = stitch_config.get("scan_protected_regions")
+    scan_max_keyframes = int(stitch_config.get("scan_max_keyframes", 14))
+    render_frame_ids = _parse_frame_ids(
+        getattr(args, "render_frame_ids", None)
+        or stitch_config.get("sequence_render_frame_ids")
+    )
     save_pair_previews = not args.no_pair_previews and bool(
         stitch_config.get("save_pair_previews", True)
     )
@@ -120,7 +327,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if motion_model not in {"translation", "similarity", "homography"}:
         raise ValueError(f"Unsupported sequence motion model: {motion_model}")
 
-    frames = select_frames(discover_frames(args.input), stride=stride, max_frames=max_frames)
+    all_frames = discover_frames(args.input)
+    frames = select_frames(all_frames, stride=stride, max_frames=max_frames)
     if len(frames) < 2:
         raise ValueError("Sequence stitching requires at least two selected color frames")
     images = [read_bgr(frame.color_path) for frame in frames]
@@ -153,6 +361,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             alignment.homography_source_to_reference,
             images[index].shape,
             motion_model,
+            translation_anchor_y=translation_anchor_y,
         )
         global_transform = _normalise(
             transforms[-1] @ sequence_pair_h
@@ -182,11 +391,78 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             f"{alignment.median_reprojection_px:.2f}px"
         )
 
-    panorama, canvas = render_panorama(
-        images,
-        transforms,
-        max_megapixels=max_canvas_megapixels,
-    )
+    render_metadata: dict[str, Any]
+    if blend_mode == "scan_seam":
+        if render_frame_ids:
+            by_id = {frame.frame_id: frame for frame in all_frames}
+            missing_ids = [frame_id for frame_id in render_frame_ids if frame_id not in by_id]
+            if missing_ids:
+                raise ValueError(f"Render frame ids are missing from the input: {missing_ids}")
+            render_frames = [by_id[frame_id] for frame_id in render_frame_ids]
+            render_transforms = interpolate_translation_transforms(
+                frames, transforms, render_frames
+            )
+            render_images = [read_bgr(frame.color_path) for frame in render_frames]
+        else:
+            indices = select_scan_keyframes(
+                frames,
+                images,
+                transforms,
+                scan_max_keyframes,
+            )
+            render_frames = [frames[index] for index in indices]
+            render_images = [images[index] for index in indices]
+            render_transforms = [transforms[index] for index in indices]
+        for frame, image in zip(render_frames, render_images, strict=True):
+            if image.shape != expected_shape:
+                raise ValueError(
+                    f"Render frame {frame.frame_id} has shape {image.shape}; "
+                    f"expected {expected_shape}"
+                )
+        protected_regions = _parse_protected_regions(
+            protected_region_specs,
+            render_frames,
+        )
+        panorama, scan_render = render_scan_panorama(
+            render_images,
+            render_transforms,
+            max_megapixels=max_canvas_megapixels,
+            seam_margin=scan_seam_margin,
+            multiband_levels=scan_multiband_levels,
+            exposure_mode=scan_exposure_mode,
+            seam_mask_sigma=scan_seam_mask_sigma,
+            protected_regions=protected_regions,
+        )
+        canvas = scan_render.canvas
+        render_metadata = scan_render.as_dict()
+        render_metadata["frame_ids"] = [frame.frame_id for frame in render_frames]
+        for region in render_metadata["protected_regions"]:
+            region["owner_frame_id"] = render_frames[
+                int(region["owner_index"])
+            ].frame_id
+        render_transform_rows = [
+            {
+                "frame_id": frame.frame_id,
+                "color_path": str(frame.color_path),
+                "image_to_world": transform.tolist(),
+            }
+            for frame, transform in zip(
+                render_frames, render_transforms, strict=True
+            )
+        ]
+        (output / "render_transforms.json").write_text(
+            json.dumps(render_transform_rows, indent=2), encoding="utf-8"
+        )
+    else:
+        panorama, canvas = render_panorama(
+            images,
+            transforms,
+            max_megapixels=max_canvas_megapixels,
+        )
+        render_metadata = {
+            "source_count": len(images),
+            "frame_ids": [frame.frame_id for frame in frames],
+        }
     panorama_path = write_bgr(output / "panorama.jpg", panorama)
     transform_rows = [
         {
@@ -200,19 +476,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         json.dumps(transform_rows, indent=2), encoding="utf-8"
     )
     report: dict[str, Any] = {
-        "schema": "gemini305-unistitch-sequence/v1",
+        "schema": "gemini305-unistitch-sequence/v2",
         "input": str(args.input.expanduser().resolve()),
         "panorama": str(panorama_path),
         "frame_count": len(frames),
         "stride": stride,
         "sequence_motion_model": motion_model,
+        "translation_anchor_y": translation_anchor_y,
         "elapsed_seconds_excluding_model_load": time.perf_counter() - started,
         "canvas": canvas.as_dict(),
-        "render_strategy": "original_frames_single_pass",
+        "render_strategy": blend_mode,
+        "render": render_metadata,
         "pair_local_warp": "UniStitch FFD/TPS previews",
         "sequence_layout": (
-            "UniStitch global homography with optional MAGSAC validation fallback, "
-            f"projected to {motion_model} motion"
+            "Validated UniStitch global homography with preferred lower-error "
+            f"LightGlue/MAGSAC layout, projected to {motion_model} motion"
         ),
         "depth_used": False,
         "pairs": pair_reports,

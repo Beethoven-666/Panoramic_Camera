@@ -71,6 +71,49 @@ def _reprojection_errors(
     return np.linalg.norm(projected - reference_points, axis=1)
 
 
+def _choose_layout_method(
+    *,
+    unistitch_median: float,
+    magsac_median: float,
+    unistitch_median_on_magsac_inliers: float,
+    magsac_inliers: int,
+    magsac_inlier_ratio: float,
+    min_matches: int,
+    min_magsac_inlier_ratio: float,
+    max_unistitch_reprojection_px: float,
+    allow_magsac_fallback: bool,
+    prefer_magsac_layout: bool,
+) -> tuple[str, float]:
+    """Choose a sequence layout using comparable residual support.
+
+    A low MAGSAC residual is meaningful only when enough of all matches support
+    that model.  Preference compares both models on the MAGSAC inlier set; the
+    unconstrained UniStitch median remains the independent acceptance check.
+    """
+
+    magsac_usable = (
+        allow_magsac_fallback
+        and magsac_inliers >= min_matches
+        and magsac_inlier_ratio >= min_magsac_inlier_ratio
+        and np.isfinite(magsac_median)
+    )
+    if (
+        magsac_usable
+        and prefer_magsac_layout
+        and magsac_median < unistitch_median_on_magsac_inliers
+    ):
+        return "magsac_preferred", magsac_median
+    if unistitch_median <= max_unistitch_reprojection_px:
+        return "unistitch_global", unistitch_median
+    if magsac_usable:
+        return "magsac_fallback", magsac_median
+    raise AlignmentError(
+        "UniStitch global branch failed validation "
+        f"(median {unistitch_median:.2f}px); MAGSAC has {magsac_inliers} inliers "
+        f"({magsac_inlier_ratio:.1%})"
+    )
+
+
 def _resize_for_inference(image: np.ndarray, target_width: int) -> np.ndarray:
     height, width = image.shape[:2]
     if target_width < 128:
@@ -123,6 +166,8 @@ class UniStitchAligner:
         max_pair_canvas: int = 4000,
         max_unistitch_reprojection_px: float = 20.0,
         allow_magsac_fallback: bool = True,
+        prefer_magsac_layout: bool = True,
+        min_magsac_inlier_ratio: float = 0.5,
     ) -> None:
         self.model_path = Path(model_path).expanduser().resolve()
         self.device = torch.device(device)
@@ -132,6 +177,11 @@ class UniStitchAligner:
         self.max_pair_canvas = max_pair_canvas
         self.max_unistitch_reprojection_px = max_unistitch_reprojection_px
         self.allow_magsac_fallback = allow_magsac_fallback
+        self.prefer_magsac_layout = prefer_magsac_layout
+        self.min_magsac_inlier_ratio = min_magsac_inlier_ratio
+
+        if not 0.0 <= self.min_magsac_inlier_ratio <= 1.0:
+            raise ValueError("min_magsac_inlier_ratio must be between zero and one")
 
         if self.device.type != "cuda":
             raise RuntimeError(
@@ -459,38 +509,64 @@ class UniStitchAligner:
         )
         unistitch_median = float(np.median(unistitch_errors))
 
-        magsac_h, inlier_mask = cv2.findHomography(
-            points1,
-            points0,
-            method=cv2.USAC_MAGSAC,
-            ransacReprojThreshold=3.0,
-            maxIters=10_000,
-            confidence=0.999,
-        )
-        magsac_inliers = int(inlier_mask.sum()) if inlier_mask is not None else 0
+        magsac_h: np.ndarray | None = None
+        inlier_mask: np.ndarray | None = None
+        magsac_inliers = 0
+        magsac_inlier_ratio = 0.0
         magsac_median = float("inf")
-        if magsac_h is not None and inlier_mask is not None and magsac_inliers >= 4:
-            magsac_h = _normalized_homography(magsac_h)
-            magsac_errors = _reprojection_errors(magsac_h, points1, points0)
-            magsac_median = float(np.median(magsac_errors[inlier_mask.ravel() > 0]))
+        unistitch_median_on_magsac_inliers = float("inf")
+        if self.allow_magsac_fallback:
+            try:
+                magsac_h, inlier_mask = cv2.findHomography(
+                    points1,
+                    points0,
+                    method=cv2.USAC_MAGSAC,
+                    ransacReprojThreshold=3.0,
+                    maxIters=10_000,
+                    confidence=0.999,
+                )
+                magsac_inliers = (
+                    int(inlier_mask.sum()) if inlier_mask is not None else 0
+                )
+                magsac_inlier_ratio = magsac_inliers / max(1, points0.shape[0])
+                if (
+                    magsac_h is not None
+                    and inlier_mask is not None
+                    and magsac_inliers >= 4
+                ):
+                    magsac_h = _normalized_homography(magsac_h)
+                    support = inlier_mask.ravel() > 0
+                    magsac_errors = _reprojection_errors(magsac_h, points1, points0)
+                    magsac_median = float(np.median(magsac_errors[support]))
+                    unistitch_median_on_magsac_inliers = float(
+                        np.median(unistitch_errors[support])
+                    )
+            except (cv2.error, AlignmentError, np.linalg.LinAlgError):
+                magsac_h = None
+                inlier_mask = None
+                magsac_inliers = 0
+                magsac_inlier_ratio = 0.0
 
-        if unistitch_median <= self.max_unistitch_reprojection_px:
-            layout_h = unistitch_h
-            layout_method = "unistitch_global"
-            layout_median = unistitch_median
-        elif (
-            self.allow_magsac_fallback
-            and magsac_h is not None
-            and magsac_inliers >= self.min_matches
-        ):
+        layout_method, layout_median = _choose_layout_method(
+            unistitch_median=unistitch_median,
+            magsac_median=magsac_median,
+            unistitch_median_on_magsac_inliers=(
+                unistitch_median_on_magsac_inliers
+            ),
+            magsac_inliers=magsac_inliers,
+            magsac_inlier_ratio=magsac_inlier_ratio,
+            min_matches=self.min_matches,
+            min_magsac_inlier_ratio=self.min_magsac_inlier_ratio,
+            max_unistitch_reprojection_px=self.max_unistitch_reprojection_px,
+            allow_magsac_fallback=self.allow_magsac_fallback,
+            prefer_magsac_layout=self.prefer_magsac_layout,
+        )
+        if layout_method.startswith("magsac"):
+            if magsac_h is None:  # Defensive: usable MAGSAC always has a matrix.
+                raise AlignmentError("MAGSAC layout was selected without a homography")
             layout_h = magsac_h
-            layout_method = "magsac_fallback"
-            layout_median = magsac_median
         else:
-            raise AlignmentError(
-                "UniStitch global branch failed validation "
-                f"(median {unistitch_median:.2f}px); MAGSAC has {magsac_inliers} inliers"
-            )
+            layout_h = unistitch_h
 
         inference_size = (small_width, small_height)
         original_size = (original_width, original_height)
@@ -504,6 +580,10 @@ class UniStitchAligner:
             "unistitch_orientation": orientation,
             "unistitch_median_reprojection_px_inference": unistitch_median,
             "magsac_median_reprojection_px_inference": magsac_median,
+            "magsac_inlier_ratio": magsac_inlier_ratio,
+            "unistitch_median_on_magsac_inliers_px_inference": (
+                unistitch_median_on_magsac_inliers
+            ),
             "mean_match_score": float(np.mean(scores)),
             "original_size": [original_width, original_height],
         }

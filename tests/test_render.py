@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import cv2
 import numpy as np
 import pytest
 
-from panorama_demo.render import compute_canvas, render_panorama
+from panorama_demo.render import (
+    compute_canvas,
+    largest_valid_rectangle,
+    render_panorama,
+    render_scan_panorama,
+)
 
 
 IDENTITY = np.eye(3, dtype=np.float64)
@@ -128,3 +134,112 @@ def test_render_rejects_non_bgr_image() -> None:
 
     with pytest.raises(ValueError, match="expects BGR uint8 images"):
         render_panorama([grayscale], [IDENTITY], max_megapixels=1.0)
+
+
+def test_largest_valid_rectangle_uses_explicit_mask() -> None:
+    mask = np.zeros((5, 8), dtype=np.uint8)
+    mask[:, 2:7] = 255
+    mask[1:4, 1] = 255
+
+    crop = largest_valid_rectangle(mask)
+
+    assert (crop.x, crop.y, crop.width, crop.height) == (2, 0, 5, 5)
+
+
+def test_scan_renderer_round_trips_one_frame_and_reports_crop() -> None:
+    rng = np.random.default_rng(7)
+    image = rng.integers(10, 246, size=(32, 48, 3), dtype=np.uint8)
+
+    panorama, info = render_scan_panorama(
+        [image], [IDENTITY], max_megapixels=1.0, multiband_levels=2
+    )
+
+    assert panorama.shape == image.shape
+    assert info.crop.as_dict() == {"x": 0, "y": 0, "width": 48, "height": 32}
+    np.testing.assert_allclose(panorama, image, atol=2)
+
+
+def test_scan_renderer_crops_shifted_solid_frames_without_voids() -> None:
+    left = _solid(32, 48, (30, 60, 90))
+    right = _solid(32, 48, (90, 60, 30))
+
+    panorama, info = render_scan_panorama(
+        [left, right],
+        [IDENTITY, _translation(20.0, 4.0)],
+        max_megapixels=1.0,
+        seam_margin=8,
+        multiband_levels=2,
+    )
+
+    assert panorama.shape == (28, 68, 3)
+    assert info.crop.as_dict() == {"x": 0, "y": 4, "width": 68, "height": 28}
+    assert np.all(panorama > 0)
+
+
+def test_scan_renderer_enforces_aggregate_working_set_limit() -> None:
+    image = _solid(100, 100, (30, 60, 90))
+
+    with pytest.raises(MemoryError, match="aggregate MP"):
+        render_scan_panorama(
+            [image, image],
+            [IDENTITY, IDENTITY],
+            max_megapixels=0.015,
+            multiband_levels=2,
+        )
+
+
+def test_scan_renderer_does_not_fall_back_to_overlap_averaging(monkeypatch) -> None:
+    class BrokenSeamFinder:
+        def find(self, *_args):
+            raise cv2.error("synthetic graph-cut failure")
+
+    monkeypatch.setattr(
+        cv2,
+        "detail_GraphCutSeamFinder",
+        lambda _cost: BrokenSeamFinder(),
+    )
+    left = _solid(32, 48, (30, 60, 90))
+    right = _solid(32, 48, (90, 60, 30))
+
+    with pytest.raises(RuntimeError, match="refusing to fall back"):
+        render_scan_panorama(
+            [left, right],
+            [IDENTITY, _translation(20.0, 4.0)],
+            max_megapixels=1.0,
+            seam_margin=8,
+            multiband_levels=2,
+        )
+
+
+def test_scan_renderer_reports_global_gain_and_protected_regions() -> None:
+    dark = _solid(32, 48, (80, 80, 80))
+    bright = _solid(32, 48, (180, 180, 180))
+
+    panorama, info = render_scan_panorama(
+        [dark, bright],
+        [IDENTITY, _translation(20.0, 4.0)],
+        max_megapixels=1.0,
+        seam_margin=8,
+        multiband_levels=2,
+        exposure_mode="global_gain",
+        seam_mask_sigma=1.0,
+        protected_regions=[(1, 22, 6, 80, 40)],
+    )
+
+    assert panorama.shape == (28, 68, 3)
+    assert info.exposure_mode == "global_gain"
+    assert info.seam_mask_sigma == 1.0
+    assert info.protected_regions == ((1, 22, 6, 68, 36),)
+    assert not np.allclose(info.color_gains[0], info.color_gains[1])
+
+
+def test_scan_renderer_rejects_protected_region_outside_canvas() -> None:
+    image = _solid(16, 24, (30, 60, 90))
+
+    with pytest.raises(ValueError, match="does not intersect the scan canvas"):
+        render_scan_panorama(
+            [image, image],
+            [IDENTITY, _translation(4.0)],
+            max_megapixels=1.0,
+            protected_regions=[(0, 100, 0, 110, 10)],
+        )
