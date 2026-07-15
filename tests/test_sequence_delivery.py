@@ -4,6 +4,7 @@ import csv
 import json
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
@@ -103,6 +104,20 @@ def test_clear_delivery_does_not_remove_nondelivery_diagnostics(
 
     assert diagnostics.exists()
     assert not (tmp_path / ".report.pending.json").exists()
+
+
+def test_dense_audit_owner_ids_preserve_empty_sentinel(tmp_path: Path) -> None:
+    path = tmp_path / "foreground_source_id.png"
+
+    sequence._write_dense_audit_image(
+        path,
+        np.asarray([[-1, 0, 42]], dtype=np.int32),
+    )
+
+    encoded = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    assert encoded is not None
+    assert encoded.dtype == np.uint16
+    assert encoded.tolist() == [[0, 1, 43]]
 
 
 def test_delivery_marker_is_removed_before_other_artifacts(

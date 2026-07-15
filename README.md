@@ -44,6 +44,7 @@ g305-panorama `
   .\data\captures\run_YYYYMMDD_HHMMSS `
   --output .\outputs\greenhouse_sequence
 ```
+网页：http://127.0.0.1:8766/tsdf_mesh_viewer.html
 
 `unistitch-sequence` 会打印弃用提示，但调用与 `g305-panorama` 完全相同的 RGB-D `main`。它不会加载 UniStitch、Torch、LightGlue 或 MAGSAC。
 

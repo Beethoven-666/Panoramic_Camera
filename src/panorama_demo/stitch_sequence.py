@@ -60,6 +60,14 @@ _DELIVERY_FILES = (
     "delivery.json",
     "panorama.jpg",
     "foreground_mask.png",
+    "background_exclusion_mask.png",
+    "tsdf_foreground_mask.png",
+    "depth_fallback_mask.png",
+    "depth_multiview_foreground_mask.png",
+    "foreground_alpha.png",
+    "foreground_source_id.png",
+    "foreground_confidence.png",
+    "background_source_id.png",
     "tsdf_mesh.glb",
     "tsdf_mesh_viewer.html",
     "report.json",
@@ -246,6 +254,25 @@ def _write_mask(path: Path, mask: np.ndarray) -> Path:
 
     binary = np.where(np.asarray(mask, dtype=bool), 255, 0).astype(np.uint8)
     return _write_bgr(path, binary)
+
+
+def _write_dense_audit_image(path: Path, image: np.ndarray) -> Path:
+    """Write a lossless dense-fusion audit raster with a stable ID encoding."""
+
+    array = np.asarray(image)
+    if array.ndim != 2:
+        raise ValueError("Dense audit image must be a single-channel raster")
+    if array.dtype == bool:
+        return _write_mask(path, array)
+    if np.issubdtype(array.dtype, np.signedinteger):
+        # -1 means no source owner.  PNG zero therefore remains an explicit
+        # empty sentinel and a real frame ID N is encoded as N+1.
+        if np.any(array < -1):
+            raise ValueError("Dense audit source IDs cannot be below -1")
+        array = np.where(array >= 0, array + 1, 0).astype(np.uint16)
+    elif array.dtype not in {np.dtype(np.uint8), np.dtype(np.uint16)}:
+        raise ValueError(f"Unsupported dense audit image dtype: {array.dtype}")
+    return _write_bgr(path, array)
 
 
 def _write_bytes(path: Path, data: bytes) -> Path:
@@ -1085,6 +1112,7 @@ def _run_pipeline(
     )
     foreground_mask: np.ndarray | None = None
     tsdf_mesh_glb: bytes | None = None
+    dense_audit_images: dict[str, np.ndarray] = {}
     if dense_fusion_backend == "tsdf_plane_dense_rgbd" and orbslam3_trajectory is not None:
         dense_frames = scan_frames
         dense_poses = [
@@ -1102,6 +1130,7 @@ def _run_pipeline(
         panorama = dense_result.image
         foreground_mask = dense_result.foreground_mask
         tsdf_mesh_glb = dense_result.tsdf_mesh_glb
+        dense_audit_images = dict(dense_result.audit_images)
         render_metadata = dict(dense_result.metadata)
     elif dense_fusion_backend in {
         "graphcut_depth_constrained",
@@ -1159,6 +1188,18 @@ def _run_pipeline(
     )
     if foreground_mask_path is not None:
         render_metadata["foreground_mask"] = str(foreground_mask_path)
+    dense_audit_paths = (
+        {
+            name: output / f"{name}.png"
+            for name in dense_audit_images
+        }
+        if dense_audit_images and not diagnostic_force
+        else {}
+    )
+    if dense_audit_paths:
+        render_metadata["foreground_audit_images"] = {
+            name: str(path) for name, path in dense_audit_paths.items()
+        }
     tsdf_mesh_path = (
         output
         / ("diagnostic_tsdf_mesh.glb" if diagnostic_force else "tsdf_mesh.glb")
@@ -1294,6 +1335,15 @@ def _run_pipeline(
         return report
 
     pending_panorama = _write_bgr(output / ".panorama.pending.jpg", panorama)
+    pending_dense_audits = [
+        (
+            _write_dense_audit_image(
+                output / f".{name}.pending.png", image
+            ),
+            dense_audit_paths[name],
+        )
+        for name, image in dense_audit_images.items()
+    ]
     pending_mesh: Path | None = None
     pending_mesh_viewer: Path | None = None
     if tsdf_mesh_path is not None and tsdf_mesh_glb is not None:
@@ -1318,6 +1368,8 @@ def _run_pipeline(
             output / ".foreground_mask.pending.png", foreground_mask
         )
         os.replace(pending_foreground_mask, foreground_mask_path)
+    for pending_dense_audit, dense_audit_path in pending_dense_audits:
+        os.replace(pending_dense_audit, dense_audit_path)
     if pending_mesh is not None and tsdf_mesh_path is not None:
         os.replace(pending_mesh, tsdf_mesh_path)
     if pending_mesh_viewer is not None and tsdf_mesh_viewer_path is not None:
@@ -1349,6 +1401,9 @@ def _run_pipeline(
         "foreground_mask": str(foreground_mask_path)
         if foreground_mask_path is not None
         else None,
+        "foreground_audit_images": {
+            name: str(path) for name, path in dense_audit_paths.items()
+        },
         "tsdf_mesh": str(tsdf_mesh_path) if tsdf_mesh_path is not None else None,
         "tsdf_mesh_viewer": (
             str(tsdf_mesh_viewer_path)

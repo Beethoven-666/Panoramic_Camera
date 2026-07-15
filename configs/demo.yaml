@@ -153,8 +153,8 @@ stitch:
     quality_gate: true
 
   dense_tsdf:
-    voxel_length_mm: 10.0
-    sdf_truncation_mm: 40.0
+    voxel_length_mm: 5.0
+    sdf_truncation_mm: 20.0
     maximum_depth_mm: 2000.0
     plane_histogram_bin_mm: 20.0
     # A measured point must sit at least this far on the camera side of the
@@ -164,7 +164,10 @@ stitch:
     minimum_foreground_support_neighbors: 1
     # Raw RGB-D points may fill only small holes enclosed by real TSDF geometry;
     # they may not spread across a completely unreconstructed wall region.
-    foreground_tsdf_hole_kernel_size: 15
+    foreground_tsdf_hole_kernel_size: 31
+    # The real wall can sit farther from the global ORB prior on close scans;
+    # this is still a bounded local plane fit, not an unconstrained fallback.
+    source_wall_global_depth_tolerance_mm: 140.0
     ray_chunk_rows: 128
     foreground_overlay: true
     minimum_crop_coverage: 0.85
