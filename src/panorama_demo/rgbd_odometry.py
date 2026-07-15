@@ -380,6 +380,7 @@ class RGBDOdometryBackend(Protocol):
         source: PreparedRGBDFrame,
         intrinsics: _Intrinsics,
         config: RGBDOdometryConfig,
+        initial_source_to_reference: np.ndarray | None = None,
     ) -> Mapping[str, Any] | PoseEdge: ...
 
     def optimize_pose_graph(
@@ -793,6 +794,11 @@ def _configure_open3d_odometry_option(
 
 
 class _Open3DBackend:
+    # Open3D's hybrid RGB-D odometry accepts a full SE(3) initial guess.  A
+    # sequence coordinator can advertise this capability without relying on
+    # the implementation type (which is deliberately private).
+    supports_initial_source_to_reference = True
+
     def __init__(self) -> None:
         self.o3d = _import_open3d()
 
@@ -824,18 +830,24 @@ class _Open3DBackend:
         source: PreparedRGBDFrame,
         intrinsics: _Intrinsics,
         config: RGBDOdometryConfig,
+        initial_source_to_reference: np.ndarray | None = None,
     ) -> Mapping[str, Any]:
         reference_rgbd = self._rgbd(reference, config)
         source_rgbd = self._rgbd(source, config)
         intrinsic = self._intrinsic(intrinsics)
         option = self.o3d.pipelines.odometry.OdometryOption()
         _configure_open3d_odometry_option(option, config)
+        initial_m = (
+            np.eye(4, dtype=np.float64)
+            if initial_source_to_reference is None
+            else _pose_mm_to_m(initial_source_to_reference)
+        )
         converged, transformation, information = (
             self.o3d.pipelines.odometry.compute_rgbd_odometry(
                 source_rgbd,
                 reference_rgbd,
                 intrinsic,
-                np.eye(4, dtype=np.float64),
+                initial_m,
                 self.o3d.pipelines.odometry.RGBDOdometryJacobianFromHybridTerm(),
                 option,
             )
@@ -966,13 +978,14 @@ def estimate_pair_rgbd_odometry(
     reference_node_id: int | None = None,
     source_node_id: int | None = None,
     uncertain: bool = False,
+    initial_source_to_reference: Any | None = None,
 ) -> PoseEdge:
     """Estimate one source-to-reference RGB-D edge.
 
     ``source_to_reference`` follows ``p_reference = T @ p_source``. Input depth,
-    returned translation, and returned RMSE are millimetres; Open3D receives
-    metres explicitly. No feature or 2-D fallback is attempted when Open3D is
-    unavailable or odometry fails.
+    returned translation, returned RMSE, and an optional rigid initial guess
+    are millimetres; Open3D receives metres explicitly. No feature or 2-D
+    fallback is attempted when Open3D is unavailable or odometry fails.
     """
 
     odometry_config = (
@@ -989,6 +1002,16 @@ def estimate_pair_rgbd_odometry(
     )
     if source_intrinsics != working_intrinsics:
         raise ValueError("Reference and source RGB-D odometry intrinsics differ")
+    initial_transform: np.ndarray | None = None
+    if initial_source_to_reference is not None:
+        initial_transform = np.asarray(
+            initial_source_to_reference, dtype=np.float64
+        )
+        if not _is_valid_se3(initial_transform):
+            raise ValueError(
+                "RGB-D odometry initial_source_to_reference must be a finite "
+                "rigid SE(3) in millimetres"
+            )
     reference_id = (
         prepared_reference.frame_id
         if reference_node_id is None
@@ -999,12 +1022,15 @@ def estimate_pair_rgbd_odometry(
     )
     selected_backend = _Open3DBackend() if backend is None else backend
     estimator = getattr(selected_backend, "estimate_pair", selected_backend)
-    measurement = estimator(
-        reference=prepared_reference,
-        source=prepared_source,
-        intrinsics=working_intrinsics,
-        config=odometry_config,
-    )
+    estimator_kwargs: dict[str, Any] = {
+        "reference": prepared_reference,
+        "source": prepared_source,
+        "intrinsics": working_intrinsics,
+        "config": odometry_config,
+    }
+    if initial_transform is not None:
+        estimator_kwargs["initial_source_to_reference"] = initial_transform
+    measurement = estimator(**estimator_kwargs)
     if isinstance(measurement, PoseEdge):
         transform = measurement.source_to_reference
         converged = bool(measurement.converged)

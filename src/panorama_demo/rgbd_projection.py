@@ -13,6 +13,7 @@ resolved by a per-source z-buffer in the common world-normal coordinate.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
@@ -137,6 +138,7 @@ class ProjectionCanvas:
     scan_axis: tuple[float, float, float]
     up_axis: tuple[float, float, float]
     normal_axis: tuple[float, float, float]
+    maximum_depth_mm: float | None
     source_count: int
     canvas_megapixels: float
     aggregate_megapixels: float
@@ -181,6 +183,7 @@ class ProjectionCanvas:
             "scan_axis": list(self.scan_axis),
             "up_axis": list(self.up_axis),
             "normal_axis": list(self.normal_axis),
+            "maximum_projection_depth_mm": self.maximum_depth_mm,
             "canvas_x_coordinate": "dot(world_point_mm, scan_axis)",
             "canvas_y_coordinate": "dot(world_point_mm, -up_axis)",
             "surface_depth_coordinate": "dot(world_point_mm, normal_axis)",
@@ -389,6 +392,7 @@ def _sample_frame_points(
     pose: np.ndarray,
     intrinsics: PinholeIntrinsics,
     working_width: int,
+    maximum_depth_mm: float | None = None,
 ) -> tuple[np.ndarray, int, int]:
     stride = max(1, int(np.ceil(intrinsics.width / float(working_width))))
     rows = np.arange(0, intrinsics.height, stride, dtype=np.int32)
@@ -396,6 +400,8 @@ def _sample_frame_points(
     yy, xx = np.meshgrid(rows, cols, indexing="ij")
     sampled_depth = np.asarray(depth, dtype=np.float64)[yy, xx]
     valid = np.isfinite(sampled_depth) & (sampled_depth > 0)
+    if maximum_depth_mm is not None:
+        valid &= sampled_depth <= maximum_depth_mm
     if not valid.any():
         raise ValueError("Sparse projection footprint contains no valid aligned depth")
     points = _camera_points(xx[valid], yy[valid], sampled_depth[valid], intrinsics)
@@ -407,6 +413,7 @@ def estimate_side_scan_footprints(
     intrinsics: IntrinsicsLike | Mapping[str, object],
     *,
     working_width: int = 640,
+    maximum_depth_mm: float | None = None,
 ) -> SideScanFootprintEstimate:
     """Estimate node coverage without allocating full-resolution warped sources."""
 
@@ -414,6 +421,10 @@ def estimate_side_scan_footprints(
         raise ValueError("At least one RGB-D frame is required")
     if working_width <= 0:
         raise ValueError("working_width must be positive")
+    if maximum_depth_mm is not None and (
+        not np.isfinite(maximum_depth_mm) or maximum_depth_mm <= 0.0
+    ):
+        raise ValueError("maximum_depth_mm must be finite and positive")
     camera = coerce_intrinsics(intrinsics)
     validated = [_validate_frame(frame, camera) for frame in frames]
     ids = [int(frame.frame_id) for frame in frames]
@@ -425,7 +436,7 @@ def estimate_side_scan_footprints(
     footprints: list[EstimatedProjectionFootprint] = []
     for frame, (_, depth, pose) in zip(frames, validated, strict=True):
         points, sample_count, candidate_count = _sample_frame_points(
-            depth, pose, camera, working_width
+            depth, pose, camera, working_width, maximum_depth_mm
         )
         scan_values = points @ scan
         down_values = points @ down
@@ -463,9 +474,14 @@ def _frustum_bounds(
     intrinsics: PinholeIntrinsics,
     scan: np.ndarray,
     down: np.ndarray,
+    maximum_depth_mm: float | None = None,
 ) -> tuple[float, float, float, float]:
     valid_depth = np.asarray(depth, dtype=np.float64)
     valid_depth = valid_depth[np.isfinite(valid_depth) & (valid_depth > 0)]
+    if maximum_depth_mm is not None:
+        valid_depth = valid_depth[valid_depth <= maximum_depth_mm]
+    if valid_depth.size == 0:
+        raise ValueError("Projection source has no depth within the selected range")
     z_min = float(valid_depth.min())
     z_max = float(valid_depth.max())
     u = np.array([0, intrinsics.width - 1] * 4, dtype=np.float64)
@@ -486,12 +502,18 @@ def _frustum_bounds(
 
 
 def _estimate_pixels_per_mm(
-    depths: Sequence[np.ndarray], intrinsics: PinholeIntrinsics
+    depths: Sequence[np.ndarray],
+    intrinsics: PinholeIntrinsics,
+    maximum_depth_mm: float | None = None,
 ) -> float:
     samples: list[np.ndarray] = []
     for depth in depths:
         values = np.asarray(depth, dtype=np.float64)
         values = values[np.isfinite(values) & (values > 0)]
+        if maximum_depth_mm is not None:
+            values = values[values <= maximum_depth_mm]
+        if values.size == 0:
+            raise ValueError("Projection source has no depth within the selected range")
         if values.size > 8192:
             indices = np.linspace(0, values.size - 1, 8192, dtype=np.int64)
             values = values[indices]
@@ -512,6 +534,8 @@ def estimate_projection_canvas(
     *,
     max_canvas_megapixels: float = 200.0,
     max_aggregate_megapixels: float | None = None,
+    adapt_density_to_budget: bool = False,
+    maximum_depth_mm: float | None = None,
 ) -> ProjectionCanvas:
     """Build a conservative common canvas and enforce memory limits up front."""
 
@@ -526,6 +550,10 @@ def estimate_projection_canvas(
     )
     if not np.isfinite(aggregate_limit) or aggregate_limit <= 0.0:
         raise ValueError("max_aggregate_megapixels must be finite and positive")
+    if maximum_depth_mm is not None and (
+        not np.isfinite(maximum_depth_mm) or maximum_depth_mm <= 0.0
+    ):
+        raise ValueError("maximum_depth_mm must be finite and positive")
     camera = coerce_intrinsics(intrinsics)
     validated = [_validate_frame(frame, camera) for frame in frames]
     ids = [int(frame.frame_id) for frame in frames]
@@ -534,9 +562,11 @@ def estimate_projection_canvas(
     poses = [item[2] for item in validated]
     scan, up, normal = _estimate_world_axes(poses)
     down = -up
-    density = _estimate_pixels_per_mm([item[1] for item in validated], camera)
+    density = _estimate_pixels_per_mm(
+        [item[1] for item in validated], camera, maximum_depth_mm
+    )
     bounds = [
-        _frustum_bounds(depth, pose, camera, scan, down)
+        _frustum_bounds(depth, pose, camera, scan, down, maximum_depth_mm)
         for _, depth, pose in validated
     ]
     min_scan = min(item[0] for item in bounds)
@@ -553,6 +583,36 @@ def estimate_projection_canvas(
     )
     width_float = (world_bounds[2] - world_bounds[0]) * density
     height_float = (world_bounds[3] - world_bounds[1]) * density
+    if adapt_density_to_budget:
+        # RGB-D points are splatted directly into this metric canvas.  A close
+        # foreground plus a few distant depth samples can otherwise request a
+        # much finer canvas than the bounded multi-source working set permits.
+        # Reduce only the sampling density; preserve the observed metric bounds
+        # and do not crop, invent pixels, or exceed the hard resource budget.
+        target_pixels = 0.98 * min(
+            max_canvas_megapixels,
+            aggregate_limit / max(1, len(frames)),
+        ) * 1_000_000.0
+        # Do not create an orthographic grid substantially denser than the
+        # real RGB-D samples feeding it.  Sparse point splats at an inflated
+        # output density look like black holes; reducing this grid is metric
+        # resampling, not colour/depth hole fabrication.
+        source_sample_budget = 0.85 * sum(
+            item[0].shape[0] * item[0].shape[1] for item in validated
+        )
+        target_pixels = min(target_pixels, source_sample_budget)
+        requested_pixels = width_float * height_float
+        if requested_pixels > target_pixels:
+            density *= math.sqrt(target_pixels / requested_pixels)
+            padding_mm = 1.0 / density
+            world_bounds = (
+                min_scan - padding_mm,
+                min_down - padding_mm,
+                max_scan + padding_mm,
+                max_down + padding_mm,
+            )
+            width_float = (world_bounds[2] - world_bounds[0]) * density
+            height_float = (world_bounds[3] - world_bounds[1]) * density
     if not np.isfinite([width_float, height_float]).all():
         raise MemoryError("Orthographic world bounds produce a non-finite canvas")
     width = int(np.ceil(width_float)) + 1
@@ -581,6 +641,7 @@ def estimate_projection_canvas(
         scan_axis=tuple(float(value) for value in scan),
         up_axis=tuple(float(value) for value in up),
         normal_axis=tuple(float(value) for value in normal),
+        maximum_depth_mm=maximum_depth_mm,
         source_count=len(frames),
         canvas_megapixels=float(canvas_megapixels),
         aggregate_megapixels=float(aggregate_megapixels),
@@ -654,10 +715,13 @@ def _project_source(
     maps: tuple[np.ndarray, np.ndarray] | None,
     *,
     chunk_rows: int,
+    maximum_depth_mm: float | None = None,
 ) -> ProjectedRGBDSource:
     rgb, depth, pose = _validate_frame(frame, intrinsics)
     rgb, depth, geometric_valid = _undistort_rgbd(rgb, depth, maps)
     depth_valid = geometric_valid & np.isfinite(depth) & (depth > 0)
+    if maximum_depth_mm is not None:
+        depth_valid &= depth <= maximum_depth_mm
     if not depth_valid.any():
         raise RuntimeError(f"Frame {frame.frame_id} has no valid depth after undistortion")
 
@@ -790,18 +854,23 @@ def project_rgbd_source(
     canvas: ProjectionCanvas,
     *,
     chunk_rows: int = 128,
+    maximum_depth_mm: float | None = None,
 ) -> ProjectedRGBDSource:
     """Project one selected source once into an already-budgeted canvas."""
 
     if chunk_rows <= 0:
         raise ValueError("chunk_rows must be positive")
     camera = coerce_intrinsics(intrinsics)
+    selected_maximum_depth = (
+        canvas.maximum_depth_mm if maximum_depth_mm is None else maximum_depth_mm
+    )
     return _project_source(
         frame,
         camera,
         canvas,
         _undistortion_maps(camera),
         chunk_rows=chunk_rows,
+        maximum_depth_mm=selected_maximum_depth,
     )
 
 
@@ -811,7 +880,9 @@ def project_selected_rgbd_sources(
     *,
     max_canvas_megapixels: float = 200.0,
     max_aggregate_megapixels: float | None = None,
+    adapt_density_to_budget: bool = False,
     chunk_rows: int = 128,
+    maximum_depth_mm: float | None = None,
 ) -> RGBDProjectionResult:
     """Project only final render sources; no dense-frame point clouds are retained."""
 
@@ -823,10 +894,19 @@ def project_selected_rgbd_sources(
         camera,
         max_canvas_megapixels=max_canvas_megapixels,
         max_aggregate_megapixels=max_aggregate_megapixels,
+        adapt_density_to_budget=adapt_density_to_budget,
+        maximum_depth_mm=maximum_depth_mm,
     )
     maps = _undistortion_maps(camera)
     projected = tuple(
-        _project_source(frame, camera, canvas, maps, chunk_rows=chunk_rows)
+        _project_source(
+            frame,
+            camera,
+            canvas,
+            maps,
+            chunk_rows=chunk_rows,
+            maximum_depth_mm=maximum_depth_mm,
+        )
         for frame in frames
     )
     return RGBDProjectionResult(canvas=canvas, sources=projected)

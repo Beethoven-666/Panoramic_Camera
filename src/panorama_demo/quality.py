@@ -780,6 +780,7 @@ def select_rgbd_render_indices_auto(
     quality_gate: bool = True,
     minimum_coverage_ratio: float = 0.95,
     minimum_overlap_fraction: float = 0.34,
+    maximum_camera_spacing_mm: float | None = None,
 ) -> tuple[list[int], dict[str, object]]:
     """Select real metric RGB-D pose nodes with continuous projected coverage.
 
@@ -799,6 +800,11 @@ def select_rgbd_render_indices_auto(
         raise ValueError("minimum_coverage_ratio must be between 0.90 and 1.0")
     if not 0.05 <= minimum_overlap_fraction <= 0.80:
         raise ValueError("minimum_overlap_fraction is outside the safe range")
+    if maximum_camera_spacing_mm is not None and (
+        not np.isfinite(maximum_camera_spacing_mm)
+        or maximum_camera_spacing_mm <= 0.0
+    ):
+        raise ValueError("maximum_camera_spacing_mm must be finite and positive")
 
     footprint_items = tuple(getattr(footprints, "footprints", footprints))
     if len(footprint_items) != len(qualities):
@@ -908,63 +914,82 @@ def select_rgbd_render_indices_auto(
             f"{eligible_coverage:.1%} of the reliable projected scan"
         )
 
-    # Each state is the shortest real-node path to one candidate.  Equal-length
-    # alternatives retain the clearer path; no synthetic bridge or pose is made.
-    best_solution: list[int] | None = None
-    best_solution_key: tuple[float, ...] | None = None
-    for start_offset, start in enumerate(eligible_indices):
+    # A panorama path must traverse the capture, not merely find any two
+    # far-depth footprints whose projected intervals happen to overlap.  This
+    # is essential in close scenes where a small amount of 10 m depth can make
+    # two neighbouring frames appear to cover the entire strip.
+    required_start = eligible_indices[0]
+    required_end = eligible_indices[-1]
+    # Preserve the genuinely observed left/right limits of the scan.  Without
+    # these anchors, a dynamic program that minimises node count can discard a
+    # short source that uniquely owns an extremity, then report an apparent
+    # coverage failure even though the dense real-node chain is connected.
+    eligible_array = np.asarray(eligible_indices, dtype=np.int64)
+    left_extreme = int(eligible_array[np.argmin(intervals[eligible_array, 0])])
+    right_extreme = int(eligible_array[np.argmax(intervals[eligible_array, 1])])
+    anchors = sorted({required_start, left_extreme, right_extreme, required_end})
+
+    def can_connect(previous: int, current: int) -> bool:
+        if positions[current] <= positions[previous] + monotonic_epsilon:
+            return False
+        if (
+            maximum_camera_spacing_mm is not None
+            and positions[current] - positions[previous]
+            > maximum_camera_spacing_mm + monotonic_epsilon
+        ):
+            return False
+        return bool(
+            _projected_interval_overlap_fraction(intervals[previous], intervals[current])
+            + 1e-12
+            >= minimum_overlap_fraction
+        )
+
+    def shortest_real_path(start: int, end: int) -> list[int] | None:
+        """Find a minimum-node, maximum-quality path through measured nodes."""
+
         paths: dict[int, list[int]] = {start: [start]}
-        for end in eligible_indices[start_offset + 1 :]:
-            end_path: list[int] | None = None
-            end_key: tuple[float, ...] | None = None
-            for previous in eligible_indices[start_offset:]:
-                if previous >= end:
-                    break
-                previous_path = paths.get(previous)
-                if previous_path is None:
-                    continue
-                if positions[end] <= positions[previous] + monotonic_epsilon:
-                    continue
-                overlap = _projected_interval_overlap_fraction(
-                    intervals[previous], intervals[end]
-                )
-                if overlap + 1e-12 < minimum_overlap_fraction:
-                    continue
-                candidate = [*previous_path, end]
-                candidate_coverage = _interval_union_length(intervals[candidate])
-                candidate_scores = scores[candidate]
-                candidate_key = (
-                    -float(len(candidate)),
-                    candidate_coverage,
-                    float(np.min(candidate_scores)),
-                    float(np.mean(candidate_scores)),
-                )
-                if end_key is None or candidate_key > end_key:
-                    end_path = candidate
-                    end_key = candidate_key
-            if end_path is not None:
-                paths[end] = end_path
-
-        for path in paths.values():
-            if len(path) < 2:
+        for current in eligible_indices:
+            if current <= start or current > end:
                 continue
-            coverage = _interval_union_length(intervals[path]) / reliable_span
-            if coverage + 1e-12 < minimum_coverage_ratio:
+            candidates: list[list[int]] = []
+            for previous, previous_path in paths.items():
+                if previous >= current or not can_connect(previous, current):
+                    continue
+                candidates.append([*previous_path, current])
+            if not candidates:
                 continue
-            path_scores = scores[path]
-            solution_key = (
-                -float(len(path)),
-                float(np.min(path_scores)),
-                float(np.mean(path_scores)),
-                coverage,
+            # Few sources minimise reprojection and seam count; quality resolves
+            # ties.  Feasibility depends only on the current real node, so this
+            # shortest-path state cannot discard a future connection.
+            paths[current] = min(
+                candidates,
+                key=lambda path: (
+                    len(path),
+                    -float(np.min(scores[path])),
+                    -float(np.mean(scores[path])),
+                ),
             )
-            if best_solution_key is None or solution_key > best_solution_key:
-                best_solution = path
-                best_solution_key = solution_key
+        return paths.get(end)
 
-    if best_solution is None:
+    best_solution: list[int] = []
+    for left, right in zip(anchors, anchors[1:]):
+        segment = shortest_real_path(left, right)
+        if segment is None:
+            best_solution = []
+            break
+        if best_solution:
+            best_solution.extend(segment[1:])
+        else:
+            best_solution.extend(segment)
+
+    if len(best_solution) < 2:
         raise RuntimeError(
             "No real RGB-D render-source path preserves safe projected overlap"
+        )
+    coverage = _interval_union_length(intervals[best_solution]) / reliable_span
+    if coverage + 1e-12 < minimum_coverage_ratio:
+        raise RuntimeError(
+            "No real RGB-D render-source path preserves required projected coverage"
         )
     if len(best_solution) > 32:
         raise RuntimeError(
@@ -997,6 +1022,7 @@ def select_rgbd_render_indices_auto(
         "cross_track_camera_span_mm": cross_track_span_mm,
         "forward_camera_span_mm": forward_span_mm,
         "minimum_required_overlap_fraction": minimum_overlap_fraction,
+        "maximum_camera_spacing_mm": maximum_camera_spacing_mm,
         "minimum_selected_overlap_fraction": float(min(overlap_fractions)),
         "maximum_adjacent_camera_spacing_mm": float(
             np.max(np.diff(selected_positions))
@@ -1009,6 +1035,7 @@ def select_rgbd_render_indices_auto(
         "selected_scan_intervals_mm": [
             [float(value) for value in intervals[index]] for index in best_solution
         ],
+        "required_endpoint_frame_ids": [frame_ids[required_start], frame_ids[required_end]],
         "eligible_source_count": int(np.count_nonzero(eligible)),
         "quality_scores": [float(value) for value in scores],
     }

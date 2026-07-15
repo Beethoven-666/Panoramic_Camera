@@ -81,7 +81,10 @@ def _write_rgbd_session(
     (root / "calibration.json").write_text(
         json.dumps(calibration), encoding="utf-8"
     )
-    manifest: dict[str, object] = {"schema": "panorama-demo-session/v1"}
+    manifest: dict[str, object] = {
+        "schema": "panorama-demo-session/v1",
+        "clean_shutdown": True,
+    }
     if manifest_align is not None:
         manifest["capture_options"] = {"align": manifest_align}
     (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -322,6 +325,31 @@ def test_load_rgbd_session_validates_capture_contract(tmp_path: Path) -> None:
     assert session.frames[0].depth_path == session.frames[0].aligned_depth_path
 
 
+@pytest.mark.parametrize("clean_shutdown", [False, None])
+def test_load_rgbd_session_rejects_incomplete_project_session(
+    tmp_path: Path, clean_shutdown: bool | None
+) -> None:
+    root = _write_rgbd_session(tmp_path)
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if clean_shutdown is None:
+        manifest.pop("clean_shutdown")
+    else:
+        manifest["clean_shutdown"] = clean_shutdown
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not cleanly closed"):
+        load_rgbd_session(root)
+
+
+def test_load_rgbd_session_requires_manifest(tmp_path: Path) -> None:
+    root = _write_rgbd_session(tmp_path)
+    (root / "manifest.json").unlink()
+
+    with pytest.raises(ValueError, match="requires manifest.json"):
+        load_rgbd_session(root)
+
+
 def test_load_rgbd_session_accepts_calibration_alignment_marker(
     tmp_path: Path,
 ) -> None:
@@ -419,7 +447,7 @@ def test_load_rgbd_session_rejects_unproven_foreign_software_alignment(
     manifest["schema"] = "foreign-session/v1"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="explicitly declare depth aligned to color"):
+    with pytest.raises(ValueError, match="unsupported manifest schema"):
         load_rgbd_session(root)
 
 

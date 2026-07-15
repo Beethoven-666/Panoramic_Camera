@@ -783,6 +783,13 @@ def _write_manifest(session_root: Path, manifest: dict[str, Any]) -> None:
 
 
 def run_capture(args: argparse.Namespace) -> Path:
+    if bool(getattr(args, "photo_mode", False)):
+        # Keep the photo controller and SDK state machine lazy. photo_capture
+        # imports shared encoding/session helpers from this module.
+        from .photo_capture import run_photo_sequence
+
+        return run_photo_sequence(args)
+
     config_file = load_config(args.config)
     options = dict(config_file.get("capture", {}))
     for name in ("width", "height", "fps", "warmup_frames", "queue_size"):
@@ -1109,6 +1116,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Capture synchronized Gemini 305 RGB-D frames")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--output", type=Path, default=Path("data/captures"))
+    parser.add_argument(
+        "--photo-mode",
+        action="store_true",
+        help=(
+            "Use no-preview SOFTWARE_TRIGGERING as a fastest-unthrottled "
+            "low-frame-rate RGB-D photo sequence"
+        ),
+    )
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
     parser.add_argument("--fps", type=int)

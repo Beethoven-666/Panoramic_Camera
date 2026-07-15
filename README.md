@@ -3,15 +3,15 @@
 本项目在 Windows 上使用奥比中光 Gemini 305 采集同步、标定且对齐到彩色坐标系的 RGB-D 序列，并生成移动侧扫全景图。正式序列流程是：
 
 ```text
-Open3D RGB-D Odometry + Pose Graph
-  → 全分辨率深度重投影正射侧扫条带
-  → 深度硬约束的 OpenCV GraphCut
-  → 严格单 owner 分区验证
-  → owner 边界窄带 OpenCV MultiBand
+短基线 Open3D RGB-D Odometry（局部质量验证）
+  → ORB-SLAM3 RGB-D（完整序列的真实全局相机轨迹）
+  → 全帧 TSDF 几何融合
+  → 标定平面真实位姿重投影（补足平整背景的深度空洞）
+  → TSDF 前景覆盖
   → 裁剪、质量门禁和原子交付
 ```
 
-正式流程不使用 UniStitch、LightGlue、MAGSAC、二维单应矩阵或二维位姿插值，也不会在 RGB-D 位姿、GraphCut 或 MultiBand 失败后回退到旧 DP、Feather 或整片重叠平均。无法可靠恢复的模糊、错误位姿、高视差接缝、覆盖缺口和黑边会产生明确失败；没有 `delivery.json` 就不是有效交付。
+正式流程不使用 UniStitch、LightGlue、MAGSAC、二维单应矩阵或二维位姿插值。ORB-SLAM3 仅负责输出真实 RGB-D 相机轨迹；有未跟踪帧、位姿异常或稠密融合覆盖不足时流程会失败，不会伪造位姿或回退到二维拼接。没有 `delivery.json` 就不是有效交付。
 
 默认工况是相机连续单向水平侧移、场景基本静止、最近物体约 `0.5 m`、最高速度约 `1.5 m/s`。用户只需提供采集目录和输出目录，不需要调整曝光、步长、帧号、位姿、接缝或裁剪参数。
 
@@ -19,11 +19,17 @@ Open3D RGB-D Odometry + Pose Graph
 
 | 命令 | 用途 |
 |---|---|
-| `g305-capture` | 采集同步 Gemini 305 RGB-D 会话 |
+| `g305-capture` | 采集连续流或照片模式驱动的低帧率同步 RGB-D 会话 |
 | `g305-panorama` | 正式 RGB-D 序列全景入口 |
 | `unistitch-sequence` | 一个版本内保留的弃用别名；运行同一 RGB-D 流程，不含 UniStitch 回退 |
 | `generate-panorama-demo` | 生成带标定、对齐深度和已知 SE(3) 轨迹的合成会话 |
 | `unistitch-pair` | 独立历史双图诊断工具，不进入正式序列流程 |
+
+激活环境
+
+```
+conda activate D:\Panoramic_Camera\.conda
+```
 
 正式零参数命令：
 
@@ -78,7 +84,7 @@ Gemini 305 同步 RGB-D 会话
 - Git；
 - Gemini 305 通过 USB 3 直接连接，采集建议使用 SSD/NVMe；
 - 实机采集需要 `pyorbbecsdk2`；
-- 正式序列依赖 Open3D 0.19，不依赖 Torch 或 CUDA。Open3D 0.19 的官方预编译包支持到 Python 3.12，详见 [Open3D 安装说明](https://www.open3d.org/docs/release/getting_started.html)。
+- 正式序列依赖 Open3D 0.19 和可从 Windows 调用的 WSL ORB-SLAM3 RGB-D 示例；不依赖 Torch 或 CUDA。Gemini 305 的 `0.1 mm/unit` 深度必须自动写成 ORB-SLAM3 `DepthMapFactor=10000`，不得使用 TUM 示例的 `5000` 默认值。Open3D 0.19 的官方预编译包支持到 Python 3.12，详见 [Open3D 安装说明](https://www.open3d.org/docs/release/getting_started.html)。
 
 Open3D 在首次执行 RGB-D odometry 时才延迟导入。采集、会话检查和不需要默认 Open3D backend 的单元测试不会因模型库或 CUDA 不可用而提前失败。
 
@@ -148,6 +154,56 @@ powershell -ExecutionPolicy Bypass -File .\scripts\register_orbbec_metadata.ps1
 脚本会优先使用项目内 `.conda`，必要时请求管理员权限。完成后重新插拔相机。短采集后应检查 `manifest.json` 的 `metadata_support`，以及 `frames.csv` 中曝光、增益、帧号、sensor timestamp 和 RGB-D 时间差是否持续有效。
 
 ## 采集 Gemini 305 RGB-D
+
+### 照片模式驱动的低帧率 RGB-D 序列
+
+不新增桌面程序；照片模式复用现有采集入口：
+
+```powershell
+g305-capture `
+  --photo-mode `
+  --output .\data\captures
+```
+
+该命令不显示视频。它在配置分辨率下枚举彩色与 Y16 深度 profile，选择两者共同支持的最高 FPS，然后以“单张拍照”作为序列帧持续采集，不增加人工限速。实际帧率由软件触发、完整同步 RGB-D 收帧、对齐和同步写盘共同决定，因此表现为较低帧率的视频式采集。按 `Q`、`Esc` 或 `Ctrl+C` 结束；也可使用已有的 `--duration` 或 `--max-frames`：
+
+```powershell
+g305-capture --photo-mode --max-frames 120 --output .\data\captures
+g305-capture --photo-mode --duration 20 --output .\data\captures
+```
+
+如果不存在尺寸一致、可同步的 RGB-D profile，会在发出正式触发前失败，不会退化为只拍 RGB。
+
+准备阶段执行以下固定安全流程：
+
+```text
+停止旧流
+  → SOFTWARE_TRIGGERING
+  → Trigger Out Enable = true
+  → frames_per_trigger = 1
+  → 物理 Trigger Out gate 关闭
+  → 用不会到达外部端口的软件触发预热 RGB-D Pipeline
+  → 确认能够取得新的完整同步 RGB-D 帧并回读配置
+  → 等待预热触发完全静默且门控稳定
+  → 开始逐帧照片序列
+```
+
+预热可能需要内部 `trigger_capture()`，但预热期间物理 gate 必须保持关闭；在打开 gate 前还会等待一个完整静默窗口并排空迟到帧，因此内部触发不能成为序列的外部脉冲。无法关闭或回读物理 gate、无法关闭设备定时自动采集、预热/静默验证失败或同步配置回读不一致时，照片模式拒绝就绪。
+
+序列中的每一帧都具有严格的一对一语义：
+
+- 每帧只调用一次正式 `device.trigger_capture()`；`SOFTWARE_TRIGGERING`、`Trigger Out Enable=true` 和 `frames_per_trigger=1` 始终保持有效；
+- 等待该触发产生的全新、完整同步 RGB-D 帧，不把预热帧、积压旧帧或只有彩色的帧计入序列；
+- 上一帧收帧、对齐和落盘完成后才发下一次触发，不存在并发触发；
+- 任一帧的触发调用、收帧、曝光元数据、解码、对齐或写盘失败都会立即终止序列，不自动重触发，也不发布 formal session。
+
+每个成功序列帧都向当前 RGB-D session 追加一张彩色图、一张对齐深度图和一条 `frames.csv` 记录；会话同时包含 `calibration.json`、深度比例、时间戳、逐帧曝光及同步元数据。结束时程序停止 Pipeline、恢复设备设置并最终更新 `manifest.json` 的实际帧数、有效采集 FPS 和 clean-shutdown 状态。正在写入、强制终止或关闭/恢复失败的会话会保持 `formal_stitch_allowed=false`，严格会话加载器也会拒绝 `clean_shutdown!=true`，不能发布部分扫描。
+
+照片模式的安全默认值位于 `capture.photo_mode`：功能默认启用；自动选择共同最高 RGB-D FPS；彩色曝光 `800 µs`；Trigger Out 延时固定为 `17000 µs`；正式触发最长等待 `8000 ms`；Gemini 固件预热最多允许 8 次仅限 gate-off 的内部触发，每次等待 `1500 ms`。取得完整预热 RGB-D 后，物理 gate 仍保持关闭，直到从最后一次内部触发起完整 `8000 ms` 迟到响应窗口结束并确认队列为空；逐帧收帧、对齐和同步写盘完成后才允许下一次正式触发，天然覆盖该硬件延时；gate 状态改变后等待 `250 ms`。这些值是内部安全默认值，普通用户不需要为了得到正式会话而调整它们。
+
+照片序列与下面的连续流模式都必须独占同一台 Gemini 305；运行前关闭 OrbbecViewer、Flash 工具和其它占用相机的进程。
+
+### 连续移动 RGB-D 序列
 
 正式采集使用 [`configs/demo.yaml`](configs/demo.yaml)：
 

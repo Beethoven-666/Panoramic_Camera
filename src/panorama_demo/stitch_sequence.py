@@ -13,6 +13,12 @@ import cv2
 import numpy as np
 
 from .config import load_config
+from .dense_fusion import fuse_dense_rgbd_side_scan
+from .orbslam3_bridge import (
+    ORBSLAM3PoseGraphOptimizer,
+    ORBSLAM3Trajectory,
+    run_orbslam3_rgbd,
+)
 from .quality import (
     FrameQuality,
     MotionEstimate,
@@ -310,14 +316,32 @@ def _select_pose_nodes(
         ),
         max_selected=int(stitch_config.get("layout_max_frames", 160)),
     )
-    pose_frames = [scan_frames[index] for index in selection.indices]
-    pose_qualities = [scan_qualities[index] for index in selection.indices]
+    dense_chain = bool(stitch_config.get("dense_rgbd_pose_chain", True))
+    maximum_nodes = int(stitch_config.get("layout_max_frames", 160))
+    if dense_chain:
+        if len(scan_frames) > maximum_nodes:
+            raise RuntimeError(
+                "The primary RGB-D scan contains more frames than the "
+                "configured dense pose-node safety limit"
+            )
+        # Every captured frame is a real pose node.  This gives close-range
+        # projection and fusion a short-baseline trajectory rather than asking
+        # a handful of widely spaced frames to represent the whole sweep.
+        pose_frames = list(scan_frames)
+        pose_qualities = list(scan_qualities)
+    else:
+        pose_frames = [scan_frames[index] for index in selection.indices]
+        pose_qualities = [scan_qualities[index] for index in selection.indices]
     if len(pose_frames) < 2:
         raise RuntimeError("Adaptive RGB-D layout selected fewer than two pose nodes")
     metadata = selection.as_dict()
     metadata.update(
         {
             "mode": "adaptive_rgbd_pose_nodes",
+            "pose_node_strategy": (
+                "dense_consecutive_rgbd_chain" if dense_chain else "sparse_layout"
+            ),
+            "selected_pose_frame_count": len(pose_frames),
             "frame_ids": [frame.frame_id for frame in pose_frames],
             "segment": {
                 **segment.as_dict(),
@@ -337,7 +361,88 @@ def _estimate_pose_edges(
     *,
     backend: object | None,
     nonadjacent_gap: int,
+    scan_frames: tuple[RGBDFrame, ...] | None = None,
+    short_baseline_audit: list[dict[str, object]] | None = None,
+    short_baseline_initialization: bool = True,
 ) -> tuple[list[Any], list[dict[str, object]]]:
+    """Measure selected pose edges, seeding wide edges from real short RGB-D edges.
+
+    A sparse rendering layout may put 10--20 captured frames between two pose
+    nodes.  At close range, solving that wide pair from identity can converge
+    to a visually plausible but wrong local minimum.  We therefore compose
+    only consecutive, measured RGB-D edges to initialise the same direct
+    measurement.  The composed motion is never inserted as a synthetic graph
+    edge and no pose is interpolated.
+    """
+
+    frames_by_id = (
+        {frame.frame_id: (index, frame) for index, frame in enumerate(scan_frames)}
+        if scan_frames is not None
+        else {}
+    )
+    supports_seed = short_baseline_initialization and (backend is None or bool(
+        getattr(backend, "supports_initial_source_to_reference", False)
+    ))
+
+    def short_baseline_seed(
+        reference: RGBDFrame, source: RGBDFrame
+    ) -> np.ndarray | None:
+        if not supports_seed:
+            return None
+        reference_row = frames_by_id.get(reference.frame_id)
+        source_row = frames_by_id.get(source.frame_id)
+        if reference_row is None or source_row is None:
+            return None
+        start, _ = reference_row
+        stop, _ = source_row
+        if stop <= start + 1:
+            return None
+        composed = np.eye(4, dtype=np.float64)
+        short_edges = 0
+        try:
+            for frame_index in range(start + 1, stop + 1):
+                short_reference = scan_frames[frame_index - 1]
+                short_source = scan_frames[frame_index]
+                short_edge = estimate_pair_rgbd_odometry(
+                    short_reference,
+                    short_source,
+                    intrinsics,
+                    config=odometry_config,
+                    backend=backend,
+                )
+                if not short_edge.reliable:
+                    raise RuntimeError(
+                        "short edge "
+                        f"{short_reference.frame_id}<->{short_source.frame_id} "
+                        "is unreliable: "
+                        + "; ".join(short_edge.failure_reasons)
+                    )
+                composed = composed @ short_edge.source_to_reference
+                short_edges += 1
+        except Exception as exc:
+            if short_baseline_audit is not None:
+                short_baseline_audit.append(
+                    {
+                        "reference_node_id": reference.frame_id,
+                        "source_node_id": source.frame_id,
+                        "used": False,
+                        "error_type": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                )
+            return None
+        if short_baseline_audit is not None:
+            short_baseline_audit.append(
+                {
+                    "reference_node_id": reference.frame_id,
+                    "source_node_id": source.frame_id,
+                    "used": True,
+                    "short_edge_count": short_edges,
+                    "initial_source_to_reference": composed.tolist(),
+                }
+            )
+        return composed
+
     edges: list[Any] = []
     optional_failures: list[dict[str, object]] = []
     pair_total = len(pose_frames) - 1
@@ -345,12 +450,14 @@ def _estimate_pose_edges(
         reference = pose_frames[index - 1]
         source = pose_frames[index]
         started = time.perf_counter()
+        initial_source_to_reference = short_baseline_seed(reference, source)
         edge = estimate_pair_rgbd_odometry(
             reference,
             source,
             intrinsics,
             config=odometry_config,
             backend=backend,
+            initial_source_to_reference=initial_source_to_reference,
         )
         edges.append(edge)
         print(
@@ -358,7 +465,9 @@ def _estimate_pose_edges(
             f"fitness={edge.fitness:.3f}, rmse={edge.rmse_mm:.1f} mm, "
             f"{time.perf_counter() - started:.2f}s"
         )
-    maximum_gap = max(1, int(nonadjacent_gap))
+    # Non-adjacent constraints are optional loop candidates.  A zero gap is
+    # intentional for the default open side-scan chain.
+    maximum_gap = max(0, int(nonadjacent_gap))
     for gap in range(2, maximum_gap + 1):
         for source_index in range(gap, len(pose_frames)):
             reference = pose_frames[source_index - gap]
@@ -442,8 +551,11 @@ def _full_projection_frames(
 
 
 def _validate_backend_config(stitch_config: dict[str, Any]) -> None:
-    if str(stitch_config.get("pose_backend", "open3d_rgbd")) != "open3d_rgbd":
-        raise ValueError("Formal pose_backend must be open3d_rgbd")
+    pose_backend = str(stitch_config.get("pose_backend", "hybrid_orbslam3_rgbd"))
+    if pose_backend not in {"open3d_rgbd", "hybrid_orbslam3_rgbd"}:
+        raise ValueError(
+            "pose_backend must be open3d_rgbd or hybrid_orbslam3_rgbd"
+        )
     if str(stitch_config.get("sequence_blend_mode", "scan_seam")) != "scan_seam":
         raise ValueError("scan_seam is the only formal sequence render mode")
     projection = dict(stitch_config.get("rgbd_projection", {}))
@@ -689,6 +801,7 @@ def _run_pipeline(
     segment_row = layout_metadata["segment"]
     segment_start = int(segment_row["start_index"])
     segment_stop = int(segment_row["end_index"]) + 1
+    scan_frames = session.frames[segment_start:segment_stop]
     capture_quality = assess_capture_quality(
         qualities[segment_start:segment_stop],
         [
@@ -720,18 +833,39 @@ def _run_pipeline(
         stitch_config.get("pose_quality")
     )
     started = time.perf_counter()
+    short_baseline_audit: list[dict[str, object]] = []
     edges, optional_edge_failures = _estimate_pose_edges(
         pose_frames,
         session.calibration,
         odometry_config,
         backend=odometry_backend,
         nonadjacent_gap=nonadjacent_gap,
+        scan_frames=scan_frames,
+        short_baseline_audit=short_baseline_audit,
+        short_baseline_initialization=bool(
+            stitch_config.get("short_baseline_initialization", True)
+        ),
     )
+    pose_backend = str(stitch_config.get("pose_backend", "hybrid_orbslam3_rgbd"))
+    orbslam3_trajectory: ORBSLAM3Trajectory | None = None
+    global_pose_backend: object | None = odometry_backend
+    if pose_backend == "hybrid_orbslam3_rgbd" and odometry_backend is None:
+        print(
+            "[ORB-SLAM3] solving the global RGB-D trajectory from the complete "
+            "short-baseline scan"
+        )
+        orbslam3_trajectory = run_orbslam3_rgbd(
+            scan_frames,
+            session.calibration,
+            output,
+            config=stitch_config.get("orbslam3_rgbd"),
+        )
+        global_pose_backend = ORBSLAM3PoseGraphOptimizer(orbslam3_trajectory)
     pose_graph = optimize_rgbd_pose_graph(
         pose_frames,
         edges,
         config=graph_config,
-        backend=odometry_backend,
+        backend=global_pose_backend,
         enforce_edge_quality=not diagnostic_force,
     )
     pose_quality_result = validate_pose_trajectory(
@@ -746,6 +880,16 @@ def _run_pipeline(
     pose_values = [pose_graph.pose_for(frame.frame_id) for frame in pose_frames]
 
     projection_config = dict(stitch_config.get("rgbd_projection", {}))
+    maximum_projection_depth_mm = float(
+        projection_config.get("maximum_projection_depth_mm", 2000.0)
+    )
+    if odometry_backend is not None:
+        # Synthetic/unit-test backends may deliberately use one flat depth
+        # outside the close-range production envelope.  Do not discard those
+        # structurally valid injected frames while testing pose orchestration.
+        maximum_projection_depth_mm = max(
+            maximum_projection_depth_mm, odometry_config.maximum_depth_mm
+        )
     footprint_frames, footprint_intrinsics = _working_projection_frames(
         pose_frames,
         pose_values,
@@ -760,12 +904,14 @@ def _run_pipeline(
         footprint_frames,
         footprint_intrinsics,
         working_width=footprint_intrinsics.width,
+        maximum_depth_mm=maximum_projection_depth_mm,
     )
     footprint_canvas = estimate_projection_canvas(
         footprint_frames,
         footprint_intrinsics,
         max_canvas_megapixels=1_000_000.0,
         max_aggregate_megapixels=1_000_000_000.0,
+        maximum_depth_mm=maximum_projection_depth_mm,
     )
     full_resolution_scale = (
         session.calibration.width / float(footprint_intrinsics.width)
@@ -793,6 +939,14 @@ def _run_pipeline(
         maximum_render_sources = int(
             projection_config.get("max_render_sources", 0)
         )
+        dense_render_minimum_nodes = int(
+            projection_config.get("dense_render_minimum_pose_nodes", 24)
+        )
+        maximum_render_step_mm = (
+            float(projection_config.get("maximum_render_step_mm", 100.0))
+            if len(pose_frames) >= dense_render_minimum_nodes
+            else None
+        )
         try:
             render_indices, render_selection = select_rgbd_render_indices_auto(
                 pose_qualities,
@@ -806,6 +960,7 @@ def _run_pipeline(
                 minimum_overlap_fraction=float(
                     projection_config.get("minimum_overlap_fraction", 0.34)
                 ),
+                maximum_camera_spacing_mm=maximum_render_step_mm,
             )
         except (RuntimeError, ValueError) as exc:
             if not diagnostic_force:
@@ -830,12 +985,10 @@ def _run_pipeline(
                     / max(estimated_full_canvas_mp * 1.05, 1e-9)
                 )
             )
-            if budget_count < 2:
-                raise MemoryError(
-                    "Diagnostic optimized poses require a canvas too large for "
-                    "two projected sources within the aggregate memory limit"
-                ) from exc
-            limit = min(maximum_render_sources or 32, budget_count)
+            # The final projector adapts its sampling density to the actual
+            # selected source count.  Do not reject a dense diagnostic path
+            # using a sparse pre-selection canvas estimate.
+            limit = min(maximum_render_sources or 32, _HARD_MAX_RENDER_SOURCES)
             if len(pose_frames) <= limit:
                 render_indices = list(range(len(pose_frames)))
             else:
@@ -876,26 +1029,55 @@ def _run_pipeline(
                 "max_aggregate_megapixels", max_canvas_megapixels
             )
         ),
+        adapt_density_to_budget=True,
         chunk_rows=int(projection_config.get("chunk_rows", 128)),
+        maximum_depth_mm=maximum_projection_depth_mm,
     )
-    del full_projection_frames
-
     seam_config = dict(stitch_config.get("scan_seam", {}))
-    panorama, render_info = render_projected_scan_panorama(
-        projection.sources,
-        max_megapixels=float(
-            projection_config.get(
-                "max_aggregate_megapixels", max_canvas_megapixels
-            )
-        ),
-        multiband_levels=int(seam_config.get("multiband_levels", 5)),
-        exposure_mode=str(seam_config.get("exposure_mode", "global_gain")),
-        quality_gate=(
-            not diagnostic_force and bool(seam_config.get("quality_gate", True))
-        ),
-        sharpness_scores=[quality.sharpness for quality in render_qualities],
+    dense_fusion_backend = str(
+        stitch_config.get("dense_fusion_backend", "tsdf_plane_dense_rgbd")
     )
-    render_metadata = render_info.as_dict()
+    if dense_fusion_backend == "tsdf_plane_dense_rgbd" and orbslam3_trajectory is not None:
+        dense_frames = scan_frames
+        dense_poses = [
+            orbslam3_trajectory.poses_by_frame_id[frame.frame_id]
+            for frame in dense_frames
+        ]
+        dense_result = fuse_dense_rgbd_side_scan(
+            full_projection_frames,
+            dense_frames,
+            dense_poses,
+            _pinhole_intrinsics(session.calibration),
+            projection.canvas,
+            config=stitch_config.get("dense_tsdf"),
+        )
+        panorama = dense_result.image
+        render_metadata = dict(dense_result.metadata)
+    elif dense_fusion_backend in {
+        "graphcut_depth_constrained",
+        "tsdf_plane_dense_rgbd",
+    }:
+        panorama, render_info = render_projected_scan_panorama(
+            projection.sources,
+            max_megapixels=float(
+                projection_config.get(
+                    "max_aggregate_megapixels", max_canvas_megapixels
+                )
+            ),
+            multiband_levels=int(seam_config.get("multiband_levels", 5)),
+            exposure_mode=str(seam_config.get("exposure_mode", "global_gain")),
+            quality_gate=(
+                not diagnostic_force and bool(seam_config.get("quality_gate", True))
+            ),
+            sharpness_scores=[quality.sharpness for quality in render_qualities],
+        )
+        render_metadata = render_info.as_dict()
+    else:
+        raise ValueError(
+            "dense_fusion_backend must be tsdf_plane_dense_rgbd or "
+            "graphcut_depth_constrained"
+        )
+    del full_projection_frames
     render_metadata["frame_ids"] = [frame.frame_id for frame in render_frames]
     render_metadata["selection"] = render_selection
     render_metadata["source_quality"] = {
@@ -918,6 +1100,12 @@ def _run_pipeline(
     transforms_payload = pose_graph.as_dict()
     transforms_payload["layout_selection"] = layout_metadata
     transforms_payload["optional_edge_failures"] = optional_edge_failures
+    transforms_payload["short_baseline_initialization"] = short_baseline_audit
+    transforms_payload["global_trajectory"] = (
+        orbslam3_trajectory.as_dict(input_frame_count=len(scan_frames))
+        if orbslam3_trajectory is not None
+        else None
+    )
     render_transforms_payload = {
         "schema": "rgbd-side-scan-projection/v1",
         "translation_unit": "mm",
@@ -962,11 +1150,17 @@ def _run_pipeline(
             },
             "edges": [edge.as_dict() for edge in edges],
             "optional_edge_failures": optional_edge_failures,
+            "short_baseline_initialization": short_baseline_audit,
         },
+        "global_trajectory": transforms_payload["global_trajectory"],
         "pose_graph": transforms_payload,
         "pose_quality": pose_quality,
         "projection": render_transforms_payload,
-        "render_strategy": "graphcut_depth_constrained",
+        "render_strategy": (
+            dense_fusion_backend
+            if orbslam3_trajectory is not None
+            else "graphcut_depth_constrained"
+        ),
         "render": render_metadata,
         "diagnostic_overrides": (
             {
@@ -1012,10 +1206,22 @@ def _run_pipeline(
         "schema": "gemini305-panorama-delivery/v2",
         "published_utc": datetime.now(timezone.utc).isoformat(),
         "quality_pass": True,
-        "pose_backend": "open3d_rgbd",
+        "pose_backend": (
+            "hybrid_orbslam3_rgbd"
+            if orbslam3_trajectory is not None
+            else "open3d_rgbd"
+        ),
         "projection": "orthographic_side_scan",
-        "seam_backend": "graphcut_depth_constrained",
-        "blend_backend": "opencv_multiband_narrow_owner_boundary",
+        "seam_backend": (
+            "tsdf_plane_dense_rgbd"
+            if orbslam3_trajectory is not None
+            else "graphcut_depth_constrained"
+        ),
+        "blend_backend": (
+            "real_pose_plane_texture_with_tsdf_foreground"
+            if orbslam3_trajectory is not None
+            else "opencv_multiband_narrow_owner_boundary"
+        ),
         "panorama": str(output / "panorama.jpg"),
         "report": str(output / "report.json"),
     }

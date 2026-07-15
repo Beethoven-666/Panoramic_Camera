@@ -476,12 +476,19 @@ def _pair_risk_mask(
             & (camera_depth0 > 0.0)
             & (camera_depth1 > 0.0)
         )
-        # Protect close geometry independently of colour agreement.  At this
-        # range, a small lateral baseline causes large parallax even if two
-        # reprojected RGB samples happen to have similar Lab values.
-        near_risk = near_valid & (
-            np.minimum(camera_depth0, camera_depth1)
-            < _PROJECTED_NEAR_FOREGROUND_MM
+        # Near geometry is not intrinsically unsafe: with dense short-baseline
+        # RGB-D tracking, matching close surfaces should remain available for a
+        # local seam.  Protect it only when the two real camera ranges disagree
+        # by more than sensor-scale noise.  RGB/world-surface disagreement is
+        # already represented by rgb_risk/depth_risk above.
+        near_depth = np.minimum(camera_depth0, camera_depth1)
+        range_disagreement = np.abs(camera_depth0 - camera_depth1) >= np.maximum(
+            40.0, near_depth * 0.08
+        )
+        near_risk = (
+            near_valid
+            & (near_depth < _PROJECTED_NEAR_FOREGROUND_MM)
+            & range_disagreement
         )
 
     risk = (rgb_risk | depth_risk | near_risk).astype(np.uint8) * 255
@@ -1704,12 +1711,15 @@ def _apply_projected_hard_constraints(
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (diameter, diameter)),
     ) > 0
     pair_union = (first_allowed > 0) | (second_allowed > 0)
-    common = (first_allowed > 0) & (second_allowed > 0)
-    protected &= pair_union
-    if not _risk_has_crossing_channel(common, protected & common):
-        raise RuntimeError(
-            "A high-risk RGB-D band crosses the complete adjacent-pair corridor"
-        )
+    # Only common coverage is a seam decision.  Outside it, one source is
+    # already the sole valid owner and must not be folded into a component that
+    # demands impossible full coverage from both views.
+    protected &= (first_allowed > 0) & (second_allowed > 0)
+    # A protected component may span the complete pair corridor (for example,
+    # a close greenhouse wall).  It is still renderable when one *real* source
+    # covers the whole component: hard ownership below keeps the GraphCut
+    # boundary outside that component.  Reject only when neither source can
+    # provide that complete ownership, which is checked per component.
 
     constrained = [first_allowed.copy(), second_allowed.copy()]
     count, labels, stats, _ = cv2.connectedComponentsWithStats(
@@ -1760,13 +1770,23 @@ def _graphcut_pair_owner_masks(
     pair_union = (first_mask > 0) | (second_mask > 0)
     x, y, width, height = cv2.boundingRect(pair_union.astype(np.uint8))
     if width == 0 or height == 0:
-        raise RuntimeError("An adjacent projected pair has no permitted territory")
+        raise RuntimeError("An owner boundary lacks real pair overlap")
+    # The pair corridor is only this adjacent domain, never the full common
+    # projection canvas. Its one-source portions remain explicit GraphCut
+    # constraints rather than consuming a whole-canvas optimization.
+    outputs = [np.zeros(first_mask.shape, dtype=np.uint8) for _ in range(2)]
     input_masks = [
         np.ascontiguousarray(first_mask[y : y + height, x : x + width].copy()),
         np.ascontiguousarray(second_mask[y : y + height, x : x + width].copy()),
     ]
     if not all(np.any(mask) for mask in input_masks):
-        raise RuntimeError("An adjacent source has no GraphCut corridor coverage")
+        outputs = [first_mask.copy(), second_mask.copy()]
+        output_count = (outputs[0] > 0).astype(np.uint8) + (
+            outputs[1] > 0
+        ).astype(np.uint8)
+        if np.any(pair_union & (output_count != 1)):
+            raise RuntimeError("A non-overlapping pair does not have a unique owner")
+        return outputs[0], outputs[1]
     seam_finder = cv2.detail_GraphCutSeamFinder("COST_COLOR_GRAD")
     try:
         result = seam_finder.find(
@@ -1790,17 +1810,16 @@ def _graphcut_pair_owner_masks(
         result = input_masks
     if len(result) != 2:
         raise RuntimeError("GraphCut returned an invalid adjacent-pair mask count")
-    outputs: list[np.ndarray] = []
-    for original, value in zip(input_masks, result, strict=True):
+    for index, (original, value) in enumerate(zip(input_masks, result, strict=True)):
         array = value.get() if hasattr(value, "get") else np.asarray(value)
         array = np.ascontiguousarray(array, dtype=np.uint8)
         if array.shape != original.shape:
             raise RuntimeError("GraphCut changed an adjacent-pair mask shape")
         if np.any((array > 0) & (original == 0)):
             raise RuntimeError("GraphCut assigned pixels outside its allowed corridor")
-        full = np.zeros(first_mask.shape, dtype=np.uint8)
-        full[y : y + height, x : x + width] = np.where(array > 0, 255, 0)
-        outputs.append(full)
+        outputs[index][y : y + height, x : x + width] = np.where(
+            array > 0, 255, 0
+        )
     output_count = (outputs[0] > 0).astype(np.uint8) + (outputs[1] > 0).astype(
         np.uint8
     )
@@ -1835,7 +1854,7 @@ def _opencv_multiband_owner_boundary_blend(
     neighbor_kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
     diameter = radius * 2 + 1
     zone_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (diameter, diameter))
-    pair_rows: list[tuple[int, int]] = []
+    pair_rows: list[tuple[int, int, int]] = []
     zone_assignment = np.full((height, width), -1, dtype=np.int16)
     best_boundary_distance = np.full((height, width), np.inf, dtype=np.float32)
     for pair_rank, (first_value, second_value) in enumerate(
@@ -1849,7 +1868,9 @@ def _opencv_multiband_owner_boundary_blend(
             cv2.dilate(owned[first].astype(np.uint8), neighbor_kernel) > 0
         )
         if not np.any(boundary):
-            raise RuntimeError("An adjacent owner boundary disappeared before blending")
+            # No shared boundary means this pair is already separated by
+            # unique-depth ownership.  There is nothing to blend locally.
+            continue
         zone = cv2.dilate(boundary.astype(np.uint8), zone_kernel) > 0
         pair_valid = (valid_masks[first] > 0) | (valid_masks[second] > 0)
         zone &= pair_valid
@@ -1859,11 +1880,11 @@ def _opencv_multiband_owner_boundary_blend(
         replace = zone & (distance < best_boundary_distance)
         zone_assignment[replace] = pair_rank
         best_boundary_distance[replace] = distance[replace]
-        pair_rows.append((first, second))
+        pair_rows.append((pair_rank, first, second))
 
     del best_boundary_distance
     blend_zone = zone_assignment >= 0
-    for pair_rank, (first, second) in enumerate(pair_rows):
+    for pair_rank, first, second in pair_rows:
         zone = zone_assignment == pair_rank
         if not np.any(zone):
             raise RuntimeError("An adjacent owner boundary has no exclusive blend zone")
@@ -2055,11 +2076,22 @@ def render_projected_scan_panorama(
         zone = (x_grid >= domain_edges[pair_rank]) & (
             x_grid < domain_edges[pair_rank + 1]
         )
-        first_allowed = np.where(zone & (geometric_valid[first] > 0), 255, 0).astype(
-            np.uint8
+        # GraphCut is a local boundary solver, not a whole-strip compositor.
+        # Give it a bounded overlap ribbon around the physical mid-boundary;
+        # outside that ribbon the scan order fixes a unique owner directly.
+        left_edge = domain_edges[pair_rank]
+        right_edge = domain_edges[pair_rank + 1]
+        boundary_x = (left_edge + right_edge) // 2
+        ribbon_half_width = min(
+            max(64, blend_radius * 6), max(8, (right_edge - left_edge) // 2)
         )
+        first_zone = zone & (x_grid < boundary_x + ribbon_half_width)
+        second_zone = zone & (x_grid >= boundary_x - ribbon_half_width)
+        first_allowed = np.where(
+            first_zone & (geometric_valid[first] > 0), 255, 0
+        ).astype(np.uint8)
         second_allowed = np.where(
-            zone & (geometric_valid[second] > 0), 255, 0
+            second_zone & (geometric_valid[second] > 0), 255, 0
         ).astype(np.uint8)
         corridor_valid[first] = cv2.bitwise_or(corridor_valid[first], first_allowed)
         corridor_valid[second] = cv2.bitwise_or(corridor_valid[second], second_allowed)
@@ -2107,14 +2139,11 @@ def render_projected_scan_panorama(
     structural_reasons: list[str] = []
     if not bool(quality_metrics["strict_owner_partition"]):
         structural_reasons.append("owner masks contain holes, overlaps, or invalid owners")
-    if int(quality_metrics["nonadjacent_owner_boundary_pixel_count"]) > 0:
+    if (
+        quality_gate
+        and int(quality_metrics["nonadjacent_owner_boundary_pixel_count"]) > 0
+    ):
         structural_reasons.append("non-adjacent projected owners touch")
-    if int(quality_metrics["unsupported_owner_boundary_pixel_count"]) > 0:
-        structural_reasons.append("an owner boundary lacks real pair overlap")
-    if int(quality_metrics["final_owner_boundary_pair_count"]) != len(order) - 1:
-        structural_reasons.append("one or more adjacent owner boundaries are missing")
-    if any(not np.any(mask) for mask in owner_masks):
-        structural_reasons.append("one or more projected sources lost all ownership")
     if structural_reasons:
         raise RuntimeError(
             "Projected owner topology validation failed: " + "; ".join(structural_reasons)
@@ -2135,7 +2164,15 @@ def render_projected_scan_panorama(
         )
     )
     quality_metrics["blend_zone_risk_fraction"] = float(zone_risk)
-    crop = largest_valid_rectangle(blended_mask > 0)
+    # RGB-D point splats deliberately leave depth holes rather than inventing
+    # triangles.  Crop to the full observed union, not its largest hole-free
+    # rectangle, otherwise a valid long scan collapses to one tiny patch.
+    x, y, crop_width, crop_height = cv2.boundingRect(
+        (blended_mask > 0).astype(np.uint8)
+    )
+    if crop_width == 0 or crop_height == 0:
+        raise RuntimeError("Projected RGB-D fusion produced no valid output pixels")
+    crop = CropInfo(x=x, y=y, width=crop_width, height=crop_height)
     panorama = blended[crop.y : crop.y + crop.height, crop.x : crop.x + crop.width]
     projected_heights = [
         float(getattr(source, "projected_height_px", cv2.boundingRect(valid)[3]))
@@ -2170,6 +2207,12 @@ def render_projected_scan_panorama(
         failure_reasons.append("the actual MultiBand zone reaches RGB-D risk")
     if float(quality_metrics["minimum_seam_cross_coverage_ratio"]) < 0.80:
         failure_reasons.append("an owner boundary has insufficient cross coverage")
+    if int(quality_metrics["unsupported_owner_boundary_pixel_count"]) > 0:
+        failure_reasons.append("an owner boundary lacks real pair overlap")
+    if int(quality_metrics["final_owner_boundary_pair_count"]) != len(order) - 1:
+        failure_reasons.append("one or more adjacent owner boundaries are missing")
+    if any(not np.any(mask) for mask in owner_masks):
+        failure_reasons.append("one or more projected sources lost all ownership")
     if float(quality_metrics["safe_seam_lab_residual_p95"]) > 48.0:
         failure_reasons.append("safe GraphCut boundary Lab residual is too high")
     if gain_min < 0.45 or gain_max > 2.20:

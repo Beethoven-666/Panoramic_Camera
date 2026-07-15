@@ -320,6 +320,18 @@ def load_rgbd_session(input_path: str | Path) -> RGBDSession:
     )
     calibration = _parse_color_intrinsics(calibration_payload)
     manifest = load_session_manifest(root)
+    if manifest is None:
+        raise ValueError("Formal RGB-D session requires manifest.json")
+    if manifest.get("schema") not in {
+        "panorama-demo-session/v1",
+        "panorama-demo-session/v2",
+    }:
+        raise ValueError("Formal RGB-D session has an unsupported manifest schema")
+    clean_shutdown = manifest.get("clean_shutdown")
+    if clean_shutdown is not True:
+        raise ValueError(
+            "Formal RGB-D session is incomplete or was not cleanly closed"
+        )
     if not _declares_color_aligned_depth(calibration_payload, manifest):
         raise ValueError("Session does not explicitly declare depth aligned to color")
 

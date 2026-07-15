@@ -26,13 +26,57 @@ capture:
   depth_png_compression: 1
   save_raw_depth: false
 
+  # No-preview, one-trigger-per-frame RGB-D photo sequence used by
+  # g305-capture --photo-mode. It runs without artificial throttling and
+  # selects the highest common color/depth FPS at the configured resolution.
+  photo_mode:
+    enabled: true
+    fastest_common_fps: true
+    exposure_us: 800
+    trigger_out_delay_us: 17000
+    capture_timeout_ms: 8000
+    # Gemini firmware may consume early gate-off triggers while warming the
+    # RGB-D pipeline. All attempts remain physically gated, and the gate stays
+    # off for a full late-response window after the final priming trigger.
+    prime_attempts: 8
+    prime_timeout_ms: 1500
+    gate_settle_ms: 250
+
 stitch:
-  pose_backend: open3d_rgbd
+  # Open3D measures every short RGB-D edge; ORB-SLAM3 RGB-D uses the complete
+  # short-baseline sequence to stabilise the global camera trajectory.
+  pose_backend: hybrid_orbslam3_rgbd
+  # Dense fusion uses every real ORB-SLAM3 pose for geometry.  The final colour
+  # atlas uses the TSDF foreground plus calibrated planar texture recovery so
+  # Gemini depth holes do not become black panorama holes.
+  dense_fusion_backend: tsdf_plane_dense_rgbd
   adaptive_layout: true
   analysis_width: 320
   layout_target_displacement_fraction: 0.18
   layout_max_displacement_fraction: 0.28
   layout_max_frames: 160
+  # Keep every real frame in a normal-length scan as a pose node. This makes
+  # both odometry and rendering short-baseline at close range; it never
+  # interpolates a pose between captures.
+  dense_rgbd_pose_chain: true
+  # Wide selected-node edges are refined from an initial pose composed solely
+  # from reliable consecutive RGB-D measurements. This is automatic and does
+  # not create interpolated poses or feature-only constraints.
+  short_baseline_initialization: true
+  orbslam3_rgbd:
+    enabled: true
+    # Paths are resolved inside WSL.  Override root in a site-specific config
+    # when ORB-SLAM3 is installed elsewhere.
+    root: ~/Projects/ORB_SLAM3_WS/ORB_SLAM3
+    executable: Examples/RGB-D/rgbd_tum
+    vocabulary: Vocabulary/ORBvoc.txt
+    timeout_seconds: 600.0
+    # The renderer never interpolates an untracked frame, so every dense pose
+    # node used by the scan must have a genuine ORB-SLAM3 pose.
+    minimum_tracked_fraction: 1.0
+    feature_count: 1800
+    fast_threshold: 12
+    minimum_fast_threshold: 5
   max_canvas_megapixels: 200
   sequence_blend_mode: scan_seam
   input_quality_gate: true
@@ -60,7 +104,11 @@ stitch:
 
   pose_graph:
     enabled: true
-    nonadjacent_max_gap: 2
+    # A side scan is an open chain, not a loop. Unseeded long-range odometry
+    # constraints can pull an otherwise correct close-range chain into a wrong
+    # global solution; verified loop constraints may be enabled by a dedicated
+    # global tracker later.
+    nonadjacent_max_gap: 0
     maximum_correspondence_distance_mm: 50.0
     edge_prune_threshold: 0.25
     preference_loop_closure: 0.10
@@ -86,9 +134,16 @@ stitch:
     footprint_working_width: 640
     reject_depth_discontinuity: true
     max_render_sources: 32
+    # The target work is a close RGB-D side scan.  Ignore sparse 4--6 m depth
+    # outliers before they inflate the common canvas and collapse seam corridors.
+    maximum_projection_depth_mm: 2000.0
+    # Restrict each GraphCut corridor to a local physical baseline even when
+    # very distant depth makes two endpoint footprints appear to overlap.
+    maximum_render_step_mm: 100.0
+    dense_render_minimum_pose_nodes: 24
     minimum_coverage_ratio: 0.95
     minimum_overlap_fraction: 0.34
-    max_aggregate_megapixels: 200
+    max_aggregate_megapixels: 80
     chunk_rows: 128
 
   scan_seam:
@@ -96,3 +151,14 @@ stitch:
     multiband_levels: 5
     exposure_mode: global_gain
     quality_gate: true
+
+  dense_tsdf:
+    voxel_length_mm: 10.0
+    sdf_truncation_mm: 40.0
+    maximum_depth_mm: 2000.0
+    plane_histogram_bin_mm: 20.0
+    foreground_offset_mm: 35.0
+    ray_chunk_rows: 128
+    foreground_overlay: true
+    minimum_crop_coverage: 0.85
+    minimum_row_or_column_coverage: 0.50

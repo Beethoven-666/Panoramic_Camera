@@ -99,6 +99,21 @@ class _PairBackend:
         return self.measurement
 
 
+class _InitialGuessBackend(_PairBackend):
+    supports_initial_source_to_reference = True
+
+    def __init__(self, measurement: dict[str, Any]) -> None:
+        super().__init__(measurement)
+        self.initial_source_to_reference: np.ndarray | None = None
+
+    def estimate_pair(self, **kwargs: Any) -> dict[str, Any]:
+        initial = kwargs.get("initial_source_to_reference")
+        self.initial_source_to_reference = (
+            None if initial is None else np.asarray(initial, dtype=np.float64).copy()
+        )
+        return super().estimate_pair(**kwargs)
+
+
 class _EchoPoseGraphBackend:
     name = "fake_pose_graph"
 
@@ -173,6 +188,33 @@ def test_pair_estimation_uses_source_to_reference_and_public_mm_units() -> None:
     payload = edge.as_dict()
     assert payload["translation_unit"] == "mm"
     assert payload["translation_mm"] == pytest.approx([125.0, 2.0, -3.0])
+
+
+def test_pair_estimation_passes_a_valid_mm_se3_initial_guess_to_backend() -> None:
+    initial = _pose(42.0, -3.0, 1.0, rotation_deg=0.5)
+    backend = _InitialGuessBackend(
+        {
+            "converged": True,
+            "source_to_reference": initial,
+            "information": np.eye(6, dtype=np.float64),
+            "fitness": 0.9,
+            "rmse_mm": 4.0,
+        }
+    )
+
+    estimate_pair_rgbd_odometry(
+        _frame(0), _frame(1), _intrinsics(), backend=backend,
+        initial_source_to_reference=initial,
+    )
+
+    assert backend.initial_source_to_reference is not None
+    np.testing.assert_allclose(backend.initial_source_to_reference, initial)
+
+    with pytest.raises(ValueError, match="initial_source_to_reference"):
+        estimate_pair_rgbd_odometry(
+            _frame(0), _frame(1), _intrinsics(), backend=backend,
+            initial_source_to_reference=np.zeros((4, 4)),
+        )
 
 
 def test_pair_estimation_requires_real_fitness_and_rmse_metrics() -> None:

@@ -20,7 +20,8 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
     assert config["capture"]["fps"] == 30
     assert config["stitch"]["max_canvas_megapixels"] == 200
     assert config["stitch"]["diagnostic_force"] is False
-    assert config["stitch"]["pose_backend"] == "open3d_rgbd"
+    assert config["stitch"]["pose_backend"] == "hybrid_orbslam3_rgbd"
+    assert config["stitch"]["dense_fusion_backend"] == "tsdf_plane_dense_rgbd"
     assert config["stitch"]["pose_graph"]["enabled"] is True
     assert config["stitch"]["rgbd_projection"]["mode"] == (
         "orthographic_side_scan"
@@ -46,6 +47,21 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
         "save_pair_previews",
     }
     assert legacy_formal_keys.isdisjoint(config["stitch"])
+
+
+def test_default_rgbd_photo_mode_preserves_single_trigger_safety_contract() -> None:
+    photo_mode = load_config()["capture"]["photo_mode"]
+
+    assert photo_mode == {
+        "enabled": True,
+        "fastest_common_fps": True,
+        "exposure_us": 800,
+        "trigger_out_delay_us": 17000,
+        "capture_timeout_ms": 8000,
+        "prime_attempts": 8,
+        "prime_timeout_ms": 1500,
+        "gate_settle_ms": 250,
+    }
 
 
 def test_unrestricted_auto_exposure_config_is_explicitly_diagnostic() -> None:

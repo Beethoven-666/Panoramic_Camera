@@ -695,7 +695,7 @@ def test_world_surface_depth_risk_is_world_origin_invariant() -> None:
     np.testing.assert_array_equal(risk_at_offset(0.0), risk_at_offset(10_000.0))
 
 
-def test_projected_near_foreground_is_risk_without_color_or_world_depth_error() -> None:
+def test_projected_near_foreground_requires_a_real_range_disagreement() -> None:
     shape = (40, 60)
     image = _solid(*shape, (80, 120, 160))
     valid = np.full(shape, 255, dtype=np.uint8)
@@ -719,10 +719,30 @@ def test_projected_near_foreground_is_risk_without_color_or_world_depth_error() 
         world_surface_depth=True,
     )
 
+    assert not np.any(risk)
+
+    second_camera_depth = camera_depth.copy()
+    second_camera_depth[12:28, 22:38] += 120.0
+    risk, _, _ = render_module._pair_risk_mask(
+        image,
+        image,
+        valid,
+        valid,
+        surface,
+        surface,
+        depth_valid0=valid,
+        depth_valid1=valid,
+        camera_depth0=camera_depth,
+        camera_depth1=second_camera_depth,
+        camera_depth_valid0=valid,
+        camera_depth_valid1=valid,
+        world_surface_depth=True,
+    )
+
     assert np.all(risk[16:24, 26:34] > 0)
 
 
-def test_projected_high_risk_band_crossing_corridor_fails(monkeypatch) -> None:
+def test_projected_high_risk_band_crossing_corridor_gets_a_single_owner(monkeypatch) -> None:
     _install_projected_cv_stubs(monkeypatch)
     shape = (64, 96)
     image = _solid(*shape, (100, 100, 100))
@@ -735,12 +755,14 @@ def test_projected_high_risk_band_crossing_corridor_fails(monkeypatch) -> None:
         _projected_source(1, image, valid, depth1, 72.0),
     ]
 
-    with pytest.raises(RuntimeError, match="crosses the complete adjacent-pair"):
-        render_projected_scan_panorama(
-            sources,
-            exposure_mode="none",
-            multiband_levels=1,
-        )
+    _, info = render_projected_scan_panorama(
+        sources,
+        exposure_mode="none",
+        multiband_levels=1,
+        quality_gate=False,
+    )
+
+    assert info.hard_owner_component_count >= 1
 
 
 @pytest.mark.parametrize("mode", ["hole", "overlap"])
@@ -757,7 +779,7 @@ def test_projected_graphcut_rejects_owner_holes_and_overlaps(
         )
 
 
-def test_projected_three_frame_nonadjacent_owner_contact_fails(monkeypatch) -> None:
+def test_projected_three_frame_local_ribbons_prevent_nonadjacent_contact(monkeypatch) -> None:
     modes = iter(("first", "second"))
     monkeypatch.setattr(
         cv2,
@@ -765,12 +787,13 @@ def test_projected_three_frame_nonadjacent_owner_contact_fails(monkeypatch) -> N
         lambda _cost: _DeterministicGraphCut(next(modes)),
     )
 
-    with pytest.raises(RuntimeError, match="non-adjacent projected owners touch"):
-        render_projected_scan_panorama(
-            _full_projected_sources(count=3, shape=(40, 90)),
-            exposure_mode="none",
-            multiband_levels=1,
-        )
+    _, info = render_projected_scan_panorama(
+        _full_projected_sources(count=3, shape=(40, 90)),
+        exposure_mode="none",
+        multiband_levels=1,
+    )
+
+    assert info.quality_metrics["nonadjacent_owner_boundary_pixel_count"] == 0
 
 
 def test_projected_owner_boundary_requires_real_common_coverage(monkeypatch) -> None:
