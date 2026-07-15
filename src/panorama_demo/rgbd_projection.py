@@ -374,6 +374,22 @@ def _estimate_world_axes(poses: Sequence[np.ndarray]) -> tuple[np.ndarray, np.nd
     return scan, up, normal
 
 
+def estimate_world_axes(
+    poses: Sequence[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Estimate the shared side-scan axes from checked real camera poses.
+
+    This public wrapper keeps non-orthographic diagnostic projections on the
+    same camera-up / scan / viewing-normal convention as the formal RGB-D
+    projector.  It never reorders or otherwise alters the supplied trajectory.
+    """
+
+    checked = [validate_camera_to_world(pose) for pose in poses]
+    if not checked:
+        raise ValueError("At least one camera pose is required to estimate world axes")
+    return _estimate_world_axes(checked)
+
+
 def _camera_points(
     u: np.ndarray, v: np.ndarray, depth_mm: np.ndarray, intrinsics: PinholeIntrinsics
 ) -> np.ndarray:

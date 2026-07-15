@@ -5,6 +5,7 @@ import html
 import json
 import os
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,6 +87,20 @@ _DIAGNOSTIC_FILES = (
 _HARD_MAX_CANVAS_MEGAPIXELS = 200.0
 _HARD_MAX_LAYOUT_FRAMES = 160
 _HARD_MAX_RENDER_SOURCES = 32
+
+_CENTRAL_STRIP_DIAGNOSTIC_DEFAULTS: dict[str, object] = {
+    # This is deliberately disabled in the shared configuration.  The only
+    # activation path is an injected renderer from the independent diagnostic
+    # command below; g305-panorama never imports or injects that renderer.
+    "enabled": False,
+    "reference_scale_mode": "robust_aligned_depth_plane",
+    "orientation_mode": "verified_camera_to_world",
+    "maximum_central_band_fraction": 0.20,
+    "minimum_pair_overlap_pixels": 96,
+    "exposure_mode": "global_gain",
+    "multiband_levels": 5,
+}
+_CENTRAL_STRIP_DIAGNOSTIC_KEYS = frozenset(_CENTRAL_STRIP_DIAGNOSTIC_DEFAULTS)
 
 
 def _invalidate_delivery_marker(output: Path) -> None:
@@ -821,10 +836,143 @@ def _validate_safety_envelope(
         raise ValueError("Formal pose-graph optimizer settings cannot be relaxed")
 
 
+def _central_strip_diagnostic_config(
+    stitch_config: dict[str, Any], *, diagnostic_renderer: object | None
+) -> dict[str, object] | None:
+    """Validate the closed central-strip diagnostic configuration boundary.
+
+    The shared YAML keeps this experimental renderer disabled.  A value of
+    ``enabled: true`` is never a way for the formal entry point to select it:
+    only the independent command can inject a renderer.  The callback receives
+    an effective, explicitly enabled copy of this fixed configuration.
+    """
+
+    value = stitch_config.get("central_strip_diagnostic", {})
+    if not isinstance(value, dict):
+        raise ValueError("stitch.central_strip_diagnostic must be a mapping")
+    unknown = sorted(set(value) - _CENTRAL_STRIP_DIAGNOSTIC_KEYS)
+    if unknown:
+        raise ValueError(
+            "Unknown central_strip_diagnostic configuration keys: "
+            + ", ".join(unknown)
+        )
+    config = dict(_CENTRAL_STRIP_DIAGNOSTIC_DEFAULTS)
+    config.update(value)
+
+    if type(config["enabled"]) is not bool:
+        raise ValueError("central_strip_diagnostic.enabled must be a boolean")
+    for name, expected in (
+        ("reference_scale_mode", "robust_aligned_depth_plane"),
+        ("orientation_mode", "verified_camera_to_world"),
+        ("exposure_mode", "global_gain"),
+    ):
+        if config[name] != expected:
+            raise ValueError(
+                f"central_strip_diagnostic.{name} must remain {expected!r}"
+            )
+
+    fraction = config["maximum_central_band_fraction"]
+    if (
+        not isinstance(fraction, (int, float))
+        or isinstance(fraction, bool)
+        or not np.isfinite(float(fraction))
+        or not np.isclose(float(fraction), 0.20)
+    ):
+        raise ValueError(
+            "central_strip_diagnostic.maximum_central_band_fraction must remain 0.20"
+        )
+    overlap = config["minimum_pair_overlap_pixels"]
+    if type(overlap) is not int or overlap != 96:
+        raise ValueError(
+            "central_strip_diagnostic.minimum_pair_overlap_pixels must remain 96"
+        )
+    levels = config["multiband_levels"]
+    if type(levels) is not int or levels != 5:
+        raise ValueError("central_strip_diagnostic.multiband_levels must remain 5")
+
+    if diagnostic_renderer is None:
+        if bool(config["enabled"]):
+            raise ValueError(
+                "central_strip_diagnostic.enabled can only be activated by "
+                "g305-central-strip-diagnostic"
+            )
+        return None
+    if not callable(diagnostic_renderer):
+        raise TypeError("diagnostic_renderer must be callable")
+
+    # The callback itself is the independent command's explicit opt-in.  Do not
+    # mutate the loaded config, since it is also used by formal validation and
+    # report construction in callers/tests.
+    config["enabled"] = True
+    return config
+
+
+def _sanitized_diagnostic_trajectory(
+    trajectory: ORBSLAM3Trajectory | None, *, input_frame_count: int
+) -> dict[str, object] | None:
+    """Keep tracking evidence without retaining a temporary ORB work path."""
+
+    if trajectory is None:
+        return None
+    payload = trajectory.as_dict(input_frame_count=input_frame_count)
+    for name in (
+        "work_dir",
+        "settings_path",
+        "association_path",
+        "trajectory_path",
+        "stdout_path",
+        "stderr_path",
+        "command",
+    ):
+        payload.pop(name, None)
+    return payload
+
+
+def _validate_central_strip_result(
+    result: object,
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Validate the minimal callback result before it can be atomically published."""
+
+    try:
+        panorama = np.asarray(getattr(result, "panorama"))
+        metadata = getattr(result, "metadata")
+    except AttributeError as exc:
+        raise TypeError(
+            "diagnostic_renderer must return an object with panorama and metadata"
+        ) from exc
+    if (
+        panorama.ndim != 3
+        or panorama.shape[2] != 3
+        or panorama.dtype != np.uint8
+        or panorama.shape[0] <= 0
+        or panorama.shape[1] <= 0
+    ):
+        raise ValueError(
+            "Central-strip diagnostic panorama must be a non-empty BGR uint8 image"
+        )
+    if not isinstance(metadata, dict):
+        raise TypeError("Central-strip diagnostic metadata must be a dictionary")
+    return panorama, dict(metadata)
+
+
+def _publish_central_strip_diagnostic(
+    output: Path, panorama: np.ndarray, report: dict[str, object]
+) -> None:
+    """Atomically publish the two and only two central-strip diagnostics."""
+
+    pending_panorama = _write_bgr(output / ".diagnostic_panorama.pending.jpg", panorama)
+    pending_report = output / ".diagnostic_report.pending.json"
+    pending_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    os.replace(pending_panorama, output / "diagnostic_panorama.jpg")
+    os.replace(pending_report, output / "diagnostic_report.json")
+
+
 def _run_pipeline(
     args: argparse.Namespace,
     *,
     odometry_backend: object | None = None,
+    diagnostic_renderer: object | None = None,
+    orb_work_root: Path | None = None,
 ) -> dict[str, Any]:
     output = args.output.expanduser().resolve()
     # This is deliberately the first filesystem action in a task.  Even a
@@ -832,6 +980,11 @@ def _run_pipeline(
     _invalidate_delivery_marker(output)
     config = load_config(getattr(args, "config", None))
     stitch_config = dict(config["stitch"])
+    central_strip_config = _central_strip_diagnostic_config(
+        stitch_config, diagnostic_renderer=diagnostic_renderer
+    )
+    if orb_work_root is not None and diagnostic_renderer is None:
+        raise ValueError("orb_work_root is reserved for the central-strip diagnostic")
     _validate_backend_config(stitch_config)
     diagnostic_force = bool(
         getattr(args, "diagnostic_force", False)
@@ -927,10 +1080,14 @@ def _run_pipeline(
             "[ORB-SLAM3] solving the global RGB-D trajectory from the complete "
             "short-baseline scan"
         )
+        if diagnostic_renderer is not None and orb_work_root is None:
+            raise RuntimeError(
+                "Central-strip diagnostic requires an isolated ORB staging directory"
+            )
         orbslam3_trajectory = run_orbslam3_rgbd(
             scan_frames,
             session.calibration,
-            output,
+            orb_work_root if diagnostic_renderer is not None else output,
             config=stitch_config.get("orbslam3_rgbd"),
         )
         global_pose_backend = ORBSLAM3PoseGraphOptimizer(orbslam3_trajectory)
@@ -994,7 +1151,37 @@ def _run_pipeline(
     )
     del footprint_frames
 
-    if manual_render_ids:
+    if diagnostic_renderer is not None:
+        # The central-strip renderer composes only a narrow calibrated band.
+        # Its overlap requirement is deliberately denser than the full-FOV
+        # delivery selector, so feed it chronological *real* pose nodes rather
+        # than allowing that selector to collapse the chain to endpoints.  The
+        # hard cap remains non-bypassable; when more nodes are available, take
+        # an evenly spaced subset that includes both chronological endpoints.
+        if len(pose_frames) <= _HARD_MAX_RENDER_SOURCES:
+            render_indices = list(range(len(pose_frames)))
+        else:
+            render_indices = sorted(
+                {
+                    int(value)
+                    for value in np.linspace(
+                        0,
+                        len(pose_frames) - 1,
+                        _HARD_MAX_RENDER_SOURCES,
+                    ).round()
+                }
+            )
+        if len(render_indices) < 2:
+            raise RuntimeError(
+                "Central-strip diagnostic requires at least two optimized pose nodes"
+            )
+        render_selection: dict[str, object] = {
+            "mode": "central_strip_real_pose_nodes",
+            "frame_ids": [pose_frames[index].frame_id for index in render_indices],
+            "interpolated_pose_count": 0,
+            "source_cap": _HARD_MAX_RENDER_SOURCES,
+        }
+    elif manual_render_ids:
         index_by_id = {frame.frame_id: index for index, frame in enumerate(pose_frames)}
         missing = [frame_id for frame_id in manual_render_ids if frame_id not in index_by_id]
         if missing:
@@ -1089,6 +1276,94 @@ def _run_pipeline(
     render_frames = [pose_frames[index] for index in render_indices]
     render_poses = [pose_values[index] for index in render_indices]
     render_qualities = [pose_qualities[index] for index in render_indices]
+    if diagnostic_renderer is not None:
+        assert central_strip_config is not None
+        callback_result = diagnostic_renderer(
+            plane_frames=pose_frames,
+            plane_poses=pose_values,
+            render_frames=render_frames,
+            render_poses=render_poses,
+            calibration=session.calibration,
+            config=central_strip_config,
+            sharpness_scores=[quality.sharpness for quality in render_qualities],
+        )
+        panorama, render_metadata = _validate_central_strip_result(callback_result)
+        render_metadata.setdefault(
+            "frame_ids", [frame.frame_id for frame in render_frames]
+        )
+        render_metadata.setdefault("selection", render_selection)
+        render_metadata.setdefault("interpolated_pose_count", 0)
+        render_metadata.setdefault(
+            "source_quality",
+            {
+                str(frame.frame_id): quality.as_dict()
+                for frame, quality in zip(
+                    render_frames, render_qualities, strict=True
+                )
+            },
+        )
+        transforms_payload = pose_graph.as_dict()
+        transforms_payload["layout_selection"] = layout_metadata
+        transforms_payload["optional_edge_failures"] = optional_edge_failures
+        transforms_payload["short_baseline_initialization"] = short_baseline_audit
+        transforms_payload["global_trajectory"] = _sanitized_diagnostic_trajectory(
+            orbslam3_trajectory, input_frame_count=len(scan_frames)
+        )
+        panorama_path = output / "diagnostic_panorama.jpg"
+        report_path = output / "diagnostic_report.json"
+        report: dict[str, Any] = {
+            "schema": "gemini305-central-strip-diagnostic/v1",
+            "input": str(args.input.expanduser().resolve()),
+            "panorama": str(panorama_path),
+            "report": str(report_path),
+            "diagnostic_only": True,
+            "deliverable_published": False,
+            "geometry_claim": "reference_plane_only",
+            "input_capture": capture_summary,
+            "rgbd_session": {
+                "root": str(session.root),
+                "frame_count": len(session.frames),
+                "depth_alignment": session.depth_alignment,
+                "depth_unit": "mm",
+                "calibration": _intrinsics_payload(session.calibration),
+            },
+            "input_quality": capture_quality,
+            "layout_selection": layout_metadata,
+            "odometry": {
+                "backend": "open3d_rgbd",
+                "config": {
+                    "working_width": odometry_config.working_width,
+                    "require_aligned_depth": odometry_config.require_aligned_depth,
+                    "require_calibration": odometry_config.require_calibration,
+                },
+                "edges": [edge.as_dict() for edge in edges],
+                "optional_edge_failures": optional_edge_failures,
+                "short_baseline_initialization": short_baseline_audit,
+            },
+            "global_trajectory": transforms_payload["global_trajectory"],
+            "pose_graph": transforms_payload,
+            "pose_quality": pose_quality,
+            "render_strategy": "central_strip_plane_diagnostic",
+            "central_strip_config": central_strip_config,
+            "central_strip": render_metadata,
+            "render": render_metadata,
+            "diagnostic_overrides": (
+                {
+                    "input_quality_thresholds_bypassed": True,
+                    "odometry_quality_thresholds_bypassed": True,
+                    "pose_quality_thresholds_bypassed": True,
+                    "final_image_quality_thresholds_bypassed": True,
+                    "calibration_aligned_depth_finite_se3_graph_connectivity_"
+                    "projection_topology_memory_atomic_safety_required": True,
+                }
+                if diagnostic_force
+                else None
+            ),
+            "elapsed_seconds": time.perf_counter() - started,
+        }
+        _publish_central_strip_diagnostic(output, panorama, report)
+        return report
+
     full_projection_frames = _full_projection_frames(render_frames, render_poses)
     max_canvas_megapixels = float(
         stitch_config.get("max_canvas_megapixels", 200.0)
@@ -1422,12 +1697,34 @@ def run(
     args: argparse.Namespace,
     *,
     odometry_backend: object | None = None,
+    diagnostic_renderer: object | None = None,
 ) -> dict[str, Any]:
-    """Run one task and persist fail-closed state for every ordinary error."""
+    """Run one task and persist fail-closed state for every ordinary error.
+
+    ``diagnostic_renderer`` is an internal dependency-injection seam used only
+    by the independent central-strip command.  Its presence always takes the
+    diagnostic-only publication path; it can never reach formal delivery.
+    """
 
     output = args.output.expanduser().resolve()
     try:
-        return _run_pipeline(args, odometry_backend=odometry_backend)
+        if diagnostic_renderer is None:
+            return _run_pipeline(args, odometry_backend=odometry_backend)
+
+        # Preserve the first-action delivery invalidation invariant before
+        # creating an external ORB staging directory.  The bridge receives this
+        # temporary root only on the callback route, so a successful diagnostic
+        # output never retains .orbslam3_rgbd under the requested output path.
+        _invalidate_delivery_marker(output)
+        with tempfile.TemporaryDirectory(
+            prefix="g305-central-strip-orbslam3-"
+        ) as root:
+            return _run_pipeline(
+                args,
+                odometry_backend=odometry_backend,
+                diagnostic_renderer=diagnostic_renderer,
+                orb_work_root=Path(root),
+            )
     except Exception as exc:
         _write_failure_report(output, args.input, exc)
         raise

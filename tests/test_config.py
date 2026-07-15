@@ -5,7 +5,10 @@ from pathlib import Path
 import pytest
 
 from panorama_demo.config import load_config
-from panorama_demo.stitch_sequence import _validate_safety_envelope
+from panorama_demo.stitch_sequence import (
+    _central_strip_diagnostic_config,
+    _validate_safety_envelope,
+)
 
 
 def test_default_capture_uses_motion_capped_auto_exposure() -> None:
@@ -22,6 +25,15 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
     assert config["stitch"]["diagnostic_force"] is False
     assert config["stitch"]["pose_backend"] == "hybrid_orbslam3_rgbd"
     assert config["stitch"]["dense_fusion_backend"] == "tsdf_plane_dense_rgbd"
+    assert config["stitch"]["central_strip_diagnostic"] == {
+        "enabled": False,
+        "reference_scale_mode": "robust_aligned_depth_plane",
+        "orientation_mode": "verified_camera_to_world",
+        "maximum_central_band_fraction": 0.20,
+        "minimum_pair_overlap_pixels": 96,
+        "exposure_mode": "global_gain",
+        "multiband_levels": 5,
+    }
     assert config["stitch"]["pose_graph"]["enabled"] is True
     assert config["stitch"]["rgbd_projection"]["mode"] == (
         "orthographic_side_scan"
@@ -160,3 +172,22 @@ def test_diagnostic_threshold_bypass_keeps_resource_hard_limits() -> None:
     config["rgbd_projection"]["max_aggregate_megapixels"] = 201
     with pytest.raises(ValueError, match="200 MP"):
         _validate_safety_envelope(config, diagnostic_force=True)
+
+
+def test_central_strip_config_is_closed_and_cannot_enable_formal_path() -> None:
+    config = load_config()["stitch"]
+    config["central_strip_diagnostic"]["unexpected"] = 1
+
+    with pytest.raises(ValueError, match="Unknown central_strip_diagnostic"):
+        _central_strip_diagnostic_config(config, diagnostic_renderer=None)
+
+    config = load_config()["stitch"]
+    config["central_strip_diagnostic"]["enabled"] = True
+    with pytest.raises(ValueError, match="only be activated"):
+        _central_strip_diagnostic_config(config, diagnostic_renderer=None)
+
+    effective = _central_strip_diagnostic_config(
+        load_config()["stitch"], diagnostic_renderer=lambda **kwargs: kwargs
+    )
+    assert effective is not None
+    assert effective["enabled"] is True

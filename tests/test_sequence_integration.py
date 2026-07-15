@@ -5,11 +5,13 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
 import pytest
 
+from panorama_demo.central_strip import render_central_strip_diagnostic
 import panorama_demo.stitch_sequence as sequence
 from panorama_demo.synthetic import generate_sequence
 
@@ -134,7 +136,8 @@ def test_importing_formal_sequence_does_not_load_legacy_model_stack() -> None:
                 "import sys; import panorama_demo.stitch_sequence; "
                 "blocked=('torch', 'kornia', 'lightglue', "
                 "'panorama_demo.unistitch_adapter', "
-                "'panorama_demo.stitch_common'); "
+                "'panorama_demo.stitch_common', "
+                "'panorama_demo.central_strip'); "
                 "loaded=[name for name in sys.modules "
                 "if any(name == item or name.startswith(item + '.') "
                 "for item in blocked)]; "
@@ -230,3 +233,115 @@ def test_diagnostic_mode_bypasses_quality_thresholds_but_never_publishes(
         "calibration_aligned_depth_finite_se3_graph_connectivity_"
         "projection_topology_memory_atomic_safety_required": True,
     }
+
+
+def test_central_strip_callback_is_diagnostic_only_and_skips_formal_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _make_session(tmp_path, seed=29)
+    output = tmp_path / "output"
+    backend = _KnownTrajectoryRGBDBackend(session)
+    received: dict[str, object] = {}
+
+    def fake_renderer(**kwargs: object) -> SimpleNamespace:
+        received.update(kwargs)
+        return SimpleNamespace(
+            panorama=np.full((200, 480, 3), 127, dtype=np.uint8),
+            metadata={"strip_quality_pass": False, "renderer": "fake-central-strip"},
+        )
+
+    def formal_quality_must_not_run(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("central-strip callback reached formal delivery quality gate")
+
+    monkeypatch.setattr(sequence, "_ensure_publishable_quality", formal_quality_must_not_run)
+    args = sequence._parser().parse_args([str(session), "--output", str(output)])
+
+    report = sequence.run(
+        args, odometry_backend=backend, diagnostic_renderer=fake_renderer
+    )
+
+    assert set(received) == {
+        "plane_frames",
+        "plane_poses",
+        "render_frames",
+        "render_poses",
+        "calibration",
+        "config",
+        "sharpness_scores",
+    }
+    assert len(received["plane_frames"]) == len(backend.optimized_node_ids)
+    assert len(received["render_frames"]) == len(backend.optimized_node_ids)
+    assert [frame.frame_id for frame in received["render_frames"]] == list(
+        backend.optimized_node_ids
+    )
+    assert received["config"]["enabled"] is True
+    assert report["schema"] == "gemini305-central-strip-diagnostic/v1"
+    assert report["diagnostic_only"] is True
+    assert report["deliverable_published"] is False
+    assert report["central_strip"]["strip_quality_pass"] is False
+    assert sorted(path.name for path in output.iterdir()) == [
+        "diagnostic_panorama.jpg",
+        "diagnostic_report.json",
+    ]
+    assert not (output / "delivery.json").exists()
+    assert not (output / "transforms.json").exists()
+    assert not (output / "report.json").exists()
+
+
+def test_central_strip_callback_uses_dense_real_pose_nodes_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """The callback route must not collapse a central strip to FOV endpoints."""
+
+    session = generate_sequence(
+        tmp_path / "session",
+        frame_count=10,
+        frame_width=640,
+        frame_height=400,
+        step=20,
+        seed=41,
+    )
+    output = tmp_path / "output"
+    backend = _KnownTrajectoryRGBDBackend(session)
+    args = sequence._parser().parse_args([str(session), "--output", str(output)])
+
+    report = sequence.run(
+        args,
+        odometry_backend=backend,
+        diagnostic_renderer=render_central_strip_diagnostic,
+    )
+
+    selection = report["central_strip"]["selection"]
+    assert selection["mode"] == "central_strip_real_pose_nodes"
+    assert selection["interpolated_pose_count"] == 0
+    assert selection["frame_ids"] == list(backend.optimized_node_ids)
+    assert len(selection["frame_ids"]) == 10
+    assert report["central_strip"]["strip_quality_pass"] is True
+    assert cv2.imread(str(output / "diagnostic_panorama.jpg"), cv2.IMREAD_COLOR) is not None
+    assert sorted(path.name for path in output.iterdir()) == [
+        "diagnostic_panorama.jpg",
+        "diagnostic_report.json",
+    ]
+
+
+def test_central_strip_callback_failure_only_publishes_failure(tmp_path: Path) -> None:
+    session = _make_session(tmp_path, seed=37)
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "delivery.json").write_text("stale", encoding="utf-8")
+    backend = _KnownTrajectoryRGBDBackend(session)
+
+    def failing_renderer(**kwargs: object) -> SimpleNamespace:
+        del kwargs
+        raise RuntimeError("forced central-strip renderer failure")
+
+    args = sequence._parser().parse_args([str(session), "--output", str(output)])
+    with pytest.raises(RuntimeError, match="forced central-strip renderer failure"):
+        sequence.run(
+            args, odometry_backend=backend, diagnostic_renderer=failing_renderer
+        )
+
+    assert sorted(path.name for path in output.iterdir()) == ["failure.json"]
+    failure = json.loads((output / "failure.json").read_text(encoding="utf-8"))
+    assert "forced central-strip renderer failure" in failure["message"]

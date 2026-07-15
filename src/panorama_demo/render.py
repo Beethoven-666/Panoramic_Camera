@@ -7,6 +7,8 @@ import numpy as np
 
 
 _PROJECTED_NEAR_FOREGROUND_MM = 1000.0
+_HARD_MAX_PREWARPED_CANVAS_MEGAPIXELS = 200.0
+_HARD_MAX_PREWARPED_AGGREGATE_MEGAPIXELS = 200.0
 
 
 @dataclass(frozen=True)
@@ -123,6 +125,94 @@ class ProjectedScanRenderInfo:
             "hard_owner_component_count": self.hard_owner_component_count,
             "quality_metrics": self.quality_metrics,
         }
+
+
+@dataclass(frozen=True)
+class PrewarpedScanSource:
+    """One RGB-D source already remapped once into a shared scan canvas.
+
+    Colour validity is intentionally independent from measured depth validity:
+    a planar or texture-only background may have usable RGB where the depth
+    sensor reported no measurement.  The two depth masks must therefore be
+    subsets of ``color_valid_mask``, rather than aliases of it.
+    """
+
+    rgb: np.ndarray
+    color_valid_mask: np.ndarray
+    surface_depth_mm: np.ndarray
+    surface_depth_valid_mask: np.ndarray
+    camera_depth_mm: np.ndarray
+    camera_depth_valid_mask: np.ndarray
+    projected_center_xy: tuple[float, float]
+    # Optional audit/preference metadata.  It is deliberately not required by
+    # the structural rendering contract.
+    frame_id: int | None = None
+    projected_height_px: int | None = None
+    sampling_stats: dict[str, int | float | bool] | None = None
+    sharpness_score: float | None = None
+
+
+@dataclass(frozen=True)
+class PrewarpedScanLayout:
+    """Verified scan-order ownership layout for prewarped sources.
+
+    ``source_order`` is supplied by the caller's real temporal/trajectory
+    validation; this renderer never sorts it.  Each owner boundary must equal
+    the midpoint between consecutive projected camera centres.  Every pair
+    overlap mask is the actual common colour support in which that adjacent
+    pair is allowed to compete.
+    """
+
+    source_order: tuple[int, ...]
+    owner_boundaries_x: tuple[float, ...]
+    pair_overlap_masks: tuple[np.ndarray, ...]
+
+
+@dataclass(frozen=True)
+class PrewarpedScanRenderInfo:
+    """Audit record for the generic prewarped RGB-D scan renderer."""
+
+    crop: CropInfo
+    canvas_width: int
+    canvas_height: int
+    source_count: int
+    source_order: tuple[int, ...]
+    color_gains: tuple[tuple[float, float, float], ...]
+    multiband_levels: int
+    blend_radius_pixels: int
+    blend_zone_pixel_count: int
+    hard_owner_component_count: int
+    owner_masks: tuple[np.ndarray, ...]
+    quality_metrics: dict[str, float | int | bool]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "backend": "prewarped_scan_graphcut_depth_constrained",
+            "blend_backend": "opencv_multiband_narrow_owner_boundary",
+            "crop": self.crop.as_dict(),
+            "canvas": {
+                "width": self.canvas_width,
+                "height": self.canvas_height,
+            },
+            "source_count": self.source_count,
+            "source_order": list(self.source_order),
+            "color_gains": [list(gain) for gain in self.color_gains],
+            "multiband_levels": self.multiband_levels,
+            "blend_radius_pixels": self.blend_radius_pixels,
+            "blend_zone_pixel_count": self.blend_zone_pixel_count,
+            "hard_owner_component_count": self.hard_owner_component_count,
+            "quality_metrics": self.quality_metrics,
+        }
+
+
+@dataclass(frozen=True)
+class _PreparedPrewarpedLayout:
+    """Internal, mask-level representation shared by both renderer entry points."""
+
+    source_order: np.ndarray
+    corridor_valid_masks: tuple[np.ndarray, ...]
+    initial_owner_masks: tuple[np.ndarray, ...]
+    pair_allowed_masks: tuple[tuple[np.ndarray, np.ndarray], ...]
 
 
 def _normalize_homography(matrix: np.ndarray) -> np.ndarray:
@@ -1515,8 +1605,16 @@ def render_panorama(
     return panorama, info
 
 
-def _projected_source_arrays(
-    source: object,
+def _validated_prewarped_arrays(
+    image: np.ndarray,
+    valid: np.ndarray,
+    depth: np.ndarray,
+    depth_valid: np.ndarray,
+    camera_depth: np.ndarray,
+    camera_depth_valid: np.ndarray,
+    center_value: object,
+    *,
+    strict_depth_validity: bool,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -1526,25 +1624,8 @@ def _projected_source_arrays(
     np.ndarray,
     tuple[float, float],
 ]:
-    """Validate the public ``ProjectedRGBDSource`` structural contract."""
+    """Validate one shared-canvas source with either strict or subset masks."""
 
-    try:
-        image = np.asarray(getattr(source, "warped_rgb"))
-        valid = np.asarray(getattr(source, "valid_mask"))
-        depth = np.asarray(getattr(source, "surface_depth_mm"), dtype=np.float32)
-        depth_valid = np.asarray(getattr(source, "surface_depth_valid_mask"))
-        camera_depth = np.asarray(
-            getattr(source, "camera_depth_mm"), dtype=np.float32
-        )
-        camera_depth_valid = np.asarray(
-            getattr(source, "camera_depth_valid_mask")
-        )
-        center_value = getattr(source, "projected_center_xy")
-    except (AttributeError, TypeError) as exc:
-        raise TypeError(
-            "Each projected source must provide RGB, validity, world depth, "
-            "depth validity, camera depth, and projected centre"
-        ) from exc
     if image.ndim != 3 or image.shape[2] != 3 or image.dtype != np.uint8:
         raise ValueError("Projected RGB sources must be BGR uint8 images")
     shape = image.shape[:2]
@@ -1559,10 +1640,20 @@ def _projected_source_arrays(
         or camera_depth_valid.dtype != np.uint8
     ):
         raise ValueError("Projected validity masks must be uint8")
-    if np.any((valid > 0) != (depth_valid > 0)):
-        raise ValueError("Projected colour and world-depth validity must agree")
-    if np.any((valid > 0) != (camera_depth_valid > 0)):
-        raise ValueError("Projected colour and camera-depth validity must agree")
+    if strict_depth_validity:
+        if np.any((valid > 0) != (depth_valid > 0)):
+            raise ValueError("Projected colour and world-depth validity must agree")
+        if np.any((valid > 0) != (camera_depth_valid > 0)):
+            raise ValueError("Projected colour and camera-depth validity must agree")
+    else:
+        if np.any((depth_valid > 0) & (valid == 0)):
+            raise ValueError(
+                "Prewarped world-depth validity must be a subset of colour validity"
+            )
+        if np.any((camera_depth_valid > 0) & (valid == 0)):
+            raise ValueError(
+                "Prewarped camera-depth validity must be a subset of colour validity"
+            )
     if not np.any(valid):
         raise ValueError("A projected source contains no valid surface")
     if not np.isfinite(depth[depth_valid > 0]).all():
@@ -1583,6 +1674,86 @@ def _projected_source_arrays(
         camera_depth,
         camera_depth_valid,
         (float(center[0]), float(center[1])),
+    )
+
+
+def _projected_source_arrays(
+    source: object,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    tuple[float, float],
+]:
+    """Validate the strict public ``ProjectedRGBDSource`` contract."""
+
+    try:
+        image = np.asarray(getattr(source, "warped_rgb"))
+        valid = np.asarray(getattr(source, "valid_mask"))
+        depth = np.asarray(getattr(source, "surface_depth_mm"), dtype=np.float32)
+        depth_valid = np.asarray(getattr(source, "surface_depth_valid_mask"))
+        camera_depth = np.asarray(
+            getattr(source, "camera_depth_mm"), dtype=np.float32
+        )
+        camera_depth_valid = np.asarray(
+            getattr(source, "camera_depth_valid_mask")
+        )
+        center_value = getattr(source, "projected_center_xy")
+    except (AttributeError, TypeError) as exc:
+        raise TypeError(
+            "Each projected source must provide RGB, validity, world depth, "
+            "depth validity, camera depth, and projected centre"
+        ) from exc
+    return _validated_prewarped_arrays(
+        image,
+        valid,
+        depth,
+        depth_valid,
+        camera_depth,
+        camera_depth_valid,
+        center_value,
+        strict_depth_validity=True,
+    )
+
+
+def _prewarped_source_arrays(
+    source: PrewarpedScanSource,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    tuple[float, float],
+]:
+    """Validate a generic prewarped source with independent depth masks."""
+
+    try:
+        image = np.asarray(source.rgb)
+        valid = np.asarray(source.color_valid_mask)
+        depth = np.asarray(source.surface_depth_mm, dtype=np.float32)
+        depth_valid = np.asarray(source.surface_depth_valid_mask)
+        camera_depth = np.asarray(source.camera_depth_mm, dtype=np.float32)
+        camera_depth_valid = np.asarray(source.camera_depth_valid_mask)
+        center_value = source.projected_center_xy
+    except (AttributeError, TypeError) as exc:
+        raise TypeError(
+            "Each prewarped source must provide RGB, colour validity, world depth, "
+            "depth validity, camera depth, and projected centre"
+        ) from exc
+    return _validated_prewarped_arrays(
+        image,
+        valid,
+        depth,
+        depth_valid,
+        camera_depth,
+        camera_depth_valid,
+        center_value,
+        strict_depth_validity=False,
     )
 
 
@@ -1987,36 +2158,36 @@ def _opencv_multiband_owner_boundary_blend(
     )
 
 
-def render_projected_scan_panorama(
-    projected_sources: list[object] | tuple[object, ...],
-    *,
-    max_megapixels: float = 200.0,
-    multiband_levels: int = 5,
-    exposure_mode: str = "global_gain",
-    quality_gate: bool = True,
-    sharpness_scores: list[float] | tuple[float, ...] | None = None,
-) -> tuple[np.ndarray, ProjectedScanRenderInfo]:
-    """Render full-canvas metric RGB-D projections with no geometric fallback.
-
-    Inputs have already been projected exactly once by ``rgbd_projection``.
-    Only adjacent scan-order sources compete, risky world-depth components are
-    hard-owned before GraphCut, and OpenCV MultiBand is confined to a narrow
-    band around the verified strict owner boundary.
-    """
-
-    sources = list(projected_sources)
+def _coerce_prewarped_render_inputs(
+    sources: list[object],
+    arrays: list[
+        tuple[
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            tuple[float, float],
+        ]
+    ],
+    sharpness_scores: list[float] | tuple[float, ...] | None,
+) -> tuple[
+    list[np.ndarray],
+    list[np.ndarray],
+    list[np.ndarray],
+    list[np.ndarray],
+    list[np.ndarray],
+    list[np.ndarray],
+    np.ndarray,
+    list[float],
+]:
     if len(sources) < 2:
-        raise ValueError("Formal projected rendering requires at least two sources")
+        raise ValueError("Prewarped scan rendering requires at least two sources")
     if len(sources) > 32:
-        raise ValueError("Formal projected rendering supports at most 32 sources")
-    if multiband_levels < 1:
-        raise ValueError("multiband_levels must be at least one")
-    if not np.isfinite(max_megapixels) or max_megapixels <= 0.0:
-        raise ValueError("max_megapixels must be finite and positive")
-
-    arrays = [_projected_source_arrays(source) for source in sources]
+        raise ValueError("Prewarped scan rendering supports at most 32 sources")
     images = [item[0] for item in arrays]
-    geometric_valid = [item[1] for item in arrays]
+    color_valid = [item[1] for item in arrays]
     depths = [item[2] for item in arrays]
     depth_valid = [item[3] for item in arrays]
     camera_depths = [item[4] for item in arrays]
@@ -2024,25 +2195,75 @@ def render_projected_scan_panorama(
     centers = np.asarray([item[6] for item in arrays], dtype=np.float64)
     shape = images[0].shape[:2]
     if any(image.shape[:2] != shape for image in images):
-        raise ValueError("All projected sources must use one common canvas")
-    height, width = shape
-    aggregate_mp = width * height * len(sources) / 1_000_000.0
-    if aggregate_mp > max_megapixels:
-        raise MemoryError(
-            f"Projected render working set is {aggregate_mp:.1f} aggregate MP, "
-            f"above the {max_megapixels:.1f} MP limit"
-        )
-    sharpness = (
-        [float(value) for value in sharpness_scores]
-        if sharpness_scores is not None
-        else [float(getattr(source, "sharpness_score", 0.0)) for source in sources]
-    )
+        raise ValueError("All prewarped sources must use one common canvas")
+    if sharpness_scores is None:
+        sharpness = []
+        for source in sources:
+            value = getattr(source, "sharpness_score", 0.0)
+            sharpness.append(0.0 if value is None else float(value))
+    else:
+        sharpness = [float(value) for value in sharpness_scores]
     if len(sharpness) != len(sources) or not np.isfinite(sharpness).all():
-        raise ValueError("sharpness_scores must be finite and match projected sources")
-    corrected, gains = _projected_exposure_compensation(
-        images, geometric_valid, exposure_mode
+        raise ValueError("sharpness_scores must be finite and match prewarped sources")
+    return (
+        images,
+        color_valid,
+        depths,
+        depth_valid,
+        camera_depths,
+        camera_depth_valid,
+        centers,
+        sharpness,
     )
 
+
+def _validate_prewarped_budget(
+    shape: tuple[int, int],
+    source_count: int,
+    max_megapixels: float,
+) -> None:
+    if not np.isfinite(max_megapixels) or max_megapixels <= 0.0:
+        raise ValueError("max_megapixels must be finite and positive")
+    height, width = shape
+    canvas_mp = width * height / 1_000_000.0
+    if canvas_mp > _HARD_MAX_PREWARPED_CANVAS_MEGAPIXELS:
+        raise MemoryError(
+            f"Prewarped render canvas is {canvas_mp:.1f} MP, above the "
+            f"{_HARD_MAX_PREWARPED_CANVAS_MEGAPIXELS:.1f} MP hard limit"
+        )
+    aggregate_mp = canvas_mp * source_count
+    aggregate_limit = min(
+        float(max_megapixels), _HARD_MAX_PREWARPED_AGGREGATE_MEGAPIXELS
+    )
+    if aggregate_mp > aggregate_limit:
+        raise MemoryError(
+            f"Prewarped render working set is {aggregate_mp:.1f} aggregate MP, "
+            f"above the {aggregate_limit:.1f} MP limit"
+        )
+
+
+def _prewarped_blend_radius(
+    shape: tuple[int, int], multiband_levels: int
+) -> int:
+    if multiband_levels < 1:
+        raise ValueError("multiband_levels must be at least one")
+    height, width = shape
+    # Five OpenCV bands have an effective half-width of roughly 2**5 pixels.
+    # Cap that footprint on small diagnostic canvases so unrelated residual
+    # components cannot merge merely because the test/source is low resolution.
+    return min(
+        64,
+        max(4, 1 << min(multiband_levels, 6)),
+        max(4, min(height, width) // 8),
+    )
+
+
+def _prepare_projected_scan_layout(
+    color_valid: list[np.ndarray], centers: np.ndarray, blend_radius: int
+) -> _PreparedPrewarpedLayout:
+    """Preserve the existing formal projected-source corridor layout."""
+
+    height, width = color_valid[0].shape
     order = np.argsort(centers[:, 0], kind="stable")
     ordered_x = centers[order, 0]
     if np.any(np.diff(ordered_x) <= 1e-6):
@@ -2057,17 +2278,8 @@ def render_projected_scan_panorama(
     if any(right <= left for left, right in zip(domain_edges[:-1], domain_edges[1:])):
         raise RuntimeError("Adjacent-pair corridors collapse on the projected canvas")
 
-    owner_masks = [np.zeros(shape, dtype=np.uint8) for _ in sources]
-    corridor_valid = [np.zeros(shape, dtype=np.uint8) for _ in sources]
-    hard_components = 0
-    # Five OpenCV bands have an effective half-width of roughly 2**5 pixels.
-    # Cap that footprint on small diagnostic canvases so unrelated residual
-    # components cannot merge merely because the test/source is low resolution.
-    blend_radius = min(
-        64,
-        max(4, 1 << min(multiband_levels, 6)),
-        max(4, min(height, width) // 8),
-    )
+    corridor_valid = [np.zeros((height, width), dtype=np.uint8) for _ in color_valid]
+    pair_allowed: list[tuple[np.ndarray, np.ndarray]] = []
     x_grid = np.arange(width)[None, :]
     for pair_rank, (first_value, second_value) in enumerate(
         zip(order[:-1], order[1:], strict=True)
@@ -2076,9 +2288,6 @@ def render_projected_scan_panorama(
         zone = (x_grid >= domain_edges[pair_rank]) & (
             x_grid < domain_edges[pair_rank + 1]
         )
-        # GraphCut is a local boundary solver, not a whole-strip compositor.
-        # Give it a bounded overlap ribbon around the physical mid-boundary;
-        # outside that ribbon the scan order fixes a unique owner directly.
         left_edge = domain_edges[pair_rank]
         right_edge = domain_edges[pair_rank + 1]
         boundary_x = (left_edge + right_edge) // 2
@@ -2088,18 +2297,194 @@ def render_projected_scan_panorama(
         first_zone = zone & (x_grid < boundary_x + ribbon_half_width)
         second_zone = zone & (x_grid >= boundary_x - ribbon_half_width)
         first_allowed = np.where(
-            first_zone & (geometric_valid[first] > 0), 255, 0
+            first_zone & (color_valid[first] > 0), 255, 0
         ).astype(np.uint8)
         second_allowed = np.where(
-            second_zone & (geometric_valid[second] > 0), 255, 0
+            second_zone & (color_valid[second] > 0), 255, 0
         ).astype(np.uint8)
         corridor_valid[first] = cv2.bitwise_or(corridor_valid[first], first_allowed)
         corridor_valid[second] = cv2.bitwise_or(corridor_valid[second], second_allowed)
+        pair_allowed.append((first_allowed, second_allowed))
+    return _PreparedPrewarpedLayout(
+        source_order=order,
+        corridor_valid_masks=tuple(corridor_valid),
+        initial_owner_masks=tuple(
+            np.zeros((height, width), dtype=np.uint8) for _ in color_valid
+        ),
+        pair_allowed_masks=tuple(pair_allowed),
+    )
+
+
+def _coerce_pair_overlap_mask(
+    value: np.ndarray, shape: tuple[int, int], pair_rank: int
+) -> np.ndarray:
+    mask = np.asarray(value)
+    if mask.shape != shape:
+        raise ValueError(
+            f"Prewarped pair overlap mask {pair_rank} must match the shared canvas"
+        )
+    if mask.dtype not in {np.dtype(np.uint8), np.dtype(np.bool_)}:
+        raise ValueError("Prewarped pair overlap masks must be uint8 or bool")
+    return mask > 0
+
+
+def _prepare_prewarped_scan_layout(
+    color_valid: list[np.ndarray],
+    centers: np.ndarray,
+    *,
+    source_order: list[int] | tuple[int, ...],
+    owner_boundaries_x: list[float] | tuple[float, ...],
+    pair_overlap_masks: list[np.ndarray] | tuple[np.ndarray, ...] | None,
+) -> _PreparedPrewarpedLayout:
+    """Build owner cores and true adjacent-pair corridors without reordering."""
+
+    source_count = len(color_valid)
+    shape = color_valid[0].shape
+    height, width = shape
+    order_values = np.asarray(source_order)
+    if order_values.shape != (source_count,) or not np.issubdtype(
+        order_values.dtype, np.integer
+    ):
+        raise ValueError("source_order must contain one integer index per source")
+    order = np.asarray(order_values, dtype=np.int64)
+    if not np.array_equal(np.sort(order), np.arange(source_count, dtype=np.int64)):
+        raise ValueError("source_order must be a permutation of source indices")
+    ordered_x = centers[order, 0]
+    if np.any(np.diff(ordered_x) <= 1e-6):
+        raise RuntimeError(
+            "Verified prewarped source order is not strictly increasing in scan x"
+        )
+
+    boundaries = np.asarray(owner_boundaries_x, dtype=np.float64)
+    if boundaries.shape != (source_count - 1,) or not np.isfinite(boundaries).all():
+        raise ValueError("owner_boundaries_x must contain one finite value per pair")
+    if np.any(np.diff(boundaries) <= 1e-6):
+        raise RuntimeError("Prewarped owner boundaries are not strictly increasing")
+    if np.any(boundaries <= 0.0) or np.any(boundaries >= float(width)):
+        raise RuntimeError("Prewarped owner boundaries must lie inside the canvas")
+    expected_boundaries = 0.5 * (ordered_x[:-1] + ordered_x[1:])
+    if not np.allclose(boundaries, expected_boundaries, rtol=0.0, atol=1e-6):
+        raise RuntimeError(
+            "Prewarped owner boundaries must equal real adjacent-centre midpoints"
+        )
+
+    if pair_overlap_masks is None:
+        raw_pair_masks: tuple[np.ndarray, ...] = tuple(
+            ((color_valid[int(first)] > 0) & (color_valid[int(second)] > 0)).astype(
+                np.uint8
+            )
+            for first, second in zip(order[:-1], order[1:], strict=True)
+        )
+    else:
+        raw_pair_masks = tuple(pair_overlap_masks)
+    if len(raw_pair_masks) != source_count - 1:
+        raise ValueError("pair_overlap_masks must contain one mask per adjacent pair")
+
+    pair_overlap: list[np.ndarray] = []
+    assigned_pair_overlap = np.zeros(shape, dtype=bool)
+    for pair_rank, (first_value, second_value, raw_mask) in enumerate(
+        zip(order[:-1], order[1:], raw_pair_masks, strict=True)
+    ):
+        first, second = int(first_value), int(second_value)
+        overlap = _coerce_pair_overlap_mask(raw_mask, shape, pair_rank)
+        if not np.any(overlap):
+            raise RuntimeError("An adjacent prewarped pair has no true colour overlap")
+        common_colour = (color_valid[first] > 0) & (color_valid[second] > 0)
+        if np.any(overlap & ~common_colour):
+            raise RuntimeError(
+                "A prewarped pair overlap includes pixels without real common colour"
+            )
+        if np.any(assigned_pair_overlap & overlap):
+            raise RuntimeError("Prewarped adjacent-pair corridors must be disjoint")
+        assigned_pair_overlap |= overlap
+        pair_overlap.append(overlap)
+
+    initial_owner = [np.zeros(shape, dtype=np.uint8) for _ in color_valid]
+    corridor_valid = [np.zeros(shape, dtype=np.uint8) for _ in color_valid]
+    x_grid = np.arange(width, dtype=np.float64)[None, :]
+    for rank, source_value in enumerate(order):
+        source_index = int(source_value)
+        lower = -np.inf if rank == 0 else boundaries[rank - 1]
+        upper = np.inf if rank + 1 == source_count else boundaries[rank]
+        core = x_grid >= lower
+        if np.isfinite(upper):
+            core &= x_grid < upper
+        direct = core & (color_valid[source_index] > 0) & ~assigned_pair_overlap
+        initial_owner[source_index][direct] = 255
+        corridor_valid[source_index][direct] = 255
+
+    pair_allowed: list[tuple[np.ndarray, np.ndarray]] = []
+    for overlap, first_value, second_value in zip(
+        pair_overlap, order[:-1], order[1:], strict=True
+    ):
+        first, second = int(first_value), int(second_value)
+        first_allowed = np.where(overlap, 255, 0).astype(np.uint8)
+        second_allowed = np.where(overlap, 255, 0).astype(np.uint8)
+        corridor_valid[first] = cv2.bitwise_or(corridor_valid[first], first_allowed)
+        corridor_valid[second] = cv2.bitwise_or(corridor_valid[second], second_allowed)
+        pair_allowed.append((first_allowed, second_allowed))
+
+    colour_union = np.logical_or.reduce([mask > 0 for mask in color_valid])
+    layout_union = np.logical_or.reduce([mask > 0 for mask in corridor_valid])
+    if np.any(colour_union & ~layout_union):
+        raise RuntimeError(
+            "Prewarped layout leaves colour-valid pixels outside owner cores or pairs"
+        )
+    return _PreparedPrewarpedLayout(
+        source_order=order,
+        corridor_valid_masks=tuple(corridor_valid),
+        initial_owner_masks=tuple(initial_owner),
+        pair_allowed_masks=tuple(pair_allowed),
+    )
+
+
+def _source_projected_height(source: object, valid: np.ndarray) -> float:
+    value = getattr(source, "projected_height_px", None)
+    if value is not None:
+        candidate = float(value)
+        if np.isfinite(candidate) and candidate > 0.0:
+            return candidate
+    return float(cv2.boundingRect(valid)[3])
+
+
+def _render_prepared_prewarped_scan_panorama(
+    sources: list[object],
+    images: list[np.ndarray],
+    color_valid: list[np.ndarray],
+    depths: list[np.ndarray],
+    depth_valid: list[np.ndarray],
+    camera_depths: list[np.ndarray],
+    camera_depth_valid: list[np.ndarray],
+    sharpness: list[float],
+    prepared: _PreparedPrewarpedLayout,
+    *,
+    max_megapixels: float,
+    multiband_levels: int,
+    exposure_mode: str,
+    quality_gate: bool,
+) -> tuple[np.ndarray, PrewarpedScanRenderInfo]:
+    shape = images[0].shape[:2]
+    height, width = shape
+    _validate_prewarped_budget(shape, len(sources), max_megapixels)
+    blend_radius = _prewarped_blend_radius(shape, multiband_levels)
+    corrected, gains = _projected_exposure_compensation(
+        images, color_valid, exposure_mode
+    )
+    owner_masks = [mask.copy() for mask in prepared.initial_owner_masks]
+    hard_components = 0
+    order = prepared.source_order
+    if len(prepared.pair_allowed_masks) != len(order) - 1:
+        raise RuntimeError("Prewarped layout does not define every adjacent pair")
+    for pair_rank, ((first_value, second_value), allowed) in enumerate(
+        zip(zip(order[:-1], order[1:], strict=True), prepared.pair_allowed_masks, strict=True)
+    ):
+        first, second = int(first_value), int(second_value)
+        first_allowed, second_allowed = allowed
         first_allowed, second_allowed, _, component_count = (
             _apply_projected_hard_constraints(
                 sources,
                 corrected,
-                geometric_valid,
+                color_valid,
                 depths,
                 depth_valid,
                 camera_depths,
@@ -2119,10 +2504,15 @@ def render_projected_scan_panorama(
             first_allowed,
             second_allowed,
         )
-        owner_masks[first] = cv2.bitwise_or(owner_masks[first], first_owner)
-        owner_masks[second] = cv2.bitwise_or(owner_masks[second], second_owner)
+        for source_index, next_owner in ((first, first_owner), (second, second_owner)):
+            if np.any((owner_masks[source_index] > 0) & (next_owner > 0)):
+                raise RuntimeError("Prewarped pair ownership overlaps an existing owner")
+            owner_masks[source_index] = cv2.bitwise_or(
+                owner_masks[source_index], next_owner
+            )
         hard_components += component_count
 
+    corridor_valid = list(prepared.corridor_valid_masks)
     quality_metrics = _evaluate_final_owner_boundaries(
         corrected,
         corridor_valid,
@@ -2139,14 +2529,17 @@ def render_projected_scan_panorama(
     structural_reasons: list[str] = []
     if not bool(quality_metrics["strict_owner_partition"]):
         structural_reasons.append("owner masks contain holes, overlaps, or invalid owners")
-    if (
-        quality_gate
-        and int(quality_metrics["nonadjacent_owner_boundary_pixel_count"]) > 0
-    ):
+    if int(quality_metrics["nonadjacent_owner_boundary_pixel_count"]) > 0:
         structural_reasons.append("non-adjacent projected owners touch")
+    if int(quality_metrics["unsupported_owner_boundary_pixel_count"]) > 0:
+        structural_reasons.append("an owner boundary lacks real pair overlap")
+    if int(quality_metrics["final_owner_boundary_pair_count"]) != len(order) - 1:
+        structural_reasons.append("one or more adjacent owner boundaries are missing")
+    if any(not np.any(mask) for mask in owner_masks):
+        structural_reasons.append("one or more projected sources lost all ownership")
     if structural_reasons:
         raise RuntimeError(
-            "Projected owner topology validation failed: " + "; ".join(structural_reasons)
+            "Prewarped owner topology validation failed: " + "; ".join(structural_reasons)
         )
 
     blended, blended_mask, blend_zone_pixels, zone_risk = (
@@ -2164,18 +2557,15 @@ def render_projected_scan_panorama(
         )
     )
     quality_metrics["blend_zone_risk_fraction"] = float(zone_risk)
-    # RGB-D point splats deliberately leave depth holes rather than inventing
-    # triangles.  Crop to the full observed union, not its largest hole-free
-    # rectangle, otherwise a valid long scan collapses to one tiny patch.
     x, y, crop_width, crop_height = cv2.boundingRect(
         (blended_mask > 0).astype(np.uint8)
     )
     if crop_width == 0 or crop_height == 0:
-        raise RuntimeError("Projected RGB-D fusion produced no valid output pixels")
+        raise RuntimeError("Prewarped RGB-D fusion produced no valid output pixels")
     crop = CropInfo(x=x, y=y, width=crop_width, height=crop_height)
     panorama = blended[crop.y : crop.y + crop.height, crop.x : crop.x + crop.width]
     projected_heights = [
-        float(getattr(source, "projected_height_px", cv2.boundingRect(valid)[3]))
+        _source_projected_height(source, valid)
         for source, valid in zip(sources, corridor_valid, strict=True)
     ]
     crop_height_ratio = crop.height / max(1.0, float(np.median(projected_heights)))
@@ -2207,12 +2597,6 @@ def render_projected_scan_panorama(
         failure_reasons.append("the actual MultiBand zone reaches RGB-D risk")
     if float(quality_metrics["minimum_seam_cross_coverage_ratio"]) < 0.80:
         failure_reasons.append("an owner boundary has insufficient cross coverage")
-    if int(quality_metrics["unsupported_owner_boundary_pixel_count"]) > 0:
-        failure_reasons.append("an owner boundary lacks real pair overlap")
-    if int(quality_metrics["final_owner_boundary_pair_count"]) != len(order) - 1:
-        failure_reasons.append("one or more adjacent owner boundaries are missing")
-    if any(not np.any(mask) for mask in owner_masks):
-        failure_reasons.append("one or more projected sources lost all ownership")
     if float(quality_metrics["safe_seam_lab_residual_p95"]) > 48.0:
         failure_reasons.append("safe GraphCut boundary Lab residual is too high")
     if gain_min < 0.45 or gain_max > 2.20:
@@ -2220,9 +2604,9 @@ def render_projected_scan_panorama(
     quality_metrics["quality_pass"] = not failure_reasons
     if quality_gate and failure_reasons:
         raise RuntimeError(
-            "Projected render quality gate failed: " + "; ".join(failure_reasons)
+            "Prewarped render quality gate failed: " + "; ".join(failure_reasons)
         )
-    info = ProjectedScanRenderInfo(
+    info = PrewarpedScanRenderInfo(
         crop=crop,
         canvas_width=width,
         canvas_height=height,
@@ -2237,3 +2621,135 @@ def render_projected_scan_panorama(
         quality_metrics=quality_metrics,
     )
     return panorama, info
+
+
+def render_prewarped_scan_panorama(
+    sources: list[PrewarpedScanSource] | tuple[PrewarpedScanSource, ...],
+    *,
+    source_order: list[int] | tuple[int, ...] | None = None,
+    owner_boundaries_x: list[float] | tuple[float, ...] | None = None,
+    max_megapixels: float = 200.0,
+    multiband_levels: int = 5,
+    exposure_mode: str = "global_gain",
+    quality_gate: bool = True,
+    sharpness_scores: list[float] | tuple[float, ...] | None = None,
+    pair_overlap_masks: list[np.ndarray] | tuple[np.ndarray, ...] | None = None,
+    layout: PrewarpedScanLayout | None = None,
+) -> tuple[np.ndarray, PrewarpedScanRenderInfo]:
+    """Render verified prewarped scan strips with independent colour/depth masks.
+
+    The caller supplies the real temporal source order and the corresponding
+    camera-centre midpoint boundaries.  No source sorting, pose interpolation,
+    or synthetic overlap is performed here.  ``pair_overlap_masks`` may narrow
+    competition to known true overlaps; when omitted, the adjacent colour-mask
+    intersections are used and must form disjoint pair corridors.
+    """
+
+    if layout is not None:
+        if any(
+            value is not None
+            for value in (source_order, owner_boundaries_x, pair_overlap_masks)
+        ):
+            raise ValueError(
+                "Pass either layout or explicit source_order/owner_boundaries_x/pairs"
+            )
+        source_order = layout.source_order
+        owner_boundaries_x = layout.owner_boundaries_x
+        pair_overlap_masks = layout.pair_overlap_masks
+    if source_order is None or owner_boundaries_x is None:
+        raise ValueError(
+            "source_order and owner_boundaries_x are required for prewarped rendering"
+        )
+
+    source_list = list(sources)
+    arrays = [_prewarped_source_arrays(source) for source in source_list]
+    (
+        images,
+        color_valid,
+        depths,
+        depth_valid,
+        camera_depths,
+        camera_depth_valid,
+        centers,
+        sharpness,
+    ) = _coerce_prewarped_render_inputs(source_list, arrays, sharpness_scores)
+    _validate_prewarped_budget(images[0].shape[:2], len(source_list), max_megapixels)
+    prepared = _prepare_prewarped_scan_layout(
+        color_valid,
+        centers,
+        source_order=source_order,
+        owner_boundaries_x=owner_boundaries_x,
+        pair_overlap_masks=pair_overlap_masks,
+    )
+    return _render_prepared_prewarped_scan_panorama(
+        source_list,
+        images,
+        color_valid,
+        depths,
+        depth_valid,
+        camera_depths,
+        camera_depth_valid,
+        sharpness,
+        prepared,
+        max_megapixels=max_megapixels,
+        multiband_levels=multiband_levels,
+        exposure_mode=exposure_mode,
+        quality_gate=quality_gate,
+    )
+
+
+def render_projected_scan_panorama(
+    projected_sources: list[object] | tuple[object, ...],
+    *,
+    max_megapixels: float = 200.0,
+    multiband_levels: int = 5,
+    exposure_mode: str = "global_gain",
+    quality_gate: bool = True,
+    sharpness_scores: list[float] | tuple[float, ...] | None = None,
+) -> tuple[np.ndarray, ProjectedScanRenderInfo]:
+    """Render strict formal RGB-D projections with no geometric fallback."""
+
+    sources = list(projected_sources)
+    arrays = [_projected_source_arrays(source) for source in sources]
+    (
+        images,
+        color_valid,
+        depths,
+        depth_valid,
+        camera_depths,
+        camera_depth_valid,
+        centers,
+        sharpness,
+    ) = _coerce_prewarped_render_inputs(sources, arrays, sharpness_scores)
+    _validate_prewarped_budget(images[0].shape[:2], len(sources), max_megapixels)
+    blend_radius = _prewarped_blend_radius(images[0].shape[:2], multiband_levels)
+    prepared = _prepare_projected_scan_layout(color_valid, centers, blend_radius)
+    panorama, prewarped_info = _render_prepared_prewarped_scan_panorama(
+        sources,
+        images,
+        color_valid,
+        depths,
+        depth_valid,
+        camera_depths,
+        camera_depth_valid,
+        sharpness,
+        prepared,
+        max_megapixels=max_megapixels,
+        multiband_levels=multiband_levels,
+        exposure_mode=exposure_mode,
+        quality_gate=quality_gate,
+    )
+    return panorama, ProjectedScanRenderInfo(
+        crop=prewarped_info.crop,
+        canvas_width=prewarped_info.canvas_width,
+        canvas_height=prewarped_info.canvas_height,
+        source_count=prewarped_info.source_count,
+        source_order=prewarped_info.source_order,
+        color_gains=prewarped_info.color_gains,
+        multiband_levels=prewarped_info.multiband_levels,
+        blend_radius_pixels=prewarped_info.blend_radius_pixels,
+        blend_zone_pixel_count=prewarped_info.blend_zone_pixel_count,
+        hard_owner_component_count=prewarped_info.hard_owner_component_count,
+        owner_masks=prewarped_info.owner_masks,
+        quality_metrics=prewarped_info.quality_metrics,
+    )

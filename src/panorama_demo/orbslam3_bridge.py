@@ -276,6 +276,17 @@ def _write_settings(
         f"Camera1.fy: {intrinsics.fy:.12g}",
         f"Camera1.cx: {intrinsics.cx:.12g}",
         f"Camera1.cy: {intrinsics.cy:.12g}",
+        # Inputs are explicitly undistorted before staging.  Several
+        # ORB-SLAM3 RGB-D builds nevertheless dereference these five classic
+        # OpenCV keys while loading a PinHole camera; omitting them merely
+        # prints "optional parameter" diagnostics on some builds but then
+        # segfaults on others.  Declare the calibrated staged model honestly
+        # as zero-distortion instead of allowing a missing-key fallback.
+        "Camera1.k1: 0.0",
+        "Camera1.k2: 0.0",
+        "Camera1.p1: 0.0",
+        "Camera1.p2: 0.0",
+        "Camera1.k3: 0.0",
         f"Camera.width: {intrinsics.width}",
         f"Camera.height: {intrinsics.height}",
         f"Camera.fps: {fps}",

@@ -21,6 +21,7 @@
 |---|---|
 | `g305-capture` | 采集连续流或照片模式驱动的低帧率同步 RGB-D 会话 |
 | `g305-panorama` | 正式 RGB-D 序列全景入口 |
+| `g305-central-strip-diagnostic` | 独立的真实轨迹中央条带诊断入口；绝不替代正式 TSDF 路径 |
 | `unistitch-sequence` | 一个版本内保留的弃用别名；运行同一 RGB-D 流程，不含 UniStitch 回退 |
 | `generate-panorama-demo` | 生成带标定、对齐深度和已知 SE(3) 轨迹的合成会话 |
 | `unistitch-pair` | 独立历史双图诊断工具，不进入正式序列流程 |
@@ -43,10 +44,20 @@ g305-capture `
 g305-panorama `
   .\data\captures\run_YYYYMMDD_HHMMSS `
   --output .\outputs\greenhouse_sequence
+
+g305-central-strip-diagnostic `
+  .\data\captures\run_YYYYMMDD_HHMMSS `
+  --output .\outputs\central_strip_diagnostic
 ```
 网页：http://127.0.0.1:8766/tsdf_mesh_viewer.html
 
 `unistitch-sequence` 会打印弃用提示，但调用与 `g305-panorama` 完全相同的 RGB-D `main`。它不会加载 UniStitch、Torch、LightGlue 或 MAGSAC。
+
+`g305-central-strip-diagnostic` 只用于评估“真实 RGB-D 轨迹驱动的参考平面中央条带”是否值得继续研究。它复用严格会话、Open3D 相邻边和 ORB-SLAM3 真实轨迹，但通过内部 renderer callback 与正式路径隔离：`g305-panorama` 不提供算法选项、不会导入该后端，也不会把它作为失败回退。
+
+`configs/demo.yaml` 中的 `stitch.central_strip_diagnostic.enabled` 故意默认为 `false`；它不能通过 `g305-panorama` 打开。独立命令本身是唯一显式 opt-in，并向 renderer 传递一个内部启用的、固定且拒绝未知键的配置副本。
+
+该诊断路线的参考平面也采用 fail-closed 门禁：它必须是唯一主导、跨扫描有足够标定图像面积支持的实测平面；竞争平面、面积不足或结构残差过大只会写 `failure.json`。较严格的平面质量阈值只会令 `strip_quality_pass=false`，仍可留下两个诊断文件供 A/B 检查，绝不变成正式交付。
 
 ## 正式处理流程
 
@@ -429,6 +440,8 @@ outputs/greenhouse_sequence/
 每次任务先删除旧 `delivery.json`，正式文件先写隐藏 pending 文件，再用 `os.replace` 原子发布；`delivery.json` 最后写入。普通异常会清除正式文件并写 `failure.json`。强制终止可能来不及写失败报告，但没有有效 `delivery.json` 仍表示失败。
 
 旧诊断文件会在新的正式或失败任务开始时清除。历史 `pairs/` 不是交付目录，不能用于判断本次任务是否成功。
+
+`g305-central-strip-diagnostic` 成功时严格只原子发布 `diagnostic_panorama.jpg` 和 `diagnostic_report.json`（schema: `gemini305-central-strip-diagnostic/v1`）。它绝不写 `panorama.jpg`、`report.json`、`transforms.json`、`delivery.json`、TSDF mesh 或其它正式交付文件；普通异常同样只留下 `failure.json`。ORB-SLAM3 的临时 staging 位于系统临时目录，不会保留在成功输出目录。
 
 ## `--diagnostic-force` 的边界
 

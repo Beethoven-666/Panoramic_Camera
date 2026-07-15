@@ -6,9 +6,11 @@ import pytest
 
 import panorama_demo.render as render_module
 from panorama_demo.render import (
+    PrewarpedScanSource,
     compute_canvas,
     largest_valid_rectangle,
     render_panorama,
+    render_prewarped_scan_panorama,
     render_projected_scan_panorama,
     render_scan_panorama,
 )
@@ -54,6 +56,40 @@ def _projected_source(
         projected_height_px=height,
         sampling_stats={"projected_sampling_ratio": sampling_ratio},
         camera_center_xy=(float(center_x), image.shape[0] * 0.5),
+    )
+
+
+def _prewarped_source(
+    image: np.ndarray,
+    color_valid_mask: np.ndarray,
+    center_x: float,
+    *,
+    surface_depth_valid_mask: np.ndarray | None = None,
+    camera_depth_valid_mask: np.ndarray | None = None,
+) -> PrewarpedScanSource:
+    shape = image.shape[:2]
+    surface_valid = (
+        np.zeros(shape, dtype=np.uint8)
+        if surface_depth_valid_mask is None
+        else np.asarray(surface_depth_valid_mask, dtype=np.uint8).copy()
+    )
+    camera_valid = (
+        np.zeros(shape, dtype=np.uint8)
+        if camera_depth_valid_mask is None
+        else np.asarray(camera_depth_valid_mask, dtype=np.uint8).copy()
+    )
+    surface_depth = np.zeros(shape, dtype=np.float32)
+    camera_depth = np.zeros(shape, dtype=np.float32)
+    surface_depth[surface_valid > 0] = 2000.0
+    camera_depth[camera_valid > 0] = 2000.0
+    return PrewarpedScanSource(
+        rgb=image.copy(),
+        color_valid_mask=np.asarray(color_valid_mask, dtype=np.uint8).copy(),
+        surface_depth_mm=surface_depth,
+        surface_depth_valid_mask=surface_valid,
+        camera_depth_mm=camera_depth,
+        camera_depth_valid_mask=camera_valid,
+        projected_center_xy=(float(center_x), image.shape[0] * 0.5),
     )
 
 
@@ -941,3 +977,138 @@ def test_projected_renderer_treats_black_pixels_as_valid_content(monkeypatch) ->
     assert info.crop.as_dict() == {"x": 0, "y": 0, "width": 80, "height": 40}
     assert info.quality_metrics["strict_owner_partition"] is True
     assert info.quality_metrics["multiband_output_mask_complete"] is True
+
+
+def test_prewarped_renderer_allows_colour_without_measured_depth(monkeypatch) -> None:
+    _install_projected_cv_stubs(monkeypatch)
+    shape = (40, 80)
+    image = _solid(*shape, (0, 0, 0))
+    colour_valid = np.full(shape, 255, dtype=np.uint8)
+    sources = [
+        _prewarped_source(image, colour_valid, 20.0),
+        _prewarped_source(image, colour_valid, 60.0),
+    ]
+    true_overlap = np.zeros(shape, dtype=np.uint8)
+    true_overlap[:, 36:44] = 255
+
+    panorama, info = render_prewarped_scan_panorama(
+        sources,
+        source_order=(0, 1),
+        owner_boundaries_x=(40.0,),
+        max_megapixels=1.0,
+        exposure_mode="none",
+        multiband_levels=1,
+        pair_overlap_masks=(true_overlap,),
+    )
+
+    assert panorama.shape == (*shape, 3)
+    assert np.count_nonzero(panorama) == 0
+    assert info.quality_metrics["strict_owner_partition"] is True
+    assert info.quality_metrics["multiband_output_mask_complete"] is True
+
+
+def test_projected_wrapper_retains_strict_colour_depth_contract() -> None:
+    sources = _full_projected_sources()
+    sources[0].surface_depth_valid_mask[0, 0] = 0
+
+    with pytest.raises(ValueError, match="world-depth validity must agree"):
+        render_projected_scan_panorama(sources, exposure_mode="none")
+
+
+def test_prewarped_renderer_rejects_reverse_order_and_nonmidpoint_boundary() -> None:
+    shape = (40, 80)
+    image = _solid(*shape, (90, 120, 150))
+    colour_valid = np.full(shape, 255, dtype=np.uint8)
+    sources = [
+        _prewarped_source(image, colour_valid, 20.0),
+        _prewarped_source(image, colour_valid, 60.0),
+    ]
+
+    with pytest.raises(RuntimeError, match="not strictly increasing"):
+        render_prewarped_scan_panorama(
+            sources,
+            source_order=(1, 0),
+            owner_boundaries_x=(40.0,),
+            max_megapixels=1.0,
+        )
+    with pytest.raises(RuntimeError, match="adjacent-centre midpoints"):
+        render_prewarped_scan_panorama(
+            sources,
+            source_order=(0, 1),
+            owner_boundaries_x=(39.0,),
+            max_megapixels=1.0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("metric", "value", "message"),
+    [
+        (
+            "nonadjacent_owner_boundary_pixel_count",
+            1,
+            "non-adjacent projected owners touch",
+        ),
+        (
+            "unsupported_owner_boundary_pixel_count",
+            1,
+            "owner boundary lacks real pair overlap",
+        ),
+        (
+            "final_owner_boundary_pair_count",
+            0,
+            "adjacent owner boundaries are missing",
+        ),
+    ],
+)
+def test_prewarped_owner_topology_is_never_quality_gate_bypassable(
+    monkeypatch, metric: str, value: int, message: str
+) -> None:
+    _install_projected_cv_stubs(monkeypatch)
+    original = render_module._evaluate_final_owner_boundaries
+
+    def invalid_metrics(*args, **kwargs):
+        metrics = original(*args, **kwargs)
+        metrics[metric] = value
+        return metrics
+
+    monkeypatch.setattr(render_module, "_evaluate_final_owner_boundaries", invalid_metrics)
+    shape = (40, 80)
+    image = _solid(*shape, (90, 120, 150))
+    colour_valid = np.full(shape, 255, dtype=np.uint8)
+    sources = [
+        _prewarped_source(image, colour_valid, 20.0),
+        _prewarped_source(image, colour_valid, 60.0),
+    ]
+
+    with pytest.raises(RuntimeError, match=message):
+        render_prewarped_scan_panorama(
+            sources,
+            source_order=(0, 1),
+            owner_boundaries_x=(40.0,),
+            max_megapixels=1.0,
+            exposure_mode="none",
+            multiband_levels=1,
+            quality_gate=False,
+        )
+
+
+def test_prewarped_empty_owner_is_never_quality_gate_bypassable(monkeypatch) -> None:
+    _install_projected_cv_stubs(monkeypatch, graphcut_mode="first")
+    shape = (40, 80)
+    image = _solid(*shape, (90, 120, 150))
+    colour_valid = np.full(shape, 255, dtype=np.uint8)
+    sources = [
+        _prewarped_source(image, colour_valid, 20.0),
+        _prewarped_source(image, colour_valid, 60.0),
+    ]
+
+    with pytest.raises(RuntimeError, match="sources lost all ownership"):
+        render_prewarped_scan_panorama(
+            sources,
+            source_order=(0, 1),
+            owner_boundaries_x=(40.0,),
+            max_megapixels=1.0,
+            exposure_mode="none",
+            multiband_levels=1,
+            quality_gate=False,
+        )

@@ -82,6 +82,18 @@ stitch:
   input_quality_gate: true
   # Diagnostic profiles may set this to true; formal defaults must remain false.
   diagnostic_force: false
+  # This experimental renderer is reachable only through
+  # g305-central-strip-diagnostic's injected callback.  It is never a formal
+  # g305-panorama backend or failure fallback, and its first release exposes no
+  # user-tunable algorithm parameters.
+  central_strip_diagnostic:
+    enabled: false
+    reference_scale_mode: robust_aligned_depth_plane
+    orientation_mode: verified_camera_to_world
+    maximum_central_band_fraction: 0.20
+    minimum_pair_overlap_pixels: 96
+    exposure_mode: global_gain
+    multiband_levels: 5
   color_exposure_unit_us: 100
   maximum_motion_exposure_us: 1200
 
