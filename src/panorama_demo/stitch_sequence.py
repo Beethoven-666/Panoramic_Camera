@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import sys
@@ -58,6 +59,9 @@ _DELIVERY_FILES = (
     # The success marker must be invalidated before every other cleanup.
     "delivery.json",
     "panorama.jpg",
+    "foreground_mask.png",
+    "tsdf_mesh.glb",
+    "tsdf_mesh_viewer.html",
     "report.json",
     "transforms.json",
     "render_transforms.json",
@@ -65,6 +69,9 @@ _DELIVERY_FILES = (
 
 _DIAGNOSTIC_FILES = (
     "diagnostic_panorama.jpg",
+    "diagnostic_foreground_mask.png",
+    "diagnostic_tsdf_mesh.glb",
+    "diagnostic_tsdf_mesh_viewer.html",
     "diagnostic_report.json",
 )
 
@@ -232,6 +239,45 @@ def _write_bgr(path: Path, image: np.ndarray) -> Path:
         raise OSError(f"OpenCV could not encode panorama: {path}")
     path.write_bytes(encoded.tobytes())
     return path
+
+
+def _write_mask(path: Path, mask: np.ndarray) -> Path:
+    """Write an explicit lossless foreground ownership mask for inspection."""
+
+    binary = np.where(np.asarray(mask, dtype=bool), 255, 0).astype(np.uint8)
+    return _write_bgr(path, binary)
+
+
+def _write_bytes(path: Path, data: bytes) -> Path:
+    """Write a binary deliverable using the caller's pending-file protocol."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
+def _mesh_viewer_html(mesh_filename: str) -> str:
+    """Build a self-contained entry page for a locally served GLB mesh."""
+
+    mesh_url = html.escape(mesh_filename, quote=True)
+    return f"""<!doctype html>
+<html lang=\"zh-CN\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <title>TSDF 三维网格</title>
+  <script type=\"module\" src=\"https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js\"></script>
+  <style>
+    html, body, model-viewer {{ width: 100%; height: 100%; margin: 0; background: #16181d; }}
+    model-viewer {{ --poster-color: #16181d; }}
+  </style>
+</head>
+<body>
+  <model-viewer src=\"{mesh_url}\" alt=\"TSDF RGB-D mesh\" camera-controls
+      auto-rotate shadow-intensity=\"0.7\" exposure=\"1\"></model-viewer>
+</body>
+</html>
+"""
 
 
 def _intrinsics_payload(intrinsics: CameraIntrinsics) -> dict[str, object]:
@@ -1037,6 +1083,8 @@ def _run_pipeline(
     dense_fusion_backend = str(
         stitch_config.get("dense_fusion_backend", "tsdf_plane_dense_rgbd")
     )
+    foreground_mask: np.ndarray | None = None
+    tsdf_mesh_glb: bytes | None = None
     if dense_fusion_backend == "tsdf_plane_dense_rgbd" and orbslam3_trajectory is not None:
         dense_frames = scan_frames
         dense_poses = [
@@ -1052,6 +1100,8 @@ def _run_pipeline(
             config=stitch_config.get("dense_tsdf"),
         )
         panorama = dense_result.image
+        foreground_mask = dense_result.foreground_mask
+        tsdf_mesh_glb = dense_result.tsdf_mesh_glb
         render_metadata = dict(dense_result.metadata)
     elif dense_fusion_backend in {
         "graphcut_depth_constrained",
@@ -1097,6 +1147,37 @@ def _run_pipeline(
     report_path = output / (
         "diagnostic_report.json" if diagnostic_force else "report.json"
     )
+    foreground_mask_path = (
+        output
+        / (
+            "diagnostic_foreground_mask.png"
+            if diagnostic_force
+            else "foreground_mask.png"
+        )
+        if foreground_mask is not None
+        else None
+    )
+    if foreground_mask_path is not None:
+        render_metadata["foreground_mask"] = str(foreground_mask_path)
+    tsdf_mesh_path = (
+        output
+        / ("diagnostic_tsdf_mesh.glb" if diagnostic_force else "tsdf_mesh.glb")
+        if tsdf_mesh_glb is not None
+        else None
+    )
+    tsdf_mesh_viewer_path = (
+        output
+        / (
+            "diagnostic_tsdf_mesh_viewer.html"
+            if diagnostic_force
+            else "tsdf_mesh_viewer.html"
+        )
+        if tsdf_mesh_path is not None
+        else None
+    )
+    if tsdf_mesh_path is not None and tsdf_mesh_viewer_path is not None:
+        render_metadata["tsdf_mesh"] = str(tsdf_mesh_path)
+        render_metadata["tsdf_mesh_viewer"] = str(tsdf_mesh_viewer_path)
     transforms_payload = pose_graph.as_dict()
     transforms_payload["layout_selection"] = layout_metadata
     transforms_payload["optional_edge_failures"] = optional_edge_failures
@@ -1129,6 +1210,12 @@ def _run_pipeline(
         "input": str(args.input.expanduser().resolve()),
         "panorama": str(panorama_path),
         "report": str(report_path),
+        "tsdf_mesh": str(tsdf_mesh_path) if tsdf_mesh_path is not None else None,
+        "tsdf_mesh_viewer": (
+            str(tsdf_mesh_viewer_path)
+            if tsdf_mesh_viewer_path is not None
+            else None
+        ),
         "diagnostic_only": diagnostic_force,
         "deliverable_published": not diagnostic_force,
         "input_capture": capture_summary,
@@ -1181,13 +1268,40 @@ def _run_pipeline(
         pending_panorama = _write_bgr(
             output / ".diagnostic_panorama.pending.jpg", panorama
         )
+        pending_mesh: Path | None = None
+        pending_mesh_viewer: Path | None = None
+        if tsdf_mesh_path is not None and tsdf_mesh_glb is not None:
+            pending_mesh = _write_bytes(
+                output / ".diagnostic_tsdf_mesh.pending.glb", tsdf_mesh_glb
+            )
+            pending_mesh_viewer = output / ".diagnostic_tsdf_mesh_viewer.pending.html"
+            pending_mesh_viewer.write_text(
+                _mesh_viewer_html(tsdf_mesh_path.name), encoding="utf-8"
+            )
         pending_report = output / ".diagnostic_report.pending.json"
         pending_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
         os.replace(pending_panorama, panorama_path)
+        if foreground_mask_path is not None and foreground_mask is not None:
+            pending_foreground_mask = _write_mask(
+                output / ".diagnostic_foreground_mask.pending.png", foreground_mask
+            )
+            os.replace(pending_foreground_mask, foreground_mask_path)
+        if pending_mesh is not None and tsdf_mesh_path is not None:
+            os.replace(pending_mesh, tsdf_mesh_path)
+        if pending_mesh_viewer is not None and tsdf_mesh_viewer_path is not None:
+            os.replace(pending_mesh_viewer, tsdf_mesh_viewer_path)
         os.replace(pending_report, report_path)
         return report
 
     pending_panorama = _write_bgr(output / ".panorama.pending.jpg", panorama)
+    pending_mesh: Path | None = None
+    pending_mesh_viewer: Path | None = None
+    if tsdf_mesh_path is not None and tsdf_mesh_glb is not None:
+        pending_mesh = _write_bytes(output / ".tsdf_mesh.pending.glb", tsdf_mesh_glb)
+        pending_mesh_viewer = output / ".tsdf_mesh_viewer.pending.html"
+        pending_mesh_viewer.write_text(
+            _mesh_viewer_html(tsdf_mesh_path.name), encoding="utf-8"
+        )
     pending_transforms = output / ".transforms.pending.json"
     pending_render_transforms = output / ".render_transforms.pending.json"
     pending_report = output / ".report.pending.json"
@@ -1199,6 +1313,15 @@ def _run_pipeline(
     )
     pending_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
     os.replace(pending_panorama, output / "panorama.jpg")
+    if foreground_mask_path is not None and foreground_mask is not None:
+        pending_foreground_mask = _write_mask(
+            output / ".foreground_mask.pending.png", foreground_mask
+        )
+        os.replace(pending_foreground_mask, foreground_mask_path)
+    if pending_mesh is not None and tsdf_mesh_path is not None:
+        os.replace(pending_mesh, tsdf_mesh_path)
+    if pending_mesh_viewer is not None and tsdf_mesh_viewer_path is not None:
+        os.replace(pending_mesh_viewer, tsdf_mesh_viewer_path)
     os.replace(pending_transforms, output / "transforms.json")
     os.replace(pending_render_transforms, output / "render_transforms.json")
     os.replace(pending_report, output / "report.json")
@@ -1223,6 +1346,15 @@ def _run_pipeline(
             else "opencv_multiband_narrow_owner_boundary"
         ),
         "panorama": str(output / "panorama.jpg"),
+        "foreground_mask": str(foreground_mask_path)
+        if foreground_mask_path is not None
+        else None,
+        "tsdf_mesh": str(tsdf_mesh_path) if tsdf_mesh_path is not None else None,
+        "tsdf_mesh_viewer": (
+            str(tsdf_mesh_viewer_path)
+            if tsdf_mesh_viewer_path is not None
+            else None
+        ),
         "report": str(output / "report.json"),
     }
     pending_delivery = output / ".delivery.pending.json"

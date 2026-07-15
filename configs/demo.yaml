@@ -157,8 +157,20 @@ stitch:
     sdf_truncation_mm: 40.0
     maximum_depth_mm: 2000.0
     plane_histogram_bin_mm: 20.0
+    # A measured point must sit at least this far on the camera side of the
+    # wall before it can cover plane texture.
     foreground_offset_mm: 35.0
+    foreground_neighbor_depth_tolerance_mm: 70.0
+    minimum_foreground_support_neighbors: 1
+    # Raw RGB-D points may fill only small holes enclosed by real TSDF geometry;
+    # they may not spread across a completely unreconstructed wall region.
+    foreground_tsdf_hole_kernel_size: 15
     ray_chunk_rows: 128
     foreground_overlay: true
     minimum_crop_coverage: 0.85
-    minimum_row_or_column_coverage: 0.50
+    # Close only tiny holes, inset one pixel, then use a strict valid-mask
+    # rectangle. The 98% rule is only its documented height-preserving fallback.
+    minimum_row_or_column_coverage: 0.98
+    minimum_inscribed_crop_height_fraction: 0.90
+    mask_close_kernel_size: 3
+    mask_erode_pixels: 1

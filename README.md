@@ -36,6 +36,10 @@ conda activate D:\Panoramic_Camera\.conda
 ```powershell
 g305-capture --output .\data\captures
 
+g305-capture `
+  --photo-mode `
+  --output .\data\captures
+
 g305-panorama `
   .\data\captures\run_YYYYMMDD_HHMMSS `
   --output .\outputs\greenhouse_sequence
