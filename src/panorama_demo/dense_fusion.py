@@ -223,6 +223,42 @@ class DenseFusionConfig:
 
 
 @dataclass(frozen=True)
+class TSDFMeshVisualizationConfig:
+    """Display-only TSDF export settings, deliberately separate from rendering."""
+
+    enabled: bool = True
+    voxel_length_mm: float = 5.0
+    sdf_truncation_mm: float = 20.0
+    maximum_depth_mm: float = 10000.0
+
+    @classmethod
+    def from_mapping(
+        cls, value: Mapping[str, Any] | None = None
+    ) -> "TSDFMeshVisualizationConfig":
+        payload = dict(value or {})
+        unknown = sorted(set(payload) - set(cls.__dataclass_fields__))
+        if unknown:
+            raise ValueError(
+                "Unknown tsdf_visualization configuration keys: " + str(unknown)
+            )
+        config = cls(**payload)
+        if not isinstance(config.enabled, bool):
+            raise ValueError("tsdf_visualization.enabled must be a boolean")
+        for name, number in (
+            ("voxel_length_mm", config.voxel_length_mm),
+            ("sdf_truncation_mm", config.sdf_truncation_mm),
+            ("maximum_depth_mm", config.maximum_depth_mm),
+        ):
+            if not math.isfinite(number) or number <= 0.0:
+                raise ValueError(f"tsdf_visualization.{name} must be finite and positive")
+        if config.sdf_truncation_mm < config.voxel_length_mm:
+            raise ValueError(
+                "tsdf_visualization.sdf_truncation_mm must cover one voxel"
+            )
+        return config
+
+
+@dataclass(frozen=True)
 class DenseFusionResult:
     image: np.ndarray
     valid_mask: np.ndarray
@@ -592,6 +628,57 @@ def _mesh_to_glb(mesh: Any) -> bytes:
             binary_chunk,
         )
     )
+
+
+def export_tsdf_mesh(
+    frames: Sequence[RGBDFrame],
+    camera_to_world: Sequence[np.ndarray],
+    intrinsics: PinholeIntrinsics,
+    *,
+    config: TSDFMeshVisualizationConfig | Mapping[str, Any] | None = None,
+) -> tuple[bytes, dict[str, object]]:
+    """Export a coloured TSDF GLB without invoking any panorama code.
+
+    The caller supplies already validated real RGB-D poses.  This helper never
+    creates a plane, foreground mask, ownership map, or RGB panorama; its GLB
+    is an inspection-only artifact.
+    """
+
+    selected = (
+        config
+        if isinstance(config, TSDFMeshVisualizationConfig)
+        else TSDFMeshVisualizationConfig.from_mapping(config)
+    )
+    if not selected.enabled:
+        raise ValueError("Cannot export a TSDF mesh when tsdf_visualization is disabled")
+    integration_config = DenseFusionConfig(
+        voxel_length_mm=selected.voxel_length_mm,
+        sdf_truncation_mm=selected.sdf_truncation_mm,
+        maximum_depth_mm=selected.maximum_depth_mm,
+    )
+    mesh = _integrate_tsdf(
+        frames,
+        camera_to_world,
+        intrinsics,
+        _undistortion_maps(intrinsics),
+        integration_config,
+    )
+    glb = _mesh_to_glb(mesh)
+    return glb, {
+        "backend": "open3d_scalable_tsdf_display_only",
+        "frame_count": len(frames),
+        "vertex_count": int(len(mesh.vertices)),
+        "triangle_count": int(len(mesh.triangles)),
+        "glb_byte_count": len(glb),
+        "translation_unit": "mm",
+        "configuration": {
+            "voxel_length_mm": selected.voxel_length_mm,
+            "sdf_truncation_mm": selected.sdf_truncation_mm,
+            "maximum_depth_mm": selected.maximum_depth_mm,
+        },
+        "display_only": True,
+        "participates_in_panorama": False,
+    }
 
 
 def _dominant_background_plane_mm(

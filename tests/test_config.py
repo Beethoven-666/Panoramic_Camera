@@ -34,6 +34,12 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
     )
     assert "dense_fusion_backend" not in config["stitch"]
     assert "rgbd_projection" not in config["stitch"]
+    assert config["stitch"]["tsdf_visualization"] == {
+        "enabled": True,
+        "voxel_length_mm": 5.0,
+        "sdf_truncation_mm": 20.0,
+        "maximum_depth_mm": 10000.0,
+    }
     assert config["stitch"]["central_strip_diagnostic"] == {
         "enabled": False,
         "reference_scale_mode": "robust_aligned_depth_plane",
@@ -79,8 +85,16 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
     assert config["stitch"]["scan_seam"]["backend"] == (
         "rgb_monotonic_hard_owner_graphcut"
     )
-    assert config["stitch"]["scan_seam"]["multiband_levels"] == 3
-    assert config["stitch"]["scan_seam"]["exposure_mode"] == (
+
+
+def test_formal_delivery_requires_display_only_tsdf_export() -> None:
+    stitch = load_config()["stitch"]
+    stitch["tsdf_visualization"] = {"enabled": False}
+
+    with pytest.raises(ValueError, match="tsdf_visualization export"):
+        _validate_safety_envelope(stitch, diagnostic_force=False)
+    assert stitch["scan_seam"]["multiband_levels"] == 3
+    assert stitch["scan_seam"]["exposure_mode"] == (
         "safe_wall_global_linear_rgb"
     )
     legacy_formal_keys = {
@@ -98,7 +112,7 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
         "translation_anchor_y",
         "save_pair_previews",
     }
-    assert legacy_formal_keys.isdisjoint(config["stitch"])
+    assert legacy_formal_keys.isdisjoint(stitch)
 
 
 def test_default_rgbd_photo_mode_preserves_single_trigger_safety_contract() -> None:

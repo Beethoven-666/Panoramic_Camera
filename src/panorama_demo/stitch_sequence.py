@@ -408,6 +408,29 @@ def _mesh_viewer_html(mesh_filename: str) -> str:
 """
 
 
+def _export_display_only_tsdf_mesh(
+    frames: list[RGBDFrame],
+    poses: list[np.ndarray],
+    intrinsics: CameraIntrinsics,
+    config: dict[str, Any],
+) -> tuple[bytes, dict[str, object]]:
+    """Build the optional 3-D inspection asset after RGB rendering is complete.
+
+    This delayed import is intentionally below the RGB panorama quality gate.
+    The exported mesh has no return path into calibrated RGB pushbroom, seam,
+    blending, crop, or delivery-quality decisions.
+    """
+
+    from .dense_fusion import export_tsdf_mesh
+
+    return export_tsdf_mesh(
+        frames,
+        poses,
+        _pinhole_intrinsics(intrinsics),
+        config=config,
+    )
+
+
 def _intrinsics_payload(intrinsics: CameraIntrinsics) -> dict[str, object]:
     return {
         "width": intrinsics.width,
@@ -757,6 +780,9 @@ def _validate_backend_config(stitch_config: dict[str, Any]) -> None:
             "Formal calibrated RGB pushbroom rendering rejects TSDF and RGB-D "
             "projection configuration"
         )
+    visualization = stitch_config.get("tsdf_visualization", {})
+    if not isinstance(visualization, dict):
+        raise ValueError("tsdf_visualization must be a mapping")
     pushbroom = dict(stitch_config.get("calibrated_rgb_pushbroom", {}))
     if str(pushbroom.get("mode", "calibrated_rgb_pushbroom")) != (
         "calibrated_rgb_pushbroom"
@@ -834,6 +860,12 @@ def _validate_safety_envelope(
 
     if diagnostic_force:
         return
+
+    visualization = dict(stitch_config.get("tsdf_visualization", {}))
+    if visualization.get("enabled", True) is not True:
+        raise ValueError(
+            "Formal delivery requires the display-only tsdf_visualization export"
+        )
 
     # These remain structural/model limits even for a later diagnostic A/B
     # run.  Formal delivery additionally requires a real held-out partition
@@ -1548,6 +1580,26 @@ def _run_pipeline(
             pose_quality,
         )
 
+    # TSDF is deliberately an output-only 3-D inspection stage.  It executes
+    # only after the RGB-only panorama has passed all of its own gates, and it
+    # receives real RGB-D poses without returning any result to that renderer.
+    tsdf_visualization: dict[str, object] | None = None
+    tsdf_mesh_glb: bytes | None = None
+    if not diagnostic_force:
+        visualization_config = dict(stitch_config.get("tsdf_visualization", {}))
+        if bool(visualization_config.get("enabled", True)):
+            tsdf_mesh_glb, mesh_metadata = _export_display_only_tsdf_mesh(
+                pose_frames,
+                pose_values,
+                session.calibration,
+                visualization_config,
+            )
+            tsdf_visualization = {
+                **mesh_metadata,
+                "mesh": str(output / "tsdf_mesh.glb"),
+                "viewer": str(output / "tsdf_mesh_viewer.html"),
+            }
+
     panorama_path = output / (
         "diagnostic_panorama.jpg" if diagnostic_force else "panorama.jpg"
     )
@@ -1589,7 +1641,7 @@ def _run_pipeline(
         ],
     }
     report: dict[str, Any] = {
-        "schema": "gemini305-calibrated-rgb-pushbroom/v2",
+        "schema": "gemini305-calibrated-rgb-pushbroom/v3",
         "input": str(args.input.expanduser().resolve()),
         "panorama": str(panorama_path),
         "report": str(report_path),
@@ -1622,6 +1674,7 @@ def _run_pipeline(
         "projection": render_transforms_payload,
         "render_strategy": "calibrated_rgb_pushbroom",
         "render": render_metadata,
+        "tsdf_visualization": tsdf_visualization,
         "diagnostic_overrides": (
             {
                 "input_quality_thresholds_bypassed": True,
@@ -1648,6 +1701,14 @@ def _run_pipeline(
         return report
 
     pending_panorama = _write_bgr(output / ".panorama.pending.jpg", panorama)
+    pending_mesh: Path | None = None
+    pending_mesh_viewer: Path | None = None
+    if tsdf_mesh_glb is not None:
+        pending_mesh = _write_bytes(output / ".tsdf_mesh.pending.glb", tsdf_mesh_glb)
+        pending_mesh_viewer = output / ".tsdf_mesh_viewer.pending.html"
+        pending_mesh_viewer.write_text(
+            _mesh_viewer_html("tsdf_mesh.glb"), encoding="utf-8"
+        )
     pending_transforms = output / ".transforms.pending.json"
     pending_render_transforms = output / ".render_transforms.pending.json"
     pending_report = output / ".report.pending.json"
@@ -1659,11 +1720,14 @@ def _run_pipeline(
     )
     pending_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
     os.replace(pending_panorama, output / "panorama.jpg")
+    if pending_mesh is not None and pending_mesh_viewer is not None:
+        os.replace(pending_mesh, output / "tsdf_mesh.glb")
+        os.replace(pending_mesh_viewer, output / "tsdf_mesh_viewer.html")
     os.replace(pending_transforms, output / "transforms.json")
     os.replace(pending_render_transforms, output / "render_transforms.json")
     os.replace(pending_report, output / "report.json")
     delivery = {
-        "schema": "gemini305-panorama-delivery/v2",
+        "schema": "gemini305-panorama-delivery/v3",
         "published_utc": datetime.now(timezone.utc).isoformat(),
         "quality_pass": True,
         "pose_backend": (
@@ -1677,6 +1741,7 @@ def _run_pipeline(
         "seam_backend": "rgb_monotonic_hard_owner_graphcut",
         "blend_backend": "safe_wall_local_multiband_narrow_owner_boundary",
         "panorama": str(output / "panorama.jpg"),
+        "tsdf_visualization": tsdf_visualization,
         "report": str(output / "report.json"),
     }
     pending_delivery = output / ".delivery.pending.json"

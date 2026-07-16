@@ -87,11 +87,29 @@ def _make_session(tmp_path: Path, *, seed: int) -> Path:
 
 
 def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session = _make_session(tmp_path, seed=19)
     output = tmp_path / "output"
     backend = _KnownTrajectoryRGBDBackend(session)
+    import panorama_demo.dense_fusion as dense_fusion
+
+    def fake_export(frames, poses, intrinsics, *, config):
+        assert len(frames) == len(poses) == 7
+        assert intrinsics.width == 320
+        assert config["enabled"] is True
+        return b"glTF-display-only-test-mesh", {
+            "backend": "fake_tsdf_display_only",
+            "frame_count": len(frames),
+            "vertex_count": 3,
+            "triangle_count": 1,
+            "glb_byte_count": 28,
+            "translation_unit": "mm",
+            "display_only": True,
+            "participates_in_panorama": False,
+        }
+
+    monkeypatch.setattr(dense_fusion, "export_tsdf_mesh", fake_export)
     args = sequence._parser().parse_args([str(session), "--output", str(output)])
 
     report = sequence.run(args, odometry_backend=backend)
@@ -102,7 +120,7 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert panorama.shape[0] >= 180
     assert (output / "delivery.json").is_file()
     assert not (output / "failure.json").exists()
-    assert report["schema"] == "gemini305-calibrated-rgb-pushbroom/v2"
+    assert report["schema"] == "gemini305-calibrated-rgb-pushbroom/v3"
     assert report["layout_selection"]["mode"] == "adaptive_rgbd_pose_nodes"
     assert report["render_strategy"] == "calibrated_rgb_pushbroom"
     assert report["render"]["backend"] == "calibrated_rgb_pushbroom"
@@ -172,12 +190,18 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert delivery["alignment_model"] == compact_alignment["selected_model"]
     assert delivery["seam_backend"] == "rgb_monotonic_hard_owner_graphcut"
     assert delivery["blend_backend"] == "safe_wall_local_multiband_narrow_owner_boundary"
+    visualization = report["tsdf_visualization"]
+    assert visualization["display_only"] is True
+    assert visualization["participates_in_panorama"] is False
+    assert (output / "tsdf_mesh.glb").read_bytes() == b"glTF-display-only-test-mesh"
+    viewer = (output / "tsdf_mesh_viewer.html").read_text(encoding="utf-8")
+    assert 'src="tsdf_mesh.glb"' in viewer
+    assert "model-viewer" in viewer
+    assert delivery["tsdf_visualization"]["display_only"] is True
     for legacy_artifact in (
         "foreground_mask.png",
         "background_exclusion_mask.png",
         "tsdf_foreground_mask.png",
-        "tsdf_mesh.glb",
-        "tsdf_mesh_viewer.html",
     ):
         assert not (output / legacy_artifact).exists()
     crop = report["render"]["crop"]

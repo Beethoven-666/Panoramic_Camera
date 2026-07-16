@@ -11,7 +11,7 @@
   → valid mask 最大内接矩形、质量门禁和原子交付
 ```
 
-正式输出像素只来自 RGB。深度仍严格用于会话契约和 Open3D/ORB-SLAM3 的真实轨迹验证，但正式 renderer 不读取深度生成像素、不建点云、不做 TSDF、不拟合参考平面，也不以深度产生前景。正式流程不使用 UniStitch、LightGlue、MAGSAC、Torch、3×3 单应矩阵、二维累计或二维位姿插值。ORB-SLAM3 仅负责输出真实 RGB-D 相机轨迹；有未跟踪帧、位姿异常、RGB 尺度不稳定或条带接缝结构不完整时流程会失败，不会伪造位姿或回退到二维拼接。没有 `delivery.json` 就不是有效交付。
+正式全景像素只来自 RGB。深度仍严格用于会话契约和 Open3D/ORB-SLAM3 的真实轨迹验证；RGB renderer 不读取深度生成像素、不拟合参考平面，也不以深度产生前景。RGB 全景通过质量门禁后，`g305-panorama` 会额外生成仅供浏览的 `tsdf_mesh.glb` 和 `tsdf_mesh_viewer.html`：它使用同一严格 RGB-D 会话和真实轨迹，但不向条带、接缝、融合、裁剪或任何全景质量判定回传结果。正式流程不使用 UniStitch、LightGlue、MAGSAC、Torch、3×3 单应矩阵、二维累计或二维位姿插值。ORB-SLAM3 仅负责输出真实 RGB-D 相机轨迹；有未跟踪帧、位姿异常、RGB 尺度不稳定或条带接缝结构不完整时流程会失败，不会伪造位姿或回退到二维拼接。没有 `delivery.json` 就不是有效交付。
 
 默认工况是相机连续单向水平侧移、场景基本静止、最近物体约 `0.5 m`、最高速度约 `1.5 m/s`。用户只需提供采集目录和输出目录，不需要调整曝光、步长、帧号、位姿、接缝或裁剪参数。
 
@@ -26,9 +26,45 @@
 | `generate-panorama-demo` | 生成带标定、对齐深度和已知 SE(3) 轨迹的合成会话 |
 | `unistitch-pair` | 独立历史双图诊断工具，不进入正式序列流程 |
 
-激活环境
+### 让 `g305-panorama` 指向当前工作区（首次或切换工作区后执行一次）
 
+本项目的正式入口必须来自当前工作区的源码。不要使用系统 Python 目录中旧的
+`g305-panorama.exe`，否则它可能仍会走旧的 TSDF/深度渲染路径。以下命令把当前
+工作区以 editable 方式写入正式 Conda 环境，并将该环境的命令目录放在用户级
+`PATH` 的最前面：
+
+```powershell
+cd D:\central_strip_Panoramic_Camera
+
+$g305Python = 'D:\Panoramic_Camera\.conda\python.exe'
+$g305Scripts = 'D:\Panoramic_Camera\.conda\Scripts'
+
+& $g305Python -m pip install --no-deps -e .
+
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (-not (($userPath -split ';') -contains $g305Scripts)) {
+  [Environment]::SetEnvironmentVariable('Path', "$g305Scripts;$userPath", 'User')
+}
+$env:Path = "$g305Scripts;$env:Path"
 ```
+
+本机的主环境是 `D:\Panoramic_Camera\.conda`。若在另一台机器上通过下文的
+bootstrap 脚本创建了项目内 `D:\central_strip_Panoramic_Camera\.conda`，请将
+上面两处 `D:\Panoramic_Camera\.conda` 替换为该项目内环境后，再执行同一安装和
+`PATH` 设置步骤。
+
+关闭并重新打开 PowerShell 后，下面的命令应显示
+`D:\Panoramic_Camera\.conda\Scripts\g305-panorama.exe`；源码路径应显示当前
+工作区的 `D:\central_strip_Panoramic_Camera\src\panorama_demo`：
+
+```powershell
+(Get-Command g305-panorama).Source
+& 'D:\Panoramic_Camera\.conda\python.exe' -c "import panorama_demo; print(panorama_demo.__file__)"
+```
+
+激活环境（当前终端也可使用）：
+
+```powershell
 conda activate D:\Panoramic_Camera\.conda
 ```
 
@@ -100,7 +136,7 @@ Gemini 305 同步 RGB-D 会话
 
 Open3D 在首次执行 RGB-D odometry 时才延迟导入。采集、会话检查和不需要默认 Open3D backend 的单元测试不会因模型库或 CUDA 不可用而提前失败。
 
-### Conda（首选）
+### 新机器：创建项目内 Conda 环境（备选）
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -108,7 +144,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 conda activate .\.conda
 ```
 
-脚本使用 [`environment.yml`](environment.yml) 创建项目内 `.conda`，并安装基础项目、Open3D、采集依赖和测试依赖。默认不会安装 Torch/Kornia/torchvision，不会克隆 UniStitch/LightGlue，也不会下载模型。
+脚本使用 [`environment.yml`](environment.yml) 创建项目内 `.conda`，并安装基础项目、Open3D、采集依赖和测试依赖。默认不会安装 Torch/Kornia/torchvision，不会克隆 UniStitch/LightGlue，也不会下载模型。若要让未激活环境的新 PowerShell 也能直接识别 `g305-panorama`，创建完成后请回到上方“让 `g305-panorama` 指向当前工作区”一节，用该项目内 `.conda` 路径执行 editable 安装和 `PATH` 设置。
 
 ```powershell
 # 明确删除并重建项目环境；会移除该环境中已有的包
@@ -160,10 +196,11 @@ python -m pip install -e ".[unistitch-diagnostic]"
 首次在一台电脑上使用相机时运行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\register_orbbec_metadata.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\register_orbbec_metadata.ps1 `
+  -Python D:\Panoramic_Camera\.conda\python.exe
 ```
 
-脚本会优先使用项目内 `.conda`，必要时请求管理员权限。完成后重新插拔相机。短采集后应检查 `manifest.json` 的 `metadata_support`，以及 `frames.csv` 中曝光、增益、帧号、sensor timestamp 和 RGB-D 时间差是否持续有效。
+若使用项目内 `.conda` 或 `.venv`，可以省略 `-Python`；否则应显式传入主环境 Python，避免脚本误选另一个环境。完成后重新插拔相机。短采集后应检查 `manifest.json` 的 `metadata_support`，以及 `frames.csv` 中曝光、增益、帧号、sensor timestamp 和 RGB-D 时间差是否持续有效。
 
 ## 采集 Gemini 305 RGB-D
 
@@ -498,6 +535,13 @@ generate-panorama-demo `
 
 合成测试通过不等于实机验收完成。动态物体、镜面反射、完全无纹理、严重欠光、深度大面积空洞或源帧已拖影的场景可能被拒绝；这是 fail-closed 设计，不应通过放宽门限或回退平均来掩盖。
 
+本机在 `2026-07-16` 已通过主环境的直接 `g305-panorama` 入口对
+`data/run_20260714_132427_262` 复验：101 个真实源、输出 `2978×782`、裁剪高度
+`97.75%`、融合区 `1.264%`、融合风险/owner 边界风险/受保护组件拆分均为 `0`。成功
+目录为 `outputs/greenhouse_sequence_optimized/`，其 `delivery.json` 必须声明
+`projection=calibrated_rgb_pushbroom`、`seam_backend=rgb_monotonic_hard_owner_graphcut`；
+出现 `orthographic_side_scan`、TSDF mesh 或深度前景 mask 说明调用到了旧全局入口。
+
 ## 常见问题
 
 ### `Open3D is required ... but could not be imported`
@@ -505,17 +549,22 @@ generate-panorama-demo `
 确认正在使用项目环境，并重新安装基础依赖：
 
 ```powershell
-.\.conda\python.exe -m pip install -e ".[capture,test]"
-.\.conda\python.exe -c "import open3d; print(open3d.__version__)"
+python -m pip install -e ".[capture,test]"
+python -c "import open3d; print(open3d.__version__)"
 ```
 
-### 找不到 `g305-panorama`
+### 找不到 `g305-panorama`，或它指向旧全局入口
 
-重新执行 editable 安装：
+先按上方“让 `g305-panorama` 指向当前工作区”完成 editable 安装和用户级 `PATH`
+设置，关闭并重新打开 PowerShell；随后验证：
 
 ```powershell
-.\.conda\python.exe -m pip install -e ".[capture,test]"
+(Get-Command g305-panorama).Source
+python -c "import panorama_demo; print(panorama_demo.__file__)"
 ```
+
+前者应为主 Conda 环境的 `Scripts\g305-panorama.exe`，后者应位于当前工作区的
+`src\panorama_demo`。不要用任意系统 Python 重装同名命令。
 
 ### 正式目录没有 `delivery.json`
 
@@ -532,9 +581,9 @@ generate-panorama-demo `
 ## 测试
 
 ```powershell
-.\.conda\python.exe -m pytest -q
+python -m pytest -q
 ruff check src tests
-.\.conda\python.exe -m compileall -q src tests
+python -m compileall -q src tests
 git diff --check
 ```
 

@@ -87,6 +87,14 @@ stitch:
     minimum_fast_threshold: 5
   max_canvas_megapixels: 200
   sequence_blend_mode: calibrated_rgb_pushbroom
+  # A coloured TSDF mesh is exported only as a 3-D inspection artifact.  It
+  # is built after the RGB-only panorama quality gate and never contributes
+  # pixels, geometry, seams, crop, or quality decisions to panorama.jpg.
+  tsdf_visualization:
+    enabled: true
+    voxel_length_mm: 5.0
+    sdf_truncation_mm: 20.0
+    maximum_depth_mm: 10000.0
   input_quality_gate: true
   # Diagnostic profiles may set this to true; formal defaults must remain false.
   diagnostic_force: false
