@@ -18,6 +18,11 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
     assert config["capture"]["color_exposure_us"] is None
     assert config["capture"]["color_ae_max_exposure_us"] == 800
     assert config["capture"]["diagnostic_unrestricted_auto_exposure"] is False
+    assert config["capture"]["color_auto_white_balance"] is True
+    assert config["capture"]["color_white_balance"] is None
+    assert config["capture"]["lock_color_controls_after_warmup"] is True
+    assert config["capture"]["post_lock_verified_frames"] == 2
+    assert config["capture"]["require_locked_control_metadata"] is True
     assert config["capture"]["frame_sync"] is True
     assert config["capture"]["external_sync_output"] is True
     assert config["capture"]["fps"] == 30
@@ -43,7 +48,7 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
         "mode": "calibrated_rgb_pushbroom",
         "maximum_central_band_fraction": 0.20,
         "endpoint_outer_half_fov": True,
-        "seam_half_width_pixels": 4,
+        "seam_search_width_pixels": 64,
         "max_canvas_megapixels": 200,
         "max_aggregate_megapixels": 200,
         "max_pose_count": 160,
@@ -53,13 +58,30 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
         "scale_low_gradient_quantile": 0.45,
         "scale_minimum_response": 0.10,
         "scale_max_relative_mad": 0.35,
+        "residual_alignment": {
+            "backend": "se3_epipolar_hierarchical_rgb",
+            "analysis_width": 640,
+            "maximum_preview_megapixels": 2.0,
+            "maximum_evidence_megapixels": 3.0,
+            "held_out_fraction": 0.20,
+            "owner_track_consistency": True,
+            "background_model": "se2",
+            "maximum_residual_displacement_pixels": 8.0,
+            "maximum_background_roll_degrees": 0.25,
+            "maximum_flow_fb_error_pixels": 1.0,
+            "maximum_epipolar_error_pixels": 1.0,
+            "component_model": "owner_only",
+            "maximum_edge_step_p95_pixels": 1.5,
+            "maximum_edge_step_pixels": 3.0,
+            "cut_mesh_formal_enabled": False,
+        },
     }
     assert config["stitch"]["scan_seam"]["backend"] == (
         "rgb_monotonic_hard_owner_graphcut"
     )
     assert config["stitch"]["scan_seam"]["multiband_levels"] == 3
     assert config["stitch"]["scan_seam"]["exposure_mode"] == (
-        "safe_wall_smooth_gain"
+        "safe_wall_global_linear_rgb"
     )
     legacy_formal_keys = {
         "model",
@@ -170,6 +192,16 @@ def test_explicit_auto_exposure_mode_is_not_overridden(tmp_path: Path) -> None:
             "requires endpoint_outer_half_fov",
         ),
         (
+            ("calibrated_rgb_pushbroom", "seam_search_width_pixels"),
+            31,
+            "32-64",
+        ),
+        (
+            ("calibrated_rgb_pushbroom", "seam_search_width_pixels"),
+            65,
+            "32-64",
+        ),
+        (
             ("calibrated_rgb_pushbroom", "max_canvas_megapixels"),
             201,
             "200 MP",
@@ -195,10 +227,78 @@ def test_explicit_auto_exposure_mode_is_not_overridden(tmp_path: Path) -> None:
             0.46,
             "cannot exceed 0.45",
         ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "residual_alignment",
+                "maximum_residual_displacement_pixels",
+            ),
+            8.1,
+            "residual_alignment",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "residual_alignment",
+                "maximum_preview_megapixels",
+            ),
+            2.1,
+            "residual_alignment",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "residual_alignment",
+                "maximum_evidence_megapixels",
+            ),
+            3.1,
+            "residual_alignment",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "residual_alignment",
+                "component_model",
+            ),
+            "rigid_normal",
+            "residual_alignment",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "residual_alignment",
+                "backend",
+            ),
+            "homography",
+            "residual_alignment",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "residual_alignment",
+                "held_out_fraction",
+            ),
+            0.19,
+            "20% held-out",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "residual_alignment",
+                "owner_track_consistency",
+            ),
+            False,
+            "owner track consistency",
+        ),
         (("rgbd_odometry", "minimum_fitness"), 0.14, "cannot be relaxed"),
         (("pose_quality", "maximum_total_rotation_deg"), 11.0, "cannot be relaxed"),
         (("scan_seam", "multiband_levels"), 4, "1-3"),
         (("scan_seam", "quality_gate"), False, "cannot disable"),
+        (
+            ("scan_seam", "exposure_mode"),
+            "safe_wall_smooth_gain",
+            "safe_wall_global_linear_rgb",
+        ),
     ],
 )
 def test_formal_stitch_config_cannot_relax_safety_envelope(

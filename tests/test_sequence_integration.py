@@ -78,7 +78,10 @@ def _make_session(tmp_path: Path, *, seed: int) -> Path:
         frame_count=7,
         frame_width=320,
         frame_height=200,
-        step=60,
+        # The formal owner search requires a 32 px interior overlap.  A 64 px
+        # central strip therefore needs a 32 px synthetic camera step rather
+        # than the old 60 px almost-touching strips.
+        step=32,
         seed=seed,
     )
 
@@ -99,6 +102,7 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert panorama.shape[0] >= 180
     assert (output / "delivery.json").is_file()
     assert not (output / "failure.json").exists()
+    assert report["schema"] == "gemini305-calibrated-rgb-pushbroom/v2"
     assert report["layout_selection"]["mode"] == "adaptive_rgbd_pose_nodes"
     assert report["render_strategy"] == "calibrated_rgb_pushbroom"
     assert report["render"]["backend"] == "calibrated_rgb_pushbroom"
@@ -139,16 +143,33 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     render_transforms = json.loads(
         (output / "render_transforms.json").read_text(encoding="utf-8")
     )
-    assert render_transforms["schema"] == "calibrated-rgb-pushbroom/v1"
+    assert render_transforms["schema"] == "calibrated-rgb-pushbroom/v2"
     assert render_transforms["pixel_source"] == "calibrated_rgb_only"
     assert [source["frame_id"] for source in render_transforms["sources"]] == list(
         backend.optimized_node_ids
     )
     assert all("aligned_depth_path" not in source for source in render_transforms["sources"])
+    compact_alignment = render_transforms["residual_alignment"]
+    full_alignment = report["render"]["residual_alignment"]
+    assert compact_alignment["backend"] == full_alignment["backend"]
+    assert compact_alignment["selected_model"] == full_alignment["selected_model"]
+    assert compact_alignment["configuration"]["held_out_fraction"] == 0.20
+    assert compact_alignment["topology_audit"]["accepted"] is True
+    assert compact_alignment["preview_remap_count"] == len(backend.optimized_node_ids)
+    assert compact_alignment["full_resolution_output_remap_count"] == len(
+        backend.optimized_node_ids
+    )
+    assert [
+        parameter["frame_id"]
+        for parameter in compact_alignment["per_source_parameters"]
+    ] == list(backend.optimized_node_ids)
+    assert "evidence" not in compact_alignment
     delivery = json.loads((output / "delivery.json").read_text(encoding="utf-8"))
     assert delivery["quality_pass"] is True
     assert delivery["pose_backend"] == "open3d_rgbd"
     assert delivery["projection"] == "calibrated_rgb_pushbroom"
+    assert delivery["alignment_backend"] == compact_alignment["backend"]
+    assert delivery["alignment_model"] == compact_alignment["selected_model"]
     assert delivery["seam_backend"] == "rgb_monotonic_hard_owner_graphcut"
     assert delivery["blend_backend"] == "safe_wall_local_multiband_narrow_owner_boundary"
     for legacy_artifact in (

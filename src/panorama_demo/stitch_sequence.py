@@ -16,6 +16,7 @@ import numpy as np
 
 from .calibrated_rgb_pushbroom import render_calibrated_rgb_pushbroom
 from .config import load_config
+from .rgb_residual_alignment import ResidualAlignmentConfig
 from .orbslam3_bridge import (
     ORBSLAM3PoseGraphOptimizer,
     ORBSLAM3Trajectory,
@@ -241,6 +242,93 @@ def _ensure_publishable_quality(
         failures.append("final render quality did not pass")
     if failures:
         raise RuntimeError("Delivery quality gate failed: " + "; ".join(failures))
+
+
+def _compact_residual_alignment_for_transforms(
+    render_metadata: dict[str, Any],
+    settings: ResidualAlignmentConfig,
+    frame_ids: list[int],
+) -> dict[str, object]:
+    """Return the reproducible, non-dense residual-map audit sidecar payload.
+
+    ``report.json`` keeps the complete scalar evidence audit.  The standalone
+    render-transform sidecar needs only the selected model, small per-source
+    parameters, and the structural/held-out summaries required to reproduce
+    the calibrated composite inverse map.  Preview RGB, flow, masks, and
+    dense inverse maps must never escape the renderer's temporary workspace.
+    """
+
+    residual = render_metadata.get("residual_alignment")
+    if not isinstance(residual, dict):
+        raise RuntimeError(
+            "Calibrated RGB pushbroom omitted the required residual alignment audit"
+        )
+    backend = residual.get("backend")
+    if backend != settings.backend:
+        raise RuntimeError("Residual alignment audit backend disagrees with config")
+    selected_model = residual.get("selected_model")
+    if not isinstance(selected_model, str) or not selected_model:
+        raise RuntimeError("Residual alignment audit has no selected model")
+
+    preview_count = residual.get("preview_remap_count")
+    full_resolution_count = residual.get("full_resolution_output_remap_count")
+    expected_count = len(frame_ids)
+    if (
+        not isinstance(preview_count, int)
+        or preview_count != expected_count
+        or not isinstance(full_resolution_count, int)
+        or full_resolution_count != expected_count
+    ):
+        raise RuntimeError(
+            "Residual alignment audit did not account for every real source remap"
+        )
+
+    parameters = residual.get("per_source_parameters")
+    if not isinstance(parameters, list) or len(parameters) != expected_count:
+        raise RuntimeError(
+            "Residual alignment audit has no one-to-one source parameters"
+        )
+    per_source_parameters: list[dict[str, object]] = []
+    for source_index, (frame_id, parameter) in enumerate(
+        zip(frame_ids, parameters, strict=True)
+    ):
+        if (
+            not isinstance(parameter, dict)
+            or parameter.get("source_index") != source_index
+        ):
+            raise RuntimeError(
+                "Residual alignment audit source parameters are not in render order"
+            )
+        per_source_parameters.append({"frame_id": frame_id, **parameter})
+
+    held_out_before = residual.get("held_out_metrics_before")
+    held_out_after = residual.get("held_out_metrics_after")
+    component_audit = residual.get("component_audit")
+    topology_audit = residual.get("topology_audit")
+    working_set_audit = residual.get("working_set_audit")
+    if (
+        not isinstance(held_out_before, dict)
+        or not isinstance(held_out_after, dict)
+        or not isinstance(component_audit, dict)
+        or not isinstance(topology_audit, dict)
+        or not isinstance(working_set_audit, dict)
+        or topology_audit.get("accepted") is not True
+    ):
+        raise RuntimeError("Residual alignment structural audit is incomplete")
+
+    return {
+        "backend": backend,
+        "selected_model": selected_model,
+        "configuration": settings.as_dict(),
+        "preview_remap_count": preview_count,
+        "full_resolution_output_remap_count": full_resolution_count,
+        "per_source_parameters": per_source_parameters,
+        "held_out_metrics_before": dict(held_out_before),
+        "held_out_metrics_after": dict(held_out_after),
+        "component_audit": dict(component_audit),
+        "topology_audit": dict(topology_audit),
+        "working_set_audit": dict(working_set_audit),
+    }
 
 
 def _read_bgr(path: Path) -> np.ndarray:
@@ -737,9 +825,28 @@ def _validate_safety_envelope(
             "calibrated_rgb_pushbroom.max_resident_frames must remain within "
             "the 2-5 streaming budget"
         )
+    try:
+        residual_alignment = ResidualAlignmentConfig.from_mapping(
+            pushbroom.get("residual_alignment")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid calibrated_rgb_pushbroom.residual_alignment") from exc
 
     if diagnostic_force:
         return
+
+    # These remain structural/model limits even for a later diagnostic A/B
+    # run.  Formal delivery additionally requires a real held-out partition
+    # and cross-pair owner tracking rather than allowing the model to certify
+    # itself on the same evidence it used to select a residual.
+    if residual_alignment.held_out_fraction < 0.20:
+        raise ValueError(
+            "Formal residual alignment must retain at least a 20% held-out partition"
+        )
+    if not residual_alignment.owner_track_consistency:
+        raise ValueError(
+            "Formal residual alignment requires cross-pair owner track consistency"
+        )
 
     if not bool(stitch_config.get("adaptive_layout", True)):
         raise ValueError("Formal delivery cannot disable adaptive_layout")
@@ -767,9 +874,11 @@ def _validate_safety_envelope(
         raise ValueError(
             "Formal calibrated RGB pushbroom requires endpoint_outer_half_fov"
         )
-    if not 0 <= int(pushbroom.get("seam_half_width_pixels", 4)) <= 8:
+    seam_search_width = int(pushbroom.get("seam_search_width_pixels", 64))
+    if not 32 <= seam_search_width <= 64:
         raise ValueError(
-            "Formal calibrated RGB seam half-width must remain within 0-8 pixels"
+            "Formal calibrated RGB seam search width must remain within 32-64 "
+            "pixels"
         )
     if int(pushbroom.get("minimum_valid_scale_pairs", 3)) < 3:
         raise ValueError(
@@ -805,11 +914,12 @@ def _validate_safety_envelope(
     levels = int(seam.get("multiband_levels", 3))
     if not 1 <= levels <= 3:
         raise ValueError("Formal MultiBand level count must remain within 1-3")
-    if str(seam.get("exposure_mode", "safe_wall_smooth_gain")) != (
-        "safe_wall_smooth_gain"
+    if str(seam.get("exposure_mode", "safe_wall_global_linear_rgb")) != (
+        "safe_wall_global_linear_rgb"
     ):
         raise ValueError(
-            "Formal exposure compensation mode must be safe_wall_smooth_gain"
+            "Formal exposure compensation mode must be "
+            "safe_wall_global_linear_rgb"
         )
 
     odometry = RGBDOdometryConfig.from_mapping(
@@ -1453,13 +1563,22 @@ def _run_pipeline(
         if orbslam3_trajectory is not None
         else None
     )
+    residual_settings = ResidualAlignmentConfig.from_mapping(
+        pushbroom_config.get("residual_alignment")
+    )
+    compact_residual_alignment = _compact_residual_alignment_for_transforms(
+        render_metadata,
+        residual_settings,
+        [frame.frame_id for frame in render_frames],
+    )
     render_transforms_payload = {
-        "schema": "calibrated-rgb-pushbroom/v1",
+        "schema": "calibrated-rgb-pushbroom/v2",
         "translation_unit": "mm",
         "pixel_source": "calibrated_rgb_only",
         "layout": render_metadata.get("layout"),
         "rgb_motion_scale": render_metadata.get("rgb_motion_scale"),
         "selection": render_selection,
+        "residual_alignment": compact_residual_alignment,
         "sources": [
             {
                 "frame_id": frame.frame_id,
@@ -1470,7 +1589,7 @@ def _run_pipeline(
         ],
     }
     report: dict[str, Any] = {
-        "schema": "gemini305-calibrated-rgb-pushbroom/v1",
+        "schema": "gemini305-calibrated-rgb-pushbroom/v2",
         "input": str(args.input.expanduser().resolve()),
         "panorama": str(panorama_path),
         "report": str(report_path),
@@ -1553,6 +1672,8 @@ def _run_pipeline(
             else "open3d_rgbd"
         ),
         "projection": "calibrated_rgb_pushbroom",
+        "alignment_backend": compact_residual_alignment["backend"],
+        "alignment_model": compact_residual_alignment["selected_model"],
         "seam_backend": "rgb_monotonic_hard_owner_graphcut",
         "blend_backend": "safe_wall_local_multiband_narrow_owner_boundary",
         "panorama": str(output / "panorama.jpg"),

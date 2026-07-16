@@ -128,6 +128,29 @@ def test_formal_pushbroom_receives_exact_optimized_se3_without_depth_projection(
                 "reference_plane_fitted": False,
                 "layout": {},
                 "rgb_motion_scale": {},
+                "residual_alignment": {
+                    "backend": "se3_epipolar_hierarchical_rgb",
+                    "selected_model": "background_se2",
+                    "preview_remap_count": len(frames),
+                    "full_resolution_output_remap_count": len(frames),
+                    "per_source_parameters": [
+                        {
+                            "source_index": index,
+                            "translation_x_pixels": 0.25 * index,
+                            "translation_y_pixels": 0.0,
+                            "roll_degrees": 0.0,
+                            "centre_x_pixels": 0.0,
+                            "centre_y_pixels": 0.0,
+                            "identity": index == 0,
+                        }
+                        for index, _frame in enumerate(frames)
+                    ],
+                    "held_out_metrics_before": {},
+                    "held_out_metrics_after": {},
+                    "component_audit": {},
+                    "topology_audit": {"accepted": True},
+                    "working_set_audit": {},
+                },
                 "quality_metrics": {"quality_pass": True},
             },
         )
@@ -152,6 +175,16 @@ def test_formal_pushbroom_receives_exact_optimized_se3_without_depth_projection(
     assert len(kwargs["rgb_motions"]) == len(backend.optimized_node_ids) - 1
     assert report["render_strategy"] == "calibrated_rgb_pushbroom"
     assert report["render"]["depth_used_for_output_pixels"] is False
+    render_transforms = json.loads(
+        (tmp_path / "output" / "render_transforms.json").read_text(encoding="utf-8")
+    )
+    alignment = render_transforms["residual_alignment"]
+    assert alignment["selected_model"] == "background_se2"
+    assert alignment["per_source_parameters"][1]["translation_x_pixels"] == 0.25
+    delivery = json.loads(
+        (tmp_path / "output" / "delivery.json").read_text(encoding="utf-8")
+    )
+    assert delivery["alignment_model"] == "background_se2"
 
 
 @pytest.mark.parametrize(

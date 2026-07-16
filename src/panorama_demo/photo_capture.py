@@ -16,11 +16,13 @@ from .capture_orbbec import (
     FramePacket,
     SessionWriter,
     _calibration_to_dict,
+    _color_control_metadata,
     _console_key,
     _depth_array,
     _device_info,
     _enum_name,
     _frame_to_bgr,
+    _locked_color_metadata_status,
     _metadata,
     _profile_dict,
     _write_manifest,
@@ -168,6 +170,9 @@ class _DeviceSnapshot:
     output_gate: bool
     color_auto_exposure: bool
     color_exposure_raw: int
+    color_gain_raw: int
+    color_auto_white_balance: bool
+    color_white_balance_raw: int
 
 
 def _profile_entries(profile_list: Any) -> list[Any]:
@@ -314,6 +319,9 @@ class SoftwareTriggeredRGBDPhotoController:
         self._close_errors: list[str] = []
         self._preparation_failed = False
         self._exposure_raw = self.settings.exposure_us // COLOR_EXPOSURE_UNIT_US
+        self._color_control_lock: dict[str, Any] | None = None
+        self._gate_off_priming_attempts = 0
+        self._gate_off_priming_complete_frame_sets = 0
 
     @property
     def prepared(self) -> bool:
@@ -433,11 +441,19 @@ class SoftwareTriggeredRGBDPhotoController:
         output_gate = self._property("OB_PROP_SYNC_SIGNAL_TRIGGER_OUT_BOOL")
         auto_exposure = self._property("OB_PROP_COLOR_AUTO_EXPOSURE_BOOL")
         exposure = self._property("OB_PROP_COLOR_EXPOSURE_INT")
+        gain = self._property("OB_PROP_COLOR_GAIN_INT")
+        auto_white_balance = self._property(
+            "OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL"
+        )
+        white_balance = self._property("OB_PROP_COLOR_WHITE_BALANCE_INT")
         for prop, label in (
             (auto_capture, "timed auto capture"),
             (output_gate, "SBU Trigger Out gate"),
             (auto_exposure, "color auto exposure"),
             (exposure, "color exposure"),
+            (gain, "color gain"),
+            (auto_white_balance, "color auto white balance"),
+            (white_balance, "color white balance"),
         ):
             self._require_write_support(prop, label)
         return _DeviceSnapshot(
@@ -448,6 +464,13 @@ class SoftwareTriggeredRGBDPhotoController:
                 auto_exposure, "color auto exposure"
             ),
             color_exposure_raw=self._read_int(exposure, "color exposure"),
+            color_gain_raw=self._read_int(gain, "color gain"),
+            color_auto_white_balance=self._read_bool(
+                auto_white_balance, "color auto white balance"
+            ),
+            color_white_balance_raw=self._read_int(
+                white_balance, "color white balance"
+            ),
         )
 
     def _set_output_gate(self, value: bool) -> None:
@@ -475,6 +498,114 @@ class SoftwareTriggeredRGBDPhotoController:
             self._exposure_raw,
             "color exposure",
         )
+
+    def _enable_auto_white_balance_for_priming(self) -> None:
+        """Let AWB settle only while all warm-up triggers are physically gated."""
+
+        self._set_bool(
+            self._property("OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL"),
+            True,
+            "color auto white balance",
+        )
+
+    def _require_gate_off_for_color_lock(self) -> None:
+        gate = self._read_bool(
+            self._property("OB_PROP_SYNC_SIGNAL_TRIGGER_OUT_BOOL"),
+            "SBU Trigger Out gate",
+        )
+        if gate:
+            raise PhotoCaptureError(
+                "Color-control lock must run while the SBU Trigger Out gate is off"
+            )
+
+    def _lock_color_controls_after_priming(self) -> dict[str, Any]:
+        """Freeze exposure/gain/AWB after the gated priming response is quiescent.
+
+        There is deliberately no post-lock trigger here: creating one would either
+        exceed the bounded gate-off priming contract or become a second formal
+        trigger.  Every later formal frame proves the same controls through its
+        own device metadata instead.
+        """
+
+        self._verify_runtime(expected_gate=False)
+        self._require_gate_off_for_color_lock()
+
+        auto_exposure = self._property("OB_PROP_COLOR_AUTO_EXPOSURE_BOOL")
+        exposure = self._property("OB_PROP_COLOR_EXPOSURE_INT")
+        gain = self._property("OB_PROP_COLOR_GAIN_INT")
+        auto_white_balance = self._property(
+            "OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL"
+        )
+        white_balance = self._property("OB_PROP_COLOR_WHITE_BALANCE_INT")
+
+        before_auto_exposure = self._read_bool(
+            auto_exposure, "color auto exposure"
+        )
+        before_auto_white_balance = self._read_bool(
+            auto_white_balance, "color auto white balance"
+        )
+        exposure_raw = self._read_int(exposure, "color exposure")
+        gain_raw = self._read_int(gain, "color gain")
+        white_balance_raw = self._read_int(white_balance, "color white balance")
+        if exposure_raw != self._exposure_raw:
+            raise PhotoCaptureError(
+                "Color exposure changed during gate-off priming: "
+                f"read {exposure_raw}, expected {self._exposure_raw}"
+            )
+        if exposure_raw <= 0 or exposure_raw * COLOR_EXPOSURE_UNIT_US > (
+            MAX_FORMAL_PHOTO_EXPOSURE_US
+        ):
+            raise PhotoCaptureError(
+                "Gate-off priming produced a color exposure outside the formal "
+                "photo safety limit"
+            )
+
+        # The SDK requires AE off before writing exposure/gain and AWB off
+        # before writing white balance.  Exact readback is enforced by each
+        # setter.  The gate is checked again below before any formal pulse can
+        # be enabled.
+        self._set_bool(auto_exposure, False, "color auto exposure")
+        self._set_int(exposure, exposure_raw, "color exposure")
+        self._set_int(gain, gain_raw, "color gain")
+        self._set_bool(
+            auto_white_balance,
+            False,
+            "color auto white balance",
+        )
+        self._set_int(white_balance, white_balance_raw, "color white balance")
+        self._verify_runtime(expected_gate=False)
+        self._require_gate_off_for_color_lock()
+
+        return {
+            "requested": True,
+            "completed": True,
+            "state": "locked_after_gate_off_priming_quiescence",
+            "gate_off_verified": True,
+            "gate_off_priming_trigger_attempts": self._gate_off_priming_attempts,
+            "gate_off_priming_complete_frame_sets": (
+                self._gate_off_priming_complete_frame_sets
+            ),
+            "readback_verified": True,
+            "require_frame_metadata": True,
+            "formal_frame_metadata_verified_frames": 0,
+            "formal_frame_metadata_missing": 0,
+            "formal_frame_metadata_mismatches": 0,
+            "device_before_lock": {
+                "auto_exposure": before_auto_exposure,
+                "auto_white_balance": before_auto_white_balance,
+                "exposure_raw": exposure_raw,
+                "gain_raw": gain_raw,
+                "white_balance_raw": white_balance_raw,
+            },
+            "locked_controls": {
+                "auto_exposure": False,
+                "exposure_raw": exposure_raw,
+                "exposure_us": exposure_raw * COLOR_EXPOSURE_UNIT_US,
+                "gain_raw": gain_raw,
+                "auto_white_balance": False,
+                "white_balance_raw": white_balance_raw,
+            },
+        }
 
     def _configure_software_trigger(self) -> dict[str, Any]:
         sdk = self._load_sdk()
@@ -559,6 +690,26 @@ class SoftwareTriggeredRGBDPhotoController:
             raise PhotoCaptureError(
                 f"Color exposure changed to {exposure}, expected {self._exposure_raw}"
             )
+        if self._color_control_lock is not None:
+            locked = self._color_control_lock["locked_controls"]
+            if self._read_int(
+                self._property("OB_PROP_COLOR_GAIN_INT"), "color gain"
+            ) != int(locked["gain_raw"]):
+                raise PhotoCaptureError("Color gain changed after the formal lock")
+            if self._read_bool(
+                self._property("OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL"),
+                "color auto white balance",
+            ):
+                raise PhotoCaptureError(
+                    "Color auto white balance became enabled after the formal lock"
+                )
+            if self._read_int(
+                self._property("OB_PROP_COLOR_WHITE_BALANCE_INT"),
+                "color white balance",
+            ) != int(locked["white_balance_raw"]):
+                raise PhotoCaptureError(
+                    "Color white balance changed after the formal lock"
+                )
         gate = self._read_bool(
             self._property("OB_PROP_SYNC_SIGNAL_TRIGGER_OUT_BOOL"),
             "SBU Trigger Out gate",
@@ -601,6 +752,11 @@ class SoftwareTriggeredRGBDPhotoController:
         output_gate = self._property("OB_PROP_SYNC_SIGNAL_TRIGGER_OUT_BOOL")
         auto_exposure = self._property("OB_PROP_COLOR_AUTO_EXPOSURE_BOOL")
         exposure = self._property("OB_PROP_COLOR_EXPOSURE_INT")
+        gain = self._property("OB_PROP_COLOR_GAIN_INT")
+        auto_white_balance = self._property(
+            "OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL"
+        )
+        white_balance = self._property("OB_PROP_COLOR_WHITE_BALANCE_INT")
 
         for label, action in (
             (
@@ -618,11 +774,43 @@ class SoftwareTriggeredRGBDPhotoController:
                 ),
             ),
             (
+                "restore color gain",
+                lambda: self._set_int(
+                    gain,
+                    snapshot.color_gain_raw,
+                    "color gain",
+                ),
+            ),
+            (
+                "disable color auto white balance for restore",
+                lambda: self._set_bool(
+                    auto_white_balance,
+                    False,
+                    "color auto white balance",
+                ),
+            ),
+            (
+                "restore color white balance",
+                lambda: self._set_int(
+                    white_balance,
+                    snapshot.color_white_balance_raw,
+                    "color white balance",
+                ),
+            ),
+            (
                 "restore color auto exposure",
                 lambda: self._set_bool(
                     auto_exposure,
                     snapshot.color_auto_exposure,
                     "color auto exposure",
+                ),
+            ),
+            (
+                "restore color auto white balance",
+                lambda: self._set_bool(
+                    auto_white_balance,
+                    snapshot.color_auto_white_balance,
+                    "color auto white balance",
                 ),
             ),
         ):
@@ -732,6 +920,7 @@ class SoftwareTriggeredRGBDPhotoController:
                 # These bounded startup triggers are never formal captures:
                 # the physical SBU gate is verified OFF before every call.
                 self._device.trigger_capture()
+                self._gate_off_priming_attempts += 1
                 wait_started = self._clock()
                 frames = self._pipeline.wait_for_frames(
                     self.settings.prime_timeout_ms
@@ -749,6 +938,7 @@ class SoftwareTriggeredRGBDPhotoController:
                         "RGB-D software-trigger priming alignment failed"
                     )
                 self._frame_indices(aligned)
+                self._gate_off_priming_complete_frame_sets += 1
                 return indices, trigger_started
             except Exception as exc:
                 last_error = exc
@@ -851,6 +1041,9 @@ class SoftwareTriggeredRGBDPhotoController:
                 )
             sdk = self._load_sdk()
             try:
+                self._color_control_lock = None
+                self._gate_off_priming_attempts = 0
+                self._gate_off_priming_complete_frame_sets = 0
                 self._context = sdk.Context()
                 devices = self._context.query_devices()
                 if devices.get_count() == 0:
@@ -869,6 +1062,7 @@ class SoftwareTriggeredRGBDPhotoController:
                 sync_config = self._configure_software_trigger()
                 self._set_output_gate(False)
                 self._apply_manual_exposure()
+                self._enable_auto_white_balance_for_priming()
 
                 self._pipeline = sdk.Pipeline(self._device)
                 color_profile, depth_profile, colors, depths = self._select_profiles()
@@ -891,6 +1085,7 @@ class SoftwareTriggeredRGBDPhotoController:
                 self._pipeline_started = True
                 # Some firmware reapplies exposure defaults while streams start.
                 self._apply_manual_exposure()
+                self._enable_auto_white_balance_for_priming()
                 self._verify_runtime(expected_gate=False)
                 if self.settings.gate_settle_ms:
                     self._sleep(self.settings.gate_settle_ms / 1_000)
@@ -898,6 +1093,12 @@ class SoftwareTriggeredRGBDPhotoController:
                 self._last_indices = self._wait_for_priming_quiescence(
                     primed_indices,
                     last_trigger_started=last_prime_trigger,
+                )
+                # No additional warmup or verification trigger may be issued
+                # after quiescence: this lock is entirely property/readback
+                # based while the physical output remains closed.
+                self._color_control_lock = (
+                    self._lock_color_controls_after_priming()
                 )
 
                 calibration = _calibration_to_dict(self._pipeline.get_camera_param())
@@ -933,6 +1134,8 @@ class SoftwareTriggeredRGBDPhotoController:
                         "frame_sync": True,
                         "color_auto_exposure": False,
                         "color_exposure_us": self.settings.exposure_us,
+                        "color_auto_white_balance": False,
+                        "lock_color_controls_after_warmup": True,
                         "save_raw_depth": False,
                     },
                     "device": _device_info(self._device),
@@ -943,6 +1146,7 @@ class SoftwareTriggeredRGBDPhotoController:
                     "available_profiles": {"color": colors, "depth": depths},
                     "software_trigger": sync_config,
                     "calibration": calibration,
+                    "color_control_lock": self._color_control_lock,
                 }
                 try:
                     self._manifest["sdk_version"] = sdk.get_version()
@@ -1123,6 +1327,43 @@ class SoftwareTriggeredRGBDPhotoController:
             raise PhotoCaptureError(f"{label} must be non-negative")
         return value
 
+    def _verify_locked_formal_frame_metadata(
+        self, controls: dict[str, int | None]
+    ) -> None:
+        """Require each emitted photo to prove the post-priming lock.
+
+        Property readback protects the interval before a trigger.  The source
+        frame metadata is the independent device-side proof retained in
+        ``frames.csv`` and avoids treating the requested property values as
+        measurements.
+        """
+
+        lock = self._color_control_lock
+        if lock is None:
+            raise PhotoCaptureError(
+                "Formal photo frame arrived before the color controls were locked"
+            )
+        missing, mismatches = _locked_color_metadata_status(controls, lock)
+        if missing:
+            lock["formal_frame_metadata_missing"] += 1
+        if mismatches:
+            lock["formal_frame_metadata_mismatches"] += 1
+        if missing or mismatches:
+            details: list[str] = []
+            if missing:
+                details.append("missing " + ", ".join(missing))
+            if mismatches:
+                details.append("; ".join(mismatches))
+            raise PhotoCaptureError(
+                "Locked color controls require matching formal-frame metadata: "
+                + "; ".join(details)
+            )
+        lock["formal_frame_metadata_verified_frames"] += 1
+        if self._manifest is not None:
+            self._manifest["metadata_support"] = {
+                name: value is not None for name, value in controls.items()
+            }
+
     def _packet_from_frames(self, frames: Any, frame_id: int) -> FramePacket:
         sdk = self._load_sdk()
         assert self._align_filter is not None
@@ -1161,7 +1402,10 @@ class SoftwareTriggeredRGBDPhotoController:
             self._timestamp_regressions += 1
         self._previous_color_timestamp = color_timestamp
         metadata_types = sdk.OBFrameMetadataType
-        color_exposure = _metadata(raw_color, metadata_types.EXPOSURE)
+        color_controls = _color_control_metadata(raw_color, metadata_types)
+        self._verify_locked_formal_frame_metadata(color_controls)
+        color_exposure = color_controls["color_exposure"]
+        assert color_exposure is not None
         if color_exposure is None:
             raise PhotoCaptureError(
                 "Triggered color exposure metadata is required; the requested "
@@ -1186,8 +1430,12 @@ class SoftwareTriggeredRGBDPhotoController:
             "host_timestamp_ns": time.time_ns(),
             "color_exposure": color_exposure,
             "depth_exposure": _metadata(raw_depth, metadata_types.EXPOSURE),
-            "color_gain": _metadata(raw_color, metadata_types.GAIN),
+            "color_gain": color_controls["color_gain"],
             "depth_gain": _metadata(raw_depth, metadata_types.GAIN),
+            "color_auto_white_balance": color_controls[
+                "color_auto_white_balance"
+            ],
+            "color_white_balance": color_controls["color_white_balance"],
             "color_frame_number": _metadata(
                 raw_color, metadata_types.FRAME_NUMBER
             ),

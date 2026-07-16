@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -68,10 +69,22 @@ class _BaseProfileList(_ProfileList):
 
 
 class _Frame:
-    def __init__(self, *, color: bool, index: int, exposure: int = 8) -> None:
+    def __init__(
+        self,
+        *,
+        color: bool,
+        index: int,
+        exposure: int = 8,
+        gain: int = 16,
+        auto_white_balance: int = 0,
+        white_balance: int = 4_600,
+    ) -> None:
         self.color = color
         self.index = index
         self.exposure = exposure
+        self.gain = gain
+        self.auto_white_balance = auto_white_balance
+        self.white_balance = white_balance
         if color:
             self.array = np.full((3, 4, 3), (20, 40, 60), dtype=np.uint8)
         else:
@@ -102,12 +115,21 @@ class _Frame:
         return 0.1
 
     def has_metadata(self, metadata: str) -> bool:
-        return metadata in {"exposure", "gain", "frame_number", "sensor_timestamp"}
+        return metadata in {
+            "exposure",
+            "gain",
+            "auto_white_balance",
+            "white_balance",
+            "frame_number",
+            "sensor_timestamp",
+        }
 
     def get_metadata_value(self, metadata: str) -> int:
         values = {
             "exposure": self.exposure if self.color else 1,
-            "gain": 16,
+            "gain": self.gain,
+            "auto_white_balance": self.auto_white_balance,
+            "white_balance": self.white_balance,
             "frame_number": self.index,
             "sensor_timestamp": self.index * 10,
         }
@@ -115,8 +137,26 @@ class _Frame:
 
 
 class _FrameSet:
-    def __init__(self, index: int) -> None:
-        self.color = _Frame(color=True, index=index)
+    def __init__(
+        self,
+        index: int,
+        device: _Device | None = None,
+        *,
+        color_metadata_overrides: dict[str, int] | None = None,
+    ) -> None:
+        color_controls = {}
+        if device is not None:
+            color_controls = {
+                "exposure": device.int_properties["exposure"],
+                "gain": device.int_properties["gain"],
+                "auto_white_balance": int(
+                    device.bool_properties["auto_white_balance"]
+                ),
+                "white_balance": device.int_properties["white_balance"],
+            }
+        if color_metadata_overrides:
+            color_controls.update(color_metadata_overrides)
+        self.color = _Frame(color=True, index=index, **color_controls)
         self.depth = _Frame(color=False, index=index)
 
     def get_color_frame(self) -> _Frame:
@@ -136,6 +176,7 @@ class _Pipeline:
         self.formal_timeout = False
         self.formal_started = threading.Event()
         self.release_formal: threading.Event | None = None
+        self.formal_color_metadata_overrides: dict[str, int] = {}
         self.queued_frames: list[_FrameSet] = []
         self.stop_failures = 0
         self.color_profiles = _ProfileList(
@@ -185,7 +226,13 @@ class _Pipeline:
             if self.release_formal is not None:
                 assert self.release_formal.wait(timeout=5)
         self.delivered_trigger = self.device.trigger_count
-        return _FrameSet(self.delivered_trigger)
+        return _FrameSet(
+            self.delivered_trigger,
+            self.device,
+            color_metadata_overrides=(
+                self.formal_color_metadata_overrides if formal else None
+            ),
+        )
 
     def get_camera_param(self) -> object:
         intrinsic = SimpleNamespace(width=4, height=3, fx=3.0, fy=3.0, cx=2.0, cy=1.5)
@@ -253,14 +300,20 @@ class _Device:
             "auto_capture": True,
             "output_gate": True,
             "auto_exposure": True,
+            "auto_white_balance": True,
         }
-        self.int_properties = {"exposure": 10}
+        self.int_properties = {
+            "exposure": 10,
+            "gain": 16,
+            "white_balance": 4_600,
+        }
         self.trigger_count = 0
         self.external_pulse_count = 0
         self.gate_off_timeouts_remaining = 0
         self.sync_config_reopens_gate = True
         self.force_frames_per_trigger: int | None = None
         self.bool_write_failures: dict[str, int] = {}
+        self.property_writes: list[tuple[str, bool | int]] = []
 
     def get_device_info(self) -> _DeviceInfo:
         return _DeviceInfo()
@@ -289,14 +342,18 @@ class _Device:
             self.bool_write_failures[prop] = failures - 1
             raise RuntimeError(f"bool write failed: {prop}")
         self.bool_properties[prop] = bool(value)
+        self.property_writes.append((prop, bool(value)))
 
     def get_int_property(self, prop: str) -> int:
         return self.int_properties[prop]
 
     def set_int_property(self, prop: str, value: int) -> None:
         self.int_properties[prop] = int(value)
+        self.property_writes.append((prop, int(value)))
 
-    def get_int_property_range(self, _prop: str) -> object:
+    def get_int_property_range(self, prop: str) -> object:
+        if prop == "white_balance":
+            return SimpleNamespace(min=1_000, max=10_000, step=1)
         return SimpleNamespace(min=1, max=100, step=1)
 
     def trigger_capture(self) -> None:
@@ -322,6 +379,9 @@ class _SDK:
         OB_PROP_SYNC_SIGNAL_TRIGGER_OUT_BOOL="output_gate",
         OB_PROP_COLOR_AUTO_EXPOSURE_BOOL="auto_exposure",
         OB_PROP_COLOR_EXPOSURE_INT="exposure",
+        OB_PROP_COLOR_GAIN_INT="gain",
+        OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL="auto_white_balance",
+        OB_PROP_COLOR_WHITE_BALANCE_INT="white_balance",
     )
     OBPermissionType = SimpleNamespace(PERMISSION_WRITE="write")
     OBMultiDeviceSyncMode = SimpleNamespace(
@@ -334,6 +394,8 @@ class _SDK:
     OBFrameMetadataType = SimpleNamespace(
         EXPOSURE="exposure",
         GAIN="gain",
+        AUTO_WHITE_BALANCE="auto_white_balance",
+        WHITE_BALANCE="white_balance",
         FRAME_NUMBER="frame_number",
         SENSOR_TIMESTAMP="sensor_timestamp",
     )
@@ -580,6 +642,35 @@ def test_prepare_primes_with_gate_off_and_applies_exact_trigger_contract(
     assert sdk.device.sync.trigger_out_delay_us == 17000
     assert sdk.device.bool_properties["output_gate"] is True
     assert sdk.device.bool_properties["auto_capture"] is False
+    manifest = json.loads(
+        (prepared.session_root / "manifest.json").read_text(encoding="utf-8")
+    )
+    lock = manifest["color_control_lock"]
+    assert lock["state"] == "locked_after_gate_off_priming_quiescence"
+    assert lock["gate_off_verified"] is True
+    assert lock["gate_off_priming_trigger_attempts"] >= 1
+    assert lock["gate_off_priming_complete_frame_sets"] == 1
+    assert lock["readback_verified"] is True
+    assert lock["device_before_lock"]["auto_white_balance"] is True
+    assert lock["locked_controls"] == {
+        "auto_exposure": False,
+        "exposure_raw": 8,
+        "exposure_us": 800,
+        "gain_raw": 16,
+        "auto_white_balance": False,
+        "white_balance_raw": 4_600,
+    }
+    last_white_balance_write = max(
+        index
+        for index, (name, _value) in enumerate(sdk.device.property_writes)
+        if name == "white_balance"
+    )
+    formal_gate_open = max(
+        index
+        for index, (name, value) in enumerate(sdk.device.property_writes)
+        if name == "output_gate" and value is True
+    )
+    assert last_white_balance_write < formal_gate_open
     controller.close()
     assert sdk.device.sync.mode == "STANDALONE"
     assert sdk.device.sync.frames_per_trigger == 2
@@ -587,8 +678,11 @@ def test_prepare_primes_with_gate_off_and_applies_exact_trigger_contract(
         "auto_capture": True,
         "output_gate": True,
         "auto_exposure": True,
+        "auto_white_balance": True,
     }
     assert sdk.device.int_properties["exposure"] == 10
+    assert sdk.device.int_properties["gain"] == 16
+    assert sdk.device.int_properties["white_balance"] == 4_600
 
 
 def test_bounded_priming_failure_never_emits_external_pulse(
@@ -663,6 +757,11 @@ def test_one_capture_issues_one_external_pulse_and_writes_formal_rgbd_session(
     controller.close()
     session = load_rgbd_session(prepared.session_root)
     assert len(session.frames) == 1
+    with result.frames_csv_path.open("r", encoding="utf-8", newline="") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["color_gain"] == "16"
+    assert row["color_auto_white_balance"] == "0"
+    assert row["color_white_balance"] == "4600"
     manifest = json.loads(
         (prepared.session_root / "manifest.json").read_text(encoding="utf-8")
     )
@@ -670,6 +769,45 @@ def test_one_capture_issues_one_external_pulse_and_writes_formal_rgbd_session(
     assert manifest["capture_mode"] == "software_triggered_rgbd_photo_sequence"
     assert manifest["one_formal_trigger_per_capture"] is True
     assert manifest["photo_sequence"]["frames"] == 1
+    assert (
+        manifest["color_control_lock"]["formal_frame_metadata_verified_frames"]
+        == 1
+    )
+
+
+def test_locked_control_runtime_drift_fails_before_a_formal_trigger(
+    tmp_path: Path,
+) -> None:
+    sdk = _SDK()
+    controller = _controller(tmp_path, sdk)
+    controller.prepare()
+    triggers_before = sdk.device.trigger_count
+    sdk.device.int_properties["gain"] = 17
+
+    with pytest.raises(PhotoCaptureError, match="Color gain changed"):
+        controller.capture_once()
+
+    assert sdk.device.trigger_count == triggers_before
+    controller.close()
+
+
+def test_mismatched_locked_white_balance_metadata_fails_without_retry(
+    tmp_path: Path,
+) -> None:
+    sdk = _SDK()
+    controller = _controller(tmp_path, sdk)
+    controller.prepare()
+    assert sdk.pipeline is not None
+    sdk.pipeline.formal_color_metadata_overrides["white_balance"] = 4_700
+    triggers_before = sdk.device.trigger_count
+
+    with pytest.raises(PhotoCaptureError, match="color_white_balance=4700"):
+        controller.capture_once()
+
+    assert sdk.device.trigger_count - triggers_before == 1
+    with pytest.raises(PhotoCaptureError, match="sequence is uncertain"):
+        controller.capture_once()
+    controller.close()
 
 
 def test_timeout_never_retriggers_and_invalidates_sequence(tmp_path: Path) -> None:
@@ -778,7 +916,7 @@ def test_missing_frame_exposure_metadata_fails_without_forging_or_retriggering(
     )
     triggers_before = sdk.device.trigger_count
 
-    with pytest.raises(PhotoCaptureError, match="metadata is required"):
+    with pytest.raises(PhotoCaptureError, match="matching formal-frame metadata"):
         controller.capture_once()
 
     assert sdk.device.trigger_count - triggers_before == 1

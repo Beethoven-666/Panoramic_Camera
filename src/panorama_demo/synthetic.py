@@ -208,7 +208,10 @@ def generate_sequence(
     depth_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
     world_width = frame_width + step * max(0, frame_count - 1)
-    world = np.full((frame_height, world_width, 3), (48, 74, 44), dtype=np.uint8)
+    # A neutral, low-texture wall deliberately supplies the safe white-wall
+    # support required by the formal RGB photometric solver.  Foreground racks
+    # and coloured details below retain the non-trivial seam/odometry cases.
+    world = np.full((frame_height, world_width, 3), (185, 185, 185), dtype=np.uint8)
 
     # Repeated vertical racks deliberately make the sequence less trivial.
     for x in range(30, world_width, 95):

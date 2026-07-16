@@ -13,6 +13,110 @@ from panorama_demo.capture_orbbec import _calibration_to_dict
 from panorama_demo.config import load_config
 
 
+class _ColorControlDevice:
+    def __init__(self) -> None:
+        self.bool_properties = {
+            "auto_exposure": True,
+            "auto_white_balance": True,
+        }
+        self.int_properties = {
+            "exposure": 8,
+            "gain": 16,
+            "white_balance": 4_600,
+        }
+        self.unsupported: set[str] = set()
+        self.int_readback_override: dict[str, int] = {}
+        self.set_calls: list[tuple[str, str, int | bool]] = []
+
+    def is_property_supported(self, prop: str, _permission: str) -> bool:
+        return prop not in self.unsupported
+
+    def get_bool_property(self, prop: str) -> bool:
+        return self.bool_properties[prop]
+
+    def set_bool_property(self, prop: str, value: bool) -> None:
+        self.set_calls.append(("bool", prop, bool(value)))
+        self.bool_properties[prop] = bool(value)
+
+    def get_int_property(self, prop: str) -> int:
+        return self.int_properties[prop]
+
+    def get_int_property_range(self, _prop: str) -> SimpleNamespace:
+        return SimpleNamespace(min=0, max=10_000, step=1)
+
+    def set_int_property(self, prop: str, value: int) -> None:
+        self.set_calls.append(("int", prop, int(value)))
+        self.int_properties[prop] = self.int_readback_override.get(prop, int(value))
+
+
+class _MetadataFrame:
+    def __init__(self, values: dict[str, int]) -> None:
+        self.values = values
+
+    def has_metadata(self, metadata: str) -> bool:
+        return metadata in self.values
+
+    def get_metadata_value(self, metadata: str) -> int:
+        return self.values[metadata]
+
+
+class _MetadataFrameSet:
+    def __init__(self, values: dict[str, int]) -> None:
+        self.color = _MetadataFrame(values)
+
+    def get_color_frame(self) -> _MetadataFrame:
+        return self.color
+
+    def get_depth_frame(self) -> object:
+        return object()
+
+
+class _IncompleteMetadataFrameSet:
+    def get_color_frame(self) -> None:
+        return None
+
+    def get_depth_frame(self) -> object:
+        return object()
+
+
+class _PostLockPipeline:
+    def __init__(self, frames: list[object]) -> None:
+        self.frames = frames
+
+    def wait_for_frames(self, _timeout_ms: int) -> object | None:
+        return self.frames.pop(0) if self.frames else None
+
+
+class _SequenceClock:
+    def __init__(self, values: list[float]) -> None:
+        self.values = values
+        self.index = 0
+
+    def __call__(self) -> float:
+        value = self.values[min(self.index, len(self.values) - 1)]
+        self.index += 1
+        return value
+
+
+def _color_control_sdk() -> SimpleNamespace:
+    return SimpleNamespace(
+        OBPropertyID=SimpleNamespace(
+            OB_PROP_COLOR_AUTO_EXPOSURE_BOOL="auto_exposure",
+            OB_PROP_COLOR_EXPOSURE_INT="exposure",
+            OB_PROP_COLOR_GAIN_INT="gain",
+            OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL="auto_white_balance",
+            OB_PROP_COLOR_WHITE_BALANCE_INT="white_balance",
+        ),
+        OBPermissionType=SimpleNamespace(PERMISSION_WRITE="write"),
+        OBFrameMetadataType=SimpleNamespace(
+            EXPOSURE="exposure",
+            GAIN="gain",
+            AUTO_WHITE_BALANCE="auto_white_balance",
+            WHITE_BALANCE="white_balance",
+        ),
+    )
+
+
 def _intrinsic() -> SimpleNamespace:
     return SimpleNamespace(width=1280, height=800, fx=600, fy=601, cx=640, cy=400)
 
@@ -53,6 +157,183 @@ def test_calibration_flattens_sdk_matrix_arrays() -> None:
     assert result["depth_to_color"]["translation_mm"] == [1.0, 2.0, 3.0]
 
 
+def test_post_warmup_color_control_lock_freezes_converged_controls() -> None:
+    device = _ColorControlDevice()
+    sdk = _color_control_sdk()
+
+    assert "color_auto_white_balance" in capture.CSV_FIELDS
+    assert "color_white_balance" in capture.CSV_FIELDS
+
+    audit = capture._lock_color_controls_after_warmup(
+        device,
+        sdk,
+        {
+            "color_auto_exposure": True,
+            "color_exposure_us": None,
+            "post_lock_verified_frames": 2,
+            "require_locked_control_metadata": True,
+        },
+        warmup_frame_sets=30,
+    )
+
+    assert device.bool_properties == {
+        "auto_exposure": False,
+        "auto_white_balance": False,
+    }
+    assert device.int_properties == {
+        "exposure": 8,
+        "gain": 16,
+        "white_balance": 4_600,
+    }
+    assert device.set_calls == [
+        ("bool", "auto_exposure", False),
+        ("int", "exposure", 8),
+        ("int", "gain", 16),
+        ("bool", "auto_white_balance", False),
+        ("int", "white_balance", 4_600),
+    ]
+    assert audit["warmup_frame_sets"] == 30
+    assert audit["readback_verified"] is True
+    assert audit["formal_exposure_cap_us"] == 800
+    assert audit["locked_controls"] == {
+        "auto_exposure": False,
+        "exposure_raw": 8,
+        "exposure_us": 800,
+        "gain_raw": 16,
+        "auto_white_balance": False,
+        "white_balance_raw": 4_600,
+    }
+
+
+def test_post_warmup_lock_fails_closed_when_control_is_not_writable() -> None:
+    device = _ColorControlDevice()
+    device.unsupported.add("white_balance")
+
+    with pytest.raises(RuntimeError, match="writable color white balance"):
+        capture._lock_color_controls_after_warmup(
+            device,
+            _color_control_sdk(),
+            {"color_auto_exposure": True, "color_exposure_us": None},
+            warmup_frame_sets=30,
+        )
+
+
+def test_post_warmup_lock_rejects_clamped_gain_readback() -> None:
+    device = _ColorControlDevice()
+    device.int_readback_override["gain"] = 15
+
+    with pytest.raises(RuntimeError, match="color gain=15, expected 16"):
+        capture._lock_color_controls_after_warmup(
+            device,
+            _color_control_sdk(),
+            {"color_auto_exposure": True, "color_exposure_us": None},
+            warmup_frame_sets=30,
+        )
+
+
+def test_post_warmup_lock_rejects_over_cap_exposure_before_writing_controls() -> None:
+    device = _ColorControlDevice()
+    device.int_properties["exposure"] = 9
+
+    with pytest.raises(RuntimeError, match="above the formal cap of 800 us"):
+        capture._lock_color_controls_after_warmup(
+            device,
+            _color_control_sdk(),
+            {
+                "color_auto_exposure": True,
+                "color_exposure_us": None,
+                "color_ae_max_exposure_us": 800,
+            },
+            warmup_frame_sets=30,
+        )
+
+    assert device.set_calls == []
+
+
+def test_post_lock_discards_transition_frames_and_requires_metadata() -> None:
+    device = _ColorControlDevice()
+    sdk = _color_control_sdk()
+    audit = capture._lock_color_controls_after_warmup(
+        device,
+        sdk,
+        {
+            "color_auto_exposure": True,
+            "color_exposure_us": None,
+            "post_lock_verified_frames": 2,
+            "require_locked_control_metadata": True,
+        },
+        warmup_frame_sets=30,
+    )
+    matching = {
+        "exposure": 8,
+        "gain": 16,
+        "auto_white_balance": 0,
+        "white_balance": 4_600,
+    }
+    pipeline = _PostLockPipeline(
+        [
+            _MetadataFrameSet(matching),
+            _MetadataFrameSet({**matching, "gain": 15}),
+            _MetadataFrameSet(matching),
+            _MetadataFrameSet(matching),
+        ]
+    )
+
+    capture._discard_and_verify_post_lock_frames(
+        pipeline,
+        sdk.OBFrameMetadataType,
+        audit,
+        timeout_seconds=1.0,
+        clock=lambda: 0.0,
+    )
+
+    assert audit["completed"] is True
+    assert audit["state"] == "verified"
+    assert audit["post_lock_discarded_frames"] == 4
+    assert audit["post_lock_metadata_mismatches"] == 1
+    assert audit["post_lock_verified_frames"] == 2
+    assert audit["post_lock_metadata_verified_frames"] == 2
+
+    with pytest.raises(RuntimeError, match="color_white_balance"):
+        capture._require_valid_locked_color_metadata(
+            {
+                "color_exposure": 8,
+                "color_gain": 16,
+                "color_auto_white_balance": 0,
+                "color_white_balance": None,
+            },
+            audit,
+        )
+
+
+def test_post_lock_verification_deadline_applies_to_incomplete_frame_sets() -> None:
+    device = _ColorControlDevice()
+    sdk = _color_control_sdk()
+    audit = capture._lock_color_controls_after_warmup(
+        device,
+        sdk,
+        {
+            "color_auto_exposure": True,
+            "color_exposure_us": None,
+            "post_lock_verified_frames": 1,
+            "require_locked_control_metadata": True,
+        },
+        warmup_frame_sets=30,
+    )
+
+    with pytest.raises(RuntimeError, match="did not receive enough complete RGB-D"):
+        capture._discard_and_verify_post_lock_frames(
+            _PostLockPipeline([_IncompleteMetadataFrameSet()]),
+            sdk.OBFrameMetadataType,
+            audit,
+            timeout_seconds=1.0,
+            clock=_SequenceClock([0.0, 0.0, 1.0]),
+        )
+
+    assert audit["completed"] is False
+    assert audit["post_lock_incomplete_frame_sets"] == 1
+
+
 def test_color_auto_exposure_is_explicitly_enabled(monkeypatch) -> None:
     boolean_calls: list[tuple[str, bool]] = []
     integer_calls: list[tuple[str, int]] = []
@@ -80,7 +361,9 @@ def test_color_auto_exposure_is_explicitly_enabled(monkeypatch) -> None:
     )
 
     assert applied["auto_exposure"] is True
+    assert applied["auto_white_balance"] is True
     assert ("OB_PROP_COLOR_AUTO_EXPOSURE_BOOL", True) in boolean_calls
+    assert ("OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL", True) in boolean_calls
     assert integer_calls == []
 
 
@@ -317,8 +600,10 @@ def test_fixed_exposure_disables_auto_exposure(monkeypatch) -> None:
         "auto_exposure": False,
         "exposure": 10,
         "exposure_us": 1000,
+        "auto_white_balance": True,
     }
     assert ("OB_PROP_COLOR_AUTO_EXPOSURE_BOOL", False) in boolean_calls
+    assert ("OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL", True) in boolean_calls
     assert integer_calls == [("OB_PROP_COLOR_EXPOSURE_INT", 10)]
 
 

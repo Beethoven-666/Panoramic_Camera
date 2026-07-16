@@ -228,7 +228,8 @@ g305-capture --output .\data\captures
 - RGB 与对齐深度均为 `1280×800@30`；
 - 软件 D2C 对齐和帧同步开启；
 - `PRIMARY` 外部同步输出开启，默认输出与帧率一致的 30 Hz 脉冲；
-- 彩色自动曝光开启，上限 `800 µs`；固件不支持 AE 上限时退回固定 `800 µs`；
+- 彩色自动曝光和 AWB 在预热期间开启，曝光上限 `800 µs`；固件不支持 AE 上限时退回固定 `800 µs`；
+- 预热后回读并锁定 exposure、sensor gain、AWB/white-balance；丢弃过渡帧，只有连续两帧的这四项 metadata 与锁定读回值一致才开始正式扫描。无法回读、锁定或验证即 fail-closed；
 - JPEG 质量 95，只默认保存对齐深度，原始深度仅供显式诊断；
 - 异步写盘队列为 64 帧，丢帧和写入错误会记录到 manifest。
 
@@ -352,11 +353,11 @@ RGB (u, v)
 
 ## RGB 风险、hard owner 与窄带 MultiBand
 
-正式接缝 backend 固定为 `rgb_monotonic_hard_owner_graphcut`。在相邻条带真实共同有效区，程序从 Lab 残差和梯度残差得到纯 RGB 视差风险；风险及其膨胀保护带只能由一个 RGB owner 直接复制，绝不进入 MultiBand。OpenCV [`GraphCutSeamFinder`](https://docs.opencv.org/4.x/d2/d7c/classcv_1_1detail_1_1GraphCutSeamFinder-members.html) 只在相邻 RGB 条带中寻找单调 hard owner 接缝。没有安全通道时会保留可审计 hard cut 或失败，绝不使用 Feather、平均、补洞或透明重影掩盖问题。
+正式接缝 backend 固定为 `rgb_monotonic_hard_owner_graphcut`。在相邻条带真实共同有效区，程序从 Lab 残差、对称边缘距离和梯度结构不一致得到纯 RGB 风险；风险连通域经过填充和自适应保护，整块只能属于一个 RGB owner。GraphCut 在与 `2–8 px` 融合带解耦的 `32–64 px` 只读搜索走廊内寻找单调 hard owner 接缝，输出不会再按行重写。`owner_boundary ∩ risk_guard` 必须为空；没有安全通道时会保留可审计 hard cut 或失败，绝不使用 Feather、平均、补洞或透明重影掩盖问题。
 
-亮度增益不再由全部有效像素估计。相邻条带先在共同有效、低梯度、低 RGB 残差、未过曝/欠曝的白墙候选上，以 trimmed median/Huber 求亮度比例；再对整条帧序列求平滑 gain 曲线。它只平滑曝光参数，不对最终全景做高斯模糊。
+光度补偿只从共同有效、低梯度、低饱和、近中性、未过曝/欠曝且不在风险保护带内的白墙候选估计。它在近似线性 RGB 中，对每个颜色通道取 trimmed Huber log-ratio，并一次性解全部帧的三通道全局 log-gain（带二阶平滑），而不是逐相邻对累加标量增益。每张 RGB 条带只施加一次线性三通道补偿后再编码输出；缺少可靠白墙支持或 gain 超出 `0.45–2.20` 均 fail-closed。
 
-owner 审计后，每对相邻条带独立运行局部 `MultiBandBlender`。总融合带宽采用：
+owner 审计后，每对相邻条带独立运行局部 `MultiBandBlender`。两个 blender mask 分别来自互补 hard owner 向安全白墙的膨胀，绝不共用同一 mask；风险、软管、标签和保护带直接复制唯一 owner。总融合带宽采用：
 
 ```text
 clamp(floor(0.20 × 较窄 owner 宽度), 2, 8) px
@@ -388,8 +389,9 @@ clamp(floor(0.20 × 较窄 owner 宽度), 2, 8) px
 | 流式驻留 RGB 条带 | `2`（硬上限 `5`） |
 | 画布 / aggregate working set 上限 | `200 / 200 MP` |
 | seam backend | `rgb_monotonic_hard_owner_graphcut` |
+| GraphCut 搜索走廊 | `64 px`（正式允许 `32–64 px`） |
 | MultiBand 总带宽 / 层数 | `2–8 px` / 最多 `3` |
-| 曝光补偿 | `safe_wall_smooth_gain` |
+| 曝光补偿 | `safe_wall_global_linear_rgb` |
 
 配置中的 `pose_backend`、`sequence_blend_mode=calibrated_rgb_pushbroom`、`calibrated_rgb_pushbroom.mode`、`scan_seam.backend`、标定/对齐要求和 pose graph 开关是正式结构约束，不能改为其它值发布交付。正式模式的曝光、RGB 尺度、odometry、pose、风险、GraphCut 和 MultiBand 阈值只能等于或收紧默认安全包络；试图放宽会直接失败。诊断模式可以绕过质量阈值，但 `200 MP` 画布/aggregate、160 pose nodes、5 条流式驻留上限和 RGB-only 像素来源等结构硬限仍不可放宽。手工 `render_frame_ids` 只允许诊断；正式命令会拒绝它。
 
@@ -407,9 +409,9 @@ outputs/greenhouse_sequence/
 ```
 
 - `transforms.json`：`rgbd-pose-graph/v1`，包含坐标约定、毫米单位、pose nodes 的 4×4 `camera_to_world`、RGB-D 边、信息矩阵、残差、优化和连通状态；
-- `render_transforms.json`：`calibrated-rgb-pushbroom/v1`，包含 RGB-only 像素来源、真实 SE(3) 源、扫描布局、局部 RGB 像素/毫米标量与选源信息；
-- `report.json`：`gemini305-calibrated-rgb-pushbroom/v1`，汇总 RGB-D 会话、输入质量、odometry、pose graph、pose quality、RGB 条带布局、风险、hard owner、亮度增益和 MultiBand 审计；
-- `delivery.json`：`gemini305-panorama-delivery/v2`，最后发布，且只有 `quality_pass=true` 才代表有效交付。
+- `render_transforms.json`：`calibrated-rgb-pushbroom/v2`，包含 RGB-only 像素来源、真实 SE(3) 源、扫描布局、局部 RGB 像素/毫米标量、选源信息，以及不含 preview、flow、mask 或稠密 map 的残差对齐小参数、held-out 与拓扑审计摘要；
+- `report.json`：`gemini305-calibrated-rgb-pushbroom/v2`，汇总 RGB-D 会话、输入质量、odometry、pose graph、pose quality、RGB 条带布局、残差对齐证据、风险、hard owner、亮度增益和 MultiBand 审计；
+- `delivery.json`：`gemini305-panorama-delivery/v2`，最后发布；其 `alignment_backend` 与 `alignment_model` 标识最终采用的 RGB 残差对齐后端和模型，且只有 `quality_pass=true` 才代表有效交付。
 
 每次任务先删除旧 `delivery.json`，正式文件先写隐藏 pending 文件，再用 `os.replace` 原子发布；`delivery.json` 最后写入。普通异常会清除正式文件并写 `failure.json`。强制终止可能来不及写失败报告，但没有有效 `delivery.json` 仍表示失败。
 

@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import panorama_demo.calibrated_rgb_pushbroom as pushbroom_module
 import panorama_demo.stitch_sequence as sequence
 from panorama_demo.synthetic import generate_sequence
 
@@ -56,7 +57,9 @@ def _make_session(tmp_path: Path, *, seed: int = 41) -> Path:
         frame_count=6,
         frame_width=320,
         frame_height=200,
-        step=60,
+        # The formal 32 px interior owner-search corridor needs a matching
+        # synthetic source overlap; the old 60 px step left only a 4 px gap.
+        step=32,
         seed=seed,
     )
 
@@ -340,5 +343,42 @@ def test_rgbd_pipeline_stage_failure_never_leaves_delivery(
     assert not (output / "report.json").exists()
     assert not (output / "diagnostic_panorama.jpg").exists()
     assert not (output / "diagnostic_report.json").exists()
+    failure = json.loads((output / "failure.json").read_text(encoding="utf-8"))
+    assert message in failure["message"]
+
+
+@pytest.mark.parametrize(
+    ("attribute", "message"),
+    [
+        ("extract_pair_evidence", "forced RGB preview evidence failure"),
+        ("solve_background_se2", "forced RGB residual solver failure"),
+        ("preflight_sequence_owners", "forced RGB owner preflight failure"),
+    ],
+)
+def test_rgb_residual_stage_failure_is_atomic_and_leaves_no_analysis_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attribute: str,
+    message: str,
+) -> None:
+    """Every residual/owner stage fails before any formal or diagnostic publish."""
+
+    session = _make_session(tmp_path)
+    output = tmp_path / "output"
+    _write_stale_delivery(output)
+
+    def fail_stage(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(pushbroom_module, attribute, fail_stage)
+    args = sequence._parser().parse_args(
+        [str(session), "--output", str(output), "--diagnostic-force"]
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        sequence.run(args, odometry_backend=_DeliveryTestRGBDBackend(session))
+
+    assert [path.name for path in output.iterdir()] == ["failure.json"]
     failure = json.loads((output / "failure.json").read_text(encoding="utf-8"))
     assert message in failure["message"]

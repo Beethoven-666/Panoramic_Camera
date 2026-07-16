@@ -21,6 +21,7 @@ from .config import load_config
 
 
 COLOR_EXPOSURE_UNIT_US = 100
+MAX_FORMAL_COLOR_EXPOSURE_US = 800
 
 
 CSV_FIELDS = [
@@ -37,6 +38,8 @@ CSV_FIELDS = [
     "depth_exposure",
     "color_gain",
     "depth_gain",
+    "color_auto_white_balance",
+    "color_white_balance",
     "color_frame_number",
     "depth_frame_number",
     "color_sensor_timestamp_raw",
@@ -262,6 +265,31 @@ def _metadata(frame: Any, metadata_type: Any) -> int | None:
     return None
 
 
+def _metadata_by_name(frame: Any, metadata_types: Any, name: str) -> int | None:
+    """Return optional frame metadata without assuming every SDK enum is present."""
+
+    try:
+        metadata_type = getattr(metadata_types, name)
+    except AttributeError:
+        return None
+    return _metadata(frame, metadata_type)
+
+
+def _color_control_metadata(frame: Any, metadata_types: Any) -> dict[str, int | None]:
+    """Read the raw color-control metadata used to audit a locked capture."""
+
+    return {
+        "color_exposure": _metadata_by_name(frame, metadata_types, "EXPOSURE"),
+        "color_gain": _metadata_by_name(frame, metadata_types, "GAIN"),
+        "color_auto_white_balance": _metadata_by_name(
+            frame, metadata_types, "AUTO_WHITE_BALANCE"
+        ),
+        "color_white_balance": _metadata_by_name(
+            frame, metadata_types, "WHITE_BALANCE"
+        ),
+    }
+
+
 def _calibration_to_dict(camera_param: Any) -> dict[str, Any]:
     def intrinsic(value: Any) -> dict[str, Any]:
         return {
@@ -332,6 +360,321 @@ def _set_bool_property(device: Any, sdk: Any, property_name: str, value: bool) -
         return None
 
 
+def _strict_color_control_property(
+    device: Any, sdk: Any, property_name: str, label: str
+) -> Any:
+    """Return a writable color-control property or fail a formal lock closed."""
+
+    try:
+        prop = getattr(sdk.OBPropertyID, property_name)
+        permission = sdk.OBPermissionType.PERMISSION_WRITE
+        supported = bool(device.is_property_supported(prop, permission))
+    except Exception as exc:
+        raise RuntimeError(
+            "Post-warmup color-control lock requires SDK support for "
+            f"{label} ({property_name})"
+        ) from exc
+    if not supported:
+        raise RuntimeError(
+            "Post-warmup color-control lock requires writable "
+            f"{label} ({property_name})"
+        )
+    return prop
+
+
+def _strict_read_bool_property(device: Any, prop: Any, label: str) -> bool:
+    try:
+        return bool(device.get_bool_property(prop))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Post-warmup color-control lock could not read {label}"
+        ) from exc
+
+
+def _strict_read_int_property(device: Any, prop: Any, label: str) -> int:
+    try:
+        return int(device.get_int_property(prop))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Post-warmup color-control lock could not read {label}"
+        ) from exc
+
+
+def _strict_set_bool_property(device: Any, prop: Any, value: bool, label: str) -> None:
+    try:
+        device.set_bool_property(prop, bool(value))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Post-warmup color-control lock could not set {label}"
+        ) from exc
+    applied = _strict_read_bool_property(device, prop, label)
+    if applied is not bool(value):
+        raise RuntimeError(
+            "Post-warmup color-control lock read back "
+            f"{label}={applied}, expected {value}"
+        )
+
+
+def _strict_set_int_property(device: Any, prop: Any, value: int, label: str) -> None:
+    try:
+        value_range = device.get_int_property_range(prop)
+        minimum = int(value_range.min)
+        maximum = int(value_range.max)
+        step = max(1, int(value_range.step))
+    except Exception as exc:
+        raise RuntimeError(
+            "Post-warmup color-control lock could not read the "
+            f"{label} range"
+        ) from exc
+    if value < minimum or value > maximum or (value - minimum) % step:
+        raise RuntimeError(
+            "Post-warmup color-control lock cannot preserve "
+            f"{label}={value} in device range {minimum}..{maximum} step {step}"
+        )
+    try:
+        device.set_int_property(prop, value)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Post-warmup color-control lock could not set {label}"
+        ) from exc
+    applied = _strict_read_int_property(device, prop, label)
+    if applied != value:
+        raise RuntimeError(
+            "Post-warmup color-control lock read back "
+            f"{label}={applied}, expected {value}"
+        )
+
+
+def _lock_color_controls_after_warmup(
+    device: Any,
+    sdk: Any,
+    options: dict[str, Any],
+    *,
+    warmup_frame_sets: int,
+) -> dict[str, Any]:
+    """Freeze the device's converged AE/gain/AWB values with exact readback.
+
+    The property values are deliberately stored as raw SDK values.  Only color
+    exposure has a project-defined conversion to microseconds; gain and white
+    balance units vary across device firmware and must not be relabelled.
+    """
+
+    auto_exposure = _strict_color_control_property(
+        device,
+        sdk,
+        "OB_PROP_COLOR_AUTO_EXPOSURE_BOOL",
+        "color auto exposure",
+    )
+    exposure = _strict_color_control_property(
+        device, sdk, "OB_PROP_COLOR_EXPOSURE_INT", "color exposure"
+    )
+    gain = _strict_color_control_property(
+        device, sdk, "OB_PROP_COLOR_GAIN_INT", "color gain"
+    )
+    auto_white_balance = _strict_color_control_property(
+        device,
+        sdk,
+        "OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL",
+        "color auto white balance",
+    )
+    white_balance = _strict_color_control_property(
+        device,
+        sdk,
+        "OB_PROP_COLOR_WHITE_BALANCE_INT",
+        "color white balance",
+    )
+
+    before_auto_exposure = _strict_read_bool_property(
+        device, auto_exposure, "color auto exposure"
+    )
+    before_auto_white_balance = _strict_read_bool_property(
+        device, auto_white_balance, "color auto white balance"
+    )
+    exposure_raw = _strict_read_int_property(device, exposure, "color exposure")
+    gain_raw = _strict_read_int_property(device, gain, "color gain")
+    white_balance_raw = _strict_read_int_property(
+        device, white_balance, "color white balance"
+    )
+    if exposure_raw <= 0:
+        raise RuntimeError(
+            "Post-warmup color-control lock read a non-positive color exposure"
+        )
+    if not _uses_color_auto_exposure(options):
+        requested_exposure = _color_exposure_units(options.get("color_exposure_us"))
+        if exposure_raw != requested_exposure:
+            raise RuntimeError(
+                "Color exposure changed during warmup before the formal lock: "
+                f"read {exposure_raw}, expected {requested_exposure}"
+            )
+
+    # A device that disregards its capped AE setting must not have its
+    # overlong exposure frozen into a deliverable scan.  The formal cap is
+    # fixed at 800 us, while a configuration may deliberately tighten it.
+    formal_cap_us = _formal_locked_exposure_cap_us(options)
+    if formal_cap_us is not None:
+        if exposure_raw > _color_exposure_units(formal_cap_us):
+            raise RuntimeError(
+                "Post-warmup color-control lock read exposure "
+                f"{exposure_raw * COLOR_EXPOSURE_UNIT_US} us above the formal "
+                f"cap of {formal_cap_us} us"
+            )
+
+    # The Orbbec SDK requires AE to be off before setting either exposure or
+    # gain, and AWB to be off before setting white balance.
+    _strict_set_bool_property(device, auto_exposure, False, "color auto exposure")
+    _strict_set_int_property(device, exposure, exposure_raw, "color exposure")
+    _strict_set_int_property(device, gain, gain_raw, "color gain")
+    _strict_set_bool_property(
+        device, auto_white_balance, False, "color auto white balance"
+    )
+    _strict_set_int_property(
+        device, white_balance, white_balance_raw, "color white balance"
+    )
+
+    requested_verification_frames = int(
+        options.get("post_lock_verified_frames", 2)
+    )
+    if requested_verification_frames <= 0:
+        raise ValueError("post_lock_verified_frames must be positive")
+    return {
+        "requested": True,
+        "completed": False,
+        "state": "locked_pending_frame_metadata",
+        "warmup_frame_sets": int(warmup_frame_sets),
+        "device_before_lock": {
+            "auto_exposure": before_auto_exposure,
+            "auto_white_balance": before_auto_white_balance,
+            "exposure_raw": exposure_raw,
+            "gain_raw": gain_raw,
+            "white_balance_raw": white_balance_raw,
+        },
+        "locked_controls": {
+            "auto_exposure": False,
+            "exposure_raw": exposure_raw,
+            "exposure_us": exposure_raw * COLOR_EXPOSURE_UNIT_US,
+            "gain_raw": gain_raw,
+            "auto_white_balance": False,
+            "white_balance_raw": white_balance_raw,
+        },
+        "readback_verified": True,
+        "formal_exposure_cap_us": formal_cap_us,
+        "require_frame_metadata": bool(
+            options.get("require_locked_control_metadata", True)
+        ),
+        "post_lock_verified_frames_requested": requested_verification_frames,
+        "post_lock_verified_frames": 0,
+        "post_lock_discarded_frames": 0,
+        "post_lock_incomplete_frame_sets": 0,
+        "post_lock_metadata_mismatches": 0,
+    }
+
+
+def _locked_color_metadata_status(
+    metadata: dict[str, int | None], lock_audit: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """Return missing and mismatched metadata labels for a locked source frame."""
+
+    expected = lock_audit["locked_controls"]
+    expected_values = {
+        "color_exposure": int(expected["exposure_raw"]),
+        "color_gain": int(expected["gain_raw"]),
+        "color_auto_white_balance": 0,
+        "color_white_balance": int(expected["white_balance_raw"]),
+    }
+    missing = [name for name, value in metadata.items() if value is None]
+    mismatches = [
+        f"{name}={value} (expected {expected_values[name]})"
+        for name, value in metadata.items()
+        if value is not None and int(value) != expected_values[name]
+    ]
+    return missing, mismatches
+
+
+def _require_valid_locked_color_metadata(
+    metadata: dict[str, int | None], lock_audit: dict[str, Any]
+) -> None:
+    """Fail closed when an emitted frame does not prove the locked controls."""
+
+    missing, mismatches = _locked_color_metadata_status(metadata, lock_audit)
+    if missing and bool(lock_audit["require_frame_metadata"]):
+        raise RuntimeError(
+            "Locked color controls require frame metadata for "
+            + ", ".join(missing)
+        )
+    if mismatches:
+        raise RuntimeError(
+            "Locked color-control metadata changed after warmup: "
+            + ", ".join(mismatches)
+        )
+
+
+def _discard_and_verify_post_lock_frames(
+    pipeline: Any,
+    metadata_types: Any,
+    lock_audit: dict[str, Any],
+    *,
+    timeout_seconds: float,
+    clock: Any = time.monotonic,
+) -> None:
+    """Discard the color-control transition and require a stable metadata run."""
+
+    if timeout_seconds <= 0.0:
+        raise ValueError("post-lock verification timeout must be positive")
+    deadline = float(clock()) + float(timeout_seconds)
+    requested_verification = int(lock_audit["post_lock_verified_frames_requested"])
+    verified_frames = 0
+    metadata_verified_frames = 0
+
+    def require_time_remaining() -> None:
+        if float(clock()) >= deadline:
+            raise RuntimeError(
+                "Post-warmup color-control lock did not receive enough complete "
+                "RGB-D frames for metadata verification"
+            )
+
+    while verified_frames < requested_verification:
+        require_time_remaining()
+        frames = pipeline.wait_for_frames(1000)
+        if frames is None:
+            require_time_remaining()
+            continue
+        raw_color = frames.get_color_frame()
+        raw_depth = frames.get_depth_frame()
+        if raw_color is None or raw_depth is None:
+            lock_audit["post_lock_incomplete_frame_sets"] += 1
+            require_time_remaining()
+            continue
+        require_time_remaining()
+        lock_audit["post_lock_discarded_frames"] += 1
+        controls = _color_control_metadata(raw_color, metadata_types)
+        missing, mismatches = _locked_color_metadata_status(controls, lock_audit)
+        if missing and bool(lock_audit["require_frame_metadata"]):
+            raise RuntimeError(
+                "Locked color controls require frame metadata for " + ", ".join(missing)
+            )
+        if mismatches:
+            lock_audit["post_lock_metadata_mismatches"] += 1
+            verified_frames = 0
+            metadata_verified_frames = 0
+            if float(clock()) >= deadline:
+                raise RuntimeError(
+                    "Post-warmup color-control lock did not stabilize: "
+                    + ", ".join(mismatches)
+                )
+            continue
+        if not missing:
+            metadata_verified_frames += 1
+        verified_frames += 1
+    lock_audit.update(
+        {
+            "completed": True,
+            "state": "verified",
+            "post_lock_verified_frames": verified_frames,
+            "post_lock_metadata_verified_frames": metadata_verified_frames,
+        }
+    )
+
+
 def _set_int_property_to_device_max(
     device: Any,
     sdk: Any,
@@ -383,6 +726,29 @@ def _uses_color_auto_exposure(options: dict[str, Any]) -> bool:
     if configured is None:
         return options.get("color_exposure_us") is None
     return bool(configured)
+
+
+def _uses_color_auto_white_balance(options: dict[str, Any]) -> bool:
+    """Resolve an explicit AWB policy while retaining old manual-WB configs."""
+
+    configured = options.get("color_auto_white_balance")
+    if configured is None:
+        return options.get("color_white_balance") is None
+    return bool(configured)
+
+
+def _formal_locked_exposure_cap_us(options: dict[str, Any]) -> int | None:
+    """Return the fixed formal lock cap, tightened by an explicit AE cap."""
+
+    if bool(options.get("diagnostic_unrestricted_auto_exposure", False)):
+        return None
+    configured_cap_us = options.get("color_ae_max_exposure_us")
+    if configured_cap_us is None:
+        return MAX_FORMAL_COLOR_EXPOSURE_US
+    value = int(configured_cap_us)
+    if value <= 0:
+        raise ValueError("color_ae_max_exposure_us must be positive")
+    return min(MAX_FORMAL_COLOR_EXPOSURE_US, value)
 
 
 def _color_exposure_units(exposure_us: object) -> int:
@@ -574,10 +940,25 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
     if gain is not None:
         applied["gain"] = _set_int_property(device, sdk, "OB_PROP_COLOR_GAIN_INT", int(gain))
     white_balance = options.get("color_white_balance")
-    if white_balance is not None:
-        applied["auto_white_balance"] = _set_bool_property(
-            device, sdk, "OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL", False
+    auto_white_balance = _uses_color_auto_white_balance(options)
+    if auto_white_balance and white_balance is not None:
+        raise ValueError(
+            "color_white_balance must be null when color_auto_white_balance is true"
         )
+    applied["auto_white_balance"] = _set_bool_property(
+        device,
+        sdk,
+        "OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL",
+        auto_white_balance,
+    )
+    if (
+        bool(options.get("lock_color_controls_after_warmup", False))
+        and applied["auto_white_balance"] is not auto_white_balance
+    ):
+        raise RuntimeError(
+            "The camera did not apply the requested color white-balance mode"
+        )
+    if white_balance is not None:
         applied["white_balance"] = _set_int_property(
             device, sdk, "OB_PROP_COLOR_WHITE_BALANCE_INT", int(white_balance)
         )
@@ -801,6 +1182,8 @@ def run_capture(args: argparse.Namespace) -> Path:
         options["color_gain"] = args.gain
     if args.white_balance is not None:
         options["color_white_balance"] = args.white_balance
+        options["color_auto_white_balance"] = False
+    options["color_auto_white_balance"] = _uses_color_auto_white_balance(options)
     options["preview"] = bool(options.get("preview", True)) and not args.no_preview
     raw_depth_override = getattr(args, "raw_depth", None)
     options["save_raw_depth"] = (
@@ -816,6 +1199,13 @@ def run_capture(args: argparse.Namespace) -> Path:
     options["align"] = align_mode
     if not _uses_color_auto_exposure(options):
         _color_exposure_units(options.get("color_exposure_us"))
+    color_control_lock_requested = bool(
+        options.get("lock_color_controls_after_warmup", False)
+    )
+    if color_control_lock_requested and int(
+        options.get("post_lock_verified_frames", 2)
+    ) <= 0:
+        raise ValueError("post_lock_verified_frames must be positive")
 
     try:
         import pyorbbecsdk as sdk
@@ -933,10 +1323,19 @@ def run_capture(args: argparse.Namespace) -> Path:
     started_monotonic = 0.0
     metadata_checked = False
     exposure_violation_run = 0
-    metadata_types = sdk.OBFrameMetadataType
+    metadata_types: Any | None = None
+    color_control_lock: dict[str, Any] | None = None
     pipeline_started = False
     capture_exception: Exception | None = None
     try:
+        try:
+            metadata_types = sdk.OBFrameMetadataType
+        except AttributeError as exc:
+            if color_control_lock_requested:
+                raise RuntimeError(
+                    "Post-warmup color-control lock requires the SDK frame metadata API"
+                ) from exc
+            raise
         pipeline.start(stream_config)
         pipeline_started = True
         warmup_received = 0
@@ -954,6 +1353,30 @@ def run_capture(args: argparse.Namespace) -> Path:
                     "Try MJPG color, a lower resolution, another USB 3 port, or disable "
                     "other camera applications."
                 )
+        if color_control_lock_requested:
+            manifest["color_control_lock"] = {
+                "requested": True,
+                "completed": False,
+                "state": "locking_after_warmup",
+                "warmup_frame_sets": warmup_received,
+            }
+            _write_manifest(session_root, manifest)
+            color_control_lock = _lock_color_controls_after_warmup(
+                device,
+                sdk,
+                options,
+                warmup_frame_sets=warmup_received,
+            )
+            manifest["color_control_lock"] = color_control_lock
+            _write_manifest(session_root, manifest)
+            _discard_and_verify_post_lock_frames(
+                pipeline,
+                metadata_types,
+                color_control_lock,
+                timeout_seconds=float(options.get("frame_timeout_seconds", 5)),
+            )
+            manifest["color_control_lock"] = color_control_lock
+            _write_manifest(session_root, manifest)
         started_monotonic = time.monotonic()
         last_frame_monotonic = started_monotonic
         manifest["calibration"] = _calibration_to_dict(pipeline.get_camera_param())
@@ -981,7 +1404,11 @@ def run_capture(args: argparse.Namespace) -> Path:
             if previous_color_timestamp is not None and color_timestamp <= previous_color_timestamp:
                 timestamp_regressions += 1
             previous_color_timestamp = color_timestamp
-            color_exposure = _metadata(raw_color, metadata_types.EXPOSURE)
+            assert metadata_types is not None
+            color_controls = _color_control_metadata(raw_color, metadata_types)
+            if color_control_lock is not None:
+                _require_valid_locked_color_metadata(color_controls, color_control_lock)
+            color_exposure = color_controls["color_exposure"]
             exposure_violation = _color_exposure_metadata_violation(
                 options, color_exposure
             )
@@ -1008,8 +1435,15 @@ def run_capture(args: argparse.Namespace) -> Path:
                     "depth_sensor_timestamp": (
                         _metadata(raw_depth, metadata_types.SENSOR_TIMESTAMP) is not None
                     ),
-                    "color_exposure": _metadata(raw_color, metadata_types.EXPOSURE) is not None,
+                    "color_exposure": color_exposure is not None,
                     "depth_exposure": _metadata(raw_depth, metadata_types.EXPOSURE) is not None,
+                    "color_gain": color_controls["color_gain"] is not None,
+                    "color_auto_white_balance": (
+                        color_controls["color_auto_white_balance"] is not None
+                    ),
+                    "color_white_balance": (
+                        color_controls["color_white_balance"] is not None
+                    ),
                 }
                 metadata_checked = True
                 if not any(manifest["metadata_support"].values()):
@@ -1042,8 +1476,12 @@ def run_capture(args: argparse.Namespace) -> Path:
                 "host_timestamp_ns": time.time_ns(),
                 "color_exposure": color_exposure,
                 "depth_exposure": _metadata(raw_depth, metadata_types.EXPOSURE),
-                "color_gain": _metadata(raw_color, metadata_types.GAIN),
+                "color_gain": color_controls["color_gain"],
                 "depth_gain": _metadata(raw_depth, metadata_types.GAIN),
+                "color_auto_white_balance": color_controls[
+                    "color_auto_white_balance"
+                ],
+                "color_white_balance": color_controls["color_white_balance"],
                 "color_frame_number": _metadata(raw_color, metadata_types.FRAME_NUMBER),
                 "depth_frame_number": _metadata(raw_depth, metadata_types.FRAME_NUMBER),
                 "color_sensor_timestamp_raw": _metadata(

@@ -20,7 +20,16 @@ capture:
   # Explicitly unsafe-for-delivery opt-in. Prefer the CLI flag for one-off diagnostics.
   diagnostic_unrestricted_auto_exposure: false
   color_gain: null
+  # Let capped AE/AWB settle during warm-up.  The formal continuous capture
+  # then reads back and locks exposure, sensor gain and white balance before
+  # any delivered scan frame is accepted.
+  color_auto_white_balance: true
   color_white_balance: null
+  lock_color_controls_after_warmup: true
+  # Discard transition frames and require two consecutive metadata-verified
+  # frames after the exposure/gain/AWB lock has been read back.
+  post_lock_verified_frames: 2
+  require_locked_control_metadata: true
   color_anti_flicker: true
   jpeg_quality: 95
   depth_png_compression: 1
@@ -149,7 +158,10 @@ stitch:
     # final frame each own their calibrated outward half-FOV so endpoint scenes
     # remain present in the published panorama.
     endpoint_outer_half_fov: true
-    seam_half_width_pixels: 4
+    # This is a read-only GraphCut search corridor, not a blend width.  The
+    # owner contribution remains bounded by the central-strip policy, while
+    # the eventual safe MultiBand band remains 2-8 pixels.
+    seam_search_width_pixels: 64
     max_canvas_megapixels: 200
     max_aggregate_megapixels: 200
     max_pose_count: 160
@@ -164,11 +176,34 @@ stitch:
     scale_low_gradient_quantile: 0.45
     scale_minimum_response: 0.10
     scale_max_relative_mad: 0.35
+    # RGB-only residual analysis runs from low-resolution calibrated previews.
+    # It selects identity until a later audited model is proven on held-out
+    # evidence; previews never provide output pixels or replace real SE(3).
+    residual_alignment:
+      backend: se3_epipolar_hierarchical_rgb
+      analysis_width: 640
+      # Analysis has an independent hard cap: only adjacent previews are kept
+      # and the aggregate dense evidence cannot exceed this RGB-only budget.
+      maximum_preview_megapixels: 2.0
+      maximum_evidence_megapixels: 3.0
+      held_out_fraction: 0.20
+      owner_track_consistency: true
+      background_model: se2
+      maximum_residual_displacement_pixels: 8.0
+      maximum_background_roll_degrees: 0.25
+      maximum_flow_fb_error_pixels: 1.0
+      maximum_epipolar_error_pixels: 1.0
+      # Rigid-normal fitting remains a separately invoked diagnostic phase;
+      # formal owner decisions are whole RGB components only.
+      component_model: owner_only
+      maximum_edge_step_p95_pixels: 1.5
+      maximum_edge_step_pixels: 3.0
+      cut_mesh_formal_enabled: false
 
   scan_seam:
     backend: rgb_monotonic_hard_owner_graphcut
     # Only safe, low-gradient RGB overlap may be blended.  The per-pair radius
     # is clamp(floor(0.20 * narrower_owner_width), 2, 8), never a global blur.
     multiband_levels: 3
-    exposure_mode: safe_wall_smooth_gain
+    exposure_mode: safe_wall_global_linear_rgb
     quality_gate: true
