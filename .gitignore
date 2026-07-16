@@ -1,5 +1,6 @@
 .venv/
 .conda/
+.idea/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -10,8 +11,7 @@ dist/
 
 models/**/*.pth
 models/**/*.pt
-data/captures/
-data/synthetic/
+data/
 outputs/
 Log/
 third_party/
