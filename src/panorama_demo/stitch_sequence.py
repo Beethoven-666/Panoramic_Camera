@@ -9,13 +9,13 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cv2
 import numpy as np
 
+from .calibrated_rgb_pushbroom import render_calibrated_rgb_pushbroom
 from .config import load_config
-from .dense_fusion import fuse_dense_rgbd_side_scan
 from .orbslam3_bridge import (
     ORBSLAM3PoseGraphOptimizer,
     ORBSLAM3Trajectory,
@@ -30,9 +30,7 @@ from .quality import (
     resize_for_analysis,
     select_layout_from_motion_estimates,
     select_primary_scan_segment,
-    select_rgbd_render_indices_auto,
 )
-from .render import render_projected_scan_panorama
 from .rgbd_odometry import (
     PoseGraphConfig,
     PoseQualityThresholds,
@@ -41,19 +39,19 @@ from .rgbd_odometry import (
     optimize_rgbd_pose_graph,
     validate_pose_trajectory,
 )
-from .rgbd_projection import (
-    PinholeIntrinsics,
-    RGBDProjectionFrame,
-    estimate_projection_canvas,
-    estimate_side_scan_footprints,
-    project_selected_rgbd_sources,
-)
 from .session import (
     CameraIntrinsics,
     RGBDFrame,
     load_rgbd_session,
     read_aligned_depth_mm,
 )
+
+if TYPE_CHECKING:
+    # These types belong only to dormant legacy helpers used by the isolated
+    # central-strip diagnostic and a focused compatibility test.  Keeping the
+    # imports type-only ensures the formal RGB pushbroom route cannot import
+    # the RGB-D projection module at process start.
+    from .rgbd_projection import PinholeIntrinsics, RGBDProjectionFrame
 
 
 _DELIVERY_FILES = (
@@ -334,7 +332,11 @@ def _intrinsics_payload(intrinsics: CameraIntrinsics) -> dict[str, object]:
     }
 
 
-def _pinhole_intrinsics(intrinsics: CameraIntrinsics) -> PinholeIntrinsics:
+def _pinhole_intrinsics(intrinsics: CameraIntrinsics) -> "PinholeIntrinsics":
+    # Kept solely for legacy isolated projection tests.  The formal sequence
+    # import and calibrated RGB pushbroom route never import this depth module.
+    from .rgbd_projection import PinholeIntrinsics
+
     return PinholeIntrinsics(
         width=intrinsics.width,
         height=intrinsics.height,
@@ -588,7 +590,12 @@ def _working_projection_frames(
     poses: list[np.ndarray],
     intrinsics: CameraIntrinsics,
     working_width: int,
-) -> tuple[list[RGBDProjectionFrame], PinholeIntrinsics]:
+) -> tuple[list["RGBDProjectionFrame"], "PinholeIntrinsics"]:
+    # Kept solely for the independent central-strip diagnostic callback.  Its
+    # delayed import prevents the formal RGB renderer from loading or using a
+    # depth projection path.
+    from .rgbd_projection import PinholeIntrinsics, RGBDProjectionFrame
+
     target_width = min(intrinsics.width, int(working_width))
     if target_width < 64:
         raise ValueError("RGB-D footprint working width must be at least 64")
@@ -626,7 +633,10 @@ def _working_projection_frames(
 
 def _full_projection_frames(
     frames: list[RGBDFrame], poses: list[np.ndarray]
-) -> list[RGBDProjectionFrame]:
+) -> list["RGBDProjectionFrame"]:
+    # Legacy unit-test helper; no formal rendering call reaches this function.
+    from .rgbd_projection import RGBDProjectionFrame
+
     return [
         RGBDProjectionFrame(
             frame_id=frame.frame_id,
@@ -644,20 +654,35 @@ def _validate_backend_config(stitch_config: dict[str, Any]) -> None:
         raise ValueError(
             "pose_backend must be open3d_rgbd or hybrid_orbslam3_rgbd"
         )
-    if str(stitch_config.get("sequence_blend_mode", "scan_seam")) != "scan_seam":
-        raise ValueError("scan_seam is the only formal sequence render mode")
-    projection = dict(stitch_config.get("rgbd_projection", {}))
-    if str(projection.get("mode", "orthographic_side_scan")) != (
-        "orthographic_side_scan"
+    if (
+        str(stitch_config.get("sequence_blend_mode", "calibrated_rgb_pushbroom"))
+        != "calibrated_rgb_pushbroom"
     ):
-        raise ValueError("Formal RGB-D projection mode must be orthographic_side_scan")
-    if not bool(projection.get("reject_depth_discontinuity", True)):
-        raise ValueError("Formal projection cannot disable depth-discontinuity rejection")
+        raise ValueError(
+            "calibrated_rgb_pushbroom is the only formal sequence render mode"
+        )
+    if any(
+        name in stitch_config
+        for name in ("dense_fusion_backend", "dense_tsdf", "rgbd_projection")
+    ):
+        raise ValueError(
+            "Formal calibrated RGB pushbroom rendering rejects TSDF and RGB-D "
+            "projection configuration"
+        )
+    pushbroom = dict(stitch_config.get("calibrated_rgb_pushbroom", {}))
+    if str(pushbroom.get("mode", "calibrated_rgb_pushbroom")) != (
+        "calibrated_rgb_pushbroom"
+    ):
+        raise ValueError(
+            "Formal renderer mode must remain calibrated_rgb_pushbroom"
+        )
     seam = dict(stitch_config.get("scan_seam", {}))
-    if str(seam.get("backend", "graphcut_depth_constrained")) != (
-        "graphcut_depth_constrained"
+    if str(seam.get("backend", "rgb_monotonic_hard_owner_graphcut")) != (
+        "rgb_monotonic_hard_owner_graphcut"
     ):
-        raise ValueError("Formal scan seam backend must be graphcut_depth_constrained")
+        raise ValueError(
+            "Formal scan seam backend must be rgb_monotonic_hard_owner_graphcut"
+        )
 
 
 def _validate_safety_envelope(
@@ -676,28 +701,53 @@ def _validate_safety_envelope(
     if not 2 <= layout_limit <= _HARD_MAX_LAYOUT_FRAMES:
         raise ValueError("layout_max_frames must remain within the 2-160 hard budget")
 
-    projection = dict(stitch_config.get("rgbd_projection", {}))
-    aggregate_limit = float(
-        projection.get("max_aggregate_megapixels", canvas_limit)
+    pushbroom = dict(stitch_config.get("calibrated_rgb_pushbroom", {}))
+    pushbroom_canvas_limit = float(
+        pushbroom.get("max_canvas_megapixels", canvas_limit)
     )
     if (
-        not np.isfinite(aggregate_limit)
-        or not 0.0 < aggregate_limit <= _HARD_MAX_CANVAS_MEGAPIXELS
+        not np.isfinite(pushbroom_canvas_limit)
+        or not 0.0 < pushbroom_canvas_limit <= _HARD_MAX_CANVAS_MEGAPIXELS
     ):
         raise ValueError(
-            "rgbd_projection.max_aggregate_megapixels cannot exceed 200 MP"
+            "calibrated_rgb_pushbroom.max_canvas_megapixels cannot exceed 200 MP"
         )
-    render_source_limit = int(
-        projection.get("max_render_sources", _HARD_MAX_RENDER_SOURCES)
+    pushbroom_aggregate_limit = float(
+        pushbroom.get("max_aggregate_megapixels", canvas_limit)
     )
-    if not 2 <= render_source_limit <= _HARD_MAX_RENDER_SOURCES:
-        raise ValueError("max_render_sources must remain within the 2-32 hard budget")
+    if (
+        not np.isfinite(pushbroom_aggregate_limit)
+        or not 0.0 < pushbroom_aggregate_limit <= _HARD_MAX_CANVAS_MEGAPIXELS
+    ):
+        raise ValueError(
+            "calibrated_rgb_pushbroom.max_aggregate_megapixels cannot exceed "
+            "200 MP"
+        )
+    pushbroom_pose_limit = int(
+        pushbroom.get("max_pose_count", _HARD_MAX_LAYOUT_FRAMES)
+    )
+    if not 2 <= pushbroom_pose_limit <= _HARD_MAX_LAYOUT_FRAMES:
+        raise ValueError(
+            "calibrated_rgb_pushbroom.max_pose_count must remain within the "
+            "2-160 hard budget"
+        )
+    resident_limit = int(pushbroom.get("max_resident_frames", 5))
+    if not 2 <= resident_limit <= 5:
+        raise ValueError(
+            "calibrated_rgb_pushbroom.max_resident_frames must remain within "
+            "the 2-5 streaming budget"
+        )
 
     if diagnostic_force:
         return
 
     if not bool(stitch_config.get("adaptive_layout", True)):
         raise ValueError("Formal delivery cannot disable adaptive_layout")
+    if not bool(stitch_config.get("dense_rgbd_pose_chain", True)):
+        raise ValueError(
+            "Formal calibrated RGB pushbroom rendering requires every real "
+            "RGB-D pose node"
+        )
     if not bool(stitch_config.get("input_quality_gate", True)):
         raise ValueError("Formal delivery cannot disable input_quality_gate")
     exposure_limit = float(
@@ -708,20 +758,55 @@ def _validate_safety_envelope(
     exposure_unit = float(stitch_config.get("color_exposure_unit_us", 100.0))
     if not np.isclose(exposure_unit, 100.0):
         raise ValueError("Formal color exposure metadata unit must remain 100 us")
-    if float(projection.get("minimum_coverage_ratio", 0.95)) < 0.95:
-        raise ValueError("Formal render-source coverage cannot be below 95%")
-    if float(projection.get("minimum_overlap_fraction", 0.34)) < 0.34:
-        raise ValueError("Formal render-source overlap cannot be below 0.34")
-    if int(projection.get("footprint_working_width", 640)) < 640:
-        raise ValueError("Formal projection footprint width cannot be below 640")
+    band_fraction = float(pushbroom.get("maximum_central_band_fraction", 0.20))
+    if not np.isfinite(band_fraction) or not 0.0 < band_fraction <= 0.20:
+        raise ValueError(
+            "Formal central RGB strip fraction cannot exceed 0.20"
+        )
+    if not 0 <= int(pushbroom.get("seam_half_width_pixels", 4)) <= 8:
+        raise ValueError(
+            "Formal calibrated RGB seam half-width must remain within 0-8 pixels"
+        )
+    if int(pushbroom.get("minimum_valid_scale_pairs", 3)) < 3:
+        raise ValueError(
+            "Formal RGB motion scale requires at least three valid adjacent pairs"
+        )
+    if float(pushbroom.get("scale_minimum_response", 0.10)) < 0.10:
+        raise ValueError(
+            "Formal RGB motion scale response threshold cannot be relaxed below 0.10"
+        )
+    if float(pushbroom.get("scale_max_relative_mad", 0.35)) > 0.35:
+        raise ValueError(
+            "Formal RGB motion scale relative MAD cannot exceed 0.35"
+        )
+    low_gradient_quantile = float(
+        pushbroom.get("scale_low_gradient_quantile", 0.45)
+    )
+    if (
+        not np.isfinite(low_gradient_quantile)
+        or not 0.0 < low_gradient_quantile <= 0.45
+    ):
+        raise ValueError(
+            "Formal safe-wall low-gradient quantile cannot exceed 0.45"
+        )
+    scale_fraction = float(pushbroom.get("scale_central_fraction", 0.20))
+    if not np.isfinite(scale_fraction) or not 0.0 < scale_fraction <= 0.20:
+        raise ValueError(
+            "Formal RGB motion scale central fraction cannot exceed 0.20"
+        )
 
     seam = dict(stitch_config.get("scan_seam", {}))
     if not bool(seam.get("quality_gate", True)):
         raise ValueError("Formal delivery cannot disable the scan-seam quality gate")
-    if int(seam.get("multiband_levels", 5)) != 5:
-        raise ValueError("Formal MultiBand level count is fixed at the validated value 5")
-    if str(seam.get("exposure_mode", "global_gain")) != "global_gain":
-        raise ValueError("Formal exposure compensation mode must be global_gain")
+    levels = int(seam.get("multiband_levels", 3))
+    if not 1 <= levels <= 3:
+        raise ValueError("Formal MultiBand level count must remain within 1-3")
+    if str(seam.get("exposure_mode", "safe_wall_smooth_gain")) != (
+        "safe_wall_smooth_gain"
+    ):
+        raise ValueError(
+            "Formal exposure compensation mode must be safe_wall_smooth_gain"
+        )
 
     odometry = RGBDOdometryConfig.from_mapping(
         stitch_config.get("rgbd_odometry")
@@ -1109,49 +1194,52 @@ def _run_pipeline(
         )
     pose_values = [pose_graph.pose_for(frame.frame_id) for frame in pose_frames]
 
-    projection_config = dict(stitch_config.get("rgbd_projection", {}))
-    maximum_projection_depth_mm = float(
-        projection_config.get("maximum_projection_depth_mm", 2000.0)
-    )
-    if odometry_backend is not None:
-        # Synthetic/unit-test backends may deliberately use one flat depth
-        # outside the close-range production envelope.  Do not discard those
-        # structurally valid injected frames while testing pose orchestration.
-        maximum_projection_depth_mm = max(
-            maximum_projection_depth_mm, odometry_config.maximum_depth_mm
-        )
-    footprint_frames, footprint_intrinsics = _working_projection_frames(
-        pose_frames,
-        pose_values,
-        session.calibration,
-        int(
-            projection_config.get(
-                "footprint_working_width", odometry_config.working_width
-            )
-        ),
-    )
-    footprint_estimate = estimate_side_scan_footprints(
-        footprint_frames,
-        footprint_intrinsics,
-        working_width=footprint_intrinsics.width,
-        maximum_depth_mm=maximum_projection_depth_mm,
-    )
-    footprint_canvas = estimate_projection_canvas(
-        footprint_frames,
-        footprint_intrinsics,
-        max_canvas_megapixels=1_000_000.0,
-        max_aggregate_megapixels=1_000_000_000.0,
-        maximum_depth_mm=maximum_projection_depth_mm,
-    )
-    full_resolution_scale = (
-        session.calibration.width / float(footprint_intrinsics.width)
-    )
-    estimated_full_canvas_mp = (
-        footprint_canvas.canvas_megapixels * full_resolution_scale**2
-    )
-    del footprint_frames
-
     if diagnostic_renderer is not None:
+        # The legacy reference-plane diagnostic remains isolated behind its
+        # injected callback.  It may use its own depth-only layout estimator;
+        # the normal g305-panorama path below does not import or invoke it.
+        from .rgbd_projection import estimate_projection_canvas
+
+        legacy_projection_config = dict(stitch_config.get("rgbd_projection", {}))
+        maximum_projection_depth_mm = float(
+            legacy_projection_config.get("maximum_projection_depth_mm", 2000.0)
+        )
+        if odometry_backend is not None:
+            maximum_projection_depth_mm = max(
+                maximum_projection_depth_mm, odometry_config.maximum_depth_mm
+            )
+        footprint_frames, footprint_intrinsics = _working_projection_frames(
+            pose_frames,
+            pose_values,
+            session.calibration,
+            int(
+                legacy_projection_config.get(
+                    "footprint_working_width", odometry_config.working_width
+                )
+            ),
+        )
+        footprint_canvas = estimate_projection_canvas(
+            footprint_frames,
+            footprint_intrinsics,
+            max_canvas_megapixels=1_000_000.0,
+            max_aggregate_megapixels=1_000_000_000.0,
+            maximum_depth_mm=maximum_projection_depth_mm,
+        )
+        full_resolution_scale = (
+            session.calibration.width / float(footprint_intrinsics.width)
+        )
+        estimated_full_canvas_mp = (
+            footprint_canvas.canvas_megapixels * full_resolution_scale**2
+        )
+        del footprint_frames
+        if (
+            not np.isfinite(estimated_full_canvas_mp)
+            or estimated_full_canvas_mp > _HARD_MAX_CANVAS_MEGAPIXELS
+        ):
+            raise RuntimeError(
+                "Central-strip diagnostic estimated canvas exceeds the hard "
+                f"{_HARD_MAX_CANVAS_MEGAPIXELS:.0f} MP limit"
+            )
         # The central-strip renderer composes only a narrow calibrated band.
         # Its overlap requirement is deliberately denser than the full-FOV
         # delivery selector, so feed it chronological *real* pose nodes rather
@@ -1196,83 +1284,22 @@ def _run_pipeline(
             "interpolated_pose_count": 0,
         }
     else:
-        maximum_render_sources = int(
-            projection_config.get("max_render_sources", 0)
-        )
-        dense_render_minimum_nodes = int(
-            projection_config.get("dense_render_minimum_pose_nodes", 24)
-        )
-        maximum_render_step_mm = (
-            float(projection_config.get("maximum_render_step_mm", 100.0))
-            if len(pose_frames) >= dense_render_minimum_nodes
-            else None
-        )
-        try:
-            render_indices, render_selection = select_rgbd_render_indices_auto(
-                pose_qualities,
-                pose_values,
-                footprint_estimate,
-                maximum_keyframes=maximum_render_sources,
-                quality_gate=not diagnostic_force,
-                minimum_coverage_ratio=float(
-                    projection_config.get("minimum_coverage_ratio", 0.95)
-                ),
-                minimum_overlap_fraction=float(
-                    projection_config.get("minimum_overlap_fraction", 0.34)
-                ),
-                maximum_camera_spacing_mm=maximum_render_step_mm,
-            )
-        except (RuntimeError, ValueError) as exc:
-            if not diagnostic_force:
-                raise
-            # Diagnostic force may bypass formal monotonicity, absolute
-            # sharpness and coverage thresholds, but it still uses only real,
-            # finite optimized pose nodes.  No timestamp/frame interpolation or
-            # synthetic pose is introduced by this audit fallback.
-            aggregate_limit = float(
-                projection_config.get(
-                    "max_aggregate_megapixels",
-                    stitch_config.get("max_canvas_megapixels", 200.0),
+        # The pushbroom's bounded strip cache removes the former 32-source
+        # full-canvas limit.  Every chronological, optimized real pose node
+        # contributes one narrow calibrated RGB strip; no pose is synthesized,
+        # reordered, or interpolated.
+        render_indices = list(range(len(pose_frames)))
+        render_selection = {
+            "mode": "calibrated_rgb_pushbroom_all_real_pose_nodes",
+            "frame_ids": [frame.frame_id for frame in pose_frames],
+            "interpolated_pose_count": 0,
+            "source_cap": int(
+                dict(stitch_config.get("calibrated_rgb_pushbroom", {})).get(
+                    "max_pose_count", _HARD_MAX_LAYOUT_FRAMES
                 )
-            )
-            # The sparse/working-resolution canvas uses the same metric bounds
-            # and density scaled by image width.  Scale its area back to full
-            # resolution and retain a 5% guard before choosing how many real
-            # pose nodes can fit the non-bypassable aggregate budget.
-            budget_count = int(
-                np.floor(
-                    aggregate_limit
-                    / max(estimated_full_canvas_mp * 1.05, 1e-9)
-                )
-            )
-            # The final projector adapts its sampling density to the actual
-            # selected source count.  Do not reject a dense diagnostic path
-            # using a sparse pre-selection canvas estimate.
-            limit = min(maximum_render_sources or 32, _HARD_MAX_RENDER_SOURCES)
-            if len(pose_frames) <= limit:
-                render_indices = list(range(len(pose_frames)))
-            else:
-                render_indices = sorted(
-                    set(
-                        int(value)
-                        for value in np.linspace(
-                            0, len(pose_frames) - 1, limit
-                        ).round()
-                    )
-                )
-            if len(render_indices) < 2:
-                raise RuntimeError(
-                    "Diagnostic projection still requires two optimized pose nodes"
-                ) from exc
-            render_selection = {
-                "mode": "diagnostic_optimized_pose_nodes",
-                "frame_ids": [pose_frames[index].frame_id for index in render_indices],
-                "interpolated_pose_count": 0,
-                "formal_selection_failure": str(exc),
-                "formal_selection_thresholds_bypassed": True,
-                "estimated_full_canvas_megapixels": estimated_full_canvas_mp,
-                "aggregate_budget_source_count": budget_count,
-            }
+            ),
+            "streaming": True,
+        }
     render_frames = [pose_frames[index] for index in render_indices]
     render_poses = [pose_values[index] for index in render_indices]
     render_qualities = [pose_qualities[index] for index in render_indices]
@@ -1364,74 +1391,36 @@ def _run_pipeline(
         _publish_central_strip_diagnostic(output, panorama, report)
         return report
 
-    full_projection_frames = _full_projection_frames(render_frames, render_poses)
-    max_canvas_megapixels = float(
-        stitch_config.get("max_canvas_megapixels", 200.0)
-    )
-    projection = project_selected_rgbd_sources(
-        full_projection_frames,
-        _pinhole_intrinsics(session.calibration),
-        max_canvas_megapixels=max_canvas_megapixels,
-        max_aggregate_megapixels=float(
-            projection_config.get(
-                "max_aggregate_megapixels", max_canvas_megapixels
-            )
-        ),
-        adapt_density_to_budget=True,
-        chunk_rows=int(projection_config.get("chunk_rows", 128)),
-        maximum_depth_mm=maximum_projection_depth_mm,
-    )
     seam_config = dict(stitch_config.get("scan_seam", {}))
-    dense_fusion_backend = str(
-        stitch_config.get("dense_fusion_backend", "tsdf_plane_dense_rgbd")
+    pushbroom_config = dict(stitch_config.get("calibrated_rgb_pushbroom", {}))
+    # Existing RGB thumbnail motion is a local scalar observation only.  It is
+    # scaled to native colour pixels and paired with the already verified real
+    # SE(3) camera-centre displacement inside the renderer; it never becomes a
+    # 2-D pose, transform, ordering rule, or interpolation source.
+    all_real_sources = (
+        len(render_frames) == len(scan_frames)
+        and [frame.frame_id for frame in render_frames]
+        == [frame.frame_id for frame in scan_frames]
     )
-    foreground_mask: np.ndarray | None = None
-    tsdf_mesh_glb: bytes | None = None
-    dense_audit_images: dict[str, np.ndarray] = {}
-    if dense_fusion_backend == "tsdf_plane_dense_rgbd" and orbslam3_trajectory is not None:
-        dense_frames = scan_frames
-        dense_poses = [
-            orbslam3_trajectory.poses_by_frame_id[frame.frame_id]
-            for frame in dense_frames
-        ]
-        dense_result = fuse_dense_rgbd_side_scan(
-            full_projection_frames,
-            dense_frames,
-            dense_poses,
-            _pinhole_intrinsics(session.calibration),
-            projection.canvas,
-            config=stitch_config.get("dense_tsdf"),
-        )
-        panorama = dense_result.image
-        foreground_mask = dense_result.foreground_mask
-        tsdf_mesh_glb = dense_result.tsdf_mesh_glb
-        dense_audit_images = dict(dense_result.audit_images)
-        render_metadata = dict(dense_result.metadata)
-    elif dense_fusion_backend in {
-        "graphcut_depth_constrained",
-        "tsdf_plane_dense_rgbd",
-    }:
-        panorama, render_info = render_projected_scan_panorama(
-            projection.sources,
-            max_megapixels=float(
-                projection_config.get(
-                    "max_aggregate_megapixels", max_canvas_megapixels
-                )
-            ),
-            multiband_levels=int(seam_config.get("multiband_levels", 5)),
-            exposure_mode=str(seam_config.get("exposure_mode", "global_gain")),
-            quality_gate=(
-                not diagnostic_force and bool(seam_config.get("quality_gate", True))
-            ),
-            sharpness_scores=[quality.sharpness for quality in render_qualities],
-        )
-        render_metadata = render_info.as_dict()
-    else:
-        raise ValueError(
-            "dense_fusion_backend must be tsdf_plane_dense_rgbd or "
-            "graphcut_depth_constrained"
-        )
-    del full_projection_frames
+    render_motions: list[MotionEstimate] | None = (
+        motions[segment_start:segment_stop] if all_real_sources else None
+    )
+    pushbroom_result = render_calibrated_rgb_pushbroom(
+        render_frames,
+        render_poses,
+        session.calibration,
+        config=pushbroom_config,
+        rgb_motions=render_motions,
+        motion_pixels_to_full_resolution=(
+            session.calibration.width / float(analysis_shape[1])
+        ),
+        multiband_levels=int(seam_config.get("multiband_levels", 3)),
+        quality_gate=(
+            not diagnostic_force and bool(seam_config.get("quality_gate", True))
+        ),
+    )
+    panorama = pushbroom_result.panorama
+    render_metadata = dict(pushbroom_result.metadata)
     render_metadata["frame_ids"] = [frame.frame_id for frame in render_frames]
     render_metadata["selection"] = render_selection
     render_metadata["source_quality"] = {
@@ -1451,49 +1440,6 @@ def _run_pipeline(
     report_path = output / (
         "diagnostic_report.json" if diagnostic_force else "report.json"
     )
-    foreground_mask_path = (
-        output
-        / (
-            "diagnostic_foreground_mask.png"
-            if diagnostic_force
-            else "foreground_mask.png"
-        )
-        if foreground_mask is not None
-        else None
-    )
-    if foreground_mask_path is not None:
-        render_metadata["foreground_mask"] = str(foreground_mask_path)
-    dense_audit_paths = (
-        {
-            name: output / f"{name}.png"
-            for name in dense_audit_images
-        }
-        if dense_audit_images and not diagnostic_force
-        else {}
-    )
-    if dense_audit_paths:
-        render_metadata["foreground_audit_images"] = {
-            name: str(path) for name, path in dense_audit_paths.items()
-        }
-    tsdf_mesh_path = (
-        output
-        / ("diagnostic_tsdf_mesh.glb" if diagnostic_force else "tsdf_mesh.glb")
-        if tsdf_mesh_glb is not None
-        else None
-    )
-    tsdf_mesh_viewer_path = (
-        output
-        / (
-            "diagnostic_tsdf_mesh_viewer.html"
-            if diagnostic_force
-            else "tsdf_mesh_viewer.html"
-        )
-        if tsdf_mesh_path is not None
-        else None
-    )
-    if tsdf_mesh_path is not None and tsdf_mesh_viewer_path is not None:
-        render_metadata["tsdf_mesh"] = str(tsdf_mesh_path)
-        render_metadata["tsdf_mesh_viewer"] = str(tsdf_mesh_viewer_path)
     transforms_payload = pose_graph.as_dict()
     transforms_payload["layout_selection"] = layout_metadata
     transforms_payload["optional_edge_failures"] = optional_edge_failures
@@ -1504,34 +1450,26 @@ def _run_pipeline(
         else None
     )
     render_transforms_payload = {
-        "schema": "rgbd-side-scan-projection/v1",
+        "schema": "calibrated-rgb-pushbroom/v1",
         "translation_unit": "mm",
-        "projection": projection.as_dict(),
+        "pixel_source": "calibrated_rgb_only",
+        "layout": render_metadata.get("layout"),
+        "rgb_motion_scale": render_metadata.get("rgb_motion_scale"),
         "selection": render_selection,
         "sources": [
             {
                 "frame_id": frame.frame_id,
                 "color_path": str(frame.color_path),
-                "aligned_depth_path": str(frame.aligned_depth_path),
                 "camera_to_world": pose.tolist(),
-                "projection": projected.as_dict(),
             }
-            for frame, pose, projected in zip(
-                render_frames, render_poses, projection.sources, strict=True
-            )
+            for frame, pose in zip(render_frames, render_poses, strict=True)
         ],
     }
     report: dict[str, Any] = {
-        "schema": "gemini305-rgbd-side-scan/v3",
+        "schema": "gemini305-calibrated-rgb-pushbroom/v1",
         "input": str(args.input.expanduser().resolve()),
         "panorama": str(panorama_path),
         "report": str(report_path),
-        "tsdf_mesh": str(tsdf_mesh_path) if tsdf_mesh_path is not None else None,
-        "tsdf_mesh_viewer": (
-            str(tsdf_mesh_viewer_path)
-            if tsdf_mesh_viewer_path is not None
-            else None
-        ),
         "diagnostic_only": diagnostic_force,
         "deliverable_published": not diagnostic_force,
         "input_capture": capture_summary,
@@ -1559,11 +1497,7 @@ def _run_pipeline(
         "pose_graph": transforms_payload,
         "pose_quality": pose_quality,
         "projection": render_transforms_payload,
-        "render_strategy": (
-            dense_fusion_backend
-            if orbslam3_trajectory is not None
-            else "graphcut_depth_constrained"
-        ),
+        "render_strategy": "calibrated_rgb_pushbroom",
         "render": render_metadata,
         "diagnostic_overrides": (
             {
@@ -1584,49 +1518,13 @@ def _run_pipeline(
         pending_panorama = _write_bgr(
             output / ".diagnostic_panorama.pending.jpg", panorama
         )
-        pending_mesh: Path | None = None
-        pending_mesh_viewer: Path | None = None
-        if tsdf_mesh_path is not None and tsdf_mesh_glb is not None:
-            pending_mesh = _write_bytes(
-                output / ".diagnostic_tsdf_mesh.pending.glb", tsdf_mesh_glb
-            )
-            pending_mesh_viewer = output / ".diagnostic_tsdf_mesh_viewer.pending.html"
-            pending_mesh_viewer.write_text(
-                _mesh_viewer_html(tsdf_mesh_path.name), encoding="utf-8"
-            )
         pending_report = output / ".diagnostic_report.pending.json"
         pending_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
         os.replace(pending_panorama, panorama_path)
-        if foreground_mask_path is not None and foreground_mask is not None:
-            pending_foreground_mask = _write_mask(
-                output / ".diagnostic_foreground_mask.pending.png", foreground_mask
-            )
-            os.replace(pending_foreground_mask, foreground_mask_path)
-        if pending_mesh is not None and tsdf_mesh_path is not None:
-            os.replace(pending_mesh, tsdf_mesh_path)
-        if pending_mesh_viewer is not None and tsdf_mesh_viewer_path is not None:
-            os.replace(pending_mesh_viewer, tsdf_mesh_viewer_path)
         os.replace(pending_report, report_path)
         return report
 
     pending_panorama = _write_bgr(output / ".panorama.pending.jpg", panorama)
-    pending_dense_audits = [
-        (
-            _write_dense_audit_image(
-                output / f".{name}.pending.png", image
-            ),
-            dense_audit_paths[name],
-        )
-        for name, image in dense_audit_images.items()
-    ]
-    pending_mesh: Path | None = None
-    pending_mesh_viewer: Path | None = None
-    if tsdf_mesh_path is not None and tsdf_mesh_glb is not None:
-        pending_mesh = _write_bytes(output / ".tsdf_mesh.pending.glb", tsdf_mesh_glb)
-        pending_mesh_viewer = output / ".tsdf_mesh_viewer.pending.html"
-        pending_mesh_viewer.write_text(
-            _mesh_viewer_html(tsdf_mesh_path.name), encoding="utf-8"
-        )
     pending_transforms = output / ".transforms.pending.json"
     pending_render_transforms = output / ".render_transforms.pending.json"
     pending_report = output / ".report.pending.json"
@@ -1638,17 +1536,6 @@ def _run_pipeline(
     )
     pending_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
     os.replace(pending_panorama, output / "panorama.jpg")
-    if foreground_mask_path is not None and foreground_mask is not None:
-        pending_foreground_mask = _write_mask(
-            output / ".foreground_mask.pending.png", foreground_mask
-        )
-        os.replace(pending_foreground_mask, foreground_mask_path)
-    for pending_dense_audit, dense_audit_path in pending_dense_audits:
-        os.replace(pending_dense_audit, dense_audit_path)
-    if pending_mesh is not None and tsdf_mesh_path is not None:
-        os.replace(pending_mesh, tsdf_mesh_path)
-    if pending_mesh_viewer is not None and tsdf_mesh_viewer_path is not None:
-        os.replace(pending_mesh_viewer, tsdf_mesh_viewer_path)
     os.replace(pending_transforms, output / "transforms.json")
     os.replace(pending_render_transforms, output / "render_transforms.json")
     os.replace(pending_report, output / "report.json")
@@ -1661,30 +1548,10 @@ def _run_pipeline(
             if orbslam3_trajectory is not None
             else "open3d_rgbd"
         ),
-        "projection": "orthographic_side_scan",
-        "seam_backend": (
-            "tsdf_plane_dense_rgbd"
-            if orbslam3_trajectory is not None
-            else "graphcut_depth_constrained"
-        ),
-        "blend_backend": (
-            "real_pose_plane_texture_with_tsdf_foreground"
-            if orbslam3_trajectory is not None
-            else "opencv_multiband_narrow_owner_boundary"
-        ),
+        "projection": "calibrated_rgb_pushbroom",
+        "seam_backend": "rgb_monotonic_hard_owner_graphcut",
+        "blend_backend": "safe_wall_local_multiband_narrow_owner_boundary",
         "panorama": str(output / "panorama.jpg"),
-        "foreground_mask": str(foreground_mask_path)
-        if foreground_mask_path is not None
-        else None,
-        "foreground_audit_images": {
-            name: str(path) for name, path in dense_audit_paths.items()
-        },
-        "tsdf_mesh": str(tsdf_mesh_path) if tsdf_mesh_path is not None else None,
-        "tsdf_mesh_viewer": (
-            str(tsdf_mesh_viewer_path)
-            if tsdf_mesh_viewer_path is not None
-            else None
-        ),
         "report": str(output / "report.json"),
     }
     pending_delivery = output / ".delivery.pending.json"

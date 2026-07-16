@@ -46,10 +46,9 @@ stitch:
   # Open3D measures every short RGB-D edge; ORB-SLAM3 RGB-D uses the complete
   # short-baseline sequence to stabilise the global camera trajectory.
   pose_backend: hybrid_orbslam3_rgbd
-  # Dense fusion uses every real ORB-SLAM3 pose for geometry.  The final colour
-  # atlas uses the TSDF foreground plus calibrated planar texture recovery so
-  # Gemini depth holes do not become black panorama holes.
-  dense_fusion_backend: tsdf_plane_dense_rgbd
+  # Output pixels are composed only from calibrated RGB.  The RGB-D inputs are
+  # retained exclusively for short-baseline Open3D verification and the real
+  # ORB-SLAM3 RGB-D trajectory; no depth image enters the renderer.
   adaptive_layout: true
   analysis_width: 320
   layout_target_displacement_fraction: 0.18
@@ -78,7 +77,7 @@ stitch:
     fast_threshold: 12
     minimum_fast_threshold: 5
   max_canvas_megapixels: 200
-  sequence_blend_mode: scan_seam
+  sequence_blend_mode: calibrated_rgb_pushbroom
   input_quality_gate: true
   # Diagnostic profiles may set this to true; formal defaults must remain false.
   diagnostic_force: false
@@ -141,51 +140,31 @@ stitch:
     maximum_consecutive_unreliable_edges: 2
     require_all_adjacent_edges: true
 
-  rgbd_projection:
-    mode: orthographic_side_scan
-    footprint_working_width: 640
-    reject_depth_discontinuity: true
-    max_render_sources: 32
-    # The target work is a close RGB-D side scan.  Ignore sparse 4--6 m depth
-    # outliers before they inflate the common canvas and collapse seam corridors.
-    maximum_projection_depth_mm: 2000.0
-    # Restrict each GraphCut corridor to a local physical baseline even when
-    # very distant depth makes two endpoint footprints appear to overlap.
-    maximum_render_step_mm: 100.0
-    dense_render_minimum_pose_nodes: 24
-    minimum_coverage_ratio: 0.95
-    minimum_overlap_fraction: 0.34
-    max_aggregate_megapixels: 80
-    chunk_rows: 128
+  calibrated_rgb_pushbroom:
+    mode: calibrated_rgb_pushbroom
+    # Every real optimized pose node is a source.  The renderer keeps only a
+    # local strip window resident and never stores per-source full canvases.
+    maximum_central_band_fraction: 0.20
+    seam_half_width_pixels: 4
+    max_canvas_megapixels: 200
+    max_aggregate_megapixels: 200
+    max_pose_count: 160
+    max_resident_frames: 5
+    # The layout scale is estimated from adjacent RGB motion divided by the
+    # corresponding verified SE(3) camera-centre displacement.  It is not a
+    # 2-D trajectory or a depth/plane proxy.
+    minimum_valid_scale_pairs: 3
+    scale_central_fraction: 0.20
+    # Safe-wall gain estimation uses only the low-gradient portion of the
+    # adjacent RGB overlap; it never averages foreground/label details.
+    scale_low_gradient_quantile: 0.45
+    scale_minimum_response: 0.10
+    scale_max_relative_mad: 0.35
 
   scan_seam:
-    backend: graphcut_depth_constrained
-    multiband_levels: 5
-    exposure_mode: global_gain
+    backend: rgb_monotonic_hard_owner_graphcut
+    # Only safe, low-gradient RGB overlap may be blended.  The per-pair radius
+    # is clamp(floor(0.20 * narrower_owner_width), 2, 8), never a global blur.
+    multiband_levels: 3
+    exposure_mode: safe_wall_smooth_gain
     quality_gate: true
-
-  dense_tsdf:
-    voxel_length_mm: 5.0
-    sdf_truncation_mm: 20.0
-    maximum_depth_mm: 2000.0
-    plane_histogram_bin_mm: 20.0
-    # A measured point must sit at least this far on the camera side of the
-    # wall before it can cover plane texture.
-    foreground_offset_mm: 35.0
-    foreground_neighbor_depth_tolerance_mm: 70.0
-    minimum_foreground_support_neighbors: 1
-    # Raw RGB-D points may fill only small holes enclosed by real TSDF geometry;
-    # they may not spread across a completely unreconstructed wall region.
-    foreground_tsdf_hole_kernel_size: 31
-    # The real wall can sit farther from the global ORB prior on close scans;
-    # this is still a bounded local plane fit, not an unconstrained fallback.
-    source_wall_global_depth_tolerance_mm: 140.0
-    ray_chunk_rows: 128
-    foreground_overlay: true
-    minimum_crop_coverage: 0.85
-    # Close only tiny holes, inset one pixel, then use a strict valid-mask
-    # rectangle. The 98% rule is only its documented height-preserving fallback.
-    minimum_row_or_column_coverage: 0.98
-    minimum_inscribed_crop_height_fraction: 0.90
-    mask_close_kernel_size: 3
-    mask_erode_pixels: 1

@@ -9,6 +9,7 @@ import numpy as np
 _PROJECTED_NEAR_FOREGROUND_MM = 1000.0
 _HARD_MAX_PREWARPED_CANVAS_MEGAPIXELS = 200.0
 _HARD_MAX_PREWARPED_AGGREGATE_MEGAPIXELS = 200.0
+_HARD_MAX_PREWARPED_SOURCE_COUNT = 160
 
 
 @dataclass(frozen=True)
@@ -166,6 +167,10 @@ class PrewarpedScanLayout:
     source_order: tuple[int, ...]
     owner_boundaries_x: tuple[float, ...]
     pair_overlap_masks: tuple[np.ndarray, ...]
+    # Optional caller-provided RGB disparity masks, in the same adjacent-pair
+    # order as ``pair_overlap_masks``.  They are an additional safety input;
+    # the renderer still derives its own residual/edge risk mask as well.
+    pair_rgb_risk_masks: tuple[np.ndarray, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -430,6 +435,7 @@ def _pair_risk_mask(
     camera_depth_valid0: np.ndarray | None = None,
     camera_depth_valid1: np.ndarray | None = None,
     world_surface_depth: bool = False,
+    rgb_risk_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     common = (valid0 > 0) & (valid1 > 0)
     lab0 = cv2.cvtColor(image0, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -581,7 +587,16 @@ def _pair_risk_mask(
             & range_disagreement
         )
 
-    risk = (rgb_risk | depth_risk | near_risk).astype(np.uint8) * 255
+    supplied_risk = np.zeros(common.shape, dtype=bool)
+    if rgb_risk_mask is not None:
+        supplied = np.asarray(rgb_risk_mask)
+        if supplied.shape != common.shape:
+            raise ValueError("RGB disparity risk mask must match the canvas")
+        if supplied.dtype not in {np.dtype(np.uint8), np.dtype(np.bool_)}:
+            raise ValueError("RGB disparity risk mask must be uint8 or bool")
+        supplied_risk = supplied > 0
+
+    risk = (rgb_risk | depth_risk | near_risk | supplied_risk).astype(np.uint8) * 255
     risk = cv2.morphologyEx(
         risk,
         cv2.MORPH_CLOSE,
@@ -597,8 +612,37 @@ def _pair_risk_mask(
         & (gradient0 < gradient_threshold)
         & (gradient1 < gradient_threshold)
         & ~near_risk
+        & ~(risk > 0)
     )
     return risk, difference, safe_background
+
+
+def compute_rgb_disparity_risk_mask(
+    image0: np.ndarray,
+    image1: np.ndarray,
+    valid0: np.ndarray,
+    valid1: np.ndarray,
+    *,
+    supplied_risk_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Return the depth-free RGB disparity risk for one adjacent strip pair.
+
+    This is the public RGB-only counterpart of the renderer's combined risk
+    calculation.  It deliberately passes no surface or camera-depth inputs,
+    so calibrated pushbroom callers can detect parallax/appearance risk
+    without reading or allocating depth data.
+    """
+
+    risk, _, _ = _pair_risk_mask(
+        image0,
+        image1,
+        valid0,
+        valid1,
+        None,
+        None,
+        rgb_risk_mask=supplied_risk_mask,
+    )
+    return risk
 
 
 def _longest_true_run(values: np.ndarray) -> tuple[int, int]:
@@ -973,6 +1017,7 @@ def _evaluate_final_owner_boundaries(
     depth_valid_masks: list[np.ndarray | None] | None = None,
     camera_depth_maps: list[np.ndarray | None] | None = None,
     camera_depth_valid_masks: list[np.ndarray | None] | None = None,
+    pair_rgb_risk_masks: list[np.ndarray] | tuple[np.ndarray, ...] | None = None,
     world_surface_depth: bool = False,
 ) -> dict[str, float | int | bool]:
     """Measure risk on the final masks after overrides and hole filling."""
@@ -987,6 +1032,13 @@ def _evaluate_final_owner_boundaries(
         raise ValueError("Camera-depth valid masks must match the source count")
     if (camera_depth_maps is None) != (camera_depth_valid_masks is None):
         raise ValueError("Camera-depth maps and valid masks must be provided together")
+    if pair_rgb_risk_masks is not None:
+        if len(pair_rgb_risk_masks) != max(0, len(order) - 1):
+            raise ValueError("RGB risk masks must match adjacent source pairs")
+        for mask in pair_rgb_risk_masks:
+            value = np.asarray(mask)
+            if value.shape != valid_masks[0].shape:
+                raise ValueError("RGB risk masks must match the canvas")
     union_valid = np.any(valid, axis=0)
     owner_count = np.sum(owned, axis=0)
     hole_count = int(np.count_nonzero(union_valid & (owner_count == 0)))
@@ -1036,6 +1088,12 @@ def _evaluate_final_owner_boundaries(
                 residuals.append(255.0)
                 coverages.append(0.0)
                 continue
+            pair_rank = int(min(order_rank[first], order_rank[second]))
+            supplied_risk = (
+                None
+                if pair_rgb_risk_masks is None
+                else pair_rgb_risk_masks[pair_rank]
+            )
             risk, difference, _ = _pair_risk_mask(
                 images[first],
                 images[second],
@@ -1074,6 +1132,7 @@ def _evaluate_final_owner_boundaries(
                     else None
                 ),
                 world_surface_depth=world_surface_depth,
+                rgb_risk_mask=supplied_risk,
             )
             risk_bool = risk > 0
             exact_risks.append(float(np.mean(risk_bool[boundary])))
@@ -1757,40 +1816,259 @@ def _prewarped_source_arrays(
     )
 
 
+def _safe_wall_pair_log_gain(
+    image0: np.ndarray,
+    image1: np.ndarray,
+    common: np.ndarray,
+    rgb_risk_mask: np.ndarray | None,
+) -> tuple[float | None, int]:
+    """Estimate one adjacent-frame brightness relation from safe wall pixels.
+
+    This deliberately does not use every valid pixel.  A foreground object can
+    have a very different apparent brightness even though it is completely
+    valid RGB, and using it for exposure compensation is how a label or hose
+    loses contrast merely to flatten a wall band.  The estimate is made from
+    low-gradient, unclipped, low-residual pixels and is robustified with a
+    trimmed median followed by a Huber-weighted mean in log luminance space.
+    """
+
+    usable = np.asarray(common, dtype=bool)
+    if usable.shape != image0.shape[:2] or image1.shape[:2] != usable.shape:
+        raise ValueError("Safe-wall exposure masks must match both RGB images")
+    if rgb_risk_mask is not None:
+        risk = np.asarray(rgb_risk_mask)
+        if risk.shape != usable.shape:
+            raise ValueError("RGB disparity risk mask must match the canvas")
+        usable &= risk == 0
+    if not np.any(usable):
+        return None, 0
+
+    lab0 = cv2.cvtColor(image0, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab1 = cv2.cvtColor(image1, cv2.COLOR_BGR2LAB).astype(np.float32)
+    luminance0 = lab0[:, :, 0]
+    luminance1 = lab1[:, :, 0]
+    gradient0 = _gradient_magnitude(image0)
+    gradient1 = _gradient_magnitude(image1)
+    gradient_values = np.concatenate((gradient0[usable], gradient1[usable]))
+    if gradient_values.size == 0:
+        return None, 0
+    # The lower half of the local gradient distribution is the intended wall
+    # candidate.  The cap keeps a generally textured scene from admitting text
+    # and hose edges simply because every pixel happens to have some gradient.
+    gradient_limit = float(
+        np.clip(np.percentile(gradient_values, 40), 6.0, 24.0)
+    )
+    unclipped = (
+        (luminance0 >= 12.0)
+        & (luminance0 <= 243.0)
+        & (luminance1 >= 12.0)
+        & (luminance1 <= 243.0)
+        & (np.max(image0, axis=2) < 253)
+        & (np.max(image1, axis=2) < 253)
+        & (np.min(image0, axis=2) > 2)
+        & (np.min(image1, axis=2) > 2)
+    )
+    candidates = (
+        usable
+        & unclipped
+        & (gradient0 <= gradient_limit)
+        & (gradient1 <= gradient_limit)
+    )
+    common_count = int(np.count_nonzero(usable))
+    minimum_support = max(16, min(256, int(np.ceil(common_count * 0.02))))
+    if int(np.count_nonzero(candidates)) < minimum_support:
+        return None, 0
+
+    log_ratio = np.log((luminance0 + 1.0) / (luminance1 + 1.0))
+    candidate_values = log_ratio[candidates]
+    median = float(np.median(candidate_values))
+    deviation = np.abs(candidate_values - median)
+    mad = float(np.median(deviation))
+    # A small absolute floor still rejects a saturated coloured patch in an
+    # otherwise perfectly uniform wall, for which MAD is often exactly zero.
+    log_tolerance = max(0.015, 3.0 * 1.4826 * mad)
+    trimmed = candidates & (np.abs(log_ratio - median) <= log_tolerance)
+    if int(np.count_nonzero(trimmed)) < minimum_support:
+        return None, 0
+
+    provisional_ratio = float(np.exp(median))
+    rgb_residual = np.linalg.norm(
+        image0.astype(np.float32)
+        - image1.astype(np.float32) * provisional_ratio,
+        axis=2,
+    )
+    residual_values = rgb_residual[trimmed]
+    residual_median = float(np.median(residual_values))
+    residual_mad = float(np.median(np.abs(residual_values - residual_median)))
+    residual_tolerance = max(8.0, residual_median + 3.0 * 1.4826 * residual_mad)
+    safe = trimmed & (rgb_residual <= residual_tolerance)
+    support = int(np.count_nonzero(safe))
+    if support < minimum_support:
+        return None, 0
+
+    values = log_ratio[safe]
+    centre = float(np.median(values))
+    scale = max(0.005, 1.4826 * float(np.median(np.abs(values - centre))))
+    residual = np.abs(values - centre)
+    huber_weights = np.minimum(1.0, 1.5 * scale / np.maximum(residual, 1e-9))
+    estimate = float(np.sum(huber_weights * values) / np.sum(huber_weights))
+    if not np.isfinite(estimate):
+        return None, 0
+    return estimate, support
+
+
+def _safe_wall_exposure_compensation(
+    images: list[np.ndarray],
+    valid_masks: list[np.ndarray],
+    mode: str,
+    *,
+    order: np.ndarray | None = None,
+    pair_overlap_masks: tuple[np.ndarray, ...] | list[np.ndarray] | None = None,
+    pair_rgb_risk_masks: tuple[np.ndarray, ...] | list[np.ndarray] | None = None,
+) -> tuple[list[np.ndarray], np.ndarray, dict[str, int | float]]:
+    """Apply a smooth sequence of gains estimated only from safe wall overlap."""
+
+    if mode not in {"none", "global_gain", "safe_wall_smooth_gain"}:
+        raise ValueError(
+            "Projected exposure mode must be none, global_gain, or "
+            "safe_wall_smooth_gain"
+        )
+    if len(images) != len(valid_masks) or not images:
+        raise ValueError("Exposure images and valid masks must be non-empty and aligned")
+    adjusted = [image.copy() for image in images]
+    gains = np.ones((len(images), 3), dtype=np.float64)
+    metrics: dict[str, int | float] = {
+        "safe_exposure_pair_count": 0,
+        "safe_exposure_support_pixel_count": 0,
+        "safe_exposure_pair_fraction": 0.0,
+    }
+    if mode == "none" or len(images) < 2:
+        return adjusted, gains, metrics
+
+    if order is None:
+        order_array = np.arange(len(images), dtype=np.int64)
+    else:
+        order_array = np.asarray(order, dtype=np.int64)
+        if order_array.shape != (len(images),) or not np.array_equal(
+            np.sort(order_array), np.arange(len(images), dtype=np.int64)
+        ):
+            raise ValueError("Exposure source order must be a source-index permutation")
+    pair_count = len(images) - 1
+    if pair_overlap_masks is not None and len(pair_overlap_masks) != pair_count:
+        raise ValueError("Exposure pair overlap masks must match adjacent source pairs")
+    if pair_rgb_risk_masks is not None and len(pair_rgb_risk_masks) != pair_count:
+        raise ValueError("Exposure RGB risk masks must match adjacent source pairs")
+
+    relationships: list[tuple[int, int, float, int]] = []
+    for pair_rank, (first_value, second_value) in enumerate(
+        zip(order_array[:-1], order_array[1:], strict=True)
+    ):
+        first, second = int(first_value), int(second_value)
+        common = (valid_masks[first] > 0) & (valid_masks[second] > 0)
+        if pair_overlap_masks is not None:
+            overlap = np.asarray(pair_overlap_masks[pair_rank])
+            if overlap.shape != common.shape:
+                raise ValueError("Exposure pair overlap mask must match the canvas")
+            common &= overlap > 0
+        supplied_risk = (
+            None
+            if pair_rgb_risk_masks is None
+            else np.asarray(pair_rgb_risk_masks[pair_rank])
+        )
+        pair_valid = np.where(common, 255, 0).astype(np.uint8)
+        visual_risk, _, _ = _pair_risk_mask(
+            images[first],
+            images[second],
+            pair_valid,
+            pair_valid,
+            None,
+            None,
+            rgb_risk_mask=supplied_risk,
+        )
+        relation, support = _safe_wall_pair_log_gain(
+            images[first], images[second], common, visual_risk
+        )
+        if relation is None:
+            continue
+        relationships.append((first, second, relation, support))
+
+    metrics["safe_exposure_pair_count"] = len(relationships)
+    metrics["safe_exposure_support_pixel_count"] = int(
+        sum(item[3] for item in relationships)
+    )
+    metrics["safe_exposure_pair_fraction"] = float(
+        len(relationships) / max(1, pair_count)
+    )
+    if not relationships:
+        return adjusted, gains, metrics
+
+    rows: list[np.ndarray] = []
+    targets: list[float] = []
+    median_support = max(1.0, float(np.median([item[3] for item in relationships])))
+    for first, second, relation, support in relationships:
+        weight = float(np.clip(np.sqrt(support / median_support), 0.25, 4.0))
+        row = np.zeros(len(images), dtype=np.float64)
+        # Corrected first and second luminance should match:
+        # log(gain_second) - log(gain_first) = log(first / second).
+        row[first] = -weight
+        row[second] = weight
+        rows.append(row)
+        targets.append(relation * weight)
+
+    anchor = np.zeros(len(images), dtype=np.float64)
+    anchor[int(order_array[0])] = 4.0
+    rows.append(anchor)
+    targets.append(0.0)
+    # A light second-difference regularizer keeps a strip sequence from
+    # turning small pairwise sensor noise into visible vertical gain bands.
+    smooth_weight = 0.20
+    for previous, current, following in zip(
+        order_array[:-2], order_array[1:-1], order_array[2:], strict=True
+    ):
+        row = np.zeros(len(images), dtype=np.float64)
+        row[int(previous)] = smooth_weight
+        row[int(current)] = -2.0 * smooth_weight
+        row[int(following)] = smooth_weight
+        rows.append(row)
+        targets.append(0.0)
+    solved, *_ = np.linalg.lstsq(
+        np.stack(rows, axis=0), np.asarray(targets, dtype=np.float64), rcond=None
+    )
+    if solved.shape != (len(images),) or not np.isfinite(solved).all():
+        raise RuntimeError("Safe-wall exposure solver returned invalid gains")
+    # The pair equations are invariant to a shared scale.  Preserve the
+    # sequence's median brightness rather than pinning an arbitrary endpoint.
+    solved -= float(np.median(solved))
+    scalar_gains = np.exp(np.clip(solved, -4.0, 4.0))
+    if not np.isfinite(scalar_gains).all():
+        raise RuntimeError("Safe-wall exposure solver returned non-finite gains")
+    for image, gain in zip(adjusted, scalar_gains, strict=True):
+        image[:] = np.clip(image.astype(np.float32) * float(gain), 0.0, 255.0).astype(
+            np.uint8
+        )
+    return adjusted, np.repeat(scalar_gains[:, None], 3, axis=1), metrics
+
+
 def _projected_exposure_compensation(
     images: list[np.ndarray],
     valid_masks: list[np.ndarray],
     mode: str,
+    *,
+    order: np.ndarray | None = None,
+    pair_overlap_masks: tuple[np.ndarray, ...] | list[np.ndarray] | None = None,
+    pair_rgb_risk_masks: tuple[np.ndarray, ...] | list[np.ndarray] | None = None,
 ) -> tuple[list[np.ndarray], np.ndarray]:
-    if mode not in {"none", "global_gain"}:
-        raise ValueError("Projected exposure mode must be none or global_gain")
-    adjusted = [image.copy() for image in images]
-    gains = np.ones((len(images), 3), dtype=np.float64)
-    if mode == "none" or len(images) < 2:
-        return adjusted, gains
-    compensator = cv2.detail.ExposureCompensator_createDefault(
-        cv2.detail.ExposureCompensator_GAIN
+    """Compatibility wrapper for the safe-wall projected exposure estimator."""
+
+    adjusted, gains, _ = _safe_wall_exposure_compensation(
+        images,
+        valid_masks,
+        mode,
+        order=order,
+        pair_overlap_masks=pair_overlap_masks,
+        pair_rgb_risk_masks=pair_rgb_risk_masks,
     )
-    try:
-        compensator.feed([(0, 0)] * len(images), adjusted, valid_masks)
-        for index, (image, valid) in enumerate(
-            zip(adjusted, valid_masks, strict=True)
-        ):
-            compensator.apply(index, (0, 0), image, valid)
-    except cv2.error as exc:
-        raise RuntimeError(
-            "Projected global exposure compensation failed; no fallback is allowed"
-        ) from exc
-    scalar_gains = np.asarray(
-        [
-            float(np.asarray(value, dtype=np.float64).reshape(-1)[0])
-            for value in compensator.getMatGains()
-        ],
-        dtype=np.float64,
-    )
-    if scalar_gains.shape != (len(images),) or not np.isfinite(scalar_gains).all():
-        raise RuntimeError("OpenCV returned invalid projected exposure gains")
-    return adjusted, np.repeat(scalar_gains[:, None], 3, axis=1)
+    return adjusted, gains
 
 
 def _risk_has_crossing_channel(
@@ -1857,6 +2135,7 @@ def _apply_projected_hard_constraints(
     blend_radius: int,
     sharpness_scores: list[float],
     first_rank: int,
+    rgb_risk_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     risk, _, _ = _pair_risk_mask(
         images[first],
@@ -1872,6 +2151,7 @@ def _apply_projected_hard_constraints(
         camera_depth_valid0=camera_depth_valid_masks[first],
         camera_depth_valid1=camera_depth_valid_masks[second],
         world_surface_depth=True,
+        rgb_risk_mask=rgb_risk_mask,
     )
     risk_bool = risk > 0
     if not np.any(risk_bool):
@@ -2011,8 +2291,17 @@ def _opencv_multiband_owner_boundary_blend(
     camera_depth_valid_masks: list[np.ndarray],
     order: np.ndarray,
     levels: int,
-    radius: int,
+    radius: int | tuple[int, ...] | list[int],
+    pair_rgb_risk_masks: tuple[np.ndarray, ...] | list[np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int, float]:
+    """Blend only safe local adjacent-owner zones.
+
+    The hard owner image is built first.  RGB/depth disparity risk and its
+    radius-sized guard are then excluded *before* constructing a MultiBand
+    input.  Consequently a foreground edge can never be softened by a local
+    pyramid: it stays a direct copy of exactly one real RGB owner.
+    """
+
     height, width = owner_masks[0].shape
     owned = [mask > 0 for mask in owner_masks]
     owner_union = np.logical_or.reduce(owned)
@@ -2020,18 +2309,34 @@ def _opencv_multiband_owner_boundary_blend(
     for image, owner in zip(images, owned, strict=True):
         direct[owner] = image[owner]
 
-    blend_zone = np.zeros((height, width), dtype=bool)
+    pair_count = len(order) - 1
+    if isinstance(radius, (tuple, list, np.ndarray)):
+        pair_radii = tuple(int(value) for value in radius)
+        if len(pair_radii) != pair_count:
+            raise ValueError("Pair blend radii must match adjacent source pairs")
+    else:
+        pair_radii = (int(radius),) * pair_count
+    if any(value < 1 for value in pair_radii):
+        raise ValueError("Blend radii must be positive")
+    pair_radii = tuple(int(np.clip(value, 2, 8)) for value in pair_radii)
+    effective_levels = _effective_narrow_multiband_levels(levels)
+    if pair_rgb_risk_masks is not None and len(pair_rgb_risk_masks) != pair_count:
+        raise ValueError("RGB risk masks must match adjacent source pairs")
+
     maximum_zone_risk = 0.0
     neighbor_kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
-    diameter = radius * 2 + 1
-    zone_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (diameter, diameter))
-    pair_rows: list[tuple[int, int, int]] = []
+    pair_rows: list[tuple[int, int, int, int, np.ndarray, np.ndarray]] = []
     zone_assignment = np.full((height, width), -1, dtype=np.int16)
     best_boundary_distance = np.full((height, width), np.inf, dtype=np.float32)
     for pair_rank, (first_value, second_value) in enumerate(
         zip(order[:-1], order[1:], strict=True)
     ):
         first, second = int(first_value), int(second_value)
+        pair_radius = pair_radii[pair_rank]
+        diameter = pair_radius * 2 + 1
+        zone_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (diameter, diameter)
+        )
         boundary = owned[first] & (
             cv2.dilate(owned[second].astype(np.uint8), neighbor_kernel) > 0
         )
@@ -2042,29 +2347,66 @@ def _opencv_multiband_owner_boundary_blend(
             # No shared boundary means this pair is already separated by
             # unique-depth ownership.  There is nothing to blend locally.
             continue
+        pair_common = (valid_masks[first] > 0) & (valid_masks[second] > 0)
+        supplied_risk = (
+            None
+            if pair_rgb_risk_masks is None
+            else pair_rgb_risk_masks[pair_rank]
+        )
+        risk, _, _ = _pair_risk_mask(
+            images[first],
+            images[second],
+            valid_masks[first],
+            valid_masks[second],
+            depths[first],
+            depths[second],
+            depth_valid0=depth_valid_masks[first],
+            depth_valid1=depth_valid_masks[second],
+            camera_depth0=camera_depths[first],
+            camera_depth1=camera_depths[second],
+            camera_depth_valid0=camera_depth_valid_masks[first],
+            camera_depth_valid1=camera_depth_valid_masks[second],
+            world_surface_depth=True,
+            rgb_risk_mask=supplied_risk,
+        )
+        guard = cv2.dilate(
+            risk,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (diameter, diameter)),
+        ) > 0
         zone = cv2.dilate(boundary.astype(np.uint8), zone_kernel) > 0
-        pair_valid = (valid_masks[first] > 0) | (valid_masks[second] > 0)
-        zone &= pair_valid
+        # A blend has two real RGB inputs.  One-source portions stay direct
+        # owner copies, as does every risk/guard pixel.
+        zone &= pair_common & ~guard
+        if not np.any(zone):
+            continue
         distance = cv2.distanceTransform(
             (~boundary).astype(np.uint8), cv2.DIST_L2, 3
         )
         replace = zone & (distance < best_boundary_distance)
         zone_assignment[replace] = pair_rank
         best_boundary_distance[replace] = distance[replace]
-        pair_rows.append((pair_rank, first, second))
+        pair_rows.append((pair_rank, first, second, pair_radius, guard, risk > 0))
 
     del best_boundary_distance
     blend_zone = zone_assignment >= 0
-    for pair_rank, first, second in pair_rows:
+    for pair_rank, first, second, pair_radius, guard, risk_bool in pair_rows:
         zone = zone_assignment == pair_rank
         if not np.any(zone):
-            raise RuntimeError("An adjacent owner boundary has no exclusive blend zone")
+            continue
+        if np.any(zone & guard) or np.any(zone & risk_bool):
+            raise RuntimeError("MultiBand blend zone reaches an RGB disparity guard")
 
         # Run one independent local blender per verified adjacent owner
         # boundary.  A single global pyramid can leak low-frequency colour
         # from source i+2 across a narrow source-i+1 territory even when its
         # level-zero mask never touches the boundary.
+        diameter = pair_radius * 2 + 1
+        zone_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (diameter, diameter)
+        )
         support = cv2.dilate(zone.astype(np.uint8), zone_kernel) > 0
+        support &= ~guard
+        support &= (valid_masks[first] > 0) & (valid_masks[second] > 0)
         first_mask = support & (
             owned[first] | (zone & (valid_masks[first] > 0))
         )
@@ -2089,7 +2431,7 @@ def _opencv_multiband_owner_boundary_blend(
             for mask in (first_mask, second_mask)
         ]
         blender = cv2.detail_MultiBandBlender()
-        blender.setNumBands(int(levels))
+        blender.setNumBands(effective_levels)
         blender.prepare((0, 0, local_width, local_height))
         try:
             for source_index, mask in zip(
@@ -2129,26 +2471,9 @@ def _opencv_multiband_owner_boundary_blend(
         local_zone = zone[y : y + local_height, x : x + local_width]
         direct_view = direct[y : y + local_height, x : x + local_width]
         direct_view[local_zone] = blended[local_zone]
-
-        risk, _, _ = _pair_risk_mask(
-            images[first],
-            images[second],
-            valid_masks[first],
-            valid_masks[second],
-            depths[first],
-            depths[second],
-            depth_valid0=depth_valid_masks[first],
-            depth_valid1=depth_valid_masks[second],
-            camera_depth0=camera_depths[first],
-            camera_depth1=camera_depths[second],
-            camera_depth_valid0=camera_depth_valid_masks[first],
-            camera_depth_valid1=camera_depth_valid_masks[second],
-            world_surface_depth=True,
-        )
-        audited = zone & (valid_masks[first] > 0) & (valid_masks[second] > 0)
-        if np.any(audited):
+        if np.any(zone):
             maximum_zone_risk = max(
-                maximum_zone_risk, float(np.mean((risk > 0)[audited]))
+                maximum_zone_risk, float(np.mean(risk_bool[zone]))
             )
     return (
         direct,
@@ -2184,8 +2509,11 @@ def _coerce_prewarped_render_inputs(
 ]:
     if len(sources) < 2:
         raise ValueError("Prewarped scan rendering requires at least two sources")
-    if len(sources) > 32:
-        raise ValueError("Prewarped scan rendering supports at most 32 sources")
+    if len(sources) > _HARD_MAX_PREWARPED_SOURCE_COUNT:
+        raise ValueError(
+            "Prewarped scan rendering supports at most "
+            f"{_HARD_MAX_PREWARPED_SOURCE_COUNT} sources"
+        )
     images = [item[0] for item in arrays]
     color_valid = [item[1] for item in arrays]
     depths = [item[2] for item in arrays]
@@ -2242,20 +2570,68 @@ def _validate_prewarped_budget(
         )
 
 
+def _effective_narrow_multiband_levels(multiband_levels: int) -> int:
+    if multiband_levels < 1:
+        raise ValueError("multiband_levels must be at least one")
+    # A larger pyramid leaks low-frequency foreground colour far outside a
+    # narrow scan seam.  Smoothness here means a small wall-only transition,
+    # never a full-frame blur.
+    return min(3, int(multiband_levels))
+
+
+def _owner_scan_width(mask: np.ndarray, axis: np.ndarray) -> int:
+    """Return an owner's populated span along the scan direction in pixels."""
+
+    owned = np.asarray(mask, dtype=bool)
+    if owned.ndim != 2:
+        raise ValueError("Owner mask must be two-dimensional")
+    horizontal = abs(float(axis[0])) >= abs(float(axis[1]))
+    profile = np.any(owned, axis=0 if horizontal else 1)
+    return int(np.count_nonzero(profile))
+
+
+def _pair_blend_radius_from_masks(
+    first_mask: np.ndarray,
+    second_mask: np.ndarray,
+    axis: np.ndarray | None = None,
+) -> int:
+    """Derive the allowed narrow blend half-width from two owner spans."""
+
+    scan_axis = (
+        np.array([1.0, 0.0], dtype=np.float64)
+        if axis is None
+        else np.asarray(axis, dtype=np.float64)
+    )
+    narrower_width = min(
+        _owner_scan_width(first_mask, scan_axis),
+        _owner_scan_width(second_mask, scan_axis),
+    )
+    return int(np.clip(np.floor(0.20 * narrower_width), 2, 8))
+
+
+def _adaptive_pair_blend_radii(
+    owner_masks: list[np.ndarray], order: np.ndarray, axis: np.ndarray
+) -> tuple[int, ...]:
+    """Compute one 2--8 px local blend radius for each adjacent owner pair."""
+
+    if len(order) < 2:
+        raise ValueError("At least two ordered owners are required")
+    return tuple(
+        _pair_blend_radius_from_masks(
+            owner_masks[int(first)], owner_masks[int(second)], axis
+        )
+        for first, second in zip(order[:-1], order[1:], strict=True)
+    )
+
+
 def _prewarped_blend_radius(
     shape: tuple[int, int], multiband_levels: int
 ) -> int:
-    if multiband_levels < 1:
-        raise ValueError("multiband_levels must be at least one")
+    """Return a conservative layout guard; final radii come from owner spans."""
+
+    _effective_narrow_multiband_levels(multiband_levels)
     height, width = shape
-    # Five OpenCV bands have an effective half-width of roughly 2**5 pixels.
-    # Cap that footprint on small diagnostic canvases so unrelated residual
-    # components cannot merge merely because the test/source is low resolution.
-    return min(
-        64,
-        max(4, 1 << min(multiband_levels, 6)),
-        max(4, min(height, width) // 8),
-    )
+    return int(np.clip(np.floor(0.20 * min(height, width)), 2, 8))
 
 
 def _prepare_projected_scan_layout(
@@ -2326,6 +2702,35 @@ def _coerce_pair_overlap_mask(
     if mask.dtype not in {np.dtype(np.uint8), np.dtype(np.bool_)}:
         raise ValueError("Prewarped pair overlap masks must be uint8 or bool")
     return mask > 0
+
+
+def _coerce_pair_rgb_risk_masks(
+    values: list[np.ndarray] | tuple[np.ndarray, ...] | None,
+    shape: tuple[int, int],
+    pair_count: int,
+) -> tuple[np.ndarray, ...]:
+    """Validate optional caller-supplied RGB disparity risk masks.
+
+    These masks are intentionally pair-local.  A source-local foreground mask
+    does not say whether the two views disagree there, whereas a pair mask can
+    be used consistently for hard ownership, seam audit, and blending.
+    """
+
+    if values is None:
+        return tuple(np.zeros(shape, dtype=np.uint8) for _ in range(pair_count))
+    if len(values) != pair_count:
+        raise ValueError("pair_rgb_risk_masks must contain one mask per adjacent pair")
+    coerced: list[np.ndarray] = []
+    for pair_rank, value in enumerate(values):
+        mask = np.asarray(value)
+        if mask.shape != shape:
+            raise ValueError(
+                f"Prewarped RGB risk mask {pair_rank} must match the shared canvas"
+            )
+        if mask.dtype not in {np.dtype(np.uint8), np.dtype(np.bool_)}:
+            raise ValueError("Prewarped RGB risk masks must be uint8 or bool")
+        coerced.append(np.where(mask > 0, 255, 0).astype(np.uint8))
+    return tuple(coerced)
 
 
 def _prepare_prewarped_scan_layout(
@@ -2457,6 +2862,7 @@ def _render_prepared_prewarped_scan_panorama(
     camera_depth_valid: list[np.ndarray],
     sharpness: list[float],
     prepared: _PreparedPrewarpedLayout,
+    pair_rgb_risk_masks: tuple[np.ndarray, ...],
     *,
     max_megapixels: float,
     multiband_levels: int,
@@ -2466,20 +2872,36 @@ def _render_prepared_prewarped_scan_panorama(
     shape = images[0].shape[:2]
     height, width = shape
     _validate_prewarped_budget(shape, len(sources), max_megapixels)
-    blend_radius = _prewarped_blend_radius(shape, multiband_levels)
-    corrected, gains = _projected_exposure_compensation(
-        images, color_valid, exposure_mode
+    effective_multiband_levels = _effective_narrow_multiband_levels(
+        multiband_levels
     )
-    owner_masks = [mask.copy() for mask in prepared.initial_owner_masks]
-    hard_components = 0
     order = prepared.source_order
     if len(prepared.pair_allowed_masks) != len(order) - 1:
         raise RuntimeError("Prewarped layout does not define every adjacent pair")
+    if len(pair_rgb_risk_masks) != len(order) - 1:
+        raise ValueError("RGB risk masks must match adjacent prewarped pairs")
+    exposure_overlap_masks = tuple(
+        ((first_allowed > 0) & (second_allowed > 0)).astype(np.uint8)
+        for first_allowed, second_allowed in prepared.pair_allowed_masks
+    )
+    corrected, gains, exposure_metrics = _safe_wall_exposure_compensation(
+        images,
+        color_valid,
+        exposure_mode,
+        order=order,
+        pair_overlap_masks=exposure_overlap_masks,
+        pair_rgb_risk_masks=pair_rgb_risk_masks,
+    )
+    owner_masks = [mask.copy() for mask in prepared.initial_owner_masks]
+    hard_components = 0
     for pair_rank, ((first_value, second_value), allowed) in enumerate(
         zip(zip(order[:-1], order[1:], strict=True), prepared.pair_allowed_masks, strict=True)
     ):
         first, second = int(first_value), int(second_value)
         first_allowed, second_allowed = allowed
+        constraint_radius = _pair_blend_radius_from_masks(
+            first_allowed, second_allowed
+        )
         first_allowed, second_allowed, _, component_count = (
             _apply_projected_hard_constraints(
                 sources,
@@ -2493,9 +2915,10 @@ def _render_prepared_prewarped_scan_panorama(
                 second,
                 first_allowed,
                 second_allowed,
-                blend_radius,
+                constraint_radius,
                 sharpness,
                 pair_rank,
+                pair_rgb_risk_masks[pair_rank],
             )
         )
         first_owner, second_owner = _graphcut_pair_owner_masks(
@@ -2520,10 +2943,11 @@ def _render_prepared_prewarped_scan_panorama(
         owner_masks,
         np.array([1.0, 0.0], dtype=np.float64),
         order,
-        blend_radius,
+        8,
         depth_valid_masks=depth_valid,
         camera_depth_maps=camera_depths,
         camera_depth_valid_masks=camera_depth_valid,
+        pair_rgb_risk_masks=pair_rgb_risk_masks,
         world_surface_depth=True,
     )
     structural_reasons: list[str] = []
@@ -2542,6 +2966,10 @@ def _render_prepared_prewarped_scan_panorama(
             "Prewarped owner topology validation failed: " + "; ".join(structural_reasons)
         )
 
+    pair_blend_radii = _adaptive_pair_blend_radii(
+        owner_masks, order, np.array([1.0, 0.0], dtype=np.float64)
+    )
+
     blended, blended_mask, blend_zone_pixels, zone_risk = (
         _opencv_multiband_owner_boundary_blend(
             corrected,
@@ -2552,17 +2980,15 @@ def _render_prepared_prewarped_scan_panorama(
             camera_depths,
             camera_depth_valid,
             order,
-            multiband_levels,
-            blend_radius,
+            effective_multiband_levels,
+            pair_blend_radii,
+            pair_rgb_risk_masks,
         )
     )
     quality_metrics["blend_zone_risk_fraction"] = float(zone_risk)
-    x, y, crop_width, crop_height = cv2.boundingRect(
-        (blended_mask > 0).astype(np.uint8)
-    )
-    if crop_width == 0 or crop_height == 0:
+    if not np.any(blended_mask):
         raise RuntimeError("Prewarped RGB-D fusion produced no valid output pixels")
-    crop = CropInfo(x=x, y=y, width=crop_width, height=crop_height)
+    crop = largest_valid_rectangle(blended_mask)
     panorama = blended[crop.y : crop.y + crop.height, crop.x : crop.x + crop.width]
     projected_heights = [
         _source_projected_height(source, valid)
@@ -2582,9 +3008,16 @@ def _render_prepared_prewarped_scan_panorama(
             "hard_owner_component_count": hard_components,
             "multiband_output_mask_complete": True,
             "near_foreground_threshold_mm": _PROJECTED_NEAR_FOREGROUND_MM,
+            "blend_radius_min_pixels": int(min(pair_blend_radii)),
+            "blend_radius_max_pixels": int(max(pair_blend_radii)),
+            **exposure_metrics,
         }
     )
     failure_reasons: list[str] = []
+    if zone_risk > 0.0:
+        # This is structural, not an image-quality preference: risk and its
+        # guard must be direct-owned RGB, never a MultiBand result.
+        raise RuntimeError("the actual MultiBand zone reaches RGB-D risk")
     if crop_height_ratio < 0.90:
         failure_reasons.append("less than 90% of projected source height remains")
     if crop_width_ratio < 0.95:
@@ -2593,8 +3026,6 @@ def _render_prepared_prewarped_scan_panorama(
         failure_reasons.append("a final GraphCut boundary crosses RGB-D risk")
     if float(quality_metrics.get("blend_guard_risk_fraction", 0.0)) > 0.10:
         failure_reasons.append("the MultiBand guard reaches RGB-D risk")
-    if zone_risk > 0.10:
-        failure_reasons.append("the actual MultiBand zone reaches RGB-D risk")
     if float(quality_metrics["minimum_seam_cross_coverage_ratio"]) < 0.80:
         failure_reasons.append("an owner boundary has insufficient cross coverage")
     if float(quality_metrics["safe_seam_lab_residual_p95"]) > 48.0:
@@ -2613,8 +3044,8 @@ def _render_prepared_prewarped_scan_panorama(
         source_count=len(sources),
         source_order=tuple(int(value) for value in order),
         color_gains=tuple(tuple(float(value) for value in gain) for gain in gains),
-        multiband_levels=multiband_levels,
-        blend_radius_pixels=blend_radius,
+        multiband_levels=effective_multiband_levels,
+        blend_radius_pixels=int(max(pair_blend_radii)),
         blend_zone_pixel_count=blend_zone_pixels,
         hard_owner_component_count=hard_components,
         owner_masks=tuple(mask.copy() for mask in owner_masks),
@@ -2634,6 +3065,7 @@ def render_prewarped_scan_panorama(
     quality_gate: bool = True,
     sharpness_scores: list[float] | tuple[float, ...] | None = None,
     pair_overlap_masks: list[np.ndarray] | tuple[np.ndarray, ...] | None = None,
+    pair_rgb_risk_masks: list[np.ndarray] | tuple[np.ndarray, ...] | None = None,
     layout: PrewarpedScanLayout | None = None,
 ) -> tuple[np.ndarray, PrewarpedScanRenderInfo]:
     """Render verified prewarped scan strips with independent colour/depth masks.
@@ -2643,12 +3075,22 @@ def render_prewarped_scan_panorama(
     or synthetic overlap is performed here.  ``pair_overlap_masks`` may narrow
     competition to known true overlaps; when omitted, the adjacent colour-mask
     intersections are used and must form disjoint pair corridors.
+
+    ``pair_rgb_risk_masks`` is optional pair-local RGB disparity risk from the
+    strip renderer.  It is combined with the renderer's own Lab/gradient risk
+    before hard ownership and is also used to keep every risk guard pixel out
+    of MultiBand blending.
     """
 
     if layout is not None:
         if any(
             value is not None
-            for value in (source_order, owner_boundaries_x, pair_overlap_masks)
+            for value in (
+                source_order,
+                owner_boundaries_x,
+                pair_overlap_masks,
+                pair_rgb_risk_masks,
+            )
         ):
             raise ValueError(
                 "Pass either layout or explicit source_order/owner_boundaries_x/pairs"
@@ -2656,6 +3098,7 @@ def render_prewarped_scan_panorama(
         source_order = layout.source_order
         owner_boundaries_x = layout.owner_boundaries_x
         pair_overlap_masks = layout.pair_overlap_masks
+        pair_rgb_risk_masks = layout.pair_rgb_risk_masks
     if source_order is None or owner_boundaries_x is None:
         raise ValueError(
             "source_order and owner_boundaries_x are required for prewarped rendering"
@@ -2681,6 +3124,11 @@ def render_prewarped_scan_panorama(
         owner_boundaries_x=owner_boundaries_x,
         pair_overlap_masks=pair_overlap_masks,
     )
+    rgb_risk_masks = _coerce_pair_rgb_risk_masks(
+        pair_rgb_risk_masks,
+        images[0].shape[:2],
+        len(prepared.source_order) - 1,
+    )
     return _render_prepared_prewarped_scan_panorama(
         source_list,
         images,
@@ -2691,6 +3139,7 @@ def render_prewarped_scan_panorama(
         camera_depth_valid,
         sharpness,
         prepared,
+        rgb_risk_masks,
         max_megapixels=max_megapixels,
         multiband_levels=multiband_levels,
         exposure_mode=exposure_mode,
@@ -2706,6 +3155,7 @@ def render_projected_scan_panorama(
     exposure_mode: str = "global_gain",
     quality_gate: bool = True,
     sharpness_scores: list[float] | tuple[float, ...] | None = None,
+    pair_rgb_risk_masks: list[np.ndarray] | tuple[np.ndarray, ...] | None = None,
 ) -> tuple[np.ndarray, ProjectedScanRenderInfo]:
     """Render strict formal RGB-D projections with no geometric fallback."""
 
@@ -2724,6 +3174,11 @@ def render_projected_scan_panorama(
     _validate_prewarped_budget(images[0].shape[:2], len(sources), max_megapixels)
     blend_radius = _prewarped_blend_radius(images[0].shape[:2], multiband_levels)
     prepared = _prepare_projected_scan_layout(color_valid, centers, blend_radius)
+    rgb_risk_masks = _coerce_pair_rgb_risk_masks(
+        pair_rgb_risk_masks,
+        images[0].shape[:2],
+        len(prepared.source_order) - 1,
+    )
     panorama, prewarped_info = _render_prepared_prewarped_scan_panorama(
         sources,
         images,
@@ -2734,6 +3189,7 @@ def render_projected_scan_panorama(
         camera_depth_valid,
         sharpness,
         prepared,
+        rgb_risk_masks,
         max_megapixels=max_megapixels,
         multiband_levels=multiband_levels,
         exposure_mode=exposure_mode,

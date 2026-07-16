@@ -100,12 +100,32 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert (output / "delivery.json").is_file()
     assert not (output / "failure.json").exists()
     assert report["layout_selection"]["mode"] == "adaptive_rgbd_pose_nodes"
+    assert report["render_strategy"] == "calibrated_rgb_pushbroom"
+    assert report["render"]["backend"] == "calibrated_rgb_pushbroom"
+    assert report["render"]["pixel_source"] == "calibrated_rgb_only"
+    assert report["render"]["depth_used_for_output_pixels"] is False
+    assert report["render"]["point_cloud_constructed"] is False
+    assert report["render"]["tsdf_constructed"] is False
+    assert report["render"]["reference_plane_fitted"] is False
     assert report["render"]["quality_metrics"]["quality_pass"] is True
     assert report["pose_quality"]["quality_pass"] is True
     assert report["pose_graph"]["connected"] is True
     assert report["render"]["selection"]["interpolated_pose_count"] == 0
     assert len(backend.optimized_node_ids) >= 2
     assert backend.estimated_pairs
+    assert report["render"]["selection"]["mode"] == (
+        "calibrated_rgb_pushbroom_all_real_pose_nodes"
+    )
+    assert report["render"]["frame_ids"] == list(backend.optimized_node_ids)
+    assert report["render"]["source_count"] == len(backend.optimized_node_ids)
+    metrics = report["render"]["quality_metrics"]
+    assert metrics["source_remap_count"] == len(backend.optimized_node_ids)
+    assert 2 <= metrics["maximum_resident_strips"] <= 5
+    assert all(
+        pair["blend_zone_risk_pixel_count"] == 0
+        and 2 <= pair["blend_width_pixels"] <= 8
+        for pair in report["render"]["pairs"]
+    )
 
     transforms = json.loads(
         (output / "transforms.json").read_text(encoding="utf-8")
@@ -116,12 +136,33 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
         np.asarray(node["camera_to_world"]).shape == (4, 4)
         for node in transforms["nodes"]
     )
+    render_transforms = json.loads(
+        (output / "render_transforms.json").read_text(encoding="utf-8")
+    )
+    assert render_transforms["schema"] == "calibrated-rgb-pushbroom/v1"
+    assert render_transforms["pixel_source"] == "calibrated_rgb_only"
+    assert [source["frame_id"] for source in render_transforms["sources"]] == list(
+        backend.optimized_node_ids
+    )
+    assert all("aligned_depth_path" not in source for source in render_transforms["sources"])
     delivery = json.loads((output / "delivery.json").read_text(encoding="utf-8"))
     assert delivery["quality_pass"] is True
     assert delivery["pose_backend"] == "open3d_rgbd"
-    assert delivery["seam_backend"] == "graphcut_depth_constrained"
-    assert np.all(np.max(panorama[[0, -1]], axis=2) > 0)
-    assert np.all(np.max(panorama[:, [0, -1]], axis=2) > 0)
+    assert delivery["projection"] == "calibrated_rgb_pushbroom"
+    assert delivery["seam_backend"] == "rgb_monotonic_hard_owner_graphcut"
+    assert delivery["blend_backend"] == "safe_wall_local_multiband_narrow_owner_boundary"
+    for legacy_artifact in (
+        "foreground_mask.png",
+        "background_exclusion_mask.png",
+        "tsdf_foreground_mask.png",
+        "tsdf_mesh.glb",
+        "tsdf_mesh_viewer.html",
+    ):
+        assert not (output / legacy_artifact).exists()
+    crop = report["render"]["crop"]
+    assert panorama.shape[:2] == (crop["height"], crop["width"])
+    assert metrics["crop_height_ratio"] >= 0.85
+    assert metrics["crop_width_ratio"] >= 0.95
 
 
 def test_importing_formal_sequence_does_not_load_legacy_model_stack() -> None:
@@ -137,7 +178,9 @@ def test_importing_formal_sequence_does_not_load_legacy_model_stack() -> None:
                 "blocked=('torch', 'kornia', 'lightglue', "
                 "'panorama_demo.unistitch_adapter', "
                 "'panorama_demo.stitch_common', "
-                "'panorama_demo.central_strip'); "
+                "'panorama_demo.central_strip', "
+                "'panorama_demo.dense_fusion', "
+                "'panorama_demo.rgbd_projection'); "
                 "loaded=[name for name in sys.modules "
                 "if any(name == item or name.startswith(item + '.') "
                 "for item in blocked)]; "
@@ -175,7 +218,7 @@ def test_diagnostic_mode_bypasses_quality_thresholds_but_never_publishes(
     # diagnostic mode; graph connectivity and finite SE(3) are still enforced.
     backend = _KnownTrajectoryRGBDBackend(session, fitness=0.0, rmse_mm=500.0)
     original_capture_quality = sequence.assess_capture_quality
-    original_render = sequence.render_projected_scan_panorama
+    original_render = sequence.render_calibrated_rgb_pushbroom
 
     def failing_capture_quality(*args, **kwargs):
         result = original_capture_quality(*args, **kwargs)
@@ -185,13 +228,16 @@ def test_diagnostic_mode_bypasses_quality_thresholds_but_never_publishes(
 
     def failing_render(*args, **kwargs):
         assert kwargs["quality_gate"] is False
-        panorama, info = original_render(*args, **kwargs)
-        info.quality_metrics["quality_pass"] = False
-        return panorama, info
+        result = original_render(*args, **kwargs)
+        metadata = dict(result.metadata)
+        quality_metrics = dict(metadata["quality_metrics"])
+        quality_metrics["quality_pass"] = False
+        metadata["quality_metrics"] = quality_metrics
+        return SimpleNamespace(panorama=result.panorama, metadata=metadata)
 
     monkeypatch.setattr(sequence, "assess_capture_quality", failing_capture_quality)
     monkeypatch.setattr(
-        sequence, "render_projected_scan_panorama", failing_render
+        sequence, "render_calibrated_rgb_pushbroom", failing_render
     )
     arguments = [str(session), "--output", str(output)]
     if activation == "cli":
@@ -225,6 +271,8 @@ def test_diagnostic_mode_bypasses_quality_thresholds_but_never_publishes(
     assert report["input_quality"]["quality_pass"] is False
     assert report["pose_quality"]["quality_pass"] is False
     assert report["render"]["quality_metrics"]["quality_pass"] is False
+    assert report["render"]["backend"] == "calibrated_rgb_pushbroom"
+    assert report["render"]["depth_used_for_output_pixels"] is False
     assert report["diagnostic_overrides"] == {
         "input_quality_thresholds_bypassed": True,
         "odometry_quality_thresholds_bypassed": True,

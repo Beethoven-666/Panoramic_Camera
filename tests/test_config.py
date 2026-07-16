@@ -24,7 +24,11 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
     assert config["stitch"]["max_canvas_megapixels"] == 200
     assert config["stitch"]["diagnostic_force"] is False
     assert config["stitch"]["pose_backend"] == "hybrid_orbslam3_rgbd"
-    assert config["stitch"]["dense_fusion_backend"] == "tsdf_plane_dense_rgbd"
+    assert config["stitch"]["sequence_blend_mode"] == (
+        "calibrated_rgb_pushbroom"
+    )
+    assert "dense_fusion_backend" not in config["stitch"]
+    assert "rgbd_projection" not in config["stitch"]
     assert config["stitch"]["central_strip_diagnostic"] == {
         "enabled": False,
         "reference_scale_mode": "robust_aligned_depth_plane",
@@ -35,14 +39,27 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
         "multiband_levels": 5,
     }
     assert config["stitch"]["pose_graph"]["enabled"] is True
-    assert config["stitch"]["rgbd_projection"]["mode"] == (
-        "orthographic_side_scan"
-    )
-    assert config["stitch"]["rgbd_projection"]["minimum_coverage_ratio"] == 0.95
+    assert config["stitch"]["calibrated_rgb_pushbroom"] == {
+        "mode": "calibrated_rgb_pushbroom",
+        "maximum_central_band_fraction": 0.20,
+        "seam_half_width_pixels": 4,
+        "max_canvas_megapixels": 200,
+        "max_aggregate_megapixels": 200,
+        "max_pose_count": 160,
+        "max_resident_frames": 5,
+        "minimum_valid_scale_pairs": 3,
+        "scale_central_fraction": 0.20,
+        "scale_low_gradient_quantile": 0.45,
+        "scale_minimum_response": 0.10,
+        "scale_max_relative_mad": 0.35,
+    }
     assert config["stitch"]["scan_seam"]["backend"] == (
-        "graphcut_depth_constrained"
+        "rgb_monotonic_hard_owner_graphcut"
     )
-    assert config["stitch"]["scan_seam"]["multiband_levels"] == 5
+    assert config["stitch"]["scan_seam"]["multiband_levels"] == 3
+    assert config["stitch"]["scan_seam"]["exposure_mode"] == (
+        "safe_wall_smooth_gain"
+    )
     legacy_formal_keys = {
         "model",
         "device",
@@ -141,10 +158,40 @@ def test_explicit_auto_exposure_mode_is_not_overridden(tmp_path: Path) -> None:
         (("maximum_motion_exposure_us",), 1201, "1200 us"),
         (("color_exposure_unit_us",), 1, "metadata unit"),
         (("max_canvas_megapixels",), 201, "200 MP"),
-        (("rgbd_projection", "minimum_coverage_ratio"), 0.94, "95%"),
-        (("rgbd_projection", "max_aggregate_megapixels"), 201, "200 MP"),
+        (
+            ("calibrated_rgb_pushbroom", "maximum_central_band_fraction"),
+            0.21,
+            "cannot exceed 0.20",
+        ),
+        (
+            ("calibrated_rgb_pushbroom", "max_canvas_megapixels"),
+            201,
+            "200 MP",
+        ),
+        (
+            ("calibrated_rgb_pushbroom", "max_aggregate_megapixels"),
+            201,
+            "200 MP",
+        ),
+        (("calibrated_rgb_pushbroom", "max_resident_frames"), 6, "2-5"),
+        (
+            ("calibrated_rgb_pushbroom", "scale_minimum_response"),
+            0.09,
+            "cannot be relaxed below 0.10",
+        ),
+        (
+            ("calibrated_rgb_pushbroom", "scale_max_relative_mad"),
+            0.36,
+            "cannot exceed 0.35",
+        ),
+        (
+            ("calibrated_rgb_pushbroom", "scale_low_gradient_quantile"),
+            0.46,
+            "cannot exceed 0.45",
+        ),
         (("rgbd_odometry", "minimum_fitness"), 0.14, "cannot be relaxed"),
         (("pose_quality", "maximum_total_rotation_deg"), 11.0, "cannot be relaxed"),
+        (("scan_seam", "multiband_levels"), 4, "1-3"),
         (("scan_seam", "quality_gate"), False, "cannot disable"),
     ],
 )
@@ -169,7 +216,7 @@ def test_diagnostic_threshold_bypass_keeps_resource_hard_limits() -> None:
 
     _validate_safety_envelope(config, diagnostic_force=True)
 
-    config["rgbd_projection"]["max_aggregate_megapixels"] = 201
+    config["calibrated_rgb_pushbroom"]["max_canvas_megapixels"] = 201
     with pytest.raises(ValueError, match="200 MP"):
         _validate_safety_envelope(config, diagnostic_force=True)
 

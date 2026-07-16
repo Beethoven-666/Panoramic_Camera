@@ -1112,3 +1112,125 @@ def test_prewarped_empty_owner_is_never_quality_gate_bypassable(monkeypatch) -> 
             multiband_levels=1,
             quality_gate=False,
         )
+
+
+def test_safe_wall_exposure_uses_only_low_residual_background() -> None:
+    shape = (64, 128)
+    first = _solid(*shape, (80, 80, 80))
+    second = _solid(*shape, (120, 120, 120))
+    # A flat foreground patch has little local gradient in its interior, so
+    # this verifies the residual trimming rather than merely edge exclusion.
+    first[18:46, 16:52] = (20, 180, 20)
+    second[18:46, 16:52] = (180, 20, 180)
+    valid = [np.full(shape, 255, dtype=np.uint8) for _ in range(2)]
+
+    corrected, gains, metrics = render_module._safe_wall_exposure_compensation(
+        [first, second],
+        valid,
+        "safe_wall_smooth_gain",
+        order=np.asarray([0, 1]),
+        pair_overlap_masks=(np.full(shape, 255, dtype=np.uint8),),
+    )
+
+    wall = np.ones(shape, dtype=bool)
+    wall[18:46, 16:52] = False
+    np.testing.assert_allclose(
+        corrected[0][wall].mean(axis=0), corrected[1][wall].mean(axis=0), atol=2.0
+    )
+    assert gains[1, 0] / gains[0, 0] == pytest.approx(2.0 / 3.0, abs=0.05)
+    assert 0 < metrics["safe_exposure_support_pixel_count"] < shape[0] * shape[1]
+
+
+def test_rgb_disparity_risk_helper_uses_no_depth_inputs() -> None:
+    shape = (24, 32)
+    image = _solid(*shape, (0, 0, 0))
+    valid = np.full(shape, 255, dtype=np.uint8)
+    supplied = np.zeros(shape, dtype=np.uint8)
+    supplied[10:14, 14:18] = 255
+
+    risk = render_module.compute_rgb_disparity_risk_mask(
+        image, image, valid, valid, supplied_risk_mask=supplied
+    )
+
+    assert risk.dtype == np.uint8
+    assert np.all(risk[10:14, 14:18] == 255)
+
+
+def test_prewarped_rgb_risk_is_hard_owned_and_never_multiband(monkeypatch) -> None:
+    _install_projected_cv_stubs(monkeypatch)
+
+    class ForbiddenMultiBand:
+        def __init__(self) -> None:
+            raise AssertionError("risk/guard pixels must not enter MultiBand")
+
+    monkeypatch.setattr(cv2, "detail_MultiBandBlender", ForbiddenMultiBand)
+    shape = (40, 80)
+    colour_valid = np.full(shape, 255, dtype=np.uint8)
+    first_colour = (20, 40, 60)
+    second_colour = (200, 180, 160)
+    sources = [
+        _prewarped_source(_solid(*shape, first_colour), colour_valid, 20.0),
+        _prewarped_source(_solid(*shape, second_colour), colour_valid, 60.0),
+    ]
+    overlap = np.zeros(shape, dtype=np.uint8)
+    overlap[:, 36:44] = 255
+    risk = overlap.copy()
+
+    panorama, info = render_prewarped_scan_panorama(
+        sources,
+        source_order=(0, 1),
+        owner_boundaries_x=(40.0,),
+        pair_overlap_masks=(overlap,),
+        pair_rgb_risk_masks=(risk,),
+        exposure_mode="none",
+        multiband_levels=5,
+        quality_gate=False,
+    )
+
+    assert np.all(panorama[:, 36:44] == np.asarray(first_colour))
+    assert info.blend_zone_pixel_count == 0
+    assert info.quality_metrics["blend_zone_risk_fraction"] == 0.0
+    assert info.multiband_levels == 3
+
+
+def test_pair_blend_radius_tracks_narrower_owner_and_caps_at_eight() -> None:
+    shape = (16, 120)
+
+    def owner(width: int) -> np.ndarray:
+        mask = np.zeros(shape, dtype=np.uint8)
+        mask[:, :width] = 255
+        return mask
+
+    assert render_module._pair_blend_radius_from_masks(owner(11), owner(70)) == 2
+    assert render_module._pair_blend_radius_from_masks(owner(34), owner(70)) == 6
+    assert render_module._pair_blend_radius_from_masks(owner(80), owner(100)) == 8
+    assert render_module._effective_narrow_multiband_levels(9) == 3
+
+
+def test_prewarped_crop_uses_largest_fully_valid_rectangle(monkeypatch) -> None:
+    _install_projected_cv_stubs(monkeypatch)
+    shape = (40, 80)
+    colour_valid = np.full(shape, 255, dtype=np.uint8)
+    # The bounding box is the whole canvas, but its top-left notch is invalid.
+    # The renderer must crop to an all-valid rectangle rather than return a
+    # black/invalid corner just because RGB happens to be non-black elsewhere.
+    colour_valid[:10, :20] = 0
+    image = _solid(*shape, (40, 80, 120))
+    sources = [
+        _prewarped_source(image, colour_valid, 20.0),
+        _prewarped_source(image, colour_valid, 60.0),
+    ]
+    overlap = colour_valid.copy()
+
+    panorama, info = render_prewarped_scan_panorama(
+        sources,
+        source_order=(0, 1),
+        owner_boundaries_x=(40.0,),
+        pair_overlap_masks=(overlap,),
+        exposure_mode="none",
+        multiband_levels=1,
+        quality_gate=False,
+    )
+
+    assert info.crop.as_dict() == {"x": 0, "y": 10, "width": 80, "height": 30}
+    assert panorama.shape == (30, 80, 3)

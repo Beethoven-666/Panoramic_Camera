@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -18,6 +19,7 @@ class _MetricTranslationBackend:
     def __init__(self, poses: dict[int, np.ndarray]) -> None:
         self.poses = poses
         self.pairs: list[tuple[int, int]] = []
+        self.optimized_node_ids: tuple[int, ...] = ()
 
     def estimate_pair(self, *, reference, source, intrinsics, config):
         del intrinsics, config
@@ -34,6 +36,13 @@ class _MetricTranslationBackend:
             "information": np.eye(6, dtype=np.float64) * 100.0,
             "backend": self.name,
         }
+
+    def optimize_pose_graph(
+        self, *, node_ids, initial_camera_to_world, edges, config
+    ):
+        del edges, config
+        self.optimized_node_ids = tuple(int(value) for value in node_ids)
+        return tuple(np.asarray(pose).copy() for pose in initial_camera_to_world)
 
 
 def _synthetic_session(tmp_path: Path):
@@ -92,58 +101,92 @@ def test_pose_edge_estimation_connects_only_real_rgbd_pose_nodes(
     )
 
 
-def test_full_resolution_projection_sources_keep_exact_optimized_se3(
-    tmp_path: Path,
+def test_formal_pushbroom_receives_exact_optimized_se3_without_depth_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session, poses = _synthetic_session(tmp_path)
-    frames = [session.frames[index] for index in (0, 4)]
-    exact_poses = [poses[frame.frame_id] for frame in frames]
+    backend = _MetricTranslationBackend(poses)
+    received: dict[str, object] = {}
 
-    projected = sequence._full_projection_frames(frames, exact_poses)
+    def legacy_projection_must_not_run(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("formal RGB pushbroom reached legacy depth projection")
 
-    assert [frame.frame_id for frame in projected] == [0, 4]
-    for source, expected in zip(projected, exact_poses, strict=True):
-        assert source.camera_to_world.shape == (4, 4)
-        np.testing.assert_allclose(source.camera_to_world, expected)
-        assert source.depth_mm.shape == (
-            session.calibration.height,
-            session.calibration.width,
+    def fake_pushbroom(frames, optimized_poses, calibration, **kwargs):
+        received["frame_ids"] = [frame.frame_id for frame in frames]
+        received["poses"] = [np.asarray(pose).copy() for pose in optimized_poses]
+        received["calibration"] = calibration
+        received["kwargs"] = dict(kwargs)
+        return SimpleNamespace(
+            panorama=np.full((100, 300, 3), 127, dtype=np.uint8),
+            metadata={
+                "backend": "calibrated_rgb_pushbroom",
+                "pixel_source": "calibrated_rgb_only",
+                "depth_used_for_output_pixels": False,
+                "point_cloud_constructed": False,
+                "tsdf_constructed": False,
+                "reference_plane_fitted": False,
+                "layout": {},
+                "rgb_motion_scale": {},
+                "quality_metrics": {"quality_pass": True},
+            },
         )
-        assert np.count_nonzero(source.depth_mm) > 0
+
+    monkeypatch.setattr(sequence, "_full_projection_frames", legacy_projection_must_not_run)
+    monkeypatch.setattr(sequence, "render_calibrated_rgb_pushbroom", fake_pushbroom)
+    args = sequence._parser().parse_args(
+        [str(session.root), "--output", str(tmp_path / "output")]
+    )
+
+    report = sequence.run(args, odometry_backend=backend)
+
+    assert received["frame_ids"] == list(backend.optimized_node_ids)
+    assert received["calibration"] == session.calibration
+    for frame_id, optimized in zip(
+        received["frame_ids"], received["poses"], strict=True
+    ):
+        np.testing.assert_allclose(optimized, poses[frame_id])
+    kwargs = received["kwargs"]
+    assert kwargs["quality_gate"] is True
+    assert kwargs["multiband_levels"] == 3
+    assert len(kwargs["rgb_motions"]) == len(backend.optimized_node_ids) - 1
+    assert report["render_strategy"] == "calibrated_rgb_pushbroom"
+    assert report["render"]["depth_used_for_output_pixels"] is False
 
 
 @pytest.mark.parametrize(
     ("override", "message"),
     [
         ({"pose_backend": "unistitch"}, "pose_backend"),
-        ({"sequence_blend_mode": "feather"}, "scan_seam"),
+        ({"sequence_blend_mode": "feather"}, "calibrated_rgb_pushbroom"),
         (
-            {"rgbd_projection": {"mode": "homography"}},
-            "orthographic_side_scan",
+            {"dense_fusion_backend": "tsdf_plane_dense_rgbd"},
+            "TSDF and RGB-D projection",
         ),
         (
-            {
-                "rgbd_projection": {
-                    "mode": "orthographic_side_scan",
-                    "reject_depth_discontinuity": False,
-                }
-            },
-            "depth-discontinuity",
+            {"rgbd_projection": {"mode": "orthographic_side_scan"}},
+            "TSDF and RGB-D projection",
         ),
-        ({"scan_seam": {"backend": "dp"}}, "graphcut_depth_constrained"),
+        (
+            {"calibrated_rgb_pushbroom": {"mode": "central_strip"}},
+            "Formal renderer mode",
+        ),
+        (
+            {"scan_seam": {"backend": "dp"}},
+            "rgb_monotonic_hard_owner_graphcut",
+        ),
     ],
 )
-def test_formal_backend_configuration_rejects_legacy_paths(
+def test_formal_backend_configuration_rejects_non_pushbroom_paths(
     override: dict[str, object], message: str
 ) -> None:
     config: dict[str, object] = {
         "pose_backend": "open3d_rgbd",
-        "sequence_blend_mode": "scan_seam",
-        "rgbd_projection": {
-            "mode": "orthographic_side_scan",
-            "reject_depth_discontinuity": True,
+        "sequence_blend_mode": "calibrated_rgb_pushbroom",
+        "calibrated_rgb_pushbroom": {
+            "mode": "calibrated_rgb_pushbroom",
         },
-        "scan_seam": {"backend": "graphcut_depth_constrained"},
+        "scan_seam": {"backend": "rgb_monotonic_hard_owner_graphcut"},
     }
     config.update(override)
 

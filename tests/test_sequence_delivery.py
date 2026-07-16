@@ -4,7 +4,6 @@ import csv
 import json
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pytest
 
@@ -70,6 +69,12 @@ def _write_stale_delivery(output: Path) -> None:
         "transforms.json",
         "render_transforms.json",
         "delivery.json",
+        "foreground_mask.png",
+        "background_exclusion_mask.png",
+        "tsdf_foreground_mask.png",
+        "foreground_source_id.png",
+        "tsdf_mesh.glb",
+        "tsdf_mesh_viewer.html",
     ):
         (output / name).write_bytes(b"stale")
 
@@ -87,6 +92,15 @@ def test_failure_report_removes_stale_deliverables(tmp_path: Path) -> None:
     assert not (tmp_path / "delivery.json").exists()
     assert not (tmp_path / "diagnostic_panorama.jpg").exists()
     assert not (tmp_path / "diagnostic_report.json").exists()
+    for legacy_artifact in (
+        "foreground_mask.png",
+        "background_exclusion_mask.png",
+        "tsdf_foreground_mask.png",
+        "foreground_source_id.png",
+        "tsdf_mesh.glb",
+        "tsdf_mesh_viewer.html",
+    ):
+        assert not (tmp_path / legacy_artifact).exists()
     failure = json.loads((tmp_path / "failure.json").read_text(encoding="utf-8"))
     assert failure["deliverable_published"] is False
     assert failure["message"] == "bad GraphCut seam"
@@ -104,20 +118,6 @@ def test_clear_delivery_does_not_remove_nondelivery_diagnostics(
 
     assert diagnostics.exists()
     assert not (tmp_path / ".report.pending.json").exists()
-
-
-def test_dense_audit_owner_ids_preserve_empty_sentinel(tmp_path: Path) -> None:
-    path = tmp_path / "foreground_source_id.png"
-
-    sequence._write_dense_audit_image(
-        path,
-        np.asarray([[-1, 0, 42]], dtype=np.int32),
-    )
-
-    encoded = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-    assert encoded is not None
-    assert encoded.dtype == np.uint16
-    assert encoded.tolist() == [[0, 1, 43]]
 
 
 def test_delivery_marker_is_removed_before_other_artifacts(
@@ -302,7 +302,7 @@ def test_diagnostic_force_cannot_bypass_strict_rgbd_session_contract(
     [
         ("odometry", "forced RGB-D odometry failure"),
         ("graph", "disconnected"),
-        ("projection", "forced RGB-D projection failure"),
+        ("pushbroom", "forced calibrated RGB pushbroom failure"),
     ],
 )
 def test_rgbd_pipeline_stage_failure_never_leaves_delivery(
@@ -317,16 +317,16 @@ def test_rgbd_pipeline_stage_failure_never_leaves_delivery(
     mode = {
         "odometry": "odometry_error",
         "graph": "disconnected_graph",
-        "projection": "ok",
+        "pushbroom": "ok",
     }[stage]
     backend = _DeliveryTestRGBDBackend(session, mode=mode)
-    if stage == "projection":
-        def fail_projection(*args, **kwargs):
+    if stage == "pushbroom":
+        def fail_pushbroom(*args, **kwargs):
             del args, kwargs
-            raise RuntimeError("forced RGB-D projection failure")
+            raise RuntimeError("forced calibrated RGB pushbroom failure")
 
         monkeypatch.setattr(
-            sequence, "project_selected_rgbd_sources", fail_projection
+            sequence, "render_calibrated_rgb_pushbroom", fail_pushbroom
         )
     args = sequence._parser().parse_args(
         [str(session), "--output", str(output), "--diagnostic-force"]
