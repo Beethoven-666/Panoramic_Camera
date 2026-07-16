@@ -42,6 +42,7 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
     assert config["stitch"]["calibrated_rgb_pushbroom"] == {
         "mode": "calibrated_rgb_pushbroom",
         "maximum_central_band_fraction": 0.20,
+        "endpoint_outer_half_fov": True,
         "seam_half_width_pixels": 4,
         "max_canvas_megapixels": 200,
         "max_aggregate_megapixels": 200,
@@ -162,6 +163,11 @@ def test_explicit_auto_exposure_mode_is_not_overridden(tmp_path: Path) -> None:
             ("calibrated_rgb_pushbroom", "maximum_central_band_fraction"),
             0.21,
             "cannot exceed 0.20",
+        ),
+        (
+            ("calibrated_rgb_pushbroom", "endpoint_outer_half_fov"),
+            False,
+            "requires endpoint_outer_half_fov",
         ),
         (
             ("calibrated_rgb_pushbroom", "max_canvas_megapixels"),

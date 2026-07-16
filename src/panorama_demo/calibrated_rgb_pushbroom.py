@@ -39,6 +39,7 @@ class CalibratedRGBPushbroomConfig:
     """Closed safety/configuration surface for the RGB pushbroom renderer."""
 
     maximum_central_band_fraction: float = 0.20
+    endpoint_outer_half_fov: bool = True
     seam_half_width_pixels: int = 4
     max_canvas_megapixels: float = 200.0
     max_aggregate_megapixels: float = 200.0
@@ -58,6 +59,7 @@ class CalibratedRGBPushbroomConfig:
         supplied.pop("mode", None)
         allowed = {
             "maximum_central_band_fraction",
+            "endpoint_outer_half_fov",
             "seam_half_width_pixels",
             "max_canvas_megapixels",
             "max_aggregate_megapixels",
@@ -99,6 +101,8 @@ class CalibratedRGBPushbroomConfig:
             raise ValueError("Calibrated RGB pushbroom settings must be finite")
         if not 0.0 < self.maximum_central_band_fraction <= 0.20:
             raise ValueError("maximum_central_band_fraction must be in (0, 0.20]")
+        if type(self.endpoint_outer_half_fov) is not bool:
+            raise ValueError("endpoint_outer_half_fov must be a boolean")
         if not 0 <= int(self.seam_half_width_pixels) <= 8:
             raise ValueError("seam_half_width_pixels must be in [0, 8]")
         if not 0.0 < self.max_canvas_megapixels <= _HARD_MAX_CANVAS_MEGAPIXELS:
@@ -154,6 +158,7 @@ class PushbroomLayout:
     support_left_x: tuple[int, ...]
     support_right_x: tuple[int, ...]
     owner_boundaries_x: tuple[float, ...]
+    endpoint_outer_owner_intervals_x: tuple[tuple[float, float], ...]
     canvas_width: int
     canvas_height: int
     canvas_megapixels: float
@@ -186,6 +191,14 @@ class PushbroomLayout:
                 )
             ],
             "owner_boundaries_x": list(self.owner_boundaries_x),
+            "endpoint_policy": (
+                "outward_half_fov"
+                if self.endpoint_outer_owner_intervals_x
+                else "central_strip_only"
+            ),
+            "endpoint_outer_owner_intervals_x": [
+                [left, right] for left, right in self.endpoint_outer_owner_intervals_x
+            ],
             "width": self.canvas_width,
             "height": self.canvas_height,
             "canvas_megapixels": self.canvas_megapixels,
@@ -456,6 +469,36 @@ def build_calibrated_rgb_pushbroom_layout(
             [centres_x_unshifted[-1] + 0.5 * steps[-1]],
         )
     )
+    if config.endpoint_outer_half_fov:
+        # The first and last source own the scene that lies outward from the
+        # scan.  Extend only those exterior intervals to the calibrated image
+        # edge; every intermediate source remains a central strip.  The sign
+        # accounts for a levelled virtual camera whose image-right direction
+        # is opposite the chronological scan axis.
+        if virtual_sign >= 0.0:
+            first_outward_extent = float(calibration.cx)
+            first_inward_extent = float(calibration.width - 1 - calibration.cx)
+            last_inward_extent = float(calibration.cx)
+            last_outward_extent = float(calibration.width - 1 - calibration.cx)
+        else:
+            first_outward_extent = float(calibration.width - 1 - calibration.cx)
+            first_inward_extent = float(calibration.cx)
+            last_inward_extent = float(calibration.width - 1 - calibration.cx)
+            last_outward_extent = float(calibration.cx)
+        owner_edges[0] = centres_x_unshifted[0] - first_outward_extent
+        owner_edges[-1] = centres_x_unshifted[-1] + last_outward_extent
+        if owner_edges[1] > centres_x_unshifted[0] + first_inward_extent:
+            raise RuntimeError(
+                "First endpoint cannot cover its midpoint owner interval within "
+                "the calibrated RGB field of view"
+            )
+        if owner_edges[-2] < centres_x_unshifted[-1] - last_inward_extent:
+            raise RuntimeError(
+                "Last endpoint cannot cover its midpoint owner interval within "
+                "the calibrated RGB field of view"
+            )
+    if np.any(np.diff(owner_edges) <= 1e-4):
+        raise RuntimeError("Pushbroom endpoint and midpoint owner intervals collapse")
     origin = math.floor(float(owner_edges[0]))
     owner_edges -= origin
     centres_x = centres_x_unshifted - origin
@@ -468,29 +511,39 @@ def build_calibrated_rgb_pushbroom_layout(
             f"Calibrated RGB pushbroom canvas is {megapixels:.1f} MP, above "
             f"the {config.max_canvas_megapixels:.1f} MP hard limit"
         )
-    # Each raw source contributes only a genuinely narrow central band.  At
-    # low frame counts an owner interval itself can approach the configured
-    # band limit, so reduce only the overlap guard; never widen the calibrated
-    # remap beyond that limit.  If the hard-owned interval cannot fit, fail
-    # closed and ask for denser real pose sampling or a lower output scale.
+    # Every intermediate raw source contributes only a genuinely narrow
+    # central band.  The two scan endpoints are allowed to own their outward
+    # calibrated half-FOV so the captured scene does not silently disappear at
+    # either edge of the panorama.  If an intermediate hard-owned interval
+    # cannot fit, fail closed and ask for denser real pose sampling or a lower
+    # output scale.
     maximum_band_width = max(
         2, int(math.floor(calibration.width * config.maximum_central_band_fraction))
     )
     owner_left_int = np.ceil(owner_edges[:-1]).astype(np.int32)
     owner_right_int = np.ceil(owner_edges[1:]).astype(np.int32)
     owner_widths = owner_right_int - owner_left_int
-    if np.any(owner_widths > maximum_band_width):
+    limited_owner_widths = (
+        owner_widths[1:-1] if config.endpoint_outer_half_fov else owner_widths
+    )
+    if np.any(limited_owner_widths > maximum_band_width):
         raise RuntimeError(
-            "Calibrated RGB pushbroom owner strip exceeds the configured narrow "
-            "central-band limit; capture more real pose frames or lower output scale"
+            "An intermediate calibrated RGB pushbroom owner strip exceeds the "
+            "configured narrow central-band limit; capture more real pose frames "
+            "or lower output scale"
         )
-    spare_width = maximum_band_width - owner_widths
+    spare_width = np.maximum(0, maximum_band_width - owner_widths)
     left_padding = np.minimum(
         int(config.seam_half_width_pixels), spare_width // 2
     )
     right_padding = np.minimum(
         int(config.seam_half_width_pixels), spare_width - left_padding
     )
+    # Endpoint exterior pixels are a direct calibrated copy, never a seam
+    # support region.  Do not ask the inverse remap to sample beyond a physical
+    # image edge merely to add seam padding.
+    left_padding[0] = 0
+    right_padding[-1] = 0
     support_left = owner_left_int - left_padding
     support_right = owner_right_int + right_padding
     support_left = np.clip(support_left, 0, width)
@@ -518,6 +571,18 @@ def build_calibrated_rgb_pushbroom_layout(
         support_left_x=tuple(int(value) for value in support_left),
         support_right_x=tuple(int(value) for value in support_right),
         owner_boundaries_x=tuple(float(value) for value in owner_edges[1:-1]),
+        endpoint_outer_owner_intervals_x=(
+            (
+                float(owner_edges[0]),
+                float(centres_x[0]),
+            ),
+            (
+                float(centres_x[-1]),
+                float(owner_edges[-1]),
+            ),
+        )
+        if config.endpoint_outer_half_fov
+        else (),
         canvas_width=width,
         canvas_height=int(calibration.height),
         canvas_megapixels=float(canvas_megapixels),
@@ -1071,6 +1136,83 @@ def render_calibrated_rgb_pushbroom(
             raise RuntimeError("Calibrated RGB pushbroom produced no valid RGB pixels")
         crop = largest_valid_rectangle(valid_canvas)
         panorama = canvas[crop.y : crop.y + crop.height, crop.x : crop.x + crop.width]
+        cropped_owner = owner_canvas[
+            crop.y : crop.y + crop.height, crop.x : crop.x + crop.width
+        ]
+        source_owner_pixel_counts = [
+            int(np.count_nonzero(cropped_owner == source_index))
+            for source_index in range(len(frames))
+        ]
+        missing_sources = [
+            int(frames[source_index].frame_id)
+            for source_index, pixel_count in enumerate(source_owner_pixel_counts)
+            if pixel_count == 0
+        ]
+        if missing_sources:
+            raise RuntimeError(
+                "Calibrated RGB pushbroom crop removed all owned pixels from "
+                f"source frame(s): {missing_sources}"
+            )
+        endpoint_outer_owner_pixel_counts: list[int] = []
+        endpoint_outer_trimmed_invalid_pixel_counts: list[int] = []
+        endpoint_outer_trimmed_column_counts: list[int] = []
+        if layout.endpoint_outer_owner_intervals_x:
+            for source_index, (left, right) in zip(
+                (0, len(frames) - 1),
+                layout.endpoint_outer_owner_intervals_x,
+                strict=True,
+            ):
+                x0 = max(crop.x, int(math.ceil(left)))
+                x1 = min(crop.x + crop.width, int(math.ceil(right)))
+                count = (
+                    int(
+                        np.count_nonzero(
+                            owner_canvas[
+                                crop.y : crop.y + crop.height,
+                                x0:x1,
+                            ]
+                            == source_index
+                        )
+                    )
+                    if x1 > x0
+                    else 0
+                )
+                endpoint_outer_owner_pixel_counts.append(count)
+                requested_left = max(0, int(math.ceil(left)))
+                requested_right = min(layout.canvas_width, int(math.ceil(right)))
+                trimmed_spans = (
+                    (requested_left, min(requested_right, crop.x)),
+                    (max(requested_left, crop.x + crop.width), requested_right),
+                )
+                trimmed_invalid = 0
+                fully_valid_trimmed_columns = 0
+                for trim_left, trim_right in trimmed_spans:
+                    if trim_right <= trim_left:
+                        continue
+                    trimmed = valid_canvas[
+                        crop.y : crop.y + crop.height,
+                        trim_left:trim_right,
+                    ]
+                    trimmed_invalid += int(trimmed.size - np.count_nonzero(trimmed))
+                    fully_valid_trimmed_columns += int(
+                        np.count_nonzero(np.all(trimmed, axis=0))
+                    )
+                if fully_valid_trimmed_columns:
+                    raise RuntimeError(
+                        "Calibrated RGB pushbroom crop discarded a fully valid "
+                        "endpoint outward calibrated field-of-view column"
+                    )
+                endpoint_outer_trimmed_invalid_pixel_counts.append(trimmed_invalid)
+                endpoint_outer_trimmed_column_counts.append(
+                    sum(max(0, right - left) for left, right in trimmed_spans)
+                )
+        if layout.endpoint_outer_owner_intervals_x and any(
+            count == 0 for count in endpoint_outer_owner_pixel_counts
+        ):
+            raise RuntimeError(
+                "Calibrated RGB pushbroom crop removed an endpoint outward "
+                "calibrated field-of-view contribution"
+            )
         crop_height_ratio = crop.height / float(layout.canvas_height)
         crop_width_ratio = crop.width / float(layout.canvas_width)
         blend_fraction = blend_pixels / max(1, int(np.count_nonzero(valid_canvas)))
@@ -1087,6 +1229,13 @@ def render_calibrated_rgb_pushbroom(
             "multiband_levels": int(multiband_levels),
             "source_remap_count": renderer.remap_count,
             "maximum_resident_strips": 2,
+            "all_sources_have_owned_pixels": True,
+            "endpoint_outer_half_fov_owner_pixel_counts": endpoint_outer_owner_pixel_counts,
+            "endpoint_outer_half_fov_trimmed_invalid_pixel_counts": endpoint_outer_trimmed_invalid_pixel_counts,
+            "endpoint_outer_half_fov_trimmed_column_counts": endpoint_outer_trimmed_column_counts,
+            "endpoint_outer_half_fov_preserved": bool(
+                layout.endpoint_outer_owner_intervals_x
+            ),
             **exposure_metrics,
             "exposure_gain_min": float(np.min(gains)),
             "exposure_gain_max": float(np.max(gains)),
@@ -1117,6 +1266,7 @@ def render_calibrated_rgb_pushbroom(
             "crop": crop.as_dict(),
             "source_count": len(frames),
             "frame_ids": [frame.frame_id for frame in frames],
+            "source_owner_pixel_counts": source_owner_pixel_counts,
             "color_gains": [[float(gain)] * 3 for gain in gains],
             "pairs": pair_metadata,
             "quality_metrics": quality_metrics,

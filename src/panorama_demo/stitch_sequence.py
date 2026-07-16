@@ -763,6 +763,10 @@ def _validate_safety_envelope(
         raise ValueError(
             "Formal central RGB strip fraction cannot exceed 0.20"
         )
+    if pushbroom.get("endpoint_outer_half_fov", True) is not True:
+        raise ValueError(
+            "Formal calibrated RGB pushbroom requires endpoint_outer_half_fov"
+        )
     if not 0 <= int(pushbroom.get("seam_half_width_pixels", 4)) <= 8:
         raise ValueError(
             "Formal calibrated RGB seam half-width must remain within 0-8 pixels"

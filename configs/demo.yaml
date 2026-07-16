@@ -145,6 +145,10 @@ stitch:
     # Every real optimized pose node is a source.  The renderer keeps only a
     # local strip window resident and never stores per-source full canvases.
     maximum_central_band_fraction: 0.20
+    # Intermediate frames stay within the central-band limit.  The first and
+    # final frame each own their calibrated outward half-FOV so endpoint scenes
+    # remain present in the published panorama.
+    endpoint_outer_half_fov: true
     seam_half_width_pixels: 4
     max_canvas_megapixels: 200
     max_aggregate_megapixels: 200

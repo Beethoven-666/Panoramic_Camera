@@ -67,7 +67,46 @@ def test_pushbroom_uses_every_real_frame_once_with_bounded_strip_residency(
     assert metrics["source_remap_count"] == len(session.frames)
     assert 2 <= metrics["maximum_resident_strips"] <= 5
     assert len(metadata["rgb_motion_scale"]["samples"]) == len(session.frames) - 1
-    assert metadata["layout"]["maximum_source_strip_width"] <= 64
+    assert metadata["layout"]["endpoint_policy"] == "outward_half_fov"
+    assert len(metadata["layout"]["endpoint_outer_owner_intervals_x"]) == 2
+    assert metadata["layout"]["maximum_source_strip_width"] > 64
+    supports = metadata["layout"]["source_support_intervals_x"]
+    assert all(right - left <= 64 for left, right in supports[1:-1])
+    assert all(count > 0 for count in metadata["source_owner_pixel_counts"])
+    assert all(
+        count > 0
+        for count in metrics["endpoint_outer_half_fov_owner_pixel_counts"]
+    )
+    assert metrics["endpoint_outer_half_fov_preserved"] is True
+    assert metrics["endpoint_outer_half_fov_trimmed_column_counts"] == [0, 0]
+    assert metrics["endpoint_outer_half_fov_trimmed_invalid_pixel_counts"] == [0, 0]
+
+
+def test_pushbroom_keeps_outward_endpoint_coverage_when_virtual_x_is_reversed(
+    tmp_path: Path,
+) -> None:
+    session, poses = _make_rgb_pushbroom_input(tmp_path, seed=19)
+    reversed_poses = []
+    for pose in poses:
+        reversed_pose = pose.copy()
+        reversed_pose[:3, :3] = np.diag((-1.0, 1.0, -1.0))
+        reversed_poses.append(reversed_pose)
+
+    result = render_calibrated_rgb_pushbroom(
+        session.frames,
+        reversed_poses,
+        session.calibration,
+        rgb_motions=_reliable_adjacent_rgb_motions(len(session.frames)),
+    )
+
+    layout = result.metadata["layout"]
+    metrics = result.metadata["quality_metrics"]
+    assert layout["temporal_to_virtual_x_sign"] < 0.0
+    assert layout["endpoint_policy"] == "outward_half_fov"
+    assert all(
+        count > 0
+        for count in metrics["endpoint_outer_half_fov_owner_pixel_counts"]
+    )
 
 
 def test_pushbroom_pair_blends_are_narrow_and_never_include_rgb_risk(
