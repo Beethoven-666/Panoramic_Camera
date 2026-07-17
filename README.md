@@ -7,12 +7,13 @@
   → ORB-SLAM3 RGB-D（完整序列的真实全局相机轨迹）
   → 真实 SE(3) 校平的 RGB 流式中央窄条（每源一次标定 inverse remap）
   → RGB 风险触发的相邻 RGB-D 双向可见性、分层和局部逆网格
+  → ForegroundSegment / span / handoff 规划（只编译已验证的单源 hard owner）
   → 单调 hard owner / GraphCut（前景、软管、透明或不可靠深度只取一个 RGB owner）
   → 仅安全白墙区域的窄带 MultiBand
   → valid mask 最大内接矩形、质量门禁和原子交付
 ```
 
-正式全景像素只来自 RGB。深度除用于会话契约和 Open3D/ORB-SLAM3 真实轨迹验证外，只能在结构性 RGB 风险触发的相邻 `96–160 px` 接缝走廊中做双向重投影、z-buffer 可见性、深度分层、遮挡/透明保护、局部逆网格和 owner 决策；Lab-only 风险仍只约束 RGB owner 与融合，不能单独启动局部变形。深度不生成颜色、不补洞、不拟合参考平面、不改写真实 pose，也不产生全景深度。局部网格只修正一次 RGB inverse sampling，不是新的相机轨迹。RGB 全景通过质量门禁后，`g305-panorama` 会额外生成仅供浏览的 `tsdf_mesh.glb` 和 `tsdf_mesh_viewer.html`：它使用同一严格 RGB-D 会话和真实轨迹，但不向条带、接缝、融合、裁剪或任何全景质量判定回传结果。正式流程不使用 UniStitch、LightGlue、MAGSAC、Torch、3×3 单应矩阵、二维累计或二维位姿插值。ORB-SLAM3 仅负责输出真实 RGB-D 相机轨迹；有未跟踪帧、位姿异常、RGB 尺度不稳定或条带接缝结构不完整时流程会失败，不会伪造位姿或回退到二维拼接。没有 `delivery.json` 就不是有效交付。
+正式全景像素只来自 RGB。深度除用于会话契约和 Open3D/ORB-SLAM3 真实轨迹验证外，只能在结构性 RGB 风险触发的相邻 `96–160 px` 接缝走廊中做双向重投影、z-buffer 可见性、深度分层、遮挡/透明保护、局部逆网格和 owner 决策；Lab-only 风险仍只约束 RGB owner 与融合，不能单独启动局部变形。深度不生成颜色、不补洞、不拟合参考平面、不改写真实 pose，也不产生全景深度。局部网格只修正一次 RGB inverse sampling，不是新的相机轨迹。RGB 全景通过质量门禁后，`g305-panorama` 会额外生成仅供浏览的 `tsdf_mesh.glb` 和 `tsdf_mesh_viewer.html`：它使用同一严格 RGB-D 会话和真实轨迹，但不向条带、接缝、融合、裁剪或任何全景质量判定回传结果。正式流程不使用 UniStitch、LightGlue、MAGSAC、Torch、3×3 单应矩阵、二维累计或二维位姿插值。ORB-SLAM3 仅负责输出真实 RGB-D 相机轨迹；有未跟踪帧、位姿异常、RGB 尺度不稳定或条带接缝结构不完整时流程会失败，不会伪造位姿或回退到二维拼接。若 WSL 原生进程唯一以 `139`（SIGSEGV）退出，bridge 只会用全新完整 RGB-D 暂存再试一次，并在报告中记录两次的标量审计；其它退出、超时、缺帧或轨迹解析失败均不会重试。没有 `delivery.json` 就不是有效交付。
 
 默认工况是相机连续单向水平侧移、场景基本静止、最近物体约 `0.5 m`、最高速度约 `1.5 m/s`。用户只需提供采集目录和输出目录，不需要调整曝光、步长、帧号、位姿、接缝或裁剪参数。
 
@@ -403,6 +404,8 @@ RGB (u, v)
 
 灭火器把手、软管、近景前景、遮挡区以及透明/反光斜带一律保持单源 RGB。透明斜带若已存在原始帧中，是受保护内容，不是要用 warp 或融合消除的“拼接错位”。所有真实 pose nodes 仍参与轨迹、布局和一次 RGB remap；如果经审计的组件/整走廊 hard-owner 决策完整覆盖一个窄条，报告会明确记录该源不再贡献最终颜色。
 
+为避免长软管或藤蔓只靠 pair-local bbox 关联，正式 owner 预检前还会构建独立的 `ForegroundSegment → ForegroundSpan → HandoffZone` 计划。只有共享源帧原始坐标足迹重叠、双向可见性/深度证据、轮廓方向和宽度连续、且不存在孔洞、遮挡、反光、分叉或其它关联歧义时，计划才可把一个 span 编译成现有 GraphCut 的硬 owner 约束。每个 span 必须由一张完整覆盖的 RGB anchor 负责；未获准的内部 handoff 只记录审计并保持原有 hard-owner/fail-closed 行为，绝不靠融合或非刚性网格掩盖。当前只含 aligned depth 的 legacy 会话一律标为 `IMAGE_REGION` owner-only，不能冒充 `DEPTH_OBSERVED` 或刚体代理；该规划不会增加正式图像、深度图或额外像素生成路径。
+
 ## RGB 风险、hard owner 与窄带 MultiBand
 
 正式接缝 backend 固定为 `rgb_monotonic_hard_owner_graphcut`。在相邻条带真实共同有效区，程序从 Lab 残差、对称边缘距离和梯度结构不一致得到 RGB 风险；风险连通域经过填充和自适应保护，整块只能属于一个 RGB owner。只有上节的结构性 raw seed 通过连通拓扑门，或边缘残差/整高 hard cut 指明真实接缝问题时，才加用局部 RGB-D 证据；Lab-only 风险仍完全受保护但不让几何网格追逐曝光差。深度绝不变成全景像素。GraphCut 在与 `2–8 px` 融合带解耦的 `32–64 px` 只读搜索走廊内寻找单调 hard owner 接缝，输出不会再按行重写。`owner_boundary ∩ risk_guard` 必须为空；没有安全通道时先尝试已审计的组件级单一 owner，再仅在完整 RGB 覆盖时使用整走廊 hard owner（不限于已触发的 depth pair），否则失败；绝不使用 Feather、平均、补洞或透明重影掩盖问题。
@@ -560,7 +563,7 @@ generate-panorama-demo `
 才能发布当前 schema 的 `delivery.json`；出现 `orthographic_side_scan`、TSDF mesh 或深度前景 mask
 则说明调用到了旧全局入口。
 
-同日的 [`outputs/greenhouse_geometry_assisted_direct_20260716_v2/diagnostic_panorama.jpg`](outputs/greenhouse_geometry_assisted_direct_20260716_v2/diagnostic_panorama.jpg) 是早于 raw-structural-trigger、实际 RGB 直线门和通用组件 owner 回退的历史直接诊断，不能代表当前门禁。2026-07-17 对同一已验证 101-node 轨迹的当前代码只读内存回放（不写文件、复用历史 gain、关闭最终画质门）仍得到 `2978×782`：24 对结构性风险触发对均按当前层/视觉保护回退为 hard owner，未接受任何局部网格。48–49 对的双向深度残差 P95 约为 `0.46/0.47` 个深度容差，但深度边保护与层连通性不足，正确回退而不拉扯灭火器/软管区域。该回放不是 CLI 交付：它复用历史 gain，当前 Windows 主机也暂未安装供 ORB-SLAM3 bridge 使用的 WSL Linux 发行版；正式 CLI 仍须在可用 bridge 上以当前 gain/门禁重新运行并发布新的 `delivery.json`。
+同日的 [`outputs/greenhouse_geometry_assisted_direct_20260716_v2/diagnostic_panorama.jpg`](outputs/greenhouse_geometry_assisted_direct_20260716_v2/diagnostic_panorama.jpg) 是早于 raw-structural-trigger、实际 RGB 直线门和通用组件 owner 回退的历史直接诊断，不能代表当前门禁。2026-07-17 对同一已验证 101-node 轨迹的当前代码只读内存回放（不写文件、复用历史 gain、关闭最终画质门）仍得到 `2978×782`：24 对结构性风险触发对均按当前层/视觉保护回退为 hard owner，未接受任何局部网格。48–49 对的双向深度残差 P95 约为 `0.46/0.47` 个深度容差，但深度边保护与层连通性不足，正确回退而不拉扯灭火器/软管区域。该回放不是 CLI 交付：它复用历史 gain。随后在本机可用的 WSL ORB-SLAM3 bridge 上，以当前代码和当前 gain/门禁对 `data/run_20260714_132427_262` 完成正式交付：101/101 个真实节点被跟踪与渲染，输出 `2973×781`，裁剪高度 `97.625%`、融合区 `1.126%`、融合风险为 `0`、峰值驻留条带为 `2`；25 个结构性风险 pair 均严格 hard-owner 回退，未接受局部网格。该单一样本是当前 renderer 的实机验收，不代表其它场景或速度已验收。
 
 ## 常见问题
 

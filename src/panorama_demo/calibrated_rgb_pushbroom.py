@@ -30,6 +30,11 @@ import cv2
 import numpy as np
 
 from .calibrated_remap import camera_points_to_source_pixels
+from .foreground_segments import (
+    GeometryMode,
+    build_foreground_fragments,
+    plan_foreground_owners,
+)
 from .geometry_assisted_local_warp import (
     GeometryAssistConfig,
     LocalMeshInverseWarp,
@@ -6084,6 +6089,30 @@ def render_calibrated_rgb_pushbroom(
                     nominal_boundary_x=layout.owner_boundaries_x[index],
                 )
             )
+        # v2 foreground planning is deliberately separate from the renderer:
+        # it turns protected components into auditable spans/handoff candidates
+        # and can only add a complete-coverage hard owner.  This capture is an
+        # aligned-depth legacy session, so its RGB-risk foreground remains
+        # IMAGE_REGION owner-only unless a future capture supplies the raw
+        # footprint and bidirectional-visibility evidence required to promote
+        # a DEPTH_OBSERVED span.
+        foreground_fragments = build_foreground_fragments(
+            preflight_fragments_by_pair,
+            frame_ids=[frame.frame_id for frame in frames],
+            geometry_modes=(GeometryMode.IMAGE_REGION,) * len(
+                preflight_fragments_by_pair
+            ),
+        )
+        foreground_owner_plan = plan_foreground_owners(foreground_fragments)
+        if not foreground_owner_plan.accepted:
+            raise RuntimeError(
+                "Foreground segment owner planning failed: "
+                + str(foreground_owner_plan.structural_failure_reason)
+            )
+        segment_locked_constraints = [
+            dict(constraints)
+            for constraints in foreground_owner_plan.component_owner_constraints
+        ]
         preflight_fragments_for_solver = list(preflight_fragments_by_pair)
         pair_level_hard_owner_pairs: set[int] = set()
         pair_level_hard_owner_reasons: dict[int, str] = {}
@@ -6092,7 +6121,8 @@ def render_calibrated_rgb_pushbroom(
         component_hard_owner_fallback_reasons: dict[int, str] = {}
         while True:
             sequence_owner_preflight = preflight_sequence_owners(
-                preflight_fragments_for_solver
+                preflight_fragments_for_solver,
+                locked_component_owner_constraints=segment_locked_constraints,
             )
             if sequence_owner_preflight.accepted:
                 break
@@ -6128,6 +6158,7 @@ def render_calibrated_rgb_pushbroom(
                 if forced_components is not None:
                     replacement, owners = forced_components
                     preflight_fragments_for_solver[component_fallback_pair] = replacement
+                    segment_locked_constraints[component_fallback_pair].update(owners)
                     component_hard_owner_fallbacks[component_fallback_pair] = owners
                     component_hard_owner_fallback_reasons[component_fallback_pair] = (
                         (
@@ -6165,6 +6196,7 @@ def render_calibrated_rgb_pushbroom(
                 + f"{failed_pair}"
             )
             preflight_fragments_for_solver[fallback_pair] = ()
+            segment_locked_constraints[fallback_pair] = {}
         pair_level_hard_owners = _resolve_pair_level_hard_owners(
             tuple(pair_level_hard_owner_pairs),
             geometry_pair_hard_owner_options,
@@ -6182,6 +6214,16 @@ def render_calibrated_rgb_pushbroom(
             working_set_audit={
                 **residual_alignment.working_set_audit,
                 "sequence_owner_preflight": sequence_owner_preflight.as_dict(),
+                "foreground_segment_owner_plan": {
+                    **foreground_owner_plan.as_dict(),
+                    "compiled_component_owner_constraints": [
+                        {
+                            str(label): int(owner)
+                            for label, owner in constraints.items()
+                        }
+                        for constraints in segment_locked_constraints
+                    ],
+                },
                 "geometry_pair_level_hard_owners": {
                     str(index): int(owner)
                     for index, owner in pair_level_hard_owners.items()

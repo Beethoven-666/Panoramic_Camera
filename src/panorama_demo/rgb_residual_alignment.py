@@ -466,6 +466,8 @@ def _constraints_allow_monotonic_owner(
 
 def preflight_sequence_owners(
     fragments_by_pair: Sequence[Sequence[ProtectedComponentFragment]],
+    *,
+    locked_component_owner_constraints: Sequence[Mapping[int, int]] | None = None,
 ) -> SequenceOwnerPreflight:
     """Choose safe pair owners before GraphCut and retain only unique tracks.
 
@@ -473,13 +475,58 @@ def preflight_sequence_owners(
     association in consecutive pair corridors.  Split/merge or several equally
     plausible matches are reported as ambiguous and deliberately receive no
     cross-pair force.  This keeps the final renderer adjacent-source-only.
+
+    ``locked_component_owner_constraints`` is the narrow bridge for the
+    foreground segment planner.  It may force only a component that has
+    already passed that planner's complete-coverage and visibility evidence.
+    A legacy pair track can supplement, but never overwrite, that hard owner.
     """
+
+    if locked_component_owner_constraints is None:
+        locked_by_pair: tuple[Mapping[int, int], ...] = tuple(
+            {} for _ in fragments_by_pair
+        )
+    else:
+        if len(locked_component_owner_constraints) != len(fragments_by_pair):
+            raise ValueError(
+                "Locked component owner constraints must cover every adjacent pair"
+            )
+        locked_by_pair = tuple(
+            {int(label): int(owner) for label, owner in constraints.items()}
+            for constraints in locked_component_owner_constraints
+        )
+        if any(
+            owner not in {0, 1}
+            for constraints in locked_by_pair
+            for owner in constraints.values()
+        ):
+            raise ValueError("Locked component owner values must be 0 or 1")
 
     constraints: list[dict[int, int]] = []
     priors: list[dict[int, int]] = []
-    for fragments in fragments_by_pair:
+    for pair_index, fragments in enumerate(fragments_by_pair):
         pair_constraints: dict[int, int] = {}
         pair_prior: dict[int, int] = {}
+        locked = locked_by_pair[pair_index]
+        known_labels = {
+            int(fragment.component_label)
+            for fragment in fragments
+            if fragment.component_label is not None
+        }
+        # A pair-level fully-covered fallback can intentionally remove every
+        # component from its replacement input.  In that one case stale plan
+        # constraints are inert; otherwise an unknown label is an audit break.
+        if fragments and set(locked) - known_labels:
+            return SequenceOwnerPreflight(
+                component_owner_constraints=tuple(constraints),
+                owner_priors=tuple(priors),
+                component_tracks=(),
+                ambiguous_association_count=0,
+                structural_failure_reason=(
+                    "locked_component_owner_constraint_unknown_label:"
+                    f"{pair_index}"
+                ),
+            )
         for fragment in fragments:
             if fragment.component_label is None:
                 return SequenceOwnerPreflight(
@@ -489,13 +536,28 @@ def preflight_sequence_owners(
                     ambiguous_association_count=0,
                     structural_failure_reason="fragment_without_component_label",
                 )
-            owner = (
-                fragment.preferred_owner
-                if fragment.preferred_owner in fragment.allowed_owners
-                else fragment.allowed_owners[0]
-            )
-            pair_constraints[int(fragment.component_label)] = int(owner)
-            pair_prior[int(fragment.component_label)] = int(owner)
+            label = int(fragment.component_label)
+            if label in locked:
+                owner = locked[label]
+                if owner not in fragment.allowed_owners:
+                    return SequenceOwnerPreflight(
+                        component_owner_constraints=tuple(constraints),
+                        owner_priors=tuple(priors),
+                        component_tracks=(),
+                        ambiguous_association_count=0,
+                        structural_failure_reason=(
+                            "locked_component_owner_constraint_not_fully_covered:"
+                            f"{pair_index}:{label}"
+                        ),
+                    )
+            else:
+                owner = (
+                    fragment.preferred_owner
+                    if fragment.preferred_owner in fragment.allowed_owners
+                    else fragment.allowed_owners[0]
+                )
+            pair_constraints[label] = int(owner)
+            pair_prior[label] = int(owner)
         constraints.append(pair_constraints)
         priors.append(pair_prior)
 
@@ -589,6 +651,18 @@ def preflight_sequence_owners(
         right_key = (int(right.pair_index), int(right.component_label))
         if incident_count[left_key] != 1 or incident_count[right_key] != 1:
             ambiguous += 1
+            rejected_track_count += 1
+            continue
+
+        locked_left = locked_by_pair[pair_index]
+        locked_right = locked_by_pair[pair_index + 1]
+        if (
+            locked_left.get(int(left.component_label)) not in {None, 1}
+            or locked_right.get(int(right.component_label)) not in {None, 0}
+        ):
+            # A verified segment anchor is a hard owner.  The older bbox track
+            # may not reverse it merely because the two local components
+            # overlap in canvas space.
             rejected_track_count += 1
             continue
 

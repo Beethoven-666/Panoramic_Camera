@@ -190,6 +190,15 @@ def _write_failure_report(output: Path, input_path: Path, exc: Exception) -> Non
         "message": str(exc),
         "deliverable_published": False,
     }
+    attempt_audit = getattr(exc, "attempt_audit", ())
+    if isinstance(attempt_audit, (list, tuple)):
+        compact_attempt_audit = [
+            dict(row) for row in attempt_audit if isinstance(row, Mapping)
+        ]
+        if compact_attempt_audit:
+            # Keep the native process facts that explain a bounded retry, but
+            # never leak a temporary RGB-D staging location into the output.
+            payload["orbslam3_execution_attempts"] = compact_attempt_audit
     pending = output / ".failure.pending.json"
     pending.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     os.replace(pending, output / "failure.json")
