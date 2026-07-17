@@ -86,6 +86,9 @@ def test_failure_report_removes_stale_deliverables(tmp_path: Path) -> None:
     _write_stale_delivery(tmp_path)
     (tmp_path / "diagnostic_panorama.jpg").write_bytes(b"stale")
     (tmp_path / "diagnostic_report.json").write_bytes(b"stale")
+    staging = tmp_path / ".orbslam3_rgbd"
+    staging.mkdir()
+    (staging / "sensitive-staged-rgb.png").write_bytes(b"stale")
 
     sequence._write_failure_report(
         tmp_path, tmp_path / "input", RuntimeError("bad GraphCut seam")
@@ -95,6 +98,7 @@ def test_failure_report_removes_stale_deliverables(tmp_path: Path) -> None:
     assert not (tmp_path / "delivery.json").exists()
     assert not (tmp_path / "diagnostic_panorama.jpg").exists()
     assert not (tmp_path / "diagnostic_report.json").exists()
+    assert not staging.exists()
     for legacy_artifact in (
         "foreground_mask.png",
         "background_exclusion_mask.png",
@@ -351,7 +355,6 @@ def test_rgbd_pipeline_stage_failure_never_leaves_delivery(
     ("attribute", "message"),
     [
         ("extract_pair_evidence", "forced RGB preview evidence failure"),
-        ("solve_background_se2", "forced RGB residual solver failure"),
         ("preflight_sequence_owners", "forced RGB owner preflight failure"),
     ],
 )

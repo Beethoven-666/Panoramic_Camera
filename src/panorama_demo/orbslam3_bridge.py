@@ -325,6 +325,8 @@ def _run_checked(
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
         )
     except FileNotFoundError as exc:
@@ -542,6 +544,8 @@ def run_orbslam3_rgbd(
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=selected_config.timeout_seconds,
             env=os.environ.copy(),
         )

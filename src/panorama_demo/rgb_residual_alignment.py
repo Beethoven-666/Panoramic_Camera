@@ -59,7 +59,11 @@ class ResidualAlignmentConfig:
     held_out_fraction: float = 0.20
     held_out_seed: int = 20301117
     owner_track_consistency: bool = True
-    background_model: str = "se2"
+    # The formal renderer is identity-only: real RGB-D SE(3) is the sole
+    # global geometry.  ``se2`` remains accepted below solely by the isolated
+    # historical solver utility; CalibratedRGBPushbroomConfig rejects it before
+    # any renderer can consume this configuration.
+    background_model: str = "identity"
     maximum_residual_displacement_pixels: float = 8.0
     maximum_background_roll_degrees: float = 0.25
     maximum_flow_fb_error_pixels: float = 1.0
@@ -1525,7 +1529,11 @@ def solve_background_se2(
     centres = tuple((float(x), float(y)) for x, y in source_centres)
     source_count = len(centres)
     metrics: dict[str, float | int | str | bool | None] = {
-        "solver": "global_huber_irls_se2",
+        "solver": (
+            "global_huber_irls_se2"
+            if settings.background_model == "se2"
+            else "identity_not_run"
+        ),
         "selected": False,
         "reason": None,
         "training_correspondence_count": 0,

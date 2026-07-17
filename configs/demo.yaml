@@ -55,9 +55,10 @@ stitch:
   # Open3D measures every short RGB-D edge; ORB-SLAM3 RGB-D uses the complete
   # short-baseline sequence to stabilise the global camera trajectory.
   pose_backend: hybrid_orbslam3_rgbd
-  # Output pixels are composed only from calibrated RGB.  The RGB-D inputs are
-  # retained exclusively for short-baseline Open3D verification and the real
-  # ORB-SLAM3 RGB-D trajectory; no depth image enters the renderer.
+  # Published pixels remain samples from calibrated RGB.  Aligned depth is
+  # additionally allowed in a narrow adjacent-seam analysis to classify true
+  # visibility and, only after a held-out mesh audit, adjust RGB sampling
+  # coordinates. It never supplies colour, a global projection, or a pose.
   adaptive_layout: true
   analysis_width: 320
   layout_target_displacement_fraction: 0.18
@@ -196,7 +197,9 @@ stitch:
       maximum_evidence_megapixels: 3.0
       held_out_fraction: 0.20
       owner_track_consistency: true
-      background_model: se2
+      # The verified RGB-D camera_to_world SE(3) chain is the sole global
+      # geometry.  RGB preview evidence remains analysis-only here.
+      background_model: identity
       maximum_residual_displacement_pixels: 8.0
       maximum_background_roll_degrees: 0.25
       maximum_flow_fb_error_pixels: 1.0
@@ -207,6 +210,44 @@ stitch:
       maximum_edge_step_p95_pixels: 1.5
       maximum_edge_step_pixels: 3.0
       cut_mesh_formal_enabled: false
+    # Only a topology-qualified raw structural RGB seed (or a strong boundary
+    # residual/full-height hard-cut) may inspect a 96--160 px adjacent RGB-D
+    # corridor. Lab-only exposure/colour risk still hard-owns RGB but cannot
+    # request geometry. Only one mutually visible same-wall/background layer
+    # can drive this 16/32 px inverse mesh; depth edges, holes, occlusions and
+    # strong RGB optical structures are hard-owned and never enter MultiBand.
+    geometry_assisted_seam:
+      enabled: true
+      analysis_corridor_width_pixels: 128
+      trigger_edge_offset_p95_pixels: 1.0
+      absolute_depth_tolerance_mm: 20.0
+      relative_depth_tolerance: 0.02
+      depth_noise_mm: 0.0
+      mutual_reprojection_tolerance_pixels: 0.40
+      edge_guard_radius_pixels: 8
+      minimum_trigger_boundary_observable_pixels: 32
+      flow_validation_preview_scale: 0.75
+      minimum_held_out_flow_validation_pixels: 8
+      minimum_held_out_strong_edge_validation_pixels: 8
+      maximum_held_out_flow_fb_error_pixels: 0.75
+      mesh_cell_pixels: 16
+      minimum_mutual_correspondences: 30
+      minimum_active_mesh_cells: 4
+      maximum_local_displacement_pixels: 8.0
+      maximum_straight_line_deviation_pixels: 1.0
+      # Every observed baseline RGB doorframe/skirting line must remain
+      # straight after raw mesh forward-inversion.  If no solver-valid line
+      # survives protected samples, record not_observed and rely on the
+      # always-required intrinsic mesh centreline/edge/diagonal audit.
+      minimum_actual_rgb_line_length_pixels: 24.0
+      minimum_actual_rgb_line_support_fraction: 0.80
+      maximum_actual_rgb_line_segments: 32
+      actual_rgb_line_inverse_maximum_iterations: 8
+      actual_rgb_line_inverse_maximum_residual_pixels: 0.05
+      maximum_held_out_error_pixels: 0.75
+      maximum_held_out_maximum_error_pixels: 2.0
+      minimum_held_out_improvement_pixels: 0.05
+      minimum_held_out_improvement_ratio: 0.30
 
   scan_seam:
     backend: rgb_monotonic_hard_owner_graphcut

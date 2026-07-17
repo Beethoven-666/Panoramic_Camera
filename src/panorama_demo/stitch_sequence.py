@@ -3,18 +3,28 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import math
 import os
+import shutil
 import sys
 import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 
 import cv2
 import numpy as np
 
-from .calibrated_rgb_pushbroom import render_calibrated_rgb_pushbroom
+from .calibrated_rgb_pushbroom import (
+    _BOUNDARY_HIGH_RISK_TOPOLOGY_POLICY,
+    _MINIMUM_BOUNDARY_HIGH_RISK_RAW_SEED_PIXELS,
+    _MINIMUM_BOUNDARY_HIGH_RISK_RAW_SEED_ROWS,
+    _MINIMUM_BOUNDARY_HIGH_RISK_RAW_SEED_ROW_SPAN,
+    _PREVIEW_RISK_TRIGGER_POLICY,
+    GeometryAssistedSeamConfig,
+    render_calibrated_rgb_pushbroom,
+)
 from .config import load_config
 from .rgb_residual_alignment import ResidualAlignmentConfig
 from .orbslam3_bridge import (
@@ -153,6 +163,14 @@ def _clear_delivery_files(output: Path) -> None:
     for pending in output.glob(".*.pending.*"):
         if pending.is_file():
             pending.unlink()
+    # ORB-SLAM3 staging is never a deliverable.  Older runs created it below
+    # ``output``; clean that known child atomically with the rest of failed or
+    # superseded work without following a user-created symlink outside output.
+    staging = output / ".orbslam3_rgbd"
+    if staging.is_symlink() or staging.is_file():
+        staging.unlink(missing_ok=True)
+    elif staging.is_dir():
+        shutil.rmtree(staging)
 
 
 def _clear_diagnostic_files(output: Path) -> None:
@@ -267,8 +285,11 @@ def _compact_residual_alignment_for_transforms(
     if backend != settings.backend:
         raise RuntimeError("Residual alignment audit backend disagrees with config")
     selected_model = residual.get("selected_model")
-    if not isinstance(selected_model, str) or not selected_model:
-        raise RuntimeError("Residual alignment audit has no selected model")
+    if settings.background_model != "identity" or selected_model != "identity":
+        raise RuntimeError(
+            "Formal residual-alignment sidecar must remain identity; "
+            "verified RGB-D SE(3) is the sole global geometry"
+        )
 
     preview_count = residual.get("preview_remap_count")
     full_resolution_count = residual.get("full_resolution_output_remap_count")
@@ -299,6 +320,23 @@ def _compact_residual_alignment_for_transforms(
             raise RuntimeError(
                 "Residual alignment audit source parameters are not in render order"
             )
+        if parameter.get("identity") is not True:
+            raise RuntimeError("Residual alignment sidecar contains a non-identity warp")
+        for name in (
+            "translation_x_pixels",
+            "translation_y_pixels",
+            "roll_degrees",
+        ):
+            value = parameter.get(name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) != 0.0
+            ):
+                raise RuntimeError(
+                    "Residual alignment sidecar contains a non-identity global transform"
+                )
         per_source_parameters.append({"frame_id": frame_id, **parameter})
 
     held_out_before = residual.get("held_out_metrics_before")
@@ -328,6 +366,1265 @@ def _compact_residual_alignment_for_transforms(
         "component_audit": dict(component_audit),
         "topology_audit": dict(topology_audit),
         "working_set_audit": dict(working_set_audit),
+    }
+
+
+def _compact_geometry_assistance_for_transforms(
+    render_metadata: dict[str, Any],
+    settings: GeometryAssistedSeamConfig,
+    frame_ids: list[int],
+) -> dict[str, object]:
+    """Publish scalar local-geometry evidence without paths, maps, or depth.
+
+    The renderer's temporary geometry masks and aligned depth frames are never
+    part of reproducibility sidecars.  The compact payload proves that depth
+    was limited to adjacent seam geometry and that final colour remained RGB.
+    """
+
+    geometry = render_metadata.get("geometry_assisted_seam")
+    if not isinstance(geometry, dict):
+        raise RuntimeError("Calibrated pushbroom omitted geometry-assistance audit")
+    if geometry.get("scope") != "adjacent_seam_corridors_only":
+        raise RuntimeError("Geometry assistance scope is not adjacent seam corridors")
+    if geometry.get("depth_used_for_output_pixels") is not False:
+        raise RuntimeError("Geometry assistance incorrectly claims depth output pixels")
+    config = geometry.get("config")
+    if not isinstance(config, dict) or config != settings.as_dict():
+        raise RuntimeError("Geometry assistance audit configuration disagrees with config")
+    pairs = geometry.get("pairs")
+    if not isinstance(pairs, list) or len(pairs) != len(frame_ids) - 1:
+        raise RuntimeError("Geometry assistance audit does not cover all adjacent pairs")
+    compact_pairs: list[dict[str, object]] = []
+    forbidden_keys = {
+        "aligned_depth_path",
+        "raw_depth_path",
+        "depth_path",
+        "source_map_x",
+        "source_map_y",
+        "depth_mm",
+        "protected_mask",
+        "active_mask",
+    }
+
+    def compact_scalar_audit(value: object, path: tuple[str, ...] = ()) -> object:
+        """Copy only finite scalar evidence; reject nested dense geometry."""
+
+        if value is None or isinstance(value, bool):
+            return value
+        if isinstance(value, (int, np.integer)):
+            return int(value)
+        if isinstance(value, (float, np.floating)):
+            numeric = float(value)
+            if not math.isfinite(numeric):
+                raise RuntimeError(
+                    "Geometry assistance sidecar contains a non-finite scalar audit value"
+                )
+            return numeric
+        if isinstance(value, str):
+            if "/" in value or "\\" in value:
+                raise RuntimeError(
+                    "Geometry assistance sidecar attempted to publish a path"
+                )
+            return value
+        if isinstance(value, np.ndarray):
+            raise RuntimeError("Geometry assistance sidecar attempted to publish dense data")
+        if isinstance(value, (list, tuple)):
+            # Scalar audits may expose the small reason vocabulary, but never
+            # arbitrary nested Python lists: those could smuggle an otherwise
+            # rejected dense mask/depth map through JSON serialization.
+            if not path or path[-1] != "trigger_reasons":
+                raise RuntimeError(
+                    "Geometry assistance sidecar attempted to publish dense list data"
+                )
+            return [
+                compact_scalar_audit(item, (*path, str(index)))
+                for index, item in enumerate(value)
+            ]
+        if isinstance(value, dict):
+            compact: dict[str, object] = {}
+            for key, nested in value.items():
+                if not isinstance(key, str):
+                    raise RuntimeError("Geometry assistance audit keys must be strings")
+                normalised = key.lower()
+                if (
+                    key in forbidden_keys
+                    or normalised.endswith("_path")
+                    or normalised.endswith("_mask")
+                    or normalised.endswith("_map")
+                    or normalised.endswith("_map_x")
+                    or normalised.endswith("_map_y")
+                    or normalised in {"depth_mm", "depth_image", "depth_frame"}
+                ):
+                    raise RuntimeError(
+                        "Geometry assistance sidecar attempted to publish dense data"
+                    )
+                compact[key] = compact_scalar_audit(nested, (*path, key))
+            return compact
+        raise RuntimeError(
+            "Geometry assistance sidecar contains a non-scalar audit value"
+        )
+
+    def required_finite_scalar(
+        mapping: Mapping[str, object], key: str, *, context: str
+    ) -> float:
+        value = mapping.get(key)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            raise RuntimeError(f"{context} lacks finite {key}")
+        return float(value)
+
+    def required_integer(
+        mapping: Mapping[str, object], key: str, *, context: str
+    ) -> int:
+        value = mapping.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise RuntimeError(f"{context} lacks integer {key}")
+        return int(value)
+
+    def required_boolean(
+        mapping: Mapping[str, object], key: str, *, context: str
+    ) -> bool:
+        value = mapping.get(key)
+        if type(value) is not bool:
+            raise RuntimeError(f"{context} lacks boolean {key}")
+        return bool(value)
+
+    def validate_accepted_trigger_audit(audit: Mapping[str, object]) -> None:
+        """Bind a published mesh to its narrow structural trigger evidence."""
+
+        context = "Accepted geometry trigger audit"
+        reasons = audit.get("trigger_reasons")
+        allowed_reasons = {
+            "boundary_edge_normal_step_p95",
+            "boundary_edge_normal_step_max",
+            "boundary_high_rgb_risk",
+            "preview_full_height_hard_cut",
+        }
+        if (
+            not isinstance(reasons, list)
+            or not reasons
+            or any(not isinstance(reason, str) for reason in reasons)
+            or any(reason not in allowed_reasons for reason in reasons)
+            or len(set(reasons)) != len(reasons)
+        ):
+            raise RuntimeError("Accepted geometry mesh lacks a valid trigger reason")
+        if audit.get("preview_risk_policy") != _PREVIEW_RISK_TRIGGER_POLICY:
+            raise RuntimeError("Accepted geometry mesh lacks RGB-risk trigger policy")
+        if (
+            audit.get("boundary_high_risk_topology_policy")
+            != _BOUNDARY_HIGH_RISK_TOPOLOGY_POLICY
+        ):
+            raise RuntimeError(
+                "Accepted geometry mesh lacks structural RGB-risk trigger policy"
+            )
+        preview_scale = required_finite_scalar(
+            audit, "preview_risk_preview_scale", context=context
+        )
+        if not math.isclose(
+            preview_scale,
+            float(settings.flow_validation_preview_scale),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise RuntimeError("Accepted geometry mesh has inconsistent trigger scale")
+        expected_minimums = {
+            "minimum_boundary_high_risk_component_pixel_count": max(
+                1,
+                int(
+                    math.ceil(
+                        _MINIMUM_BOUNDARY_HIGH_RISK_RAW_SEED_PIXELS
+                        * preview_scale
+                        * preview_scale
+                    )
+                ),
+            ),
+            "minimum_boundary_high_risk_component_row_count": max(
+                1,
+                int(
+                    math.ceil(
+                        _MINIMUM_BOUNDARY_HIGH_RISK_RAW_SEED_ROWS * preview_scale
+                    )
+                ),
+            ),
+            "minimum_boundary_high_risk_component_row_span": max(
+                1,
+                int(
+                    math.ceil(
+                        _MINIMUM_BOUNDARY_HIGH_RISK_RAW_SEED_ROW_SPAN
+                        * preview_scale
+                    )
+                ),
+            ),
+        }
+        if any(
+            required_integer(audit, key, context=context) != expected
+            for key, expected in expected_minimums.items()
+        ):
+            raise RuntimeError(
+                "Accepted geometry mesh has inconsistent structural-risk threshold"
+            )
+        component_count = required_integer(
+            audit, "boundary_risk_component_count", context=context
+        )
+        centreline_count = required_integer(
+            audit,
+            "boundary_centreline_touching_risk_component_count",
+            context=context,
+        )
+        qualifying_count = required_integer(
+            audit, "boundary_qualifying_risk_component_count", context=context
+        )
+        high_risk = required_boolean(audit, "boundary_high_rgb_risk", context=context)
+        if (
+            component_count < 0
+            or centreline_count < 0
+            or qualifying_count < 0
+            or centreline_count > component_count
+            or qualifying_count > centreline_count
+            or high_risk != bool(qualifying_count)
+            or ("boundary_high_rgb_risk" in reasons) != high_risk
+        ):
+            raise RuntimeError("Accepted geometry mesh has invalid structural-risk topology")
+        for key, minimum_key in (
+            (
+                "boundary_largest_qualifying_risk_component_pixel_count",
+                "minimum_boundary_high_risk_component_pixel_count",
+            ),
+            (
+                "boundary_largest_qualifying_risk_component_row_count",
+                "minimum_boundary_high_risk_component_row_count",
+            ),
+            (
+                "boundary_largest_qualifying_risk_component_row_span",
+                "minimum_boundary_high_risk_component_row_span",
+            ),
+        ):
+            value = required_integer(audit, key, context=context)
+            minimum = required_integer(audit, minimum_key, context=context)
+            if (qualifying_count == 0 and value != 0) or (
+                qualifying_count > 0 and value < minimum
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh has invalid qualifying risk support"
+                )
+        full_hard_cut = required_boolean(
+            audit, "preview_full_height_hard_cut", context=context
+        )
+        probe_status = audit.get("preview_owner_probe_status")
+        probe_graphcut = required_boolean(
+            audit, "preview_owner_probe_graphcut_used", context=context
+        )
+        hard_cut_rows = required_integer(
+            audit, "preview_hard_cut_row_count", context=context
+        )
+        common_rows = required_integer(audit, "common_row_count", context=context)
+        if (
+            not isinstance(probe_status, str)
+            or not probe_status
+            or hard_cut_rows > common_rows
+            or ("preview_full_height_hard_cut" in reasons) != full_hard_cut
+            or (full_hard_cut and not high_risk)
+            or (
+                not high_risk
+                and (
+                    hard_cut_rows != 0
+                    or full_hard_cut
+                    or probe_graphcut
+                    or probe_status
+                    not in {
+                        "not_needed_no_boundary_rgb_risk",
+                        "not_needed_unqualified_boundary_rgb_risk",
+                    }
+                )
+            )
+        ):
+            raise RuntimeError("Accepted geometry mesh has inconsistent owner probe")
+
+    def validate_accepted_depth_layer_audit(audit: Mapping[str, object]) -> None:
+        """Require scalar proof that a mesh stayed on one safe wall layer."""
+
+        context = "Accepted geometry depth-layer audit"
+        pair_geometry = audit.get("geometry")
+        if not isinstance(pair_geometry, dict):
+            raise RuntimeError("Accepted geometry mesh lacks bidirectional depth audit")
+        for direction in ("first_to_second", "second_to_first"):
+            directed = pair_geometry.get(direction)
+            if not isinstance(directed, dict):
+                raise RuntimeError("Accepted geometry mesh lacks directed depth audit")
+            mutual_count = required_integer(
+                directed,
+                "mutual_consistent_pixel_count",
+                context=context,
+            )
+            residual_p95 = required_finite_scalar(
+                directed,
+                "mutual_depth_residual_ratio_p95",
+                context=context,
+            )
+            residual_maximum = required_finite_scalar(
+                directed,
+                "mutual_depth_residual_ratio_max",
+                context=context,
+            )
+            if (
+                mutual_count <= 0
+                or residual_p95 < 0.0
+                or residual_maximum < residual_p95
+                or residual_maximum > 1.0 + 1e-6
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh violates mutual depth-residual gate"
+                )
+        for key in ("first_surface_safety", "second_surface_safety"):
+            safety = pair_geometry.get(key)
+            if (
+                not isinstance(safety, dict)
+                or safety.get("policy")
+                != (
+                    "one_dominant_far_depth_component_mesh_safe_"
+                    "near_and_ambiguous_components_hard_owner"
+                )
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh lacks conservative surface-safety audit"
+                )
+            mesh_safe_count = required_integer(
+                safety, "mesh_safe_pixel_count", context=context
+            )
+            dominant_count = required_integer(
+                safety, "dominant_component_pixel_count", context=context
+            )
+            hard_owner_count = required_integer(
+                safety, "hard_owner_pixel_count", context=context
+            )
+            near_count = required_integer(
+                safety, "near_foreground_pixel_count", context=context
+            )
+            ambiguous_count = required_integer(
+                safety,
+                "ambiguous_or_unreliable_pixel_count",
+                context=context,
+            )
+            component_count = required_integer(
+                safety, "component_count", context=context
+            )
+            material_component_count = required_integer(
+                safety, "material_component_count", context=context
+            )
+            near_component_count = required_integer(
+                safety,
+                "near_foreground_component_count",
+                context=context,
+            )
+            depth_anchor_count = required_integer(
+                safety,
+                "depth_anchor_component_count",
+                context=context,
+            )
+            analysis_count = required_integer(
+                safety, "analysis_pixel_count", context=context
+            )
+            base_safe_count = required_integer(
+                safety, "base_safe_pixel_count", context=context
+            )
+            dominant_fraction = required_finite_scalar(
+                safety, "dominant_component_fraction", context=context
+            )
+            dominant_depth = safety.get("dominant_component_median_depth_mm")
+            if (
+                safety.get("analysis_scope") != "adjacent_seam_raw_footprint"
+                or mesh_safe_count <= 0
+                or dominant_count != mesh_safe_count
+                or hard_owner_count < 0
+                or hard_owner_count != near_count + ambiguous_count
+                or near_count < 0
+                or ambiguous_count < 0
+                or component_count < 0
+                or material_component_count < 0
+                or near_component_count < 0
+                or near_component_count > material_component_count
+                or material_component_count > component_count
+                or depth_anchor_count <= 0
+                or depth_anchor_count > material_component_count
+                or analysis_count <= 0
+                or base_safe_count <= 0
+                or base_safe_count > analysis_count
+                or not 0.50 <= dominant_fraction <= 1.0
+                or isinstance(dominant_depth, bool)
+                or not isinstance(dominant_depth, (int, float))
+                or not math.isfinite(float(dominant_depth))
+                or float(dominant_depth) <= 0.0
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh has invalid surface-safety support"
+                )
+        component = audit.get("virtual_background_component")
+        if (
+            not isinstance(component, dict)
+            or component.get("policy")
+            != "one_4_connected_bilateral_background_component_crossing_nominal_owner_boundary"
+        ):
+            raise RuntimeError(
+                "Accepted geometry mesh lacks one-component background selection"
+            )
+        depth_component_count = required_integer(
+            component, "depth_safe_component_count", context=context
+        )
+        crossing_component_count = required_integer(
+            component, "boundary_crossing_component_count", context=context
+        )
+        selected_label = required_integer(
+            component, "selected_component_label", context=context
+        )
+        selected_count = required_integer(
+            component, "selected_component_pixel_count", context=context
+        )
+        nonselected_count = required_integer(
+            component, "nonselected_depth_safe_pixel_count", context=context
+        )
+        candidate_count = required_integer(
+            audit, "candidate_depth_same_layer_pixel_count", context=context
+        )
+        before_rgb_count = required_integer(
+            audit,
+            "depth_same_layer_before_rgb_protection_pixel_count",
+            context=context,
+        )
+        depth_same_layer_count = required_integer(
+            audit, "depth_same_layer_pixel_count", context=context
+        )
+        same_layer_count = required_integer(
+            audit, "same_layer_pixel_count", context=context
+        )
+        fit_support_count = required_integer(
+            audit, "mesh_fit_support_pixel_count", context=context
+        )
+        flow_application_count = required_integer(
+            audit, "rgb_flow_application_pixel_count", context=context
+        )
+        fit_excluded_count = required_integer(
+            audit,
+            "rgb_flow_fit_excluded_same_layer_pixel_count",
+            context=context,
+        )
+        mesh_candidate_count = required_integer(
+            audit, "mesh_candidate_pixel_count", context=context
+        )
+        mesh_active_count = required_integer(
+            audit, "mesh_active_pixel_count", context=context
+        )
+        if (
+            depth_component_count <= 0
+            or crossing_component_count <= 0
+            or crossing_component_count > depth_component_count
+            or selected_label <= 0
+            or selected_count <= 0
+            or candidate_count != selected_count + nonselected_count
+            or candidate_count > before_rgb_count
+            or depth_same_layer_count != selected_count
+            or same_layer_count <= 0
+            or same_layer_count > depth_same_layer_count
+            or flow_application_count <= 0
+            or same_layer_count > flow_application_count
+            or fit_support_count <= 0
+            or fit_support_count > same_layer_count
+            or fit_excluded_count != same_layer_count - fit_support_count
+            or mesh_candidate_count <= 0
+            or mesh_candidate_count > same_layer_count
+            or mesh_active_count <= 0
+            or mesh_active_count > mesh_candidate_count
+        ):
+            raise RuntimeError(
+                "Accepted geometry mesh has invalid virtual background support"
+            )
+        if required_integer(
+            audit,
+            "protected_active_overlap_pixel_count",
+            context=context,
+        ) != 0:
+            raise RuntimeError(
+                "Accepted geometry mesh overlaps an owner-protected component"
+            )
+        if required_integer(
+            audit,
+            "active_non_same_layer_overlap_pixel_count",
+            context=context,
+        ) != 0:
+            raise RuntimeError(
+                "Accepted geometry mesh moves a non-same-layer component"
+            )
+
+    mesh_settings = settings.mesh_warp_config()
+
+    triggered_count = 0
+    accepted_count = 0
+    hard_owner_fallback_count = 0
+    for index, pair in enumerate(pairs):
+        if not isinstance(pair, dict):
+            raise RuntimeError("Geometry assistance pair audit is malformed")
+        if pair.get("pair_index") != index or pair.get("frame_ids") != frame_ids[index : index + 2]:
+            raise RuntimeError("Geometry assistance pair order disagrees with render sources")
+        if forbidden_keys & set(pair):
+            raise RuntimeError("Geometry assistance sidecar attempted to publish dense data")
+        audit = pair.get("audit")
+        if not isinstance(audit, dict) or "reason" not in audit:
+            raise RuntimeError("Geometry assistance pair audit lacks a decision reason")
+        compact_audit = compact_scalar_audit(audit)
+        if not isinstance(compact_audit, dict):  # Kept explicit for type safety.
+            raise RuntimeError("Geometry assistance pair audit is malformed")
+        triggered = pair.get("triggered")
+        accepted = pair.get("accepted")
+        if type(triggered) is not bool or type(accepted) is not bool:
+            raise RuntimeError("Geometry assistance pair decision flags must be booleans")
+        fallback = pair.get("fallback")
+        corridor = pair.get("corridor_x")
+        if triggered:
+            if corridor is None:
+                # A high-risk preview may correctly trigger while the two
+                # immutable 20%-band strips have no 96--160 px common field.
+                # That is a declared hard-owner fallback, never a reason to
+                # expand the corridor or relax the strip budget.
+                if (
+                    accepted
+                    or fallback != "hard_owner"
+                    or audit.get("reason")
+                    != "insufficient_calibrated_geometry_corridor"
+                ):
+                    raise RuntimeError(
+                        "Geometry pair without a calibrated corridor must hard-own"
+                    )
+            elif (
+                not isinstance(corridor, list)
+                or len(corridor) != 2
+                or any(
+                    isinstance(value, bool) or not isinstance(value, int)
+                    for value in corridor
+                )
+                or not 96 <= int(corridor[1]) - int(corridor[0]) <= 160
+            ):
+                raise RuntimeError("Triggered geometry pair has an invalid 96-160px corridor")
+            triggered_count += 1
+        elif corridor is not None:
+            raise RuntimeError("Untriggered geometry pair must not retain a corridor")
+        if accepted:
+            accepted_count += 1
+        if fallback == "hard_owner":
+            hard_owner_fallback_count += 1
+        if accepted and not triggered:
+            raise RuntimeError("Accepted geometry pair was not triggered")
+        if triggered and not accepted and (
+            fallback != "hard_owner" or pair.get("warp_source_index") is not None
+        ):
+            raise RuntimeError("Rejected triggered geometry pair must use hard-owner fallback")
+        if accepted:
+            if audit.get("reason") != "accepted":
+                raise RuntimeError("Accepted geometry pair lacks an accepted decision")
+            if pair.get("warp_source_index") != index + 1 or pair.get("fallback") != "none":
+                raise RuntimeError("Accepted geometry pair has an invalid local-warp owner")
+            validate_accepted_trigger_audit(compact_audit)
+            mesh = compact_audit.get("mesh")
+            if not isinstance(mesh, dict):
+                raise RuntimeError("Accepted geometry mesh lacks a scalar mesh audit")
+            if mesh.get("accepted") is not True:
+                raise RuntimeError("Accepted geometry pair disagrees with its mesh audit")
+            if mesh.get("metric_unit") != "full_resolution_pixels":
+                raise RuntimeError("Accepted geometry mesh lacks full-resolution metric units")
+            straightness = mesh.get("maximum_straight_line_deviation_pixels")
+            if (
+                isinstance(straightness, bool)
+                or not isinstance(straightness, (int, float))
+                or not math.isfinite(float(straightness))
+                or float(straightness) < 0.0
+            ):
+                raise RuntimeError("Accepted geometry mesh lacks a finite straight-line audit")
+            if float(straightness) > float(
+                settings.maximum_straight_line_deviation_pixels
+            ):
+                raise RuntimeError("Accepted geometry mesh exceeds straight-line gate")
+            validate_accepted_depth_layer_audit(compact_audit)
+            transparency = compact_audit.get("rgb_transparency_protection")
+            if (
+                not isinstance(transparency, dict)
+                or transparency.get("policy")
+                != "rgb_occlusion_or_any_strong_rgb_structure_dilated_guard"
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh lacks RGB transparency/reflection protection"
+                )
+            if required_integer(
+                transparency,
+                "guard_radius_pixels",
+                context="Accepted geometry RGB transparency protection",
+            ) != int(settings.edge_guard_radius_pixels):
+                raise RuntimeError(
+                    "Accepted geometry mesh has an inconsistent RGB transparency guard"
+                )
+            transparency_counts = {
+                key: required_integer(
+                    transparency,
+                    key,
+                    context="Accepted geometry RGB transparency protection",
+                )
+                for key in (
+                    "preview_occluded_pixel_count",
+                    "preview_strong_rgb_structure_pixel_count",
+                    "preview_uncertain_or_rejected_strong_edge_pixel_count",
+                    "preview_unsafe_pixel_count",
+                    "full_resolution_unguarded_pixel_count",
+                    "full_resolution_protected_pixel_count",
+                    "full_resolution_tile_pixel_count",
+                )
+            }
+            if (
+                any(value < 0 for value in transparency_counts.values())
+                or transparency_counts["preview_unsafe_pixel_count"]
+                < transparency_counts["preview_occluded_pixel_count"]
+                or transparency_counts["preview_unsafe_pixel_count"]
+                < transparency_counts[
+                    "preview_strong_rgb_structure_pixel_count"
+                ]
+                or transparency_counts[
+                    "preview_strong_rgb_structure_pixel_count"
+                ]
+                < transparency_counts[
+                    "preview_uncertain_or_rejected_strong_edge_pixel_count"
+                ]
+                or transparency_counts["full_resolution_protected_pixel_count"]
+                < transparency_counts["full_resolution_unguarded_pixel_count"]
+                or transparency_counts["full_resolution_protected_pixel_count"]
+                > transparency_counts["full_resolution_tile_pixel_count"]
+                or transparency_counts["full_resolution_tile_pixel_count"] <= 0
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh has an invalid RGB transparency protection audit"
+                )
+            for key in (
+                "depth_protected_pixel_count",
+                "rgb_transparent_or_reflection_protected_pixel_count",
+                "protected_pixel_count",
+            ):
+                if required_integer(
+                    compact_audit, key, context="Accepted geometry protection audit"
+                ) < 0:
+                    raise RuntimeError(
+                        "Accepted geometry mesh has a negative protection count"
+                    )
+            if required_integer(
+                compact_audit,
+                "protected_pixel_count",
+                context="Accepted geometry protection audit",
+            ) < max(
+                required_integer(
+                    compact_audit,
+                    "depth_protected_pixel_count",
+                    context="Accepted geometry protection audit",
+                ),
+                required_integer(
+                    compact_audit,
+                    "rgb_transparent_or_reflection_protected_pixel_count",
+                    context="Accepted geometry protection audit",
+                ),
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh protection union disagrees with its inputs"
+                )
+            final_owner = compact_audit.get("final_owner")
+            if (
+                not isinstance(final_owner, dict)
+                or final_owner.get("policy")
+                != "final_nominal_owner_boundary_rgb_risk_and_hard_cut_closure"
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh lacks final RGB owner-closure audit"
+                )
+            final_owner_counts = {
+                key: required_integer(
+                    final_owner,
+                    key,
+                    context="Accepted geometry final owner audit",
+                )
+                for key in (
+                    "nominal_boundary_x",
+                    "nominal_boundary_half_width_pixels",
+                    "final_nominal_boundary_risk_pixel_count",
+                    "final_nominal_boundary_risk_row_count",
+                    "final_boundary_common_row_count",
+                    "final_common_row_count",
+                    "final_hard_cut_row_count",
+                )
+            }
+            final_full_hard_cut = final_owner.get("final_full_height_hard_cut")
+            final_graphcut_used = final_owner.get("final_graphcut_used")
+            final_pair_level = final_owner.get("final_pair_level_hard_owner")
+            if (
+                type(final_full_hard_cut) is not bool
+                or type(final_graphcut_used) is not bool
+                or type(final_pair_level) is not bool
+                or final_owner_counts["nominal_boundary_half_width_pixels"] != 2
+                or final_owner_counts["final_nominal_boundary_risk_row_count"]
+                > final_owner_counts["final_boundary_common_row_count"]
+                or final_owner_counts["final_boundary_common_row_count"]
+                > final_owner_counts["final_common_row_count"]
+                or (
+                    not final_pair_level
+                    and final_owner_counts["final_hard_cut_row_count"]
+                    > final_owner_counts["final_common_row_count"]
+                )
+                or (
+                    final_full_hard_cut
+                    and not final_pair_level
+                    and (
+                        final_owner_counts["final_common_row_count"] <= 0
+                        or final_owner_counts["final_hard_cut_row_count"]
+                        < final_owner_counts["final_common_row_count"]
+                    )
+                )
+                or (final_pair_level and not final_full_hard_cut)
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh has an invalid final RGB owner-closure audit"
+                )
+            active_cells = mesh.get("active_cell_count")
+            largest_component = mesh.get("largest_connected_active_cell_count")
+            if (
+                not isinstance(active_cells, int)
+                or not isinstance(largest_component, int)
+                or active_cells < int(settings.minimum_active_mesh_cells)
+                or largest_component < int(settings.minimum_active_mesh_cells)
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh lacks four-cell connected support"
+                )
+            if mesh.get("straight_line_audit_policy") != (
+                "raw_same_layer_active_centrelines_internal_grid_edges_and_cell_diagonals"
+            ):
+                raise RuntimeError("Accepted geometry mesh lacks straight-line audit policy")
+            correspondence_count = required_integer(
+                mesh, "correspondence_count", context="Accepted geometry mesh"
+            )
+            if correspondence_count < int(settings.minimum_mutual_correspondences):
+                raise RuntimeError("Accepted geometry mesh lacks mutual correspondence support")
+            training_count = required_integer(
+                mesh, "training_count", context="Accepted geometry mesh"
+            )
+            held_out_count = required_integer(
+                mesh, "held_out_count", context="Accepted geometry mesh"
+            )
+            expected_held_out = max(
+                1,
+                int(round(correspondence_count * float(mesh_settings.held_out_fraction))),
+            )
+            if (
+                training_count <= 0
+                or held_out_count != expected_held_out
+                or training_count + held_out_count != correspondence_count
+            ):
+                raise RuntimeError("Accepted geometry mesh lacks an independent held-out partition")
+            if required_integer(
+                mesh, "free_node_count", context="Accepted geometry mesh"
+            ) <= 0:
+                raise RuntimeError("Accepted geometry mesh lacks free mesh nodes")
+            held_before = required_finite_scalar(
+                mesh,
+                "held_out_error_p95_before_pixels",
+                context="Accepted geometry mesh",
+            )
+            held_after = required_finite_scalar(
+                mesh,
+                "held_out_error_p95_after_pixels",
+                context="Accepted geometry mesh",
+            )
+            held_max = required_finite_scalar(
+                mesh,
+                "held_out_error_max_after_pixels",
+                context="Accepted geometry mesh",
+            )
+            if (
+                held_before < 0.0
+                or held_after < 0.0
+                or held_max < 0.0
+                or held_after > float(settings.maximum_held_out_error_pixels)
+                or held_max > float(settings.maximum_held_out_maximum_error_pixels)
+            ):
+                raise RuntimeError("Accepted geometry mesh exceeds held-out error gate")
+            improvement = held_before - held_after
+            improvement_ratio = improvement / held_before if held_before > 1e-9 else 0.0
+            if (
+                improvement < float(settings.minimum_held_out_improvement_pixels)
+                or improvement_ratio < float(settings.minimum_held_out_improvement_ratio)
+            ):
+                raise RuntimeError("Accepted geometry mesh lacks held-out improvement")
+            displacement = required_finite_scalar(
+                mesh, "maximum_displacement_pixels", context="Accepted geometry mesh"
+            )
+            if not 0.0 <= displacement <= float(settings.maximum_local_displacement_pixels):
+                raise RuntimeError("Accepted geometry mesh exceeds displacement gate")
+            minimum_det = required_finite_scalar(
+                mesh, "minimum_jacobian_determinant", context="Accepted geometry mesh"
+            )
+            maximum_det = required_finite_scalar(
+                mesh, "maximum_jacobian_determinant", context="Accepted geometry mesh"
+            )
+            maximum_condition = required_finite_scalar(
+                mesh, "maximum_jacobian_condition", context="Accepted geometry mesh"
+            )
+            if not (
+                float(mesh_settings.minimum_jacobian_determinant)
+                <= minimum_det
+                <= maximum_det
+                <= float(mesh_settings.maximum_jacobian_determinant)
+                and 1.0 <= maximum_condition <= float(mesh_settings.maximum_jacobian_condition)
+            ):
+                raise RuntimeError("Accepted geometry mesh violates Jacobian gate")
+            boundary_identity = required_finite_scalar(
+                mesh,
+                "boundary_identity_maximum_error_pixels",
+                context="Accepted geometry mesh",
+            )
+            if not 0.0 <= boundary_identity <= 1e-9:
+                raise RuntimeError("Accepted geometry mesh violates boundary-identity gate")
+            flow_fit_support = compact_audit.get("rgb_flow_fit_support")
+            if not isinstance(flow_fit_support, dict) or flow_fit_support.get("policy") != (
+                "training_only_accepted_bidirectional_rgb_flow_and_epipolar_support"
+            ):
+                raise RuntimeError("Accepted geometry mesh lacks flow-consistent fit support")
+            fit_full_resolution_count = required_integer(
+                flow_fit_support,
+                "full_resolution_flow_consistent_pixel_count",
+                context="Accepted geometry flow-fit mask",
+            )
+            application_full_resolution_count = required_integer(
+                flow_fit_support,
+                "full_resolution_application_flow_consistent_pixel_count",
+                context="Accepted geometry flow-application mask",
+            )
+            training_preview_count = required_integer(
+                flow_fit_support,
+                "preview_training_flow_consistent_pixel_count",
+                context="Accepted geometry flow-fit mask",
+            )
+            application_preview_count = required_integer(
+                flow_fit_support,
+                "preview_application_flow_consistent_pixel_count",
+                context="Accepted geometry flow-application mask",
+            )
+            held_out_preview_count = required_integer(
+                flow_fit_support,
+                "preview_held_out_pixel_count",
+                context="Accepted geometry flow-fit mask",
+            )
+            flow_tile_count = required_integer(
+                flow_fit_support,
+                "full_resolution_tile_pixel_count",
+                context="Accepted geometry flow-fit mask",
+            )
+            audited_flow_application_count = required_integer(
+                compact_audit,
+                "rgb_flow_application_pixel_count",
+                context="Accepted geometry flow-application audit",
+            )
+            audited_fit_support_count = required_integer(
+                compact_audit,
+                "mesh_fit_support_pixel_count",
+                context="Accepted geometry flow-fit audit",
+            )
+            if (
+                fit_full_resolution_count <= 0
+                or application_full_resolution_count <= 0
+                or training_preview_count <= 0
+                or application_preview_count < training_preview_count
+                or held_out_preview_count <= 0
+                or flow_tile_count <= 0
+                or fit_full_resolution_count > application_full_resolution_count
+                or application_full_resolution_count > flow_tile_count
+                or audited_flow_application_count
+                != application_full_resolution_count
+                or audited_fit_support_count > fit_full_resolution_count
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh has inconsistent independent flow-fit support"
+                )
+            fit_preview_scale = required_finite_scalar(
+                flow_fit_support, "preview_scale", context="Accepted geometry flow-fit mask"
+            )
+            fit_maximum_full_resolution_fb = required_finite_scalar(
+                flow_fit_support,
+                "maximum_full_resolution_fb_error_pixels",
+                context="Accepted geometry flow-fit mask",
+            )
+            fit_maximum_preview_fb = required_finite_scalar(
+                flow_fit_support,
+                "maximum_preview_fb_error_pixels",
+                context="Accepted geometry flow-fit mask",
+            )
+            if not (
+                0.0 < fit_preview_scale <= 1.0
+                and flow_fit_support.get("metric_unit")
+                == "full_resolution_pixels"
+                and math.isclose(
+                    fit_maximum_full_resolution_fb,
+                    float(settings.maximum_held_out_flow_fb_error_pixels),
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                and math.isclose(
+                    fit_maximum_preview_fb,
+                    fit_maximum_full_resolution_fb * fit_preview_scale,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+            ):
+                raise RuntimeError("Accepted geometry mesh has inconsistent flow-fit policy")
+            flow = compact_audit.get("rgb_flow_validation")
+            if (
+                not isinstance(flow, dict)
+                or flow.get("accepted") is not True
+                or flow.get("reason") != "accepted"
+                or flow.get("metric_unit") != "full_resolution_pixels"
+            ):
+                raise RuntimeError("Accepted geometry mesh lacks held-out RGB-flow acceptance")
+            flow_count = required_integer(
+                flow,
+                "held_out_observable_flow_pixel_count",
+                context="Accepted geometry RGB-flow audit",
+            )
+            flow_p95 = required_finite_scalar(
+                flow,
+                "held_out_flow_fb_error_p95_pixels",
+                context="Accepted geometry RGB-flow audit",
+            )
+            if (
+                flow_count < int(settings.minimum_held_out_flow_validation_pixels)
+                or flow_p95 < 0.0
+                or flow_p95 > float(settings.maximum_held_out_flow_fb_error_pixels)
+            ):
+                raise RuntimeError("Accepted geometry mesh violates held-out RGB-flow gate")
+            flow_preview_scale = required_finite_scalar(
+                flow, "preview_scale", context="Accepted geometry RGB-flow audit"
+            )
+            if not math.isclose(
+                flow_preview_scale,
+                float(settings.flow_validation_preview_scale),
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ):
+                raise RuntimeError("Accepted geometry mesh has inconsistent flow-validation scale")
+            flow_maximum = required_finite_scalar(
+                flow,
+                "maximum_held_out_flow_fb_error_pixels",
+                context="Accepted geometry RGB-flow audit",
+            )
+            if not math.isclose(
+                flow_maximum,
+                float(settings.maximum_held_out_flow_fb_error_pixels),
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh has inconsistent RGB-flow threshold"
+                )
+            strong_edge = flow.get("held_out_strong_edge")
+            if (
+                not isinstance(strong_edge, dict)
+                or strong_edge.get("accepted") is not True
+                or strong_edge.get("reason") != "accepted"
+                or strong_edge.get("policy")
+                != "same_held_out_flow_epipolar_supported_strong_rgb_edges"
+                or strong_edge.get("metric_unit") != "full_resolution_pixels"
+            ):
+                raise RuntimeError("Accepted geometry mesh lacks held-out strong-edge acceptance")
+            strong_count = required_integer(
+                strong_edge,
+                "held_out_strong_edge_pixel_count",
+                context="Accepted geometry strong-edge audit",
+            )
+            strong_after = required_finite_scalar(
+                strong_edge,
+                "held_out_strong_edge_p95_after_pixels",
+                context="Accepted geometry strong-edge audit",
+            )
+            strong_max = required_finite_scalar(
+                strong_edge,
+                "held_out_strong_edge_maximum_after_pixels",
+                context="Accepted geometry strong-edge audit",
+            )
+            strong_improvement = required_finite_scalar(
+                strong_edge,
+                "held_out_strong_edge_improvement_pixels",
+                context="Accepted geometry strong-edge audit",
+            )
+            strong_ratio = required_finite_scalar(
+                strong_edge,
+                "held_out_strong_edge_improvement_ratio",
+                context="Accepted geometry strong-edge audit",
+            )
+            strong_before = required_finite_scalar(
+                strong_edge,
+                "held_out_strong_edge_p95_before_pixels",
+                context="Accepted geometry strong-edge audit",
+            )
+            recomputed_strong_improvement = strong_before - strong_after
+            recomputed_strong_ratio = (
+                recomputed_strong_improvement / strong_before
+                if strong_before > 1e-9
+                else 0.0
+            )
+            if (
+                strong_count
+                < int(settings.minimum_held_out_strong_edge_validation_pixels)
+                or strong_before < 0.0
+                or strong_after < 0.0
+                or strong_max < 0.0
+                or strong_after > float(settings.maximum_held_out_error_pixels)
+                or strong_max > float(settings.maximum_held_out_maximum_error_pixels)
+                or not math.isclose(
+                    strong_improvement,
+                    recomputed_strong_improvement,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                or not math.isclose(
+                    strong_ratio,
+                    recomputed_strong_ratio,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                or recomputed_strong_improvement
+                < float(settings.minimum_held_out_improvement_pixels)
+                or recomputed_strong_ratio
+                < float(settings.minimum_held_out_improvement_ratio)
+            ):
+                raise RuntimeError("Accepted geometry mesh violates held-out strong-edge gate")
+            strong_preview_scale = required_finite_scalar(
+                strong_edge,
+                "preview_scale",
+                context="Accepted geometry strong-edge audit",
+            )
+            if not math.isclose(
+                strong_preview_scale,
+                flow_preview_scale,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh has inconsistent strong-edge scale"
+                )
+            actual_line = flow.get("rgb_actual_line_straightness")
+            if (
+                not isinstance(actual_line, dict)
+                or actual_line.get("accepted") is not True
+                or actual_line.get("metric_unit") != "full_resolution_pixels"
+                or actual_line.get("policy")
+                != (
+                    "baseline_second_rgb_dual_source_canny_hough_"
+                    "raw_forward_inverse_chord_bend"
+                )
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh lacks actual RGB line-straightness acceptance"
+                )
+            observed_line = actual_line.get("observed")
+            if type(observed_line) is not bool:
+                raise RuntimeError(
+                    "Accepted geometry mesh lacks an explicit actual RGB line observation state"
+                )
+            actual_line_counts = {
+                key: required_integer(
+                    actual_line,
+                    key,
+                    context="Accepted geometry actual RGB line audit",
+                )
+                for key in (
+                    "raw_hough_segment_count",
+                    "deduplicated_hough_segment_count",
+                    "eligible_hough_segment_count",
+                    "tested_line_run_count",
+                )
+            }
+            if (
+                actual_line_counts["raw_hough_segment_count"]
+                < actual_line_counts["deduplicated_hough_segment_count"]
+                or actual_line_counts["raw_hough_segment_count"] < 0
+                or actual_line_counts["deduplicated_hough_segment_count"] < 0
+                or actual_line_counts["eligible_hough_segment_count"] < 0
+                or actual_line_counts["tested_line_run_count"] < 0
+                or actual_line_counts["deduplicated_hough_segment_count"]
+                > int(settings.maximum_actual_rgb_line_segments)
+                or actual_line_counts["eligible_hough_segment_count"]
+                > actual_line_counts["deduplicated_hough_segment_count"]
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh has invalid actual RGB line support"
+                )
+            actual_line_length = required_finite_scalar(
+                actual_line,
+                "minimum_actual_rgb_line_length_pixels",
+                context="Accepted geometry actual RGB line audit",
+            )
+            actual_line_support = required_finite_scalar(
+                actual_line,
+                "minimum_actual_rgb_line_support_fraction",
+                context="Accepted geometry actual RGB line audit",
+            )
+            if (
+                not math.isclose(
+                    actual_line_length,
+                    float(settings.minimum_actual_rgb_line_length_pixels),
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                or not math.isclose(
+                    actual_line_support,
+                    float(settings.minimum_actual_rgb_line_support_fraction),
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                or required_integer(
+                    actual_line,
+                    "maximum_actual_rgb_line_segments",
+                    context="Accepted geometry actual RGB line audit",
+                )
+                != int(settings.maximum_actual_rgb_line_segments)
+                or required_integer(
+                    actual_line,
+                    "inverse_maximum_iterations",
+                    context="Accepted geometry actual RGB line audit",
+                )
+                != int(settings.actual_rgb_line_inverse_maximum_iterations)
+                or not math.isclose(
+                    required_finite_scalar(
+                        actual_line,
+                        "inverse_maximum_residual_pixels",
+                        context="Accepted geometry actual RGB line audit",
+                    ),
+                    float(settings.actual_rgb_line_inverse_maximum_residual_pixels),
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                or not math.isclose(
+                    required_finite_scalar(
+                        actual_line,
+                        "maximum_straight_line_deviation_pixels",
+                        context="Accepted geometry actual RGB line audit",
+                    ),
+                    float(settings.maximum_straight_line_deviation_pixels),
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+            ):
+                raise RuntimeError(
+                    "Accepted geometry mesh violates actual RGB line-straightness gate"
+                )
+            if not observed_line:
+                if (
+                    actual_line.get("reason")
+                    != "not_observed_no_solver_valid_line"
+                    or actual_line_counts["tested_line_run_count"] != 0
+                    or any(
+                        actual_line.get(key) is not None
+                        for key in (
+                            "maximum_line_bend_pixels",
+                            "p95_line_bend_pixels",
+                            "maximum_inverse_residual_pixels",
+                            "p95_inverse_residual_pixels",
+                        )
+                    )
+                ):
+                    raise RuntimeError(
+                        "Accepted geometry mesh has an invalid unobserved RGB line audit"
+                    )
+            else:
+                if (
+                    actual_line.get("reason") != "accepted"
+                    or actual_line_counts["eligible_hough_segment_count"] <= 0
+                    or actual_line_counts["tested_line_run_count"] <= 0
+                ):
+                    raise RuntimeError(
+                        "Accepted geometry mesh has invalid observed RGB line support"
+                    )
+                actual_line_max_bend = required_finite_scalar(
+                    actual_line,
+                    "maximum_line_bend_pixels",
+                    context="Accepted geometry actual RGB line audit",
+                )
+                actual_line_p95_bend = required_finite_scalar(
+                    actual_line,
+                    "p95_line_bend_pixels",
+                    context="Accepted geometry actual RGB line audit",
+                )
+                actual_line_max_residual = required_finite_scalar(
+                    actual_line,
+                    "maximum_inverse_residual_pixels",
+                    context="Accepted geometry actual RGB line audit",
+                )
+                actual_line_p95_residual = required_finite_scalar(
+                    actual_line,
+                    "p95_inverse_residual_pixels",
+                    context="Accepted geometry actual RGB line audit",
+                )
+                if (
+                    min(
+                        actual_line_max_bend,
+                        actual_line_p95_bend,
+                        actual_line_max_residual,
+                        actual_line_p95_residual,
+                    )
+                    < 0.0
+                    or actual_line_max_bend
+                    > float(settings.maximum_straight_line_deviation_pixels)
+                    or actual_line_p95_bend > actual_line_max_bend
+                    or actual_line_max_residual
+                    > float(settings.actual_rgb_line_inverse_maximum_residual_pixels)
+                    or actual_line_p95_residual > actual_line_max_residual
+                ):
+                    raise RuntimeError(
+                        "Accepted geometry mesh violates actual RGB line-straightness gate"
+                    )
+        compact_pairs.append(
+            {
+                "pair_index": index,
+                "frame_ids": list(frame_ids[index : index + 2]),
+                "triggered": triggered,
+                "corridor_x": pair.get("corridor_x"),
+                "warp_source_index": pair.get("warp_source_index"),
+                "accepted": accepted,
+                "fallback": pair.get("fallback"),
+                "audit": compact_audit,
+            }
+        )
+    if required_integer(
+        geometry, "triggered_pair_count", context="Geometry assistance aggregate"
+    ) != triggered_count:
+        raise RuntimeError("Geometry assistance triggered aggregate disagrees with pair audits")
+    if required_integer(
+        geometry, "accepted_pair_count", context="Geometry assistance aggregate"
+    ) != accepted_count:
+        raise RuntimeError("Geometry assistance accepted aggregate disagrees with pair audits")
+    if required_integer(
+        geometry,
+        "hard_owner_fallback_pair_count",
+        context="Geometry assistance aggregate",
+    ) != hard_owner_fallback_count:
+        raise RuntimeError("Geometry assistance fallback aggregate disagrees with pair audits")
+    if geometry.get("depth_used_for_local_geometry") is not bool(triggered_count):
+        raise RuntimeError("Geometry assistance depth-use flag disagrees with pair audits")
+    return {
+        "backend": "rgbd_bidirectional_visibility_local_inverse_mesh",
+        "configuration": settings.as_dict(),
+        "scope": "adjacent_seam_corridors_only",
+        "depth_used_for_output_pixels": False,
+        "depth_used_for_local_geometry": bool(
+            geometry.get("depth_used_for_local_geometry", False)
+        ),
+        "triggered_pair_count": int(geometry.get("triggered_pair_count", 0)),
+        "accepted_pair_count": int(geometry.get("accepted_pair_count", 0)),
+        "hard_owner_fallback_pair_count": int(
+            geometry.get("hard_owner_fallback_pair_count", 0)
+        ),
+        "pairs": compact_pairs,
     }
 
 
@@ -857,6 +2154,20 @@ def _validate_safety_envelope(
         )
     except (TypeError, ValueError) as exc:
         raise ValueError("Invalid calibrated_rgb_pushbroom.residual_alignment") from exc
+    try:
+        geometry_assisted_seam = GeometryAssistedSeamConfig.from_mapping(
+            pushbroom.get("geometry_assisted_seam")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid calibrated_rgb_pushbroom.geometry_assisted_seam") from exc
+
+    # This is structural even for --diagnostic-force: a global RGB residual
+    # would create a second pose model and violate the SE(3)-only contract.
+    if residual_alignment.background_model != "identity":
+        raise ValueError(
+            "Calibrated RGB pushbroom requires identity residual alignment; "
+            "verified RGB-D SE(3) is the sole global geometry"
+        )
 
     if diagnostic_force:
         return
@@ -878,6 +2189,95 @@ def _validate_safety_envelope(
     if not residual_alignment.owner_track_consistency:
         raise ValueError(
             "Formal residual alignment requires cross-pair owner track consistency"
+        )
+    if not geometry_assisted_seam.enabled:
+        raise ValueError("Formal delivery requires geometry_assisted_seam.enabled")
+    if geometry_assisted_seam.trigger_edge_offset_p95_pixels > 1.0:
+        raise ValueError(
+            "Formal geometry-assist trigger cannot exceed 1.0 pixels"
+        )
+    if geometry_assisted_seam.mutual_reprojection_tolerance_pixels > 0.40:
+        raise ValueError(
+            "Formal geometry-assist mutual reprojection tolerance cannot exceed 0.40 pixels"
+        )
+    if not np.isclose(
+        geometry_assisted_seam.absolute_depth_tolerance_mm,
+        20.0,
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise ValueError(
+            "Formal geometry-assist absolute depth tolerance must equal 20 mm"
+        )
+    if not np.isclose(
+        geometry_assisted_seam.relative_depth_tolerance,
+        0.02,
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise ValueError(
+            "Formal geometry-assist relative depth tolerance must equal 2%"
+        )
+    if not np.isclose(
+        geometry_assisted_seam.depth_noise_mm,
+        0.0,
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise ValueError(
+            "Formal geometry-assist cannot use uncalibrated depth-noise tolerance"
+        )
+    if geometry_assisted_seam.maximum_held_out_flow_fb_error_pixels > 0.75:
+        raise ValueError(
+            "Formal geometry-assist held-out RGB flow FB error cannot exceed 0.75 pixels"
+        )
+    if geometry_assisted_seam.minimum_held_out_strong_edge_validation_pixels < 8:
+        raise ValueError(
+            "Formal geometry-assist requires at least eight held-out strong-edge samples"
+        )
+    if geometry_assisted_seam.minimum_trigger_boundary_observable_pixels < 32:
+        raise ValueError(
+            "Formal geometry-assist trigger requires at least 32 boundary-observable pixels"
+        )
+    if geometry_assisted_seam.minimum_active_mesh_cells < 4:
+        raise ValueError(
+            "Formal geometry-assist requires at least four active mesh cells"
+        )
+    if geometry_assisted_seam.minimum_held_out_improvement_ratio < 0.30:
+        raise ValueError(
+            "Formal geometry-assist requires at least 30% held-out improvement"
+        )
+    if geometry_assisted_seam.maximum_held_out_error_pixels > 0.75:
+        raise ValueError(
+            "Formal geometry-assist held-out P95 cannot exceed 0.75 pixels"
+        )
+    if geometry_assisted_seam.maximum_held_out_maximum_error_pixels > 2.0:
+        raise ValueError(
+            "Formal geometry-assist held-out maximum cannot exceed 2 pixels"
+        )
+    if geometry_assisted_seam.maximum_straight_line_deviation_pixels > 1.0:
+        raise ValueError(
+            "Formal geometry-assist straight-line deviation cannot exceed 1 pixel"
+        )
+    if geometry_assisted_seam.minimum_actual_rgb_line_length_pixels < 24.0:
+        raise ValueError(
+            "Formal geometry-assist actual RGB line support must be at least 24 pixels"
+        )
+    if geometry_assisted_seam.minimum_actual_rgb_line_support_fraction < 0.80:
+        raise ValueError(
+            "Formal geometry-assist actual RGB line support fraction must be at least 80%"
+        )
+    if geometry_assisted_seam.maximum_actual_rgb_line_segments > 32:
+        raise ValueError(
+            "Formal geometry-assist actual RGB Hough segment budget cannot exceed 32"
+        )
+    if geometry_assisted_seam.actual_rgb_line_inverse_maximum_iterations > 8:
+        raise ValueError(
+            "Formal geometry-assist actual RGB line inverse solve cannot exceed 8 iterations"
+        )
+    if geometry_assisted_seam.actual_rgb_line_inverse_maximum_residual_pixels > 0.05:
+        raise ValueError(
+            "Formal geometry-assist actual RGB line inverse residual cannot exceed 0.05 pixels"
         )
 
     if not bool(stitch_config.get("adaptive_layout", True)):
@@ -1198,29 +2598,66 @@ def _publish_central_strip_diagnostic(
     os.replace(pending_report, output / "diagnostic_report.json")
 
 
+def _geometry_pair_diagnostic_index(args: argparse.Namespace) -> int:
+    """Return one adjacent-pair index without accepting a frame subset.
+
+    The geometry A/B diagnostic deliberately renders the complete real pose
+    chain.  Its selector therefore names a *pair position* in that chain,
+    never a two-frame render override that would turn both sources into
+    endpoint strips or weaken the motion-scale contract.
+    """
+
+    value = getattr(args, "pair_index", None)
+    if isinstance(value, bool):
+        raise ValueError("geometry pair diagnostic pair_index must be an integer")
+    try:
+        index = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "geometry pair diagnostic requires an integer --pair-index"
+        ) from exc
+    if index < 0:
+        raise ValueError("geometry pair diagnostic pair_index must be non-negative")
+    return index
+
+
 def _run_pipeline(
     args: argparse.Namespace,
     *,
     odometry_backend: object | None = None,
     diagnostic_renderer: object | None = None,
+    geometry_pair_diagnostic_renderer: object | None = None,
     orb_work_root: Path | None = None,
 ) -> dict[str, Any]:
     output = args.output.expanduser().resolve()
     # This is deliberately the first filesystem action in a task.  Even a
     # malformed configuration must not leave a previous success marker live.
     _invalidate_delivery_marker(output)
+    if (
+        diagnostic_renderer is not None
+        and geometry_pair_diagnostic_renderer is not None
+    ):
+        raise ValueError("Only one diagnostic renderer may be active in a task")
+    if (
+        geometry_pair_diagnostic_renderer is not None
+        and not callable(geometry_pair_diagnostic_renderer)
+    ):
+        raise TypeError("geometry_pair_diagnostic_renderer must be callable")
     config = load_config(getattr(args, "config", None))
     stitch_config = dict(config["stitch"])
     central_strip_config = _central_strip_diagnostic_config(
         stitch_config, diagnostic_renderer=diagnostic_renderer
     )
-    if orb_work_root is not None and diagnostic_renderer is None:
-        raise ValueError("orb_work_root is reserved for the central-strip diagnostic")
     _validate_backend_config(stitch_config)
     diagnostic_force = bool(
         getattr(args, "diagnostic_force", False)
         or stitch_config.get("diagnostic_force", False)
     )
+    if geometry_pair_diagnostic_renderer is not None and diagnostic_force:
+        raise ValueError(
+            "Geometry pair diagnostic cannot use diagnostic-force; its complete "
+            "RGB-D/Open3D/ORB-SLAM3 chain remains quality-gated"
+        )
     _validate_safety_envelope(
         stitch_config, diagnostic_force=diagnostic_force
     )
@@ -1239,6 +2676,11 @@ def _run_pipeline(
         getattr(args, "render_frame_ids", None)
         or stitch_config.get("render_frame_ids")
     )
+    if geometry_pair_diagnostic_renderer is not None and manual_render_ids:
+        raise ValueError(
+            "Geometry pair diagnostic always renders the complete scan; "
+            "render_frame_ids is not permitted"
+        )
     if manual_render_ids and not diagnostic_force:
         raise ValueError(
             "render_frame_ids cannot publish a complete quality-gated delivery"
@@ -1304,6 +2746,14 @@ def _run_pipeline(
         ),
     )
     pose_backend = str(stitch_config.get("pose_backend", "hybrid_orbslam3_rgbd"))
+    if (
+        geometry_pair_diagnostic_renderer is not None
+        and pose_backend != "hybrid_orbslam3_rgbd"
+    ):
+        raise RuntimeError(
+            "Geometry pair diagnostic requires hybrid_orbslam3_rgbd and a "
+            "current full-scan ORB-SLAM3 trajectory"
+        )
     orbslam3_trajectory: ORBSLAM3Trajectory | None = None
     global_pose_backend: object | None = odometry_backend
     if pose_backend == "hybrid_orbslam3_rgbd" and odometry_backend is None:
@@ -1311,16 +2761,31 @@ def _run_pipeline(
             "[ORB-SLAM3] solving the global RGB-D trajectory from the complete "
             "short-baseline scan"
         )
-        if diagnostic_renderer is not None and orb_work_root is None:
+        if (
+            diagnostic_renderer is not None
+            or geometry_pair_diagnostic_renderer is not None
+        ) and orb_work_root is None:
             raise RuntimeError(
-                "Central-strip diagnostic requires an isolated ORB staging directory"
+                "Diagnostic rendering requires an isolated ORB staging directory"
             )
-        orbslam3_trajectory = run_orbslam3_rgbd(
-            scan_frames,
-            session.calibration,
-            orb_work_root if diagnostic_renderer is not None else output,
-            config=stitch_config.get("orbslam3_rgbd"),
-        )
+        if orb_work_root is not None:
+            orbslam3_trajectory = run_orbslam3_rgbd(
+                scan_frames,
+                session.calibration,
+                orb_work_root,
+                config=stitch_config.get("orbslam3_rgbd"),
+            )
+        else:
+            # The formal output directory must contain only final pending or
+            # delivered artifacts.  RGB-D staging is sensitive analysis input
+            # and belongs to a system temporary directory even on success.
+            with tempfile.TemporaryDirectory(prefix="g305-panorama-orbslam3-") as root:
+                orbslam3_trajectory = run_orbslam3_rgbd(
+                    scan_frames,
+                    session.calibration,
+                    Path(root),
+                    config=stitch_config.get("orbslam3_rgbd"),
+                )
         global_pose_backend = ORBSLAM3PoseGraphOptimizer(orbslam3_trajectory)
     pose_graph = optimize_rgbd_pose_graph(
         pose_frames,
@@ -1339,6 +2804,16 @@ def _run_pipeline(
             + "; ".join(pose_quality_result.failure_reasons)
         )
     pose_values = [pose_graph.pose_for(frame.frame_id) for frame in pose_frames]
+
+    if (
+        geometry_pair_diagnostic_renderer is not None
+        and orbslam3_trajectory is None
+    ):
+        raise RuntimeError(
+            "Geometry pair diagnostic requires a current full-scan ORB-SLAM3 "
+            "trajectory; it cannot reuse a saved transform sidecar or an "
+            "Open3D-only pose graph"
+        )
 
     if diagnostic_renderer is not None:
         # The legacy reference-plane diagnostic remains isolated behind its
@@ -1449,6 +2924,18 @@ def _run_pipeline(
     render_frames = [pose_frames[index] for index in render_indices]
     render_poses = [pose_values[index] for index in render_indices]
     render_qualities = [pose_qualities[index] for index in render_indices]
+    # Existing RGB thumbnail motion is a local scalar observation only.  It is
+    # scaled to native colour pixels and paired with the already verified real
+    # SE(3) camera-centre displacement inside the renderer; it never becomes a
+    # 2-D pose, transform, ordering rule, or interpolation source.
+    all_real_sources = (
+        len(render_frames) == len(scan_frames)
+        and [frame.frame_id for frame in render_frames]
+        == [frame.frame_id for frame in scan_frames]
+    )
+    render_motions: list[MotionEstimate] | None = (
+        motions[segment_start:segment_stop] if all_real_sources else None
+    )
     if diagnostic_renderer is not None:
         assert central_strip_config is not None
         callback_result = diagnostic_renderer(
@@ -1537,20 +3024,70 @@ def _run_pipeline(
         _publish_central_strip_diagnostic(output, panorama, report)
         return report
 
+    if geometry_pair_diagnostic_renderer is not None:
+        if not all_real_sources:
+            raise RuntimeError(
+                "Geometry pair diagnostic requires every real full-scan pose node"
+            )
+        pair_index = _geometry_pair_diagnostic_index(args)
+        if pair_index >= len(render_frames) - 1:
+            raise ValueError(
+                "Geometry pair diagnostic pair_index must select one adjacent "
+                f"pair in [0, {len(render_frames) - 2}]"
+            )
+        seam_config = dict(stitch_config.get("scan_seam", {}))
+        pushbroom_config = dict(stitch_config.get("calibrated_rgb_pushbroom", {}))
+        callback_result = geometry_pair_diagnostic_renderer(
+            render_frames=render_frames,
+            render_poses=render_poses,
+            calibration=session.calibration,
+            config=pushbroom_config,
+            rgb_motions=render_motions,
+            motion_pixels_to_full_resolution=(
+                session.calibration.width / float(analysis_shape[1])
+            ),
+            multiband_levels=int(seam_config.get("multiband_levels", 3)),
+            pair_index=pair_index,
+        )
+        panorama, render_metadata = _validate_central_strip_result(callback_result)
+        panorama_path = output / "diagnostic_panorama.jpg"
+        report_path = output / "diagnostic_report.json"
+        trajectory_summary = _sanitized_diagnostic_trajectory(
+            orbslam3_trajectory, input_frame_count=len(scan_frames)
+        )
+        report = {
+            "schema": "gemini305-geometry-pair-diagnostic/v1",
+            "input": str(args.input.expanduser().resolve()),
+            "panorama": str(panorama_path),
+            "report": str(report_path),
+            "diagnostic_only": True,
+            "deliverable_published": False,
+            "trajectory_provenance": "current_orbslam3_rgbd_full_scan",
+            "input_capture": capture_summary,
+            "rgbd_session": {
+                "frame_count": len(session.frames),
+                "depth_alignment": session.depth_alignment,
+                "depth_unit": "mm",
+                "calibration": _intrinsics_payload(session.calibration),
+            },
+            "odometry": {
+                "backend": "open3d_rgbd",
+                "edge_count": len(edges),
+                "required_adjacent_edge_count": len(pose_frames) - 1,
+                "all_adjacent_edges_required": True,
+                "optional_edge_failure_count": len(optional_edge_failures),
+            },
+            "global_trajectory": trajectory_summary,
+            "pose_quality": pose_quality,
+            "render_strategy": "full_sequence_geometry_pair_ab_crop",
+            "geometry_pair_diagnostic": render_metadata,
+            "elapsed_seconds": time.perf_counter() - started,
+        }
+        _publish_central_strip_diagnostic(output, panorama, report)
+        return report
+
     seam_config = dict(stitch_config.get("scan_seam", {}))
     pushbroom_config = dict(stitch_config.get("calibrated_rgb_pushbroom", {}))
-    # Existing RGB thumbnail motion is a local scalar observation only.  It is
-    # scaled to native colour pixels and paired with the already verified real
-    # SE(3) camera-centre displacement inside the renderer; it never becomes a
-    # 2-D pose, transform, ordering rule, or interpolation source.
-    all_real_sources = (
-        len(render_frames) == len(scan_frames)
-        and [frame.frame_id for frame in render_frames]
-        == [frame.frame_id for frame in scan_frames]
-    )
-    render_motions: list[MotionEstimate] | None = (
-        motions[segment_start:segment_stop] if all_real_sources else None
-    )
     pushbroom_result = render_calibrated_rgb_pushbroom(
         render_frames,
         render_poses,
@@ -1610,10 +3147,8 @@ def _run_pipeline(
     transforms_payload["layout_selection"] = layout_metadata
     transforms_payload["optional_edge_failures"] = optional_edge_failures
     transforms_payload["short_baseline_initialization"] = short_baseline_audit
-    transforms_payload["global_trajectory"] = (
-        orbslam3_trajectory.as_dict(input_frame_count=len(scan_frames))
-        if orbslam3_trajectory is not None
-        else None
+    transforms_payload["global_trajectory"] = _sanitized_diagnostic_trajectory(
+        orbslam3_trajectory, input_frame_count=len(scan_frames)
     )
     residual_settings = ResidualAlignmentConfig.from_mapping(
         pushbroom_config.get("residual_alignment")
@@ -1623,14 +3158,27 @@ def _run_pipeline(
         residual_settings,
         [frame.frame_id for frame in render_frames],
     )
+    geometry_settings = GeometryAssistedSeamConfig.from_mapping(
+        pushbroom_config.get("geometry_assisted_seam")
+    )
+    compact_geometry_assistance = _compact_geometry_assistance_for_transforms(
+        render_metadata,
+        geometry_settings,
+        [frame.frame_id for frame in render_frames],
+    )
     render_transforms_payload = {
-        "schema": "calibrated-rgb-pushbroom/v2",
+        "schema": "calibrated-rgb-pushbroom/v7",
         "translation_unit": "mm",
-        "pixel_source": "calibrated_rgb_only",
+        "pixel_source": "calibrated_rgb_source_samples",
+        "depth_used_for_output_pixels": False,
+        "depth_used_for_local_geometry": compact_geometry_assistance[
+            "depth_used_for_local_geometry"
+        ],
         "layout": render_metadata.get("layout"),
         "rgb_motion_scale": render_metadata.get("rgb_motion_scale"),
         "selection": render_selection,
         "residual_alignment": compact_residual_alignment,
+        "geometry_assisted_seam": compact_geometry_assistance,
         "sources": [
             {
                 "frame_id": frame.frame_id,
@@ -1641,7 +3189,7 @@ def _run_pipeline(
         ],
     }
     report: dict[str, Any] = {
-        "schema": "gemini305-calibrated-rgb-pushbroom/v3",
+        "schema": "gemini305-calibrated-rgb-pushbroom/v8",
         "input": str(args.input.expanduser().resolve()),
         "panorama": str(panorama_path),
         "report": str(report_path),
@@ -1727,7 +3275,7 @@ def _run_pipeline(
     os.replace(pending_render_transforms, output / "render_transforms.json")
     os.replace(pending_report, output / "report.json")
     delivery = {
-        "schema": "gemini305-panorama-delivery/v3",
+        "schema": "gemini305-panorama-delivery/v8",
         "published_utc": datetime.now(timezone.utc).isoformat(),
         "quality_pass": True,
         "pose_backend": (
@@ -1740,6 +3288,30 @@ def _run_pipeline(
         "alignment_model": compact_residual_alignment["selected_model"],
         "seam_backend": "rgb_monotonic_hard_owner_graphcut",
         "blend_backend": "safe_wall_local_multiband_narrow_owner_boundary",
+        "pixel_source": "calibrated_rgb_source_samples",
+        "depth_used_for_output_pixels": False,
+        "depth_used_for_local_geometry": compact_geometry_assistance[
+            "depth_used_for_local_geometry"
+        ],
+        "geometry_assistance_backend": compact_geometry_assistance["backend"],
+        "geometry_assistance_gate": {
+            "minimum_active_mesh_cells": int(
+                geometry_settings.minimum_active_mesh_cells
+            ),
+            "maximum_straight_line_deviation_pixels": float(
+                geometry_settings.maximum_straight_line_deviation_pixels
+            ),
+            "rgb_flow_application_policy": (
+                "accepted_bidirectional_rgb_flow_and_epipolar_support_"
+                "including_held_out"
+            ),
+            "rgb_flow_fit_support_policy": (
+                "training_only_accepted_bidirectional_rgb_flow_and_epipolar_support"
+            ),
+            "actual_rgb_line_observation_policy": (
+                "observed_hough_solver_line_veto_or_not_observed_non_veto"
+            ),
+        },
         "panorama": str(output / "panorama.jpg"),
         "tsdf_visualization": tsdf_visualization,
         "report": str(output / "report.json"),
@@ -1755,17 +3327,22 @@ def run(
     *,
     odometry_backend: object | None = None,
     diagnostic_renderer: object | None = None,
+    geometry_pair_diagnostic_renderer: object | None = None,
 ) -> dict[str, Any]:
     """Run one task and persist fail-closed state for every ordinary error.
 
-    ``diagnostic_renderer`` is an internal dependency-injection seam used only
-    by the independent central-strip command.  Its presence always takes the
-    diagnostic-only publication path; it can never reach formal delivery.
+    ``diagnostic_renderer`` is reserved for the independent central-strip
+    command.  ``geometry_pair_diagnostic_renderer`` is a separate diagnostic
+    seam for a full-sequence RGB-only A/B crop.  Neither can reach formal
+    delivery.
     """
 
     output = args.output.expanduser().resolve()
     try:
-        if diagnostic_renderer is None:
+        if (
+            diagnostic_renderer is None
+            and geometry_pair_diagnostic_renderer is None
+        ):
             return _run_pipeline(args, odometry_backend=odometry_backend)
 
         # Preserve the first-action delivery invalidation invariant before
@@ -1773,13 +3350,17 @@ def run(
         # temporary root only on the callback route, so a successful diagnostic
         # output never retains .orbslam3_rgbd under the requested output path.
         _invalidate_delivery_marker(output)
-        with tempfile.TemporaryDirectory(
-            prefix="g305-central-strip-orbslam3-"
-        ) as root:
+        prefix = (
+            "g305-central-strip-orbslam3-"
+            if diagnostic_renderer is not None
+            else "g305-geometry-pair-orbslam3-"
+        )
+        with tempfile.TemporaryDirectory(prefix=prefix) as root:
             return _run_pipeline(
                 args,
                 odometry_backend=odometry_backend,
                 diagnostic_renderer=diagnostic_renderer,
+                geometry_pair_diagnostic_renderer=geometry_pair_diagnostic_renderer,
                 orb_work_root=Path(root),
             )
     except Exception as exc:

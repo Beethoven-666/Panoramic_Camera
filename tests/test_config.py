@@ -71,7 +71,7 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
             "maximum_evidence_megapixels": 3.0,
             "held_out_fraction": 0.20,
             "owner_track_consistency": True,
-            "background_model": "se2",
+            "background_model": "identity",
             "maximum_residual_displacement_pixels": 8.0,
             "maximum_background_roll_degrees": 0.25,
             "maximum_flow_fb_error_pixels": 1.0,
@@ -80,6 +80,35 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
             "maximum_edge_step_p95_pixels": 1.5,
             "maximum_edge_step_pixels": 3.0,
             "cut_mesh_formal_enabled": False,
+        },
+        "geometry_assisted_seam": {
+            "enabled": True,
+            "analysis_corridor_width_pixels": 128,
+            "trigger_edge_offset_p95_pixels": 1.0,
+            "absolute_depth_tolerance_mm": 20.0,
+            "relative_depth_tolerance": 0.02,
+            "depth_noise_mm": 0.0,
+            "mutual_reprojection_tolerance_pixels": 0.40,
+            "edge_guard_radius_pixels": 8,
+            "minimum_trigger_boundary_observable_pixels": 32,
+            "flow_validation_preview_scale": 0.75,
+            "minimum_held_out_flow_validation_pixels": 8,
+            "minimum_held_out_strong_edge_validation_pixels": 8,
+            "maximum_held_out_flow_fb_error_pixels": 0.75,
+            "mesh_cell_pixels": 16,
+            "minimum_mutual_correspondences": 30,
+            "minimum_active_mesh_cells": 4,
+            "maximum_local_displacement_pixels": 8.0,
+            "maximum_straight_line_deviation_pixels": 1.0,
+            "minimum_actual_rgb_line_length_pixels": 24.0,
+            "minimum_actual_rgb_line_support_fraction": 0.80,
+            "maximum_actual_rgb_line_segments": 32,
+            "actual_rgb_line_inverse_maximum_iterations": 8,
+            "actual_rgb_line_inverse_maximum_residual_pixels": 0.05,
+            "maximum_held_out_error_pixels": 0.75,
+            "maximum_held_out_maximum_error_pixels": 2.0,
+            "minimum_held_out_improvement_pixels": 0.05,
+            "minimum_held_out_improvement_ratio": 0.30,
         },
     }
     assert config["stitch"]["scan_seam"]["backend"] == (
@@ -303,6 +332,177 @@ def test_explicit_auto_exposure_mode_is_not_overridden(tmp_path: Path) -> None:
             ),
             False,
             "owner track consistency",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "minimum_trigger_boundary_observable_pixels",
+            ),
+            31,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "flow_validation_preview_scale",
+            ),
+            0.49,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "maximum_held_out_flow_fb_error_pixels",
+            ),
+            0.76,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "minimum_held_out_strong_edge_validation_pixels",
+            ),
+            7,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "mutual_reprojection_tolerance_pixels",
+            ),
+            0.41,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "enabled",
+            ),
+            False,
+            "geometry_assisted_seam.enabled",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "analysis_corridor_width_pixels",
+            ),
+            95,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "mesh_cell_pixels",
+            ),
+            24,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "edge_guard_radius_pixels",
+            ),
+            7,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "minimum_mutual_correspondences",
+            ),
+            29,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "minimum_active_mesh_cells",
+            ),
+            3,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "absolute_depth_tolerance_mm",
+            ),
+            20.01,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "relative_depth_tolerance",
+            ),
+            0.0201,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "depth_noise_mm",
+            ),
+            0.1,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "maximum_local_displacement_pixels",
+            ),
+            8.1,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "maximum_straight_line_deviation_pixels",
+            ),
+            1.01,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "maximum_held_out_error_pixels",
+            ),
+            0.76,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "geometry_assisted_seam",
+                "minimum_held_out_improvement_ratio",
+            ),
+            0.29,
+            "geometry_assisted_seam",
+        ),
+        (
+            (
+                "calibrated_rgb_pushbroom",
+                "residual_alignment",
+                "background_model",
+            ),
+            "se2",
+            "sole global geometry",
         ),
         (("rgbd_odometry", "minimum_fitness"), 0.14, "cannot be relaxed"),
         (("pose_quality", "maximum_total_rotation_deg"), 11.0, "cannot be relaxed"),

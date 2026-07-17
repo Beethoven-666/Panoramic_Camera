@@ -120,12 +120,17 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert panorama.shape[0] >= 180
     assert (output / "delivery.json").is_file()
     assert not (output / "failure.json").exists()
-    assert report["schema"] == "gemini305-calibrated-rgb-pushbroom/v3"
+    assert report["schema"] == "gemini305-calibrated-rgb-pushbroom/v8"
     assert report["layout_selection"]["mode"] == "adaptive_rgbd_pose_nodes"
     assert report["render_strategy"] == "calibrated_rgb_pushbroom"
     assert report["render"]["backend"] == "calibrated_rgb_pushbroom"
-    assert report["render"]["pixel_source"] == "calibrated_rgb_only"
+    assert report["render"]["pixel_source"] == "calibrated_rgb_source_samples"
     assert report["render"]["depth_used_for_output_pixels"] is False
+    assert report["render"]["local_geometry_scope"] == "adjacent_seam_corridors_only"
+    geometry = report["render"]["geometry_assisted_seam"]
+    assert geometry["depth_used_for_output_pixels"] is False
+    assert geometry["scope"] == "adjacent_seam_corridors_only"
+    assert len(geometry["pairs"]) == len(backend.optimized_node_ids) - 1
     assert report["render"]["point_cloud_constructed"] is False
     assert report["render"]["tsdf_constructed"] is False
     assert report["render"]["reference_plane_fitted"] is False
@@ -145,6 +150,7 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert 2 <= metrics["maximum_resident_strips"] <= 5
     assert all(
         pair["blend_zone_risk_pixel_count"] == 0
+        and pair["geometry_blend_zone_pixel_count"] == 0
         and 2 <= pair["blend_width_pixels"] <= 8
         for pair in report["render"]["pairs"]
     )
@@ -161,8 +167,9 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     render_transforms = json.loads(
         (output / "render_transforms.json").read_text(encoding="utf-8")
     )
-    assert render_transforms["schema"] == "calibrated-rgb-pushbroom/v2"
-    assert render_transforms["pixel_source"] == "calibrated_rgb_only"
+    assert render_transforms["schema"] == "calibrated-rgb-pushbroom/v7"
+    assert render_transforms["pixel_source"] == "calibrated_rgb_source_samples"
+    assert render_transforms["depth_used_for_output_pixels"] is False
     assert [source["frame_id"] for source in render_transforms["sources"]] == list(
         backend.optimized_node_ids
     )
@@ -182,10 +189,38 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
         for parameter in compact_alignment["per_source_parameters"]
     ] == list(backend.optimized_node_ids)
     assert "evidence" not in compact_alignment
+    compact_geometry = render_transforms["geometry_assisted_seam"]
+    assert compact_geometry["backend"] == "rgbd_bidirectional_visibility_local_inverse_mesh"
+    assert compact_geometry["scope"] == "adjacent_seam_corridors_only"
+    assert compact_geometry["depth_used_for_output_pixels"] is False
+    assert len(compact_geometry["pairs"]) == len(backend.optimized_node_ids) - 1
+    assert all(
+        "aligned_depth_path" not in pair
+        and "depth_mm" not in pair
+        and "source_map_x" not in pair
+        for pair in compact_geometry["pairs"]
+    )
     delivery = json.loads((output / "delivery.json").read_text(encoding="utf-8"))
     assert delivery["quality_pass"] is True
     assert delivery["pose_backend"] == "open3d_rgbd"
     assert delivery["projection"] == "calibrated_rgb_pushbroom"
+    assert delivery["schema"] == "gemini305-panorama-delivery/v8"
+    assert delivery["pixel_source"] == "calibrated_rgb_source_samples"
+    assert delivery["depth_used_for_output_pixels"] is False
+    assert delivery["geometry_assistance_backend"] == compact_geometry["backend"]
+    assert delivery["geometry_assistance_gate"] == {
+        "minimum_active_mesh_cells": 4,
+        "maximum_straight_line_deviation_pixels": 1.0,
+        "rgb_flow_application_policy": (
+            "accepted_bidirectional_rgb_flow_and_epipolar_support_including_held_out"
+        ),
+        "rgb_flow_fit_support_policy": (
+            "training_only_accepted_bidirectional_rgb_flow_and_epipolar_support"
+        ),
+        "actual_rgb_line_observation_policy": (
+            "observed_hough_solver_line_veto_or_not_observed_non_veto"
+        ),
+    }
     assert delivery["alignment_backend"] == compact_alignment["backend"]
     assert delivery["alignment_model"] == compact_alignment["selected_model"]
     assert delivery["seam_backend"] == "rgb_monotonic_hard_owner_graphcut"

@@ -1,0 +1,62 @@
+{
+  "schema": "panorama-demo-calibration/v2",
+  "color_intrinsic": {
+    "width": 640,
+    "height": 256,
+    "fx": 544.0,
+    "fy": 544.0,
+    "cx": 319.5,
+    "cy": 127.5
+  },
+  "color_distortion": {
+    "k1": 0.0,
+    "k2": 0.0,
+    "k3": 0.0,
+    "k4": 0.0,
+    "k5": 0.0,
+    "k6": 0.0,
+    "p1": 0.0,
+    "p2": 0.0
+  },
+  "depth_intrinsic": {
+    "width": 640,
+    "height": 256,
+    "fx": 544.0,
+    "fy": 544.0,
+    "cx": 319.5,
+    "cy": 127.5
+  },
+  "depth_distortion": {
+    "k1": 0.0,
+    "k2": 0.0,
+    "k3": 0.0,
+    "k4": 0.0,
+    "k5": 0.0,
+    "k6": 0.0,
+    "p1": 0.0,
+    "p2": 0.0
+  },
+  "depth_to_color": {
+    "rotation_row_major": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "translation_mm": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "depth_alignment": {
+    "aligned_to": "color",
+    "enabled": true,
+    "method": "synthetic"
+  }
+}

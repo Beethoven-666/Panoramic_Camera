@@ -264,7 +264,26 @@ def test_config_is_closed_and_rejects_projective_or_depth_backends() -> None:
         ResidualAlignmentConfig.from_mapping({"backend": "homography"})
 
 
+def test_background_model_defaults_to_identity() -> None:
+    """The formal renderer must never opt into a global RGB SE(2) warp."""
+
+    assert ResidualAlignmentConfig().background_model == "identity"
+    warps, metrics, audit = solve_background_se2(
+        (),
+        source_centres=((64.0, 48.0), (64.0, 48.0)),
+        pair_preview_origins=(),
+    )
+
+    assert warps is None
+    assert audit is None
+    assert metrics["selected"] is False
+    assert metrics["solver"] == "identity_not_run"
+    assert metrics["reason"] == "background_model_identity"
+
+
 def test_global_background_se2_uses_training_only_and_improves_held_out() -> None:
+    """The retained solver utility requires an explicit historical opt-in."""
+
     images = [_translated_edge_preview(offset)[1] for offset in range(5)]
     valid = np.ones(images[0].shape[:2], dtype=bool)
     evidence = tuple(
@@ -283,6 +302,7 @@ def test_global_background_se2_uses_training_only_and_improves_held_out() -> Non
         source_centres=tuple((64.0, 48.0) for _ in images),
         pair_preview_origins=tuple((0.0, 1.0) for _ in evidence),
         support_margins_pixels=tuple(8.0 for _ in images),
+        config=ResidualAlignmentConfig(background_model="se2"),
     )
 
     assert warps is not None
@@ -314,7 +334,10 @@ def test_global_background_se2_rejects_held_out_edge_step_above_formal_limit() -
         source_centres=tuple((64.0, 48.0) for _ in images),
         pair_preview_origins=tuple((0.0, 1.0) for _ in evidence),
         support_margins_pixels=tuple(8.0 for _ in images),
-        config=ResidualAlignmentConfig(maximum_edge_step_p95_pixels=0.5),
+        config=ResidualAlignmentConfig(
+            background_model="se2",
+            maximum_edge_step_p95_pixels=0.5,
+        ),
     )
 
     assert warps is None

@@ -1,0 +1,144 @@
+{
+  "schema": "panorama-demo-session/v2",
+  "synthetic": true,
+  "frame_count": 5,
+  "known_step_px": 32,
+  "frame_size": [
+    640,
+    256
+  ],
+  "scene": "layered",
+  "capture_options": {
+    "width": 640,
+    "height": 256,
+    "align": "software",
+    "frame_sync": true
+  },
+  "frame_sync": true,
+  "clean_shutdown": true,
+  "queue_drops": 0,
+  "write_errors": 0,
+  "depth_scale_mm_per_unit": 1.0,
+  "synthetic_depth_mm": {
+    "far": 2400,
+    "near": 900,
+    "invalid": 0
+  },
+  "known_trajectory": {
+    "transform": "camera_to_world",
+    "translation_unit": "millimetres",
+    "camera_axes": {
+      "x": "right",
+      "y": "down",
+      "z": "forward"
+    },
+    "world_scan_axis": "+x",
+    "poses": [
+      {
+        "frame_id": 0,
+        "matrix_row_major": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "frame_id": 1,
+        "matrix_row_major": [
+          1.0,
+          0.0,
+          0.0,
+          141.1764705882353,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "frame_id": 2,
+        "matrix_row_major": [
+          1.0,
+          0.0,
+          0.0,
+          282.3529411764706,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "frame_id": 3,
+        "matrix_row_major": [
+          1.0,
+          0.0,
+          0.0,
+          423.5294117647059,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "frame_id": 4,
+        "matrix_row_major": [
+          1.0,
+          0.0,
+          0.0,
+          564.7058823529412,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      }
+    ]
+  }
+}

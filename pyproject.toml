@@ -28,6 +28,7 @@ unistitch-diagnostic = [
 g305-capture = "panorama_demo.capture_orbbec:main"
 g305-panorama = "panorama_demo.stitch_sequence:main"
 g305-central-strip-diagnostic = "panorama_demo.central_strip_diagnostic:main"
+g305-geometry-pair-diagnostic = "panorama_demo.geometry_pair_diagnostic:main"
 unistitch-pair = "panorama_demo.stitch_pair:main"
 unistitch-sequence = "panorama_demo.stitch_sequence:main"
 generate-panorama-demo = "panorama_demo.synthetic:main"
