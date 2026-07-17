@@ -117,6 +117,50 @@ def test_sigsegv_139_retries_once_with_a_fresh_stage(
     assert report["execution_attempts"] == list(trajectory.attempt_audit)
 
 
+def test_native_heap_abort_134_retries_once_with_a_fresh_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WSL malloc aborts are retried, but never replaced by a fake trajectory."""
+
+    session = _session(tmp_path)
+    _patch_wsl_runtime(monkeypatch)
+    calls: list[Path] = []
+
+    def fake_process(
+        command: list[str] | tuple[str, ...],
+        *,
+        stage_dir: Path,
+        timeout_seconds: float,
+    ) -> tuple[subprocess.CompletedProcess[str], float]:
+        del timeout_seconds
+        calls.append(stage_dir)
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(
+                list(command), 134, stdout="", stderr="malloc(): corrupted"
+            ), 0.5
+        _write_complete_trajectory(stage_dir, session)
+        return subprocess.CompletedProcess(list(command), 0, stdout="tracked", stderr=""), 1.0
+
+    monkeypatch.setattr(bridge, "_run_orbslam3_process", fake_process)
+    trajectory = bridge.run_orbslam3_rgbd(
+        session.frames,
+        session.calibration,
+        tmp_path / "orb-work",
+    )
+
+    assert len(calls) == 2
+    assert calls[0] != calls[1]
+    assert trajectory.attempt_audit[0] == {
+        "attempt_index": 1,
+        "returncode": 134,
+        "signal": 6,
+        "elapsed_seconds": 0.5,
+        "accepted": False,
+        "retry_reason": "returncode_134_native_heap_abort_fresh_staging_retry",
+    }
+    assert trajectory.attempt_audit[1]["accepted"] is True
+
+
 def test_sigsegv_139_twice_fails_closed_after_two_fresh_stages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

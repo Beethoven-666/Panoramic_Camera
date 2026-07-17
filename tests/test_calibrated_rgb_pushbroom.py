@@ -13,7 +13,19 @@ from panorama_demo.calibrated_rgb_pushbroom import (
     CalibratedRGBPushbroomRenderer,
     CalibratedRGBPushbroomConfig,
     GeometryAssistedSeamConfig,
+    LocalGeometryContribution,
+    PushbroomContribution,
+    _GeometryPairPlan,
+    _ForegroundAnchorReservation,
+    _SourceAnchorEvidence,
     _boundary_rgb_risk_audit,
+    _append_shared_source_signed_occlusion_anchors,
+    _advance_completed_foreground_anchor_locks,
+    _build_shared_source_anchor_reservations,
+    _foreground_anchor_completed_lock_mask,
+    _foreground_anchor_mask_and_prior,
+    _verify_foreground_anchor_handoff,
+    _write_foreground_anchor_fragment,
     _geometry_trigger_from_preview,
     _held_out_strong_rgb_edge_gate,
     _rgb_transparent_or_reflection_protection_from_preview,
@@ -23,7 +35,9 @@ from panorama_demo.calibrated_rgb_pushbroom import (
     _pair_level_hard_owner_options,
     _pair_level_hard_owner_masks,
     _preflight_failure_pair_index,
+    _protected_component_anchor_pixel_counts,
     _raw_pixels_to_virtual_coordinates,
+    _restrict_signed_occlusion_components_to_tile_footprint,
     _resolve_pair_level_hard_owners,
     _audit_suppressed_source_frames,
     _select_pair_level_hard_owner,
@@ -33,14 +47,25 @@ from panorama_demo.calibrated_rgb_pushbroom import (
     _blend_safe_pair_zone,
     _graphcut_monotonic_owner,
     _solve_global_linear_rgb_gains,
+    _save_source_anchor_labels,
     _srgb_to_linear_bgr,
     build_calibrated_rgb_pushbroom_layout,
     estimate_rgb_motion_pixels_per_mm,
     render_calibrated_rgb_pushbroom,
 )
+from panorama_demo.foreground_segments import (
+    DepthAnchorToken,
+    ForegroundFragment,
+    GeometryMode,
+    RawFootprintSummary,
+)
 from panorama_demo.rgb_residual_alignment import ProtectedComponentFragment
-from panorama_demo.geometry_assisted_local_warp import LocalMeshInverseWarp, TileBounds
-from panorama_demo.session import RGBDSession, load_rgbd_session
+from panorama_demo.geometry_assisted_local_warp import (
+    LocalMeshInverseWarp,
+    SignedOcclusionForegroundComponents,
+    TileBounds,
+)
+from panorama_demo.session import CameraIntrinsics, RGBDSession, load_rgbd_session
 from panorama_demo.synthetic import generate_sequence
 
 
@@ -82,6 +107,573 @@ def _reliable_adjacent_rgb_motions(frame_count: int) -> list[dict[str, object]]:
     """Synthetic frames advance by 16 RGB pixels at the far background."""
 
     return [{"dx": 16.0, "reliable": True} for _ in range(frame_count - 1)]
+
+
+def test_sparse_depth_anchor_hands_off_to_a_later_valid_pair() -> None:
+    """An old anchor survives only where a later pair has no valid RGB."""
+
+    token = DepthAnchorToken(
+        shared_source_index=1,
+        left_pair_index=0,
+        right_pair_index=1,
+        left_direct_component_label=3,
+        right_direct_component_label=5,
+    )
+    first_anchor = np.zeros((3, 3), dtype=bool)
+    first_anchor[:2, :2] = True
+    second_anchor = np.zeros((3, 3), dtype=bool)
+    second_anchor[1:, 1:] = True
+    first_fragment = ForegroundFragment(
+        pair_index=0,
+        component_label=7,
+        frame_ids=(100, 101),
+        source_indices=(0, 1),
+        global_bbox=(4, 2, 3, 3),
+        local_mask=np.ones((3, 3), dtype=bool),
+        depth_anchor_local_mask=first_anchor,
+        depth_anchor_token=token,
+        allowed_local_owners=(1,),
+        preferred_local_owner=1,
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+    )
+    second_fragment = ForegroundFragment(
+        pair_index=1,
+        component_label=13,
+        frame_ids=(101, 102),
+        source_indices=(1, 2),
+        global_bbox=(6, 2, 3, 3),
+        local_mask=np.ones((3, 3), dtype=bool),
+        depth_anchor_local_mask=second_anchor,
+        depth_anchor_token=token,
+        allowed_local_owners=(0,),
+        preferred_local_owner=0,
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+    )
+    reservation = _ForegroundAnchorReservation(
+        span_id=4,
+        segment_id=2,
+        source_index=1,
+        frame_id=101,
+        fragment_refs=((0, 7), (1, 13)),
+        fragments=(first_fragment, second_fragment),
+    )
+    canvas = np.zeros((8, 16, 3), dtype=np.uint8)
+    valid = np.zeros((8, 16), dtype=bool)
+    owner = np.full((8, 16), -1, dtype=np.int16)
+    contribution = PushbroomContribution(
+        source_index=1,
+        frame_id=101,
+        x0=3,
+        rgb=np.full((8, 10, 3), (20, 40, 60), dtype=np.uint8),
+        valid_mask=np.ones((8, 10), dtype=bool),
+    )
+
+    first_reserved, first_prior, first_current = _foreground_anchor_mask_and_prior(
+        (reservation,), pair_index=0, left=4, right=10, height=8
+    )
+    assert np.any(first_reserved)
+    assert set(np.unique(first_prior[first_prior >= 0])) == {1}
+    assert len(first_current) == 1
+    _write_foreground_anchor_fragment(
+        canvas, valid, owner, contribution, first_current[0][1]
+    )
+    completed = [first_current[0]]
+
+    current_reserved, prior, current = _foreground_anchor_mask_and_prior(
+        (reservation,), pair_index=1, left=4, right=10, height=8
+    )
+    completed_reserved = _foreground_anchor_completed_lock_mask(
+        completed, left=4, right=10, height=8
+    )
+    # Pair 1 sees source 1 as its first source, while pair 0's fragment is
+    # only a completed lock rather than a second owner prior.
+    assert np.any(current_reserved)
+    assert np.any(completed_reserved)
+    assert set(np.unique(prior[prior >= 0])) == {0}
+    assert len(current) == 1
+    _write_foreground_anchor_fragment(
+        canvas, valid, owner, contribution, current[0][1]
+    )
+    completed.append(current[0])
+
+    later_current, later_prior, later_records = _foreground_anchor_mask_and_prior(
+        (reservation,), pair_index=2, left=4, right=10, height=8
+    )
+    no_support_retained, no_support_handoffs = _advance_completed_foreground_anchor_locks(
+        completed,
+        pair_index=2,
+        left=4,
+        right=10,
+        height=8,
+        current_pair_valid=np.zeros((8, 6), dtype=bool),
+        protected_components=(),
+        component_owner_constraints={},
+    )
+    assert no_support_retained == tuple(completed)
+    assert no_support_handoffs == ()
+
+    later_retained, later_handoffs = _advance_completed_foreground_anchor_locks(
+        no_support_retained,
+        pair_index=2,
+        left=4,
+        right=10,
+        height=8,
+        current_pair_valid=np.ones((8, 6), dtype=bool),
+        protected_components=(),
+        component_owner_constraints={},
+    )
+    assert not np.any(later_current)
+    assert not np.any(later_prior >= 0)
+    assert later_records == ()
+    assert later_retained == ()
+    assert len(later_handoffs) == 2
+    assert sum(handoff.pixel_count for handoff in later_handoffs) == 8
+
+    # The valid later pair must replace every old non-adjacent anchor with an
+    # owner from its own adjacent source set.  Its hard-owner guard is covered
+    # by the renderer, while this narrow unit check exercises the ownership
+    # transition itself.
+    later_pair_rgb = np.full((8, 6, 3), (200, 10, 10), dtype=np.uint8)
+    later_pair_valid = np.ones((8, 6), dtype=bool)
+    canvas[:, 4:10][later_pair_valid] = later_pair_rgb[later_pair_valid]
+    valid[:, 4:10][later_pair_valid] = True
+    owner[:, 4:10][later_pair_valid] = 2
+    for handoff in later_handoffs:
+        _verify_foreground_anchor_handoff(valid, owner, handoff)
+    assert np.all(owner[2:4, 4:6] == 2)
+    assert np.all(owner[3:5, 7:9] == 2)
+
+
+def test_completed_anchor_handoffs_before_a_nonadjacent_guard() -> None:
+    """An old local owner ID cannot retain a non-adjacent RGB source."""
+
+    token = DepthAnchorToken(
+        shared_source_index=1,
+        left_pair_index=0,
+        right_pair_index=1,
+        left_direct_component_label=3,
+        right_direct_component_label=5,
+    )
+    old_fragment = ForegroundFragment(
+        pair_index=1,
+        component_label=5,
+        frame_ids=(101, 102),
+        source_indices=(1, 2),
+        global_bbox=(8, 2, 3, 3),
+        local_mask=np.ones((3, 3), dtype=bool),
+        depth_anchor_local_mask=np.ones((3, 3), dtype=bool),
+        depth_anchor_token=token,
+        allowed_local_owners=(0,),
+        preferred_local_owner=0,
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+    )
+    earlier_fragment = ForegroundFragment(
+        pair_index=0,
+        component_label=3,
+        frame_ids=(100, 101),
+        source_indices=(0, 1),
+        global_bbox=(8, 2, 3, 3),
+        local_mask=np.ones((3, 3), dtype=bool),
+        depth_anchor_local_mask=np.ones((3, 3), dtype=bool),
+        depth_anchor_token=token,
+        allowed_local_owners=(1,),
+        preferred_local_owner=1,
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+    )
+    reservation = _ForegroundAnchorReservation(
+        span_id=0,
+        segment_id=0,
+        source_index=1,
+        frame_id=101,
+        fragment_refs=((0, 3), (1, 5)),
+        fragments=(earlier_fragment, old_fragment),
+    )
+    current_guard = ProtectedComponentFragment(
+        pair_index=2,
+        global_bbox=(8, 2, 3, 3),
+        local_mask=np.ones((3, 3), dtype=bool),
+        allowed_owners=(0, 1),
+        component_label=9,
+        preferred_owner=0,
+    )
+
+    # Source 1 was old pair 1's local owner 0, but it is not a source of
+    # current pair 2=(2,3).  The guard must hand off all nine exact pixels
+    # rather than treating both local owner IDs as equivalent.
+    retained, retirements = _advance_completed_foreground_anchor_locks(
+        ((reservation, old_fragment),),
+        pair_index=2,
+        left=8,
+        right=11,
+        height=8,
+        current_pair_valid=np.ones((8, 3), dtype=bool),
+        protected_components=(current_guard,),
+        component_owner_constraints={9: 0},
+    )
+    assert retained == ()
+    assert len(retirements) == 1
+    assert retirements[0].as_dict() == {
+            "pair_index": 2,
+            "span_id": 0,
+            "source_index": 1,
+            "fragment_ref": {"pair_index": 1, "component_label": 5},
+            "retired_exact_anchor_pixel_count": 9,
+            "current_pair_valid_overlap_pixel_count": 9,
+            "protected_component_pixel_counts": {"9": 9},
+            "reason": "nonadjacent_current_pair_hard_owner_handoff",
+    }
+    valid = np.ones((8, 16), dtype=bool)
+    owner = np.full((8, 16), 2, dtype=np.int16)
+    _verify_foreground_anchor_handoff(valid, owner, retirements[0])
+    owner[2, 8] = 1
+    with pytest.raises(RuntimeError, match="retained its non-adjacent source"):
+        _verify_foreground_anchor_handoff(valid, owner, retirements[0])
+
+
+def _test_raw_footprint(source_index: int) -> RawFootprintSummary:
+    rows, columns = np.mgrid[0:8, 0:8]
+    footprint = RawFootprintSummary.from_source_coordinates(
+        source_index=source_index,
+        source_size=(64, 48),
+        map_x=20.0 + columns.astype(np.float64),
+        map_y=10.0 + rows.astype(np.float64),
+        mask=np.ones(rows.shape, dtype=bool),
+    )
+    assert footprint is not None
+    return footprint
+
+
+def _test_anchor_plan(
+    *,
+    pair_index: int,
+    token: DepthAnchorToken,
+    local_owner: int,
+    path: Path,
+) -> _GeometryPairPlan:
+    labels = np.zeros((8, 12), dtype=np.int32)
+    labels[2:6, 3:7] = 1
+    _save_source_anchor_labels(path, x0=20, labels=labels)
+    return _GeometryPairPlan(
+        pair_index=pair_index,
+        frame_ids=(100 + pair_index, 101 + pair_index),
+        triggered=True,
+        corridor_x=(20, 32),
+        warp_source_index=None,
+        accepted=False,
+        fallback="hard_owner",
+        protected_mask_path=None,
+        active_mask_path=None,
+        audit={},
+        source_anchor_labels_path=path,
+        source_anchor_evidence={
+            1: _SourceAnchorEvidence(
+                token=token,
+                local_owner=local_owner,
+                footprint=_test_raw_footprint(token.shared_source_index),
+            )
+        },
+    )
+
+
+def _test_protected_component(pair_index: int) -> ProtectedComponentFragment:
+    return ProtectedComponentFragment(
+        pair_index=pair_index,
+        global_bbox=(20, 0, 12, 8),
+        local_mask=np.ones((8, 12), dtype=bool),
+        allowed_owners=(0, 1),
+        component_label=1,
+        preferred_owner=0,
+    )
+
+
+def test_exact_token_tiles_compile_to_a_sparse_two_pair_reservation(tmp_path: Path) -> None:
+    """The bridge retains token identity from label tile to final reservation."""
+
+    token = DepthAnchorToken(
+        shared_source_index=1,
+        left_pair_index=0,
+        right_pair_index=1,
+        left_direct_component_label=7,
+        right_direct_component_label=11,
+    )
+    plans = (
+        _test_anchor_plan(
+            pair_index=0,
+            token=token,
+            local_owner=1,
+            path=tmp_path / "left-labels.npz",
+        ),
+        _test_anchor_plan(
+            pair_index=1,
+            token=token,
+            local_owner=0,
+            path=tmp_path / "right-labels.npz",
+        ),
+    )
+
+    reservations, constraints, audit = _build_shared_source_anchor_reservations(
+        plans,
+        ((_test_protected_component(0),), (_test_protected_component(1),)),
+        canvas_height=8,
+    )
+
+    assert len(reservations) == 1
+    assert reservations[0].fragments[0].depth_anchor_token == token
+    assert reservations[0].fragments[1].depth_anchor_token == token
+    assert reservations[0].pixel_count == 32
+    assert constraints == ({1: 1}, {1: 0})
+    assert audit["selected_reservation_count"] == 1
+
+
+def test_different_source_output_overlap_rejects_every_sparse_anchor(
+    tmp_path: Path,
+) -> None:
+    """No unrelated direct support may pick an owner at a shared output pixel."""
+
+    first_token = DepthAnchorToken(
+        shared_source_index=1,
+        left_pair_index=0,
+        right_pair_index=1,
+        left_direct_component_label=3,
+        right_direct_component_label=5,
+    )
+    second_token = DepthAnchorToken(
+        shared_source_index=2,
+        left_pair_index=1,
+        right_pair_index=2,
+        left_direct_component_label=7,
+        right_direct_component_label=11,
+    )
+    first = _test_anchor_plan(
+        pair_index=0,
+        token=first_token,
+        local_owner=1,
+        path=tmp_path / "first-labels.npz",
+    )
+    middle_base = _test_anchor_plan(
+        pair_index=1,
+        token=first_token,
+        local_owner=0,
+        path=tmp_path / "middle-labels.npz",
+    )
+    with np.load(middle_base.source_anchor_labels_path, allow_pickle=False) as stored:
+        middle_labels = np.asarray(stored["labels"], dtype=np.int32)
+    middle_labels[2:6, 8:12] = 2
+    _save_source_anchor_labels(
+        middle_base.source_anchor_labels_path,
+        x0=20,
+        labels=middle_labels,
+    )
+    middle = _GeometryPairPlan(
+        pair_index=1,
+        frame_ids=(101, 102),
+        triggered=True,
+        corridor_x=(20, 32),
+        warp_source_index=None,
+        accepted=False,
+        fallback="hard_owner",
+        protected_mask_path=None,
+        active_mask_path=None,
+        audit={},
+        source_anchor_labels_path=middle_base.source_anchor_labels_path,
+        source_anchor_evidence={
+            1: _SourceAnchorEvidence(
+                token=first_token,
+                local_owner=0,
+                footprint=_test_raw_footprint(1),
+            ),
+            2: _SourceAnchorEvidence(
+                token=second_token,
+                local_owner=1,
+                footprint=_test_raw_footprint(2),
+            ),
+        },
+    )
+    last = _test_anchor_plan(
+        pair_index=2,
+        token=second_token,
+        local_owner=0,
+        path=tmp_path / "last-labels.npz",
+    )
+
+    reservations, constraints, audit = _build_shared_source_anchor_reservations(
+        (first, middle, last),
+        ((_test_protected_component(0),), (), (_test_protected_component(2),)),
+        canvas_height=8,
+    )
+
+    assert reservations == ()
+    assert constraints == ({}, {}, {})
+    assert audit["candidate_token_count"] == 2
+    assert audit["selected_reservation_count"] == 0
+    assert audit["rejected_token_count_due_to_output_overlap"] == 2
+    assert audit["output_anchor_overlap_conflicts"] == [
+        {
+            "candidate_count": 2,
+            "reservation_span_ids": [0, 1],
+            "source_indices": [1, 2],
+            "outcome": "ambiguous_exact_anchor_output_overlap_rejected",
+        }
+    ]
+
+
+def test_anchor_owner_vote_counts_only_pixels_inside_that_protected_component() -> None:
+    """A one-pixel touch cannot vote with the claim's full outside area."""
+
+    token = DepthAnchorToken(
+        shared_source_index=1,
+        left_pair_index=0,
+        right_pair_index=1,
+        left_direct_component_label=3,
+        right_direct_component_label=5,
+    )
+    claim = ForegroundFragment(
+        pair_index=0,
+        component_label=1,
+        frame_ids=(100, 101),
+        source_indices=(0, 1),
+        global_bbox=(0, 0, 10, 10),
+        local_mask=np.ones((10, 10), dtype=bool),
+        depth_anchor_local_mask=np.ones((10, 10), dtype=bool),
+        depth_anchor_token=token,
+        allowed_local_owners=(1,),
+        preferred_local_owner=1,
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+    )
+    guard = ProtectedComponentFragment(
+        pair_index=0,
+        global_bbox=(9, 9, 1, 1),
+        local_mask=np.ones((1, 1), dtype=bool),
+        allowed_owners=(0, 1),
+        component_label=7,
+        preferred_owner=0,
+    )
+
+    counts = _protected_component_anchor_pixel_counts(claim, (guard,))
+
+    assert counts == {7: 1}
+
+
+def test_scoped_signed_occlusion_components_ignore_full_frame_evidence_outside_tile() -> None:
+    """A raw component cannot win a corridor match from an unseen image area."""
+
+    labels = np.zeros((20, 20), dtype=np.int32)
+    labels[5:15, 5:15] = 1
+    components = SignedOcclusionForegroundComponents(
+        labels=labels,
+        component_pixel_counts={1: 100},
+        signed_occlusion_pixel_count=100,
+        eroded_core_pixel_count=64,
+        rejected_component_count=0,
+    )
+    map_x, map_y = np.meshgrid(
+        np.arange(4, dtype=np.float32), np.arange(4, dtype=np.float32)
+    )
+    tile = LocalGeometryContribution(
+        source_index=1,
+        frame_id=101,
+        x0=0,
+        source_map_x=map_x,
+        source_map_y=map_y,
+        valid_mask=np.ones((4, 4), dtype=bool),
+    )
+
+    scoped = _restrict_signed_occlusion_components_to_tile_footprint(components, tile)
+
+    assert scoped.component_count == 0
+    assert not np.any(scoped.labels)
+
+
+def test_shared_source_anchor_reserves_only_exact_raw_signed_occlusion_intersection(
+    tmp_path: Path,
+) -> None:
+    """A matched component pair may not widen a sparse owner claim."""
+
+    previous_labels = np.zeros((20, 20), dtype=np.int32)
+    previous_labels[2:12, 2:12] = 1
+    current_labels = np.zeros((20, 20), dtype=np.int32)
+    current_labels[2:12, 5:15] = 1
+    previous_components = SignedOcclusionForegroundComponents(
+        labels=previous_labels,
+        component_pixel_counts={1: 100},
+        signed_occlusion_pixel_count=100,
+        eroded_core_pixel_count=64,
+        rejected_component_count=0,
+    )
+    current_components = SignedOcclusionForegroundComponents(
+        labels=current_labels,
+        component_pixel_counts={1: 100},
+        signed_occlusion_pixel_count=100,
+        eroded_core_pixel_count=64,
+        rejected_component_count=0,
+    )
+    map_x, map_y = np.meshgrid(
+        np.arange(20, dtype=np.float32), np.arange(20, dtype=np.float32)
+    )
+    tile = LocalGeometryContribution(
+        source_index=1,
+        frame_id=101,
+        x0=0,
+        source_map_x=map_x,
+        source_map_y=map_y,
+        valid_mask=np.ones((20, 20), dtype=bool),
+    )
+    previous_path = tmp_path / "previous-labels.npz"
+    current_path = tmp_path / "current-labels.npz"
+    _save_source_anchor_labels(previous_path, x0=0, labels=np.zeros((20, 20), dtype=np.int32))
+    _save_source_anchor_labels(current_path, x0=0, labels=np.zeros((20, 20), dtype=np.int32))
+    previous_plan = _GeometryPairPlan(
+        pair_index=0,
+        frame_ids=(100, 101),
+        triggered=True,
+        corridor_x=(0, 20),
+        warp_source_index=None,
+        accepted=False,
+        fallback="hard_owner",
+        protected_mask_path=None,
+        active_mask_path=None,
+        audit={},
+        source_anchor_labels_path=previous_path,
+    )
+    current_plan = _GeometryPairPlan(
+        pair_index=1,
+        frame_ids=(101, 102),
+        triggered=True,
+        corridor_x=(0, 20),
+        warp_source_index=None,
+        accepted=False,
+        fallback="hard_owner",
+        protected_mask_path=None,
+        active_mask_path=None,
+        audit={},
+        source_anchor_labels_path=current_path,
+    )
+    calibration = CameraIntrinsics(20, 20, 10.0, 10.0, 10.0, 10.0, ())
+
+    previous_plan, current_plan = _append_shared_source_signed_occlusion_anchors(
+        previous_plan,
+        current_plan,
+        previous_second_components=previous_components,
+        current_first_components=current_components,
+        previous_second_tile=tile,
+        current_first_tile=tile,
+        calibration=calibration,
+    )
+
+    with np.load(previous_path, allow_pickle=False) as stored:
+        previous_claim = np.asarray(stored["labels"], dtype=np.int32)
+    with np.load(current_path, allow_pickle=False) as stored:
+        current_claim = np.asarray(stored["labels"], dtype=np.int32)
+    # The native overlap is 7 columns x 10 rows, not either 10x10 component.
+    assert int(np.count_nonzero(previous_claim)) == 70
+    assert int(np.count_nonzero(current_claim)) == 70
+    assert len(previous_plan.source_anchor_evidence) == 1
+    assert len(current_plan.source_anchor_evidence) == 1
 
 
 def test_geometry_trigger_requires_local_owner_boundary_evidence() -> None:

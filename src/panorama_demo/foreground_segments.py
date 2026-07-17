@@ -170,6 +170,64 @@ class RawFootprintSummary:
 
 
 @dataclass(frozen=True)
+class DepthAnchorToken:
+    """Immutable identity for one two-pair direct signed-occlusion anchor.
+
+    The two local pair tiles intentionally retain their own compact integer
+    label images.  This token is the non-image bridge that proves that those
+    two labels came from the *same* exact raw signed-occlusion match in their
+    shared middle RGB-D source.  It is an owner-only identity, never a track,
+    a pose estimate, or a deformation field.
+    """
+
+    shared_source_index: int
+    left_pair_index: int
+    right_pair_index: int
+    left_direct_component_label: int
+    right_direct_component_label: int
+
+    def __post_init__(self) -> None:
+        values = (
+            self.shared_source_index,
+            self.left_pair_index,
+            self.right_pair_index,
+            self.left_direct_component_label,
+            self.right_direct_component_label,
+        )
+        if any(isinstance(value, (bool, np.bool_)) for value in values):
+            raise ValueError("Depth anchor token fields must be integer identifiers")
+        try:
+            shared_source, left_pair, right_pair, left_label, right_label = (
+                int(value) for value in values
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Depth anchor token fields must be integer identifiers") from exc
+        if (
+            shared_source < 0
+            or left_pair < 0
+            or right_pair != left_pair + 1
+            or shared_source != right_pair
+            or left_label < 1
+            or right_label < 1
+        ):
+            raise ValueError("Depth anchor token is not one shared adjacent-pair identity")
+        object.__setattr__(self, "shared_source_index", shared_source)
+        object.__setattr__(self, "left_pair_index", left_pair)
+        object.__setattr__(self, "right_pair_index", right_pair)
+        object.__setattr__(self, "left_direct_component_label", left_label)
+        object.__setattr__(self, "right_direct_component_label", right_label)
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "shared_source_index": int(self.shared_source_index),
+            "left_pair_index": int(self.left_pair_index),
+            "right_pair_index": int(self.right_pair_index),
+            "left_direct_component_label": int(self.left_direct_component_label),
+            "right_direct_component_label": int(self.right_direct_component_label),
+        }
+
+
+@dataclass(frozen=True)
 class ForegroundFragment:
     """One protected pair-corridor foreground component and its evidence."""
 
@@ -179,6 +237,8 @@ class ForegroundFragment:
     source_indices: tuple[int, int]
     global_bbox: tuple[int, int, int, int]
     local_mask: np.ndarray = field(repr=False)
+    depth_anchor_local_mask: np.ndarray | None = field(default=None, repr=False)
+    depth_anchor_token: DepthAnchorToken | None = None
     allowed_local_owners: tuple[int, ...] = (0, 1)
     preferred_local_owner: int | None = None
     edge_orientation_degrees: float | None = None
@@ -204,6 +264,26 @@ class ForegroundFragment:
         mask = np.asarray(self.local_mask, dtype=bool)
         if mask.shape != (height, width) or not np.any(mask):
             raise ValueError("Foreground fragment mask must fill its non-empty bbox shape")
+        anchor_mask = (
+            None
+            if self.depth_anchor_local_mask is None
+            else np.asarray(self.depth_anchor_local_mask, dtype=bool)
+        )
+        if anchor_mask is not None:
+            if anchor_mask.shape != mask.shape or not np.any(anchor_mask):
+                raise ValueError(
+                    "Foreground depth anchor mask must be non-empty and match local_mask"
+                )
+            if np.any(anchor_mask & ~mask):
+                raise ValueError("Foreground depth anchor mask must be a local_mask subset")
+        if (anchor_mask is None) != (self.depth_anchor_token is None):
+            raise ValueError(
+                "Foreground depth anchor mask and token must be present together"
+            )
+        if self.depth_anchor_token is not None and not isinstance(
+            self.depth_anchor_token, DepthAnchorToken
+        ):
+            raise ValueError("Foreground depth anchor token has the wrong type")
         owners = tuple(int(owner) for owner in self.allowed_local_owners)
         if not owners or any(owner not in {0, 1} for owner in owners):
             raise ValueError("Foreground fragment owners must be a non-empty subset of (0, 1)")
@@ -231,6 +311,11 @@ class ForegroundFragment:
         object.__setattr__(self, "source_indices", tuple(int(value) for value in self.source_indices))
         object.__setattr__(self, "global_bbox", (x, y, width, height))
         object.__setattr__(self, "local_mask", np.ascontiguousarray(mask))
+        object.__setattr__(
+            self,
+            "depth_anchor_local_mask",
+            None if anchor_mask is None else np.ascontiguousarray(anchor_mask),
+        )
         object.__setattr__(self, "allowed_local_owners", owners)
         object.__setattr__(
             self,
@@ -249,6 +334,14 @@ class ForegroundFragment:
     def pixel_count(self) -> int:
         return int(np.count_nonzero(self.local_mask))
 
+    @property
+    def anchor_pixel_count(self) -> int:
+        """Number of depth-observed pixels reserved inside this guard."""
+
+        if self.depth_anchor_local_mask is None:
+            return 0
+        return int(np.count_nonzero(self.depth_anchor_local_mask))
+
     def local_owner_for_source(self, source_index: int) -> int | None:
         for owner, candidate in enumerate(self.source_indices):
             if int(candidate) == int(source_index) and owner in self.allowed_local_owners:
@@ -263,6 +356,12 @@ class ForegroundFragment:
             "source_indices": [int(value) for value in self.source_indices],
             "global_bbox": [int(value) for value in self.global_bbox],
             "pixel_count": self.pixel_count,
+            "anchor_pixel_count": self.anchor_pixel_count,
+            "depth_anchor_token": (
+                None
+                if self.depth_anchor_token is None
+                else self.depth_anchor_token.as_dict()
+            ),
             "allowed_local_owners": [int(value) for value in self.allowed_local_owners],
             "preferred_local_owner": self.preferred_local_owner,
             "edge_orientation_degrees": self.edge_orientation_degrees,
@@ -284,6 +383,8 @@ def foreground_fragment_from_protected(
     source_indices: tuple[int, int],
     geometry_mode: GeometryMode = GeometryMode.IMAGE_REGION,
     bidirectional_visibility_supported: bool = False,
+    depth_anchor_local_mask: np.ndarray | None = None,
+    depth_anchor_token: DepthAnchorToken | None = None,
     raw_footprints: tuple[RawFootprintSummary | None, RawFootprintSummary | None] = (
         None,
         None,
@@ -301,6 +402,8 @@ def foreground_fragment_from_protected(
         source_indices=source_indices,
         global_bbox=fragment.global_bbox,
         local_mask=fragment.local_mask,
+        depth_anchor_local_mask=depth_anchor_local_mask,
+        depth_anchor_token=depth_anchor_token,
         allowed_local_owners=fragment.allowed_owners,
         preferred_local_owner=fragment.preferred_owner,
         edge_orientation_degrees=fragment.edge_orientation,
@@ -317,6 +420,10 @@ def build_foreground_fragments(
     frame_ids: Sequence[int],
     geometry_modes: Sequence[GeometryMode] | None = None,
     bidirectional_visibility: Sequence[bool] | None = None,
+    geometry_mode_overrides: Mapping[tuple[int, int], GeometryMode] | None = None,
+    bidirectional_visibility_overrides: Mapping[tuple[int, int], bool] | None = None,
+    depth_anchor_masks: Mapping[tuple[int, int], np.ndarray] | None = None,
+    depth_anchor_tokens: Mapping[tuple[int, int], DepthAnchorToken] | None = None,
     raw_footprints: Mapping[tuple[int, int, int], RawFootprintSummary] | None = None,
     natural_breaks: Mapping[tuple[int, int], str] | None = None,
 ) -> tuple[tuple[ForegroundFragment, ...], ...]:
@@ -324,9 +431,9 @@ def build_foreground_fragments(
 
     The default is deliberately ``IMAGE_REGION`` with no visibility evidence:
     that is the only honest formal interpretation of an aligned-only legacy
-    input.  Callers may supply depth-observed evidence in the future, but a
-    caller cannot accidentally promote a fragment merely by providing an RGB
-    bounding box.
+    input.  A caller may promote only a particular protected component by
+    supplying its own per-fragment, bidirectionally verified depth evidence;
+    a pair-wide RGB bounding box can never promote its neighbours.
     """
 
     pair_count = len(fragments_by_pair)
@@ -340,6 +447,36 @@ def build_foreground_fragments(
         raise ValueError("Foreground planning pair evidence has an invalid length")
     footprints = {} if raw_footprints is None else dict(raw_footprints)
     breaks = {} if natural_breaks is None else dict(natural_breaks)
+    mode_overrides = (
+        {} if geometry_mode_overrides is None else dict(geometry_mode_overrides)
+    )
+    visibility_overrides = (
+        {}
+        if bidirectional_visibility_overrides is None
+        else dict(bidirectional_visibility_overrides)
+    )
+    anchor_masks = {} if depth_anchor_masks is None else dict(depth_anchor_masks)
+    anchor_tokens = {} if depth_anchor_tokens is None else dict(depth_anchor_tokens)
+    if set(anchor_masks) != set(anchor_tokens):
+        raise ValueError("Depth anchor masks and tokens must use the same component references")
+    known_references = {
+        (pair_index, int(fragment.component_label))
+        for pair_index, fragments in enumerate(fragments_by_pair)
+        for fragment in fragments
+        if fragment.component_label is not None
+    }
+    unknown_overrides = (
+        set(mode_overrides)
+        | set(visibility_overrides)
+        | set(anchor_masks)
+        | set(anchor_tokens)
+    ) - known_references
+    if unknown_overrides:
+        raise ValueError("Foreground planning override references an unknown component")
+    if not all(isinstance(mode, GeometryMode) for mode in mode_overrides.values()):
+        raise ValueError("Foreground planning geometry overrides must contain GeometryMode")
+    if not all(isinstance(value, (bool, np.bool_)) for value in visibility_overrides.values()):
+        raise ValueError("Foreground planning visibility overrides must be boolean")
     result: list[tuple[ForegroundFragment, ...]] = []
     for pair_index, protected_fragments in enumerate(fragments_by_pair):
         mode = geometry_modes[pair_index]
@@ -350,15 +487,20 @@ def build_foreground_fragments(
             if int(protected.pair_index) != pair_index or protected.component_label is None:
                 raise ValueError("Foreground planning fragments must be ordered by pair")
             label = int(protected.component_label)
+            reference = (pair_index, label)
             pair_fragments.append(
                 foreground_fragment_from_protected(
                     protected,
                     frame_ids=(int(frame_ids[pair_index]), int(frame_ids[pair_index + 1])),
                     source_indices=(pair_index, pair_index + 1),
-                    geometry_mode=mode,
+                    geometry_mode=mode_overrides.get(reference, mode),
                     bidirectional_visibility_supported=bool(
-                        bidirectional_visibility[pair_index]
+                        visibility_overrides.get(
+                            reference, bidirectional_visibility[pair_index]
+                        )
                     ),
+                    depth_anchor_local_mask=anchor_masks.get(reference),
+                    depth_anchor_token=anchor_tokens.get(reference),
                     raw_footprints=(
                         footprints.get((pair_index, label, 0)),
                         footprints.get((pair_index, label, 1)),
@@ -599,28 +741,60 @@ def _candidate_link(
     if first_footprint is None or second_footprint is None:
         return None, "missing_shared_raw_footprint"
     footprint_iou = first_footprint.overlap_iou(second_footprint)
-    if footprint_iou < _MINIMUM_RAW_FOOTPRINT_IOU:
+    left_has_direct_anchor = left.depth_anchor_local_mask is not None
+    right_has_direct_anchor = right.depth_anchor_local_mask is not None
+    if left_has_direct_anchor != right_has_direct_anchor:
+        return None, "incomplete_source_anchor_evidence"
+    direct_source_anchor = left_has_direct_anchor and right_has_direct_anchor
+    if direct_source_anchor:
+        # A sparse anchor is allowed to bypass coarse guard shape heuristics
+        # only when both pair-local labels carry the *same* exact raw
+        # signed-occlusion identity.  The occupancy-grid IoU below is audit
+        # information, not a substitute for this identity proof.
+        left_token = left.depth_anchor_token
+        right_token = right.depth_anchor_token
+        if left_token is None or right_token is None:
+            raise RuntimeError("Direct source anchor mask lacks its immutable token")
+        if left_token != right_token:
+            return None, "source_anchor_token_mismatch"
+        if (
+            left_token.shared_source_index != shared_source
+            or left_token.left_pair_index != left.pair_index
+            or left_token.right_pair_index != right.pair_index
+        ):
+            return None, "source_anchor_token_not_for_this_adjacent_pair"
+    elif footprint_iou < _MINIMUM_RAW_FOOTPRINT_IOU:
         return None, "shared_raw_footprint_disjoint"
     if left.edge_orientation_degrees is None or right.edge_orientation_degrees is None:
-        return None, "missing_contour_orientation"
-    orientation_delta = _orientation_delta(
-        float(left.edge_orientation_degrees), float(right.edge_orientation_degrees)
-    )
-    if orientation_delta > _MAXIMUM_ORIENTATION_DELTA_DEGREES:
+        if not direct_source_anchor:
+            return None, "missing_contour_orientation"
+        # The direct raw signed-occlusion overlap is the identity proof for a
+        # sparse source anchor.  A surrounding RGB guard need not itself have
+        # one reliable contour orientation.
+        orientation_delta = 0.0
+    else:
+        orientation_delta = _orientation_delta(
+            float(left.edge_orientation_degrees), float(right.edge_orientation_degrees)
+        )
+    if not direct_source_anchor and orientation_delta > _MAXIMUM_ORIENTATION_DELTA_DEGREES:
         return None, "contour_orientation_discontinuity"
     width_ratio = max(
         float(left.local_width_pixels), float(right.local_width_pixels)
     ) / min(float(left.local_width_pixels), float(right.local_width_pixels))
-    if width_ratio > _MAXIMUM_WIDTH_RATIO:
+    if not direct_source_anchor and width_ratio > _MAXIMUM_WIDTH_RATIO:
         return None, "local_width_discontinuity"
     # A deterministic scalar cost/score is enough in v2.0 because all
     # candidate anchors have already passed complete coverage.  Future
     # capture-time native depth/pose confidence can extend this score without
     # changing the owner contract.
     score = (
-        0.70 * footprint_iou
-        + 0.20 * (1.0 - orientation_delta / _MAXIMUM_ORIENTATION_DELTA_DEGREES)
-        + 0.10 * (1.0 - (width_ratio - 1.0) / (_MAXIMUM_WIDTH_RATIO - 1.0))
+        1.0
+        if direct_source_anchor
+        else (
+            0.70 * footprint_iou
+            + 0.20 * (1.0 - orientation_delta / _MAXIMUM_ORIENTATION_DELTA_DEGREES)
+            + 0.10 * (1.0 - (width_ratio - 1.0) / (_MAXIMUM_WIDTH_RATIO - 1.0))
+        )
     )
     return (
         _CandidateLink(

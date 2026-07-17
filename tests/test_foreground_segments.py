@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from panorama_demo.foreground_segments import (
+    DepthAnchorToken,
     GeometryMode,
     RawFootprintSummary,
     build_foreground_fragments,
@@ -44,6 +46,21 @@ def _footprint(source_index: int, *, x0: float) -> RawFootprintSummary:
         map_x=x0 + grid_x.astype(np.float64),
         map_y=30.0 + grid_y.astype(np.float64),
         mask=np.ones(grid_x.shape, dtype=bool),
+    )
+
+
+def _anchor_token(
+    *,
+    left_pair_index: int = 0,
+    left_direct_component_label: int = 3,
+    right_direct_component_label: int = 5,
+) -> DepthAnchorToken:
+    return DepthAnchorToken(
+        shared_source_index=left_pair_index + 1,
+        left_pair_index=left_pair_index,
+        right_pair_index=left_pair_index + 1,
+        left_direct_component_label=left_direct_component_label,
+        right_direct_component_label=right_direct_component_label,
     )
 
 
@@ -124,6 +141,93 @@ def test_disjoint_shared_raw_footprints_do_not_create_a_cross_pair_segment() -> 
     assert len(plan.spans) == 2
 
 
+def test_depth_observed_shared_source_anchor_locks_each_pair_fragment() -> None:
+    """Depth evidence, not pair-local preference, chooses a hose anchor.
+
+    The two pair-local components prefer opposite outer RGB sources.  Their
+    only common source is frame 101 and the raw source-coordinate footprint
+    proves that it sees the same foreground instance in both pair corridors.
+    A valid anchor must therefore lock pair 0 to its second local owner and
+    pair 1 to its first local owner; the legacy bbox preflight cannot rewrite
+    either decision.
+    """
+
+    first_protected = _protected(0, 7, x=36, preferred=0)
+    second_protected = _protected(1, 13, x=54, preferred=1)
+    shared = _footprint(1, x0=42.0)
+    first = foreground_fragment_from_protected(
+        first_protected,
+        frame_ids=(100, 101),
+        source_indices=(0, 1),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_local_mask=np.ones(first_protected.local_mask.shape, dtype=bool),
+        depth_anchor_token=_anchor_token(),
+        raw_footprints=(_footprint(0, x0=12.0), shared),
+    )
+    second = foreground_fragment_from_protected(
+        second_protected,
+        frame_ids=(101, 102),
+        source_indices=(1, 2),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_local_mask=np.ones(second_protected.local_mask.shape, dtype=bool),
+        depth_anchor_token=_anchor_token(),
+        raw_footprints=(shared, _footprint(2, x0=94.0)),
+    )
+
+    plan = plan_foreground_owners(((first,), (second,)))
+
+    assert plan.accepted
+    assert plan.component_owner_constraints == ({7: 1}, {13: 0})
+    assert len(plan.spans) == 1
+    span = plan.spans[0]
+    assert span.fragment_refs == ((0, 7), (1, 13))
+    assert span.anchor_source_index == 1
+    assert span.anchor_frame_id == 101
+    assert all(candidate.complete_coverage for candidate in span.anchor_candidates)
+    preflight = preflight_sequence_owners(
+        ((first_protected,), (second_protected,)),
+        locked_component_owner_constraints=plan.component_owner_constraints,
+    )
+    assert preflight.accepted
+    assert preflight.component_owner_constraints == ({7: 1}, {13: 0})
+
+
+def test_different_sparse_anchor_tokens_cannot_link_on_coarse_footprint_overlap() -> None:
+    """A common 32x32 footprint is audit only, never token identity."""
+
+    first_protected = _protected(0, 7, x=36)
+    second_protected = _protected(1, 13, x=54)
+    shared = _footprint(1, x0=42.0)
+    first = foreground_fragment_from_protected(
+        first_protected,
+        frame_ids=(100, 101),
+        source_indices=(0, 1),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_local_mask=np.ones(first_protected.local_mask.shape, dtype=bool),
+        depth_anchor_token=_anchor_token(left_direct_component_label=3),
+        raw_footprints=(_footprint(0, x0=12.0), shared),
+    )
+    second = foreground_fragment_from_protected(
+        second_protected,
+        frame_ids=(101, 102),
+        source_indices=(1, 2),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_local_mask=np.ones(second_protected.local_mask.shape, dtype=bool),
+        depth_anchor_token=_anchor_token(right_direct_component_label=11),
+        raw_footprints=(shared, _footprint(2, x0=94.0)),
+    )
+
+    plan = plan_foreground_owners(((first,), (second,)))
+
+    assert plan.component_owner_constraints == ({}, {})
+    assert plan.rejected_association_counts["source_anchor_token_mismatch"] == 1
+    assert len(plan.spans) == 2
+
+
 def test_aligned_only_adapter_stays_image_region_owner_only() -> None:
     protected = ((_protected(0, 1),), (_protected(1, 1),))
 
@@ -137,6 +241,65 @@ def test_aligned_only_adapter_stays_image_region_owner_only() -> None:
     assert plan.component_owner_constraints == ({}, {})
     assert len(plan.segments) == 2
     assert not plan.handoffs
+
+
+def test_component_depth_override_does_not_promote_neighbouring_rgb_guard() -> None:
+    first = _protected(0, 1, x=0)
+    neighbouring_rgb_guard = _protected(0, 2, x=18)
+    first_footprint = _footprint(0, x0=5.0)
+    second_footprint = _footprint(1, x0=25.0)
+
+    fragments = build_foreground_fragments(
+        ((first, neighbouring_rgb_guard),),
+        frame_ids=(10, 11),
+        geometry_mode_overrides={(0, 1): GeometryMode.DEPTH_OBSERVED},
+        bidirectional_visibility_overrides={(0, 1): True},
+        raw_footprints={
+            (0, 1, 0): first_footprint,
+            (0, 1, 1): second_footprint,
+        },
+    )
+
+    by_label = {fragment.component_label: fragment for fragment in fragments[0]}
+    assert by_label[1].geometry_mode is GeometryMode.DEPTH_OBSERVED
+    assert by_label[1].bidirectional_visibility_supported
+    assert by_label[2].geometry_mode is GeometryMode.IMAGE_REGION
+    assert not by_label[2].bidirectional_visibility_supported
+
+
+def test_depth_anchor_mask_is_audited_and_limited_to_its_protected_component() -> None:
+    protected = _protected(0, 1)
+    anchor = np.zeros(protected.local_mask.shape, dtype=bool)
+    anchor[2:5, 4:9] = True
+
+    fragment = build_foreground_fragments(
+        ((protected,),),
+        frame_ids=(10, 11),
+        depth_anchor_masks={(0, 1): anchor},
+        depth_anchor_tokens={(0, 1): _anchor_token()},
+    )[0][0]
+
+    assert fragment.anchor_pixel_count == 15
+    assert np.array_equal(fragment.depth_anchor_local_mask, anchor)
+    assert fragment.as_dict()["anchor_pixel_count"] == 15
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    (
+        np.ones((4, 5), dtype=bool),
+        np.zeros((8, 12), dtype=bool),
+        np.pad(np.ones((1, 1), dtype=bool), ((0, 7), (12, 0))),
+    ),
+)
+def test_depth_anchor_mask_must_be_a_nonempty_local_mask_subset(anchor: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="depth anchor mask"):
+        build_foreground_fragments(
+            ((_protected(0, 1),),),
+            frame_ids=(10, 11),
+            depth_anchor_masks={(0, 1): anchor},
+            depth_anchor_tokens={(0, 1): _anchor_token()},
+        )
 
 
 def test_locked_segment_owner_constraint_cannot_be_overwritten_by_legacy_bbox_track() -> None:

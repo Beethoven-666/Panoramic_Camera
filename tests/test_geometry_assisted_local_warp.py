@@ -1,5 +1,8 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
+import cv2
 import panorama_demo.calibrated_rgb_pushbroom as pushbroom_module
 import panorama_demo.geometry_assisted_local_warp as geometry_module
 
@@ -14,8 +17,10 @@ from panorama_demo.geometry_assisted_local_warp import (
     analyze_adjacent_rgbd_pair,
     depth_edge_guard,
     depth_tolerance_mm,
+    extract_signed_occlusion_foreground_components,
     fit_local_inverse_warp,
     fit_local_mesh_inverse_warp,
+    match_bidirectional_signed_occlusion_instances,
     mutually_consistent_correspondences,
     sample_aligned_depth_nearest,
     solve_active_mesh_forward_inverse,
@@ -160,6 +165,116 @@ def test_mutually_visible_near_depth_component_is_still_hard_owned() -> None:
     assert safety.mesh_safe_mask[10, 10]
     assert safety.near_foreground_component_count == 1
     assert result.audit.first_surface_safety["near_foreground_pixel_count"] == 529
+
+
+def _direct_signed_foreground(
+    base: object, component_mask: np.ndarray
+) -> object:
+    """Mark one synthetic direct foreground region without changing geometry."""
+
+    reprojection = base
+    labels = np.asarray(reprojection.labels, dtype=np.uint8).copy()
+    labels[component_mask] = int(LayerLabel.FOREGROUND)
+    residual_ratio = np.asarray(reprojection.depth_residual_ratio, dtype=np.float32).copy()
+    residual_ratio[component_mask] = 2.0
+    return replace(
+        reprojection,
+        source_foreground=np.asarray(component_mask, dtype=bool),
+        labels=labels,
+        depth_residual_ratio=residual_ratio,
+    )
+
+
+def test_signed_occlusion_instances_require_direct_foreground_and_virtual_overlap() -> None:
+    """A foreground anchor is direct bilateral occlusion evidence, not a mesh layer."""
+
+    height = width = 101
+    camera = _intrinsics(width, height)
+    depth = np.full((height, width), 1000.0, dtype=np.float32)
+    base = analyze_adjacent_rgbd_pair(depth, depth, camera, _pose(), _pose())
+    component = np.zeros_like(depth, dtype=bool)
+    component[30:71, 30:71] = True
+    first = extract_signed_occlusion_foreground_components(
+        _direct_signed_foreground(base.first_to_second, component)
+    )
+    second = extract_signed_occlusion_foreground_components(
+        _direct_signed_foreground(base.second_to_first, component)
+    )
+
+    instances = match_bidirectional_signed_occlusion_instances(
+        first, second, first.labels, second.labels
+    )
+
+    assert first.component_count == second.component_count == 1
+    assert first.eroded_core_pixel_count == second.eroded_core_pixel_count == 1521
+    assert len(instances.matches) == 1
+    match = instances.matches[0]
+    assert match.first_component_pixel_count == 1681
+    assert match.second_component_pixel_count == 1681
+    assert match.virtual_overlap_pixel_count == 1681
+    assert match.virtual_overlap_row_count == 41
+    assert instances.first_instance_labels[50, 50] == match.instance_id
+    assert instances.second_instance_labels[50, 50] == match.instance_id
+
+
+def test_mutual_same_layer_background_cannot_be_promoted_to_a_foreground_instance() -> None:
+    """The former seed-and-grow route may never bridge mutual wall pixels."""
+
+    height = width = 101
+    camera = _intrinsics(width, height)
+    depth = np.full((height, width), 1000.0, dtype=np.float32)
+    base = analyze_adjacent_rgbd_pair(depth, depth, camera, _pose(), _pose())
+    # The whole image is mutual, z-buffer-visible and depth-consistent wall,
+    # but it carries no signed foreground label.
+    assert base.first_to_second.mutual_consistent[50, 50]
+    assert base.first_to_second.depth_consistent[50, 50]
+    first = extract_signed_occlusion_foreground_components(base.first_to_second)
+    second = extract_signed_occlusion_foreground_components(base.second_to_first)
+
+    instances = match_bidirectional_signed_occlusion_instances(
+        first, second, first.labels, second.labels
+    )
+
+    assert first.component_count == second.component_count == 0
+    assert instances.matches == ()
+    assert not np.any(instances.first_instance_labels)
+    assert not np.any(instances.second_instance_labels)
+
+
+def test_signed_occlusion_instance_rejects_two_equally_plausible_partners() -> None:
+    """A split foreground label cannot select an arbitrary RGB owner."""
+
+    height = width = 101
+    camera = _intrinsics(width, height)
+    depth = np.full((height, width), 1000.0, dtype=np.float32)
+    base = analyze_adjacent_rgbd_pair(depth, depth, camera, _pose(), _pose())
+    first_mask = np.zeros_like(depth, dtype=bool)
+    first_mask[20:50, 20:50] = True
+    second_mask = np.zeros_like(depth, dtype=bool)
+    second_mask[20:50, 20:35] = True
+    second_mask[20:50, 40:55] = True
+    first = extract_signed_occlusion_foreground_components(
+        _direct_signed_foreground(base.first_to_second, first_mask)
+    )
+    second = extract_signed_occlusion_foreground_components(
+        _direct_signed_foreground(base.second_to_first, second_mask)
+    )
+    assert first.component_count == 1
+    assert second.component_count == 2
+
+    first_virtual = np.zeros_like(first.labels)
+    second_virtual = np.zeros_like(second.labels)
+    first_virtual[20:50, 20:50] = 1
+    second_virtual[20:50, 20:35] = 1
+    second_virtual[20:50, 35:50] = 2
+    instances = match_bidirectional_signed_occlusion_instances(
+        first, second, first_virtual, second_virtual
+    )
+
+    assert instances.matches == ()
+    assert instances.rejected_component_count == 3
+    assert not np.any(instances.first_instance_labels)
+    assert not np.any(instances.second_instance_labels)
 
 
 def test_tiny_far_depth_sliver_cannot_disqualify_a_dominant_safe_wall() -> None:
@@ -598,6 +713,66 @@ def test_local_mesh_warp_keeps_protected_same_layer_hole_at_identity() -> None:
     assert source_guard_y == pytest.approx(88.0)
     active_x, active_y = result.warp.inverse_virtual_coordinates(160.0, 96.0)
     assert abs(active_x - 160.0) > 0.05 or abs(active_y - 96.0) > 0.05
+
+
+def test_flow_backed_background_mesh_never_moves_a_foreground_hose_guard() -> None:
+    """A fine diagonal foreground stays owner-only beside an accepted wall mesh.
+
+    The correspondences model a previously validated RGB-flow/background
+    support set.  The hose itself and its 10 px guard are removed from both
+    the application and fit domain, so a successful background fit must still
+    have no actual non-identity samples in that foreground footprint.
+    """
+
+    height, width = 193, 225
+    protected_u8 = np.zeros((height, width), dtype=np.uint8)
+    cv2.line(protected_u8, (70, 25), (145, 170), 255, 8)
+    protected = cv2.dilate(
+        protected_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21)),
+    ) > 0
+    background = ~protected
+    x_values = np.arange(24.0, 201.0, 4.0)
+    y_values = np.arange(24.0, 169.0, 4.0)
+    grid_x, grid_y = np.meshgrid(x_values, y_values, indexing="xy")
+    output = np.column_stack((grid_x.reshape(-1), grid_y.reshape(-1)))
+    source = output + np.column_stack(
+        (
+            0.70 + 0.001 * (output[:, 0] - 110.0),
+            -0.42 + 0.001 * (output[:, 1] - 90.0),
+        )
+    )
+
+    result = fit_local_mesh_inverse_warp(
+        output,
+        source,
+        TileBounds(0.0, 0.0, float(width - 1), float(height - 1)),
+        same_layer_mask=background,
+        # The supplied fit support deliberately represents flow-validated
+        # background only; a foreground flow observation cannot opt the hose
+        # back into the inverse map.
+        fit_support_mask=background,
+        config=LocalMeshWarpConfig(
+            minimum_correspondences=48,
+            held_out_seed=11,
+            maximum_jacobian_determinant=1.5,
+        ),
+    )
+
+    assert result.warp is not None
+    assert result.audit.accepted
+    xx, yy = np.meshgrid(
+        np.arange(width, dtype=np.float64),
+        np.arange(height, dtype=np.float64),
+        indexing="xy",
+    )
+    mapped_x, mapped_y = result.warp.inverse_virtual_coordinates(xx, yy)
+    active = np.hypot(mapped_x - xx, mapped_y - yy) > 1e-9
+    assert np.any(active)
+    # This is the renderer-level invariant in raster form: an accepted local
+    # background mesh cannot tug a hose, its metal coupling, or the guard
+    # reserved for a single RGB owner.
+    assert not np.any(active & protected)
 
 
 def test_local_mesh_uses_sparse_fit_support_without_freezing_safe_holdout_pixels() -> None:

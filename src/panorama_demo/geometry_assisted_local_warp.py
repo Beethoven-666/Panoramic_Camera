@@ -621,6 +621,193 @@ class AdjacentPairGeometry:
     audit: PairGeometryAudit
 
 
+@dataclass(frozen=True)
+class ForegroundInstanceMatch:
+    """One uniquely associated signed-occlusion instance across a pair.
+
+    Both source components are direct signed occlusion observations: their
+    source point is visibly in front of the target depth in its own direction.
+    The association itself is measured only in the calibrated narrow virtual
+    corridor where both raw components appear.  This is evidence for an RGB
+    owner decision only; it contains neither RGB samples nor a warp and never
+    changes a camera pose.
+    """
+
+    instance_id: int
+    first_component_label: int
+    second_component_label: int
+    first_component_pixel_count: int
+    second_component_pixel_count: int
+    first_virtual_pixel_count: int
+    second_virtual_pixel_count: int
+    virtual_overlap_pixel_count: int
+    virtual_overlap_row_count: int
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "instance_id": int(self.instance_id),
+            "first_component_label": int(self.first_component_label),
+            "second_component_label": int(self.second_component_label),
+            "first_component_pixel_count": int(self.first_component_pixel_count),
+            "second_component_pixel_count": int(self.second_component_pixel_count),
+            "first_virtual_pixel_count": int(self.first_virtual_pixel_count),
+            "second_virtual_pixel_count": int(self.second_virtual_pixel_count),
+            "virtual_overlap_pixel_count": int(self.virtual_overlap_pixel_count),
+            "virtual_overlap_row_count": int(self.virtual_overlap_row_count),
+        }
+
+
+@dataclass(frozen=True)
+class SignedOcclusionForegroundComponents:
+    """Material raw components of one directed signed foreground occlusion.
+
+    The label image remains in the native aligned-colour coordinate system.
+    It contains only direct ``FOREGROUND`` observations with a positive signed
+    depth residual; it deliberately excludes mutually-consistent same-layer
+    samples, background/occluded samples, and any inferred grown region.
+    """
+
+    labels: np.ndarray = field(repr=False)
+    component_pixel_counts: Mapping[int, int]
+    signed_occlusion_pixel_count: int
+    eroded_core_pixel_count: int
+    rejected_component_count: int
+
+    def __post_init__(self) -> None:
+        labels = np.asarray(self.labels)
+        if labels.ndim != 2 or labels.dtype.kind not in {"i", "u"}:
+            raise ValueError("Signed occlusion labels must be a two-dimensional integer image")
+        counts = {int(label): int(count) for label, count in self.component_pixel_counts.items()}
+        if any(label <= 0 or count <= 0 for label, count in counts.items()):
+            raise ValueError("Signed occlusion component labels/counts must be positive")
+        if set(np.unique(labels).tolist()) - {0, *counts}:
+            raise ValueError("Signed occlusion labels contain an unknown component")
+        for value in (
+            self.signed_occlusion_pixel_count,
+            self.eroded_core_pixel_count,
+            self.rejected_component_count,
+        ):
+            if int(value) < 0:
+                raise ValueError("Signed occlusion counts must be non-negative")
+        object.__setattr__(self, "labels", np.ascontiguousarray(labels, dtype=np.int32))
+        object.__setattr__(self, "component_pixel_counts", counts)
+        object.__setattr__(
+            self,
+            "signed_occlusion_pixel_count",
+            int(self.signed_occlusion_pixel_count),
+        )
+        object.__setattr__(self, "eroded_core_pixel_count", int(self.eroded_core_pixel_count))
+        object.__setattr__(
+            self,
+            "rejected_component_count",
+            int(self.rejected_component_count),
+        )
+
+    @property
+    def component_count(self) -> int:
+        return len(self.component_pixel_counts)
+
+
+@dataclass(frozen=True)
+class BidirectionalForegroundInstances:
+    """Matched owner-only signed-occlusion labels for an adjacent RGB-D pair.
+
+    ``first_instance_labels`` and ``second_instance_labels`` share one small
+    instance-id namespace.  A nonzero value is present only after both
+    directions have a material direct foreground occlusion and their
+    calibrated virtual footprints identify one another uniquely.  Split,
+    merge, hole, same-layer, and ambiguous components are absent rather than
+    guessed.
+    """
+
+    first_instance_labels: np.ndarray = field(repr=False)
+    second_instance_labels: np.ndarray = field(repr=False)
+    matches: tuple[ForegroundInstanceMatch, ...]
+    rejected_component_count: int
+    first_signed_occlusion_pixel_count: int = 0
+    second_signed_occlusion_pixel_count: int = 0
+    first_eroded_occlusion_core_pixel_count: int = 0
+    second_eroded_occlusion_core_pixel_count: int = 0
+
+    def __post_init__(self) -> None:
+        first = np.asarray(self.first_instance_labels)
+        second = np.asarray(self.second_instance_labels)
+        if (
+            first.ndim != 2
+            or second.ndim != 2
+            or first.shape != second.shape
+            or first.dtype.kind not in {"i", "u"}
+            or second.dtype.kind not in {"i", "u"}
+        ):
+            raise ValueError("Foreground instance labels must be matching integer images")
+        if int(self.rejected_component_count) < 0:
+            raise ValueError("Foreground rejected component count must be non-negative")
+        for value in (
+            self.first_signed_occlusion_pixel_count,
+            self.second_signed_occlusion_pixel_count,
+            self.first_eroded_occlusion_core_pixel_count,
+            self.second_eroded_occlusion_core_pixel_count,
+        ):
+            if int(value) < 0:
+                raise ValueError("Foreground signed-occlusion counts must be non-negative")
+        instance_ids = {match.instance_id for match in self.matches}
+        if any(int(value) <= 0 for value in instance_ids):
+            raise ValueError("Foreground instance ids must be positive")
+        if len(instance_ids) != len(self.matches):
+            raise ValueError("Foreground instance ids must be unique")
+        permitted = {0, *instance_ids}
+        if (
+            not set(np.unique(first).tolist()).issubset(permitted)
+            or not set(np.unique(second).tolist()).issubset(permitted)
+        ):
+            raise ValueError("Foreground instance labels contain an unknown id")
+        object.__setattr__(self, "first_instance_labels", np.ascontiguousarray(first))
+        object.__setattr__(self, "second_instance_labels", np.ascontiguousarray(second))
+        object.__setattr__(self, "rejected_component_count", int(self.rejected_component_count))
+        object.__setattr__(
+            self,
+            "first_signed_occlusion_pixel_count",
+            int(self.first_signed_occlusion_pixel_count),
+        )
+        object.__setattr__(
+            self,
+            "second_signed_occlusion_pixel_count",
+            int(self.second_signed_occlusion_pixel_count),
+        )
+        object.__setattr__(
+            self,
+            "first_eroded_occlusion_core_pixel_count",
+            int(self.first_eroded_occlusion_core_pixel_count),
+        )
+        object.__setattr__(
+            self,
+            "second_eroded_occlusion_core_pixel_count",
+            int(self.second_eroded_occlusion_core_pixel_count),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "policy": (
+                "reciprocal_unique_signed_occlusion_virtual_instances_owner_only"
+            ),
+            "matched_instance_count": len(self.matches),
+            "rejected_component_count": int(self.rejected_component_count),
+            "first_signed_occlusion_pixel_count": int(
+                self.first_signed_occlusion_pixel_count
+            ),
+            "second_signed_occlusion_pixel_count": int(
+                self.second_signed_occlusion_pixel_count
+            ),
+            "first_eroded_occlusion_core_pixel_count": int(
+                self.first_eroded_occlusion_core_pixel_count
+            ),
+            "second_eroded_occlusion_core_pixel_count": int(
+                self.second_eroded_occlusion_core_pixel_count
+            ),
+            "instances": [match.as_dict() for match in self.matches],
+        }
+
+
 def _empty_directed(
     shape: tuple[int, int],
     source_valid: np.ndarray,
@@ -1154,6 +1341,262 @@ def analyze_adjacent_rgbd_pair(
         first_surface_safety,
         second_surface_safety,
         audit,
+    )
+
+
+_MINIMUM_SIGNED_OCCLUSION_COMPONENT_PIXELS = 64
+_MINIMUM_SIGNED_OCCLUSION_ERODED_CORE_PIXELS = 32
+_MINIMUM_SIGNED_OCCLUSION_MEDIAN_RESIDUAL_RATIO = 1.25
+_MINIMUM_VIRTUAL_INSTANCE_OVERLAP_PIXELS = 12
+_MINIMUM_VIRTUAL_INSTANCE_OVERLAP_ROWS = 8
+_MINIMUM_VIRTUAL_INSTANCE_OVERLAP_FRACTION = 0.05
+
+
+def extract_signed_occlusion_foreground_components(
+    reprojection: DirectedReprojection,
+) -> SignedOcclusionForegroundComponents:
+    """Return material direct foreground-occlusion components in one source.
+
+    A component is not inferred from nearby same-layer support.  Every output
+    sample itself must be a z-buffer-visible source point which is in front of
+    valid target depth by at least one formal depth tolerance.  The 3x3 eroded
+    core is a quality proof only; the un-eroded direct observation remains the
+    eventual owner-only label so the seam guard is never widened by matching.
+    """
+
+    fields = (
+        reprojection.source_valid,
+        reprojection.in_target_bounds,
+        reprojection.zbuffer_visible,
+        reprojection.target_valid,
+        reprojection.source_foreground,
+        reprojection.labels,
+        reprojection.target_x,
+        reprojection.target_y,
+        reprojection.depth_residual_ratio,
+    )
+    shape = np.asarray(reprojection.source_valid, dtype=bool).shape
+    if any(np.asarray(field).shape != shape for field in fields):
+        raise ValueError("Signed foreground reprojection fields must share one source shape")
+    residual_ratio = np.asarray(reprojection.depth_residual_ratio, dtype=np.float64)
+    direct_foreground = (
+        np.asarray(reprojection.source_valid, dtype=bool)
+        & np.asarray(reprojection.in_target_bounds, dtype=bool)
+        & np.asarray(reprojection.zbuffer_visible, dtype=bool)
+        & np.asarray(reprojection.target_valid, dtype=bool)
+        & np.asarray(reprojection.source_foreground, dtype=bool)
+        & (np.asarray(reprojection.labels) == int(LayerLabel.FOREGROUND))
+        & np.isfinite(reprojection.target_x)
+        & np.isfinite(reprojection.target_y)
+        & np.isfinite(residual_ratio)
+        & (residual_ratio >= 1.0)
+    )
+    component_count, provisional, stats, _ = cv2.connectedComponentsWithStats(
+        direct_foreground.astype(np.uint8), connectivity=8
+    )
+    labels = np.zeros(shape, dtype=np.int32)
+    areas: dict[int, int] = {}
+    eroded_core_count = 0
+    rejected = 0
+    next_label = 1
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    for provisional_label in range(1, int(component_count)):
+        component = provisional == provisional_label
+        area = int(stats[provisional_label, cv2.CC_STAT_AREA])
+        if area < _MINIMUM_SIGNED_OCCLUSION_COMPONENT_PIXELS:
+            rejected += 1
+            continue
+        core = cv2.erode(component.astype(np.uint8), kernel, iterations=1) > 0
+        core_count = int(np.count_nonzero(core))
+        if core_count < _MINIMUM_SIGNED_OCCLUSION_ERODED_CORE_PIXELS:
+            rejected += 1
+            continue
+        component_residual = residual_ratio[component]
+        component_residual = component_residual[np.isfinite(component_residual)]
+        if (
+            not component_residual.size
+            or float(np.median(component_residual))
+            < _MINIMUM_SIGNED_OCCLUSION_MEDIAN_RESIDUAL_RATIO
+        ):
+            rejected += 1
+            continue
+        labels[component] = next_label
+        areas[next_label] = area
+        eroded_core_count += core_count
+        next_label += 1
+    return SignedOcclusionForegroundComponents(
+        labels=labels,
+        component_pixel_counts=areas,
+        signed_occlusion_pixel_count=int(np.count_nonzero(direct_foreground)),
+        eroded_core_pixel_count=eroded_core_count,
+        rejected_component_count=rejected,
+    )
+
+
+def _positive_label_pixel_counts(labels: np.ndarray) -> dict[int, int]:
+    values, counts = np.unique(np.asarray(labels, dtype=np.int32), return_counts=True)
+    return {
+        int(value): int(count)
+        for value, count in zip(values, counts, strict=True)
+        if int(value) > 0
+    }
+
+
+def _unique_dominant_virtual_partner(
+    candidates: Sequence[tuple[int, int]],
+) -> int | None:
+    """Return one component only when it dominates every alternate overlap."""
+
+    if not candidates:
+        return None
+    ranked = sorted(candidates, key=lambda item: (-int(item[1]), int(item[0])))
+    if len(ranked) > 1 and int(ranked[0][1]) < 2 * int(ranked[1][1]):
+        return None
+    return int(ranked[0][0])
+
+
+def match_bidirectional_signed_occlusion_instances(
+    first_components: SignedOcclusionForegroundComponents,
+    second_components: SignedOcclusionForegroundComponents,
+    first_virtual_component_labels: np.ndarray,
+    second_virtual_component_labels: np.ndarray,
+    *,
+    minimum_overlap_pixels: int = _MINIMUM_VIRTUAL_INSTANCE_OVERLAP_PIXELS,
+    minimum_overlap_rows: int = _MINIMUM_VIRTUAL_INSTANCE_OVERLAP_ROWS,
+    minimum_overlap_fraction: float = _MINIMUM_VIRTUAL_INSTANCE_OVERLAP_FRACTION,
+) -> BidirectionalForegroundInstances:
+    """Associate only uniquely overlapping direct foreground observations.
+
+    The two directions are deliberately *not* joined through a depth-consistent
+    correspondence: foreground occlusion and mutual same-layer evidence are
+    semantically disjoint.  Instead, each direction first proves its own
+    signed foreground component, then the calibrated 96--160 px virtual
+    corridor must show one exact, dominant component overlap.  No dilation or
+    optical-flow displacement participates in this identity proof.
+    """
+
+    if int(minimum_overlap_pixels) < 1 or int(minimum_overlap_rows) < 1:
+        raise ValueError("Signed-occlusion overlap gates must be positive")
+    if not 0.0 < float(minimum_overlap_fraction) <= 1.0:
+        raise ValueError("Signed-occlusion overlap fraction must be in (0, 1]")
+
+    first_labels = np.asarray(first_components.labels, dtype=np.int32)
+    second_labels = np.asarray(second_components.labels, dtype=np.int32)
+    if first_labels.shape != second_labels.shape:
+        raise ValueError("Adjacent signed-occlusion labels must share one native shape")
+    first_virtual = np.asarray(first_virtual_component_labels, dtype=np.int32)
+    second_virtual = np.asarray(second_virtual_component_labels, dtype=np.int32)
+    if (
+        first_virtual.ndim != 2
+        or second_virtual.ndim != 2
+        or first_virtual.shape != second_virtual.shape
+    ):
+        raise ValueError("Signed-occlusion virtual labels must share one corridor shape")
+    if set(np.unique(first_virtual).tolist()) - {0, *first_components.component_pixel_counts}:
+        raise ValueError("First virtual labels contain an unknown signed foreground component")
+    if set(np.unique(second_virtual).tolist()) - {0, *second_components.component_pixel_counts}:
+        raise ValueError("Second virtual labels contain an unknown signed foreground component")
+
+    first_virtual_counts = _positive_label_pixel_counts(first_virtual)
+    second_virtual_counts = _positive_label_pixel_counts(second_virtual)
+    overlap = (first_virtual > 0) & (second_virtual > 0)
+    overlap_counts: dict[tuple[int, int], int] = {}
+    overlap_rows: dict[tuple[int, int], int] = {}
+    if np.any(overlap):
+        rows, _columns = np.nonzero(overlap)
+        pairs = np.column_stack((first_virtual[overlap], second_virtual[overlap]))
+        unique_pairs, inverse, counts = np.unique(
+            pairs, axis=0, return_inverse=True, return_counts=True
+        )
+        for index, (pair, count) in enumerate(zip(unique_pairs, counts, strict=True)):
+            key = (int(pair[0]), int(pair[1]))
+            overlap_counts[key] = int(count)
+            overlap_rows[key] = int(np.unique(rows[inverse == index]).size)
+
+    first_partners: dict[int, list[tuple[int, int]]] = {
+        label: [] for label in first_components.component_pixel_counts
+    }
+    second_partners: dict[int, list[tuple[int, int]]] = {
+        label: [] for label in second_components.component_pixel_counts
+    }
+    for (first_label, second_label), count in overlap_counts.items():
+        first_partners[first_label].append((second_label, count))
+        second_partners[second_label].append((first_label, count))
+    first_dominant = {
+        label: _unique_dominant_virtual_partner(partners)
+        for label, partners in first_partners.items()
+    }
+    second_dominant = {
+        label: _unique_dominant_virtual_partner(partners)
+        for label, partners in second_partners.items()
+    }
+
+    first_instance_labels = np.zeros_like(first_labels, dtype=np.int32)
+    second_instance_labels = np.zeros_like(second_labels, dtype=np.int32)
+    matches: list[ForegroundInstanceMatch] = []
+    next_instance_id = 1
+    for (first_label, second_label), overlap_count in sorted(overlap_counts.items()):
+        first_virtual_count = first_virtual_counts.get(first_label, 0)
+        second_virtual_count = second_virtual_counts.get(second_label, 0)
+        minimum_overlap = max(
+            int(minimum_overlap_pixels),
+            int(
+                math.ceil(
+                    float(minimum_overlap_fraction)
+                    * min(first_virtual_count, second_virtual_count)
+                )
+            ),
+        )
+        if (
+            overlap_count < minimum_overlap
+            or overlap_rows[(first_label, second_label)]
+            < int(minimum_overlap_rows)
+            or first_dominant.get(first_label) != second_label
+            or second_dominant.get(second_label) != first_label
+        ):
+            continue
+        first_instance_labels[first_labels == first_label] = next_instance_id
+        second_instance_labels[second_labels == second_label] = next_instance_id
+        matches.append(
+            ForegroundInstanceMatch(
+                instance_id=next_instance_id,
+                first_component_label=first_label,
+                second_component_label=second_label,
+                first_component_pixel_count=first_components.component_pixel_counts[
+                    first_label
+                ],
+                second_component_pixel_count=second_components.component_pixel_counts[
+                    second_label
+                ],
+                first_virtual_pixel_count=first_virtual_count,
+                second_virtual_pixel_count=second_virtual_count,
+                virtual_overlap_pixel_count=overlap_count,
+                virtual_overlap_row_count=overlap_rows[(first_label, second_label)],
+            )
+        )
+        next_instance_id += 1
+    rejected_component_count = (
+        len(first_components.component_pixel_counts)
+        + len(second_components.component_pixel_counts)
+        - 2 * len(matches)
+    )
+    return BidirectionalForegroundInstances(
+        first_instance_labels=first_instance_labels,
+        second_instance_labels=second_instance_labels,
+        matches=tuple(matches),
+        rejected_component_count=rejected_component_count,
+        first_signed_occlusion_pixel_count=(
+            first_components.signed_occlusion_pixel_count
+        ),
+        second_signed_occlusion_pixel_count=(
+            second_components.signed_occlusion_pixel_count
+        ),
+        first_eroded_occlusion_core_pixel_count=(
+            first_components.eroded_core_pixel_count
+        ),
+        second_eroded_occlusion_core_pixel_count=(
+            second_components.eroded_core_pixel_count
+        ),
     )
 
 
@@ -2909,8 +3352,10 @@ def fit_local_mesh_inverse_warp(
 __all__ = [
     "AdjacentPairGeometry",
     "ActiveMeshForwardInverseResult",
+    "BidirectionalForegroundInstances",
     "DirectedReprojection",
     "DirectedSurfaceSafety",
+    "ForegroundInstanceMatch",
     "GeometryAssistConfig",
     "GeometryIntrinsics",
     "IntrinsicsLike",
@@ -2925,14 +3370,17 @@ __all__ = [
     "LocalWarpFitResult",
     "PairGeometryAudit",
     "SampledDepth",
+    "SignedOcclusionForegroundComponents",
     "TileBounds",
     "analyze_adjacent_rgbd_pair",
     "coerce_intrinsics",
     "classify_directed_surface_safety",
     "depth_edge_guard",
     "depth_tolerance_mm",
+    "extract_signed_occlusion_foreground_components",
     "fit_local_inverse_warp",
     "fit_local_mesh_inverse_warp",
+    "match_bidirectional_signed_occlusion_instances",
     "mutually_consistent_correspondences",
     "sample_aligned_depth_nearest",
     "solve_active_mesh_forward_inverse",

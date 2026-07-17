@@ -31,8 +31,21 @@ import numpy as np
 from .session import CameraIntrinsics, RGBDFrame
 
 
+_ORB_SLAM3_NATIVE_ABORT_RETURN_CODE = 134
 _ORB_SLAM3_SEGFAULT_RETURN_CODE = 139
 _ORB_SLAM3_MAX_EXECUTION_ATTEMPTS = 2
+_ORB_SLAM3_RETRYABLE_NATIVE_FAILURES = {
+    _ORB_SLAM3_NATIVE_ABORT_RETURN_CODE: (
+        "returncode_134_native_heap_abort_fresh_staging_retry"
+    ),
+    _ORB_SLAM3_SEGFAULT_RETURN_CODE: (
+        "returncode_139_native_sigsegv_fresh_staging_retry"
+    ),
+}
+_ORB_SLAM3_NATIVE_FAILURE_SIGNALS = {
+    _ORB_SLAM3_NATIVE_ABORT_RETURN_CODE: 6,
+    _ORB_SLAM3_SEGFAULT_RETURN_CODE: 11,
+}
 
 
 class ORBSLAM3Error(RuntimeError):
@@ -606,7 +619,7 @@ def _attempt_audit_row(
     return {
         "attempt_index": attempt_index,
         "returncode": returncode,
-        "signal": 11 if returncode == _ORB_SLAM3_SEGFAULT_RETURN_CODE else None,
+        "signal": _ORB_SLAM3_NATIVE_FAILURE_SIGNALS.get(returncode),
         "elapsed_seconds": round(float(elapsed_seconds), 3),
         "accepted": accepted,
         "retry_reason": retry_reason,
@@ -674,11 +687,8 @@ def run_orbslam3_rgbd(
         stderr_path.write_text(completed.stderr or "", encoding="utf-8")
 
         retry_reason = (
-            "returncode_139_native_sigsegv_fresh_staging_retry"
-            if (
-                completed.returncode == _ORB_SLAM3_SEGFAULT_RETURN_CODE
-                and attempt_index < _ORB_SLAM3_MAX_EXECUTION_ATTEMPTS
-            )
+            _ORB_SLAM3_RETRYABLE_NATIVE_FAILURES.get(int(completed.returncode))
+            if attempt_index < _ORB_SLAM3_MAX_EXECUTION_ATTEMPTS
             else None
         )
         attempt_audit.append(
