@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import struct
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -14,6 +15,21 @@ import pytest
 from panorama_demo.central_strip import render_central_strip_diagnostic
 import panorama_demo.stitch_sequence as sequence
 from panorama_demo.synthetic import generate_sequence
+
+
+def _test_glb(label: str) -> bytes:
+    """Return a small, structurally valid glTF 2.0 binary for staging tests."""
+
+    document = json.dumps(
+        {"asset": {"version": "2.0", "generator": label}},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    document += b" " * (-len(document) % 4)
+    return (
+        struct.pack("<III", 0x46546C67, 2, 20 + len(document))
+        + struct.pack("<II", len(document), 0x4E4F534A)
+        + document
+    )
 
 
 class _KnownTrajectoryRGBDBackend:
@@ -98,7 +114,7 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
         assert len(frames) == len(poses) == 7
         assert intrinsics.width == 320
         assert config["enabled"] is True
-        return b"glTF-display-only-test-mesh", {
+        return _test_glb("display-only-test"), {
             "backend": "fake_tsdf_display_only",
             "frame_count": len(frames),
             "vertex_count": 3,
@@ -245,13 +261,31 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert delivery["seam_backend"] == "rgb_monotonic_hard_owner_graphcut"
     assert delivery["blend_backend"] == "safe_wall_local_multiband_narrow_owner_boundary"
     visualization = report["tsdf_visualization"]
+    assert visualization["status"] == "published"
+    assert visualization["required_for_delivery"] is True
     assert visualization["display_only"] is True
     assert visualization["participates_in_panorama"] is False
-    assert (output / "tsdf_mesh.glb").read_bytes() == b"glTF-display-only-test-mesh"
+    assert visualization["mesh"] == "tsdf_mesh.glb"
+    assert visualization["viewer"] == "tsdf_mesh_viewer.html"
+    assert (output / "tsdf_mesh.glb").read_bytes() == _test_glb(
+        "display-only-test"
+    )
     viewer = (output / "tsdf_mesh_viewer.html").read_text(encoding="utf-8")
     assert 'src="tsdf_mesh.glb"' in viewer
     assert "model-viewer" in viewer
-    assert delivery["tsdf_visualization"]["display_only"] is True
+    assert delivery["tsdf_visualization"] == visualization
+    foreground_summary = report["foreground_owner_continuity_summary"]
+    assert delivery["foreground_owner_continuity_summary"] == foreground_summary
+    assert foreground_summary["backend"] == "foreground_segment_owner_plan_v3"
+    assert all(
+        foreground_summary[key] == 0
+        for key in (
+            "avoidable_owner_switch_count",
+            "current_valid_nonadjacent_owner_pixel_count",
+            "foreground_blend_pixel_count",
+            "foreground_deformation_pixel_count",
+        )
+    )
     for legacy_artifact in (
         "foreground_mask.png",
         "background_exclusion_mask.png",
@@ -262,12 +296,21 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert panorama.shape[:2] == (crop["height"], crop["width"])
     assert metrics["crop_height_ratio"] >= 0.85
     assert metrics["crop_width_ratio"] >= 0.95
+    assert {path.name for path in output.iterdir()} == {
+        "panorama.jpg",
+        "tsdf_mesh.glb",
+        "tsdf_mesh_viewer.html",
+        "report.json",
+        "transforms.json",
+        "render_transforms.json",
+        "delivery.json",
+    }
 
 
-def test_tsdf_export_failure_is_nonblocking_for_valid_rgb_delivery(
+def test_tsdf_export_failure_fails_closed_and_removes_all_deliverables(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The display-only mesh cannot invalidate an already-safe RGB delivery."""
+    """A missing required mesh makes the entire formal attempt F."""
 
     session = _make_session(tmp_path, seed=19)
     output = tmp_path / "output"
@@ -281,24 +324,157 @@ def test_tsdf_export_failure_is_nonblocking_for_valid_rgb_delivery(
     monkeypatch.setattr(dense_fusion, "export_tsdf_mesh", fail_export)
     args = sequence._parser().parse_args([str(session), "--output", str(output)])
 
-    report = sequence.run(args, odometry_backend=backend)
+    with pytest.raises(RuntimeError, match="forced display-only TSDF export failure"):
+        sequence.run(args, odometry_backend=backend)
 
-    expected_visualization = {
-        "status": "unavailable",
-        "display_only": True,
-        "participates_in_panorama": False,
-        "reason": "tsdf_export_failed_nonblocking",
-        "error_type": "RuntimeError",
-    }
-    delivery = json.loads((output / "delivery.json").read_text(encoding="utf-8"))
-    assert (output / "panorama.jpg").is_file()
-    assert not (output / "failure.json").exists()
-    assert delivery["delivery_state"] == "published"
-    assert delivery["strict_quality_pass"] is True
-    assert delivery["tsdf_visualization"] == expected_visualization
-    assert report["tsdf_visualization"] == expected_visualization
+    assert [path.name for path in output.iterdir()] == ["failure.json"]
+    failure = json.loads((output / "failure.json").read_text(encoding="utf-8"))
+    assert failure["deliverable_published"] is False
+    assert "forced display-only TSDF export failure" in failure["message"]
+    assert not (output / "delivery.json").exists()
+    assert not (output / "panorama.jpg").exists()
     assert not (output / "tsdf_mesh.glb").exists()
     assert not (output / "tsdf_mesh_viewer.html").exists()
+
+
+def test_tsdf_viewer_staging_failure_fails_closed_and_removes_all_deliverables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The GLB and viewer are inseparable required formal artifacts."""
+
+    session = _make_session(tmp_path, seed=19)
+    output = tmp_path / "output"
+    backend = _KnownTrajectoryRGBDBackend(session)
+
+    monkeypatch.setattr(
+        sequence,
+        "_export_display_only_tsdf_mesh",
+        lambda *args, **kwargs: (
+            _test_glb("viewer-staging-test"),
+            {
+                "backend": "fake_tsdf_display_only",
+                "display_only": True,
+                "participates_in_panorama": False,
+            },
+        ),
+    )
+
+    def fail_viewer(mesh_filename: str) -> str:
+        assert mesh_filename == "tsdf_mesh.glb"
+        raise OSError("forced TSDF viewer staging failure")
+
+    monkeypatch.setattr(sequence, "_mesh_viewer_html", fail_viewer)
+    args = sequence._parser().parse_args([str(session), "--output", str(output)])
+
+    with pytest.raises(OSError, match="forced TSDF viewer staging failure"):
+        sequence.run(args, odometry_backend=backend)
+
+    assert [path.name for path in output.iterdir()] == ["failure.json"]
+    failure = json.loads((output / "failure.json").read_text(encoding="utf-8"))
+    assert failure["deliverable_published"] is False
+    assert "forced TSDF viewer staging failure" in failure["message"]
+    assert not (output / "delivery.json").exists()
+    assert not (output / "panorama.jpg").exists()
+    assert not (output / "tsdf_mesh.glb").exists()
+    assert not (output / "tsdf_mesh_viewer.html").exists()
+
+
+def test_tsdf_viewer_publish_failure_is_atomic_and_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed viewer rename removes already-published formal siblings too."""
+
+    session = _make_session(tmp_path, seed=19)
+    output = tmp_path / "output"
+    backend = _KnownTrajectoryRGBDBackend(session)
+    monkeypatch.setattr(
+        sequence,
+        "_export_display_only_tsdf_mesh",
+        lambda *args, **kwargs: (
+            _test_glb("viewer-publish-test"),
+            {
+                "backend": "fake_tsdf_display_only",
+                "display_only": True,
+                "participates_in_panorama": False,
+            },
+        ),
+    )
+    original_replace = sequence.os.replace
+
+    def fail_viewer_publish(source: object, destination: object) -> None:
+        if Path(destination).name == "panorama.jpg":
+            assert all(
+                (output / name).is_file()
+                for name in (
+                    ".panorama.pending.jpg",
+                    ".tsdf_mesh.pending.glb",
+                    ".tsdf_mesh_viewer.pending.html",
+                    ".transforms.pending.json",
+                    ".render_transforms.pending.json",
+                    ".report.pending.json",
+                    ".delivery.pending.json",
+                )
+            )
+        if (
+            Path(source).name == ".tsdf_mesh_viewer.pending.html"
+            and Path(destination).name == "tsdf_mesh_viewer.html"
+        ):
+            raise OSError("forced TSDF viewer publication failure")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(sequence.os, "replace", fail_viewer_publish)
+    args = sequence._parser().parse_args([str(session), "--output", str(output)])
+
+    with pytest.raises(OSError, match="forced TSDF viewer publication failure"):
+        sequence.run(args, odometry_backend=backend)
+
+    assert [path.name for path in output.iterdir()] == ["failure.json"]
+    failure = json.loads((output / "failure.json").read_text(encoding="utf-8"))
+    assert failure["deliverable_published"] is False
+    assert "forced TSDF viewer publication failure" in failure["message"]
+    assert not (output / "delivery.json").exists()
+    assert not (output / "panorama.jpg").exists()
+    assert not (output / "tsdf_mesh.glb").exists()
+    assert not (output / "tsdf_mesh_viewer.html").exists()
+
+
+def test_delivery_marker_publish_failure_is_atomic_and_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The final success marker cannot leave any sibling artifact published."""
+
+    session = _make_session(tmp_path, seed=19)
+    output = tmp_path / "output"
+    backend = _KnownTrajectoryRGBDBackend(session)
+    monkeypatch.setattr(
+        sequence,
+        "_export_display_only_tsdf_mesh",
+        lambda *args, **kwargs: (
+            _test_glb("delivery-marker-publish-test"),
+            {
+                "backend": "fake_tsdf_display_only",
+                "display_only": True,
+                "participates_in_panorama": False,
+            },
+        ),
+    )
+    original_replace = sequence.os.replace
+
+    def fail_delivery_publish(source: object, destination: object) -> None:
+        if (
+            Path(source).name == ".delivery.pending.json"
+            and Path(destination).name == "delivery.json"
+        ):
+            raise OSError("forced delivery marker publication failure")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(sequence.os, "replace", fail_delivery_publish)
+    args = sequence._parser().parse_args([str(session), "--output", str(output)])
+
+    with pytest.raises(OSError, match="forced delivery marker publication failure"):
+        sequence.run(args, odometry_backend=backend)
+
+    assert [path.name for path in output.iterdir()] == ["failure.json"]
 
 
 def test_public_handoff_policy_enables_local_apap_without_a_duplicate_renderer_switch(
@@ -323,7 +499,7 @@ def test_public_handoff_policy_enables_local_apap_without_a_duplicate_renderer_s
     monkeypatch.setattr(
         dense_fusion,
         "export_tsdf_mesh",
-        lambda *args, **kwargs: (b"glTF-policy-test", {
+        lambda *args, **kwargs: (_test_glb("policy-test"), {
             "backend": "fake_tsdf_display_only",
             "frame_count": 7,
             "vertex_count": 3,

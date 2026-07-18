@@ -1,11 +1,12 @@
-"""Scalar-only continuity audits for local foreground handoffs.
+"""Scalar-only background and foreground handoff audits.
 
-The formal renderer may use this module to decide whether an existing RGB
-anchor can be kept at a foreground handoff or whether it must enter a bounded
-local-deformation / hard-cut policy.  This module deliberately has no image,
-depth, pose, mask persistence, or warp implementation.  Array inputs are
-consumed immediately to produce scalar counts and percentiles; neither the
-returned audit nor its JSON representation retains dense evidence.
+The existing continuity gate evaluates whether a background anchor has enough
+same-layer evidence for a later local-deformation candidate.  Foreground
+handoffs are deliberately separate: their owner-only audit never authorizes
+APAP, flow, blending, or deformation.  This module has no image, depth, pose,
+mask persistence, or warp implementation.  Array inputs are consumed
+immediately to produce scalar counts and percentiles; neither returned audit
+nor its JSON representation retains dense evidence.
 """
 
 from __future__ import annotations
@@ -32,6 +33,21 @@ class HandoffMethod(str, Enum):
     APAP = "apap"
     FLOW_MESH = "flow_mesh"
     HARD_CUT = "hard_cut"
+
+
+class ForegroundOwnerHandoffOutcome(str, Enum):
+    """The only terminal actions permitted for a foreground owner boundary.
+
+    These are intentionally not aliases for background handoff methods.  In
+    particular, no APAP or flow outcome exists here: foreground pixels remain
+    a single RGB owner throughout a planned owner run and its boundary.
+    """
+
+    KEEP_SOURCE = "keep_source"
+    ADJACENT_OWNER_HANDOFF = "adjacent_owner_handoff"
+    PAIR_LOCAL_HARD_OWNER = "pair_local_hard_owner"
+    FULL_CORRIDOR_HARD_CUT = "full_corridor_hard_cut"
+    STRUCTURAL_FAILURE = "structural_failure"
 
 
 def _finite_number(value: object, name: str) -> float:
@@ -578,6 +594,643 @@ def build_handoff_continuity_audit(
     )
 
 
+def _strict_bool(value: object, name: str) -> bool:
+    if not isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be a boolean")
+    return bool(value)
+
+
+def _required_identifier(value: object, name: str) -> str:
+    if value is None or isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be a non-empty identifier")
+    result = str(value).strip()
+    if not result:
+        raise ValueError(f"{name} must be a non-empty identifier")
+    return result
+
+
+def _coerce_foreground_owner_handoff_outcome(
+    value: ForegroundOwnerHandoffOutcome | str,
+) -> ForegroundOwnerHandoffOutcome:
+    if isinstance(value, ForegroundOwnerHandoffOutcome):
+        return value
+    if not isinstance(value, str):
+        raise ValueError("Foreground handoff outcome must be a supported string")
+    candidate = value.strip().lower()
+    aliases = {
+        outcome.value: outcome for outcome in ForegroundOwnerHandoffOutcome
+    }
+    aliases.update(
+        {
+            outcome.name.lower(): outcome
+            for outcome in ForegroundOwnerHandoffOutcome
+        }
+    )
+    try:
+        return aliases[candidate]
+    except KeyError as exc:
+        raise ValueError(
+            "Unsupported foreground owner handoff outcome: " + value
+        ) from exc
+
+
+def _current_pair_source_indices(
+    value: object | None, *, pair_index: int
+) -> tuple[int, int]:
+    if value is None:
+        return (int(pair_index), int(pair_index) + 1)
+    if isinstance(value, (str, bytes)):
+        raise ValueError("current_pair_source_indices must contain exactly two indices")
+    try:
+        values = tuple(value)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise ValueError(
+            "current_pair_source_indices must contain exactly two indices"
+        ) from exc
+    if len(values) != 2:
+        raise ValueError("current_pair_source_indices must contain exactly two indices")
+    first = _nonnegative_integer(values[0], "current_pair_source_indices[0]")
+    second = _nonnegative_integer(values[1], "current_pair_source_indices[1]")
+    if first == second:
+        raise ValueError("current_pair_source_indices must name two distinct sources")
+    return (first, second)
+
+
+def _reason_strings(value: Iterable[object], name: str) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes)):
+        raise ValueError(f"{name} must be an iterable of non-empty strings")
+    try:
+        values = tuple(value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be an iterable of non-empty strings") from exc
+    reasons: list[str] = []
+    for item in values:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{name} must contain only non-empty strings")
+        reasons.append(item.strip())
+    return tuple(reasons)
+
+
+@dataclass(frozen=True)
+class ForegroundOwnerHandoffAudit:
+    """Fail-closed scalar audit for one foreground owner-run boundary.
+
+    ``current_pair_source_indices`` defines the only two source owners that
+    can legally participate in this pair.  A non-failure result proves that
+    every foreground handoff pixel belongs to ``incoming_source_index``;
+    merely proving ownership by either member of the pair is insufficient.
+
+    The type has no APAP or flow outcome and serializes their authorization as
+    false.  If an upstream caller attempts either mechanism, the evaluator
+    records that attempt and returns ``STRUCTURAL_FAILURE`` instead.
+    """
+
+    pair_index: int
+    track_id: str
+    outgoing_run_id: str
+    incoming_run_id: str
+    outcome: ForegroundOwnerHandoffOutcome
+    current_pair_source_indices: tuple[int, int]
+    outgoing_source_index: int
+    incoming_source_index: int
+    handoff_pixel_count: int
+    incoming_owner_pixel_count: int
+    other_adjacent_owner_pixel_count: int
+    nonadjacent_owner_pixel_count: int
+    invalid_owner_pixel_count: int
+    pair_corridor_pixel_count: int | None = None
+    foreground_blend_pixel_count: int = 0
+    foreground_deformation_pixel_count: int = 0
+    prohibited_apap_or_flow_requested: bool = False
+    prohibited_deformation_attempted: bool = False
+    audit_complete: bool = True
+    selection_reasons: tuple[str, ...] = ()
+    rejection_reasons: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        pair_index = _nonnegative_integer(self.pair_index, "pair_index")
+        track_id = _required_identifier(self.track_id, "track_id")
+        outgoing_run_id = _required_identifier(self.outgoing_run_id, "outgoing_run_id")
+        incoming_run_id = _required_identifier(self.incoming_run_id, "incoming_run_id")
+        outcome = _coerce_foreground_owner_handoff_outcome(self.outcome)
+        pair_sources = _current_pair_source_indices(
+            self.current_pair_source_indices, pair_index=pair_index
+        )
+        outgoing_source = _nonnegative_integer(
+            self.outgoing_source_index, "outgoing_source_index"
+        )
+        incoming_source = _nonnegative_integer(
+            self.incoming_source_index, "incoming_source_index"
+        )
+        count_names = (
+            "handoff_pixel_count",
+            "incoming_owner_pixel_count",
+            "other_adjacent_owner_pixel_count",
+            "nonadjacent_owner_pixel_count",
+            "invalid_owner_pixel_count",
+            "foreground_blend_pixel_count",
+            "foreground_deformation_pixel_count",
+        )
+        counts = {
+            name: _nonnegative_integer(getattr(self, name), name) for name in count_names
+        }
+        if (
+            counts["incoming_owner_pixel_count"]
+            + counts["other_adjacent_owner_pixel_count"]
+            + counts["nonadjacent_owner_pixel_count"]
+            + counts["invalid_owner_pixel_count"]
+            != counts["handoff_pixel_count"]
+        ):
+            raise ValueError("foreground handoff owner counts must partition support")
+        corridor_count = (
+            None
+            if self.pair_corridor_pixel_count is None
+            else _nonnegative_integer(
+                self.pair_corridor_pixel_count, "pair_corridor_pixel_count"
+            )
+        )
+        if corridor_count is not None and counts["handoff_pixel_count"] > corridor_count:
+            raise ValueError("handoff support cannot exceed the pair corridor")
+        if outcome is ForegroundOwnerHandoffOutcome.FULL_CORRIDOR_HARD_CUT and (
+            corridor_count is None
+            or corridor_count == 0
+            or counts["handoff_pixel_count"] != corridor_count
+        ):
+            raise ValueError(
+                "full-corridor hard cut requires complete non-empty corridor support"
+            )
+        prohibited_apap_or_flow = _strict_bool(
+            self.prohibited_apap_or_flow_requested,
+            "prohibited_apap_or_flow_requested",
+        )
+        prohibited_deformation = _strict_bool(
+            self.prohibited_deformation_attempted,
+            "prohibited_deformation_attempted",
+        )
+        audit_complete = _strict_bool(self.audit_complete, "audit_complete")
+        selection_reasons = _reason_strings(self.selection_reasons, "selection_reasons")
+        reasons = _reason_strings(self.rejection_reasons, "rejection_reasons")
+
+        incoming_is_adjacent = incoming_source in pair_sources
+        outgoing_is_adjacent = outgoing_source in pair_sources
+        owner_topology_complete = (
+            incoming_is_adjacent
+            and counts["incoming_owner_pixel_count"]
+            == counts["handoff_pixel_count"]
+            and counts["other_adjacent_owner_pixel_count"] == 0
+            and counts["nonadjacent_owner_pixel_count"] == 0
+            and counts["invalid_owner_pixel_count"] == 0
+        )
+        owner_only_without_deformation = (
+            counts["foreground_blend_pixel_count"] == 0
+            and counts["foreground_deformation_pixel_count"] == 0
+            and not prohibited_apap_or_flow
+            and not prohibited_deformation
+        )
+        outcome_is_semantically_valid = (
+            (
+                outcome is not ForegroundOwnerHandoffOutcome.KEEP_SOURCE
+                or outgoing_source == incoming_source
+            )
+            and (
+                outcome
+                is not ForegroundOwnerHandoffOutcome.ADJACENT_OWNER_HANDOFF
+                or outgoing_source != incoming_source
+            )
+        )
+        structurally_safe = (
+            outcome is not ForegroundOwnerHandoffOutcome.STRUCTURAL_FAILURE
+            and audit_complete
+            and outgoing_is_adjacent
+            and owner_topology_complete
+            and owner_only_without_deformation
+            and outcome_is_semantically_valid
+        )
+        if outcome is ForegroundOwnerHandoffOutcome.STRUCTURAL_FAILURE:
+            if not reasons:
+                raise ValueError("structural foreground handoff failure requires a reason")
+        elif not structurally_safe:
+            raise ValueError(
+                "non-failure foreground handoff outcome requires complete adjacent "
+                "incoming ownership and owner-only rendering"
+            )
+
+        object.__setattr__(self, "pair_index", pair_index)
+        object.__setattr__(self, "track_id", track_id)
+        object.__setattr__(self, "outgoing_run_id", outgoing_run_id)
+        object.__setattr__(self, "incoming_run_id", incoming_run_id)
+        object.__setattr__(self, "outcome", outcome)
+        object.__setattr__(self, "current_pair_source_indices", pair_sources)
+        object.__setattr__(self, "outgoing_source_index", outgoing_source)
+        object.__setattr__(self, "incoming_source_index", incoming_source)
+        for name, count in counts.items():
+            object.__setattr__(self, name, count)
+        object.__setattr__(self, "pair_corridor_pixel_count", corridor_count)
+        object.__setattr__(self, "prohibited_apap_or_flow_requested", prohibited_apap_or_flow)
+        object.__setattr__(self, "prohibited_deformation_attempted", prohibited_deformation)
+        object.__setattr__(self, "audit_complete", audit_complete)
+        object.__setattr__(self, "selection_reasons", selection_reasons)
+        object.__setattr__(self, "rejection_reasons", reasons)
+
+    @property
+    def incoming_owner_is_adjacent(self) -> bool:
+        """Whether the planned incoming owner belongs to the current pair."""
+
+        return self.incoming_source_index in self.current_pair_source_indices
+
+    @property
+    def outgoing_owner_is_adjacent(self) -> bool:
+        """Whether the planned outgoing owner belongs to the current pair."""
+
+        return self.outgoing_source_index in self.current_pair_source_indices
+
+    @property
+    def incoming_owner_coverage_ratio(self) -> float:
+        """Fraction of handoff support written by the named incoming owner."""
+
+        if self.handoff_pixel_count == 0:
+            return 1.0
+        return float(self.incoming_owner_pixel_count / self.handoff_pixel_count)
+
+    @property
+    def incoming_owner_ownership_complete(self) -> bool:
+        """Whether every audited handoff pixel has the named incoming owner."""
+
+        return (
+            self.incoming_owner_is_adjacent
+            and self.incoming_owner_pixel_count == self.handoff_pixel_count
+            and self.other_adjacent_owner_pixel_count == 0
+            and self.nonadjacent_owner_pixel_count == 0
+            and self.invalid_owner_pixel_count == 0
+        )
+
+    @property
+    def owner_only_without_deformation(self) -> bool:
+        """Foreground content must neither blend nor use a local deformation."""
+
+        return (
+            self.foreground_blend_pixel_count == 0
+            and self.foreground_deformation_pixel_count == 0
+            and not self.prohibited_apap_or_flow_requested
+            and not self.prohibited_deformation_attempted
+        )
+
+    @property
+    def structurally_safe(self) -> bool:
+        """Whether the completed audit supports a non-failure terminal outcome."""
+
+        return (
+            self.outcome is not ForegroundOwnerHandoffOutcome.STRUCTURAL_FAILURE
+            and self.audit_complete
+            and self.outgoing_owner_is_adjacent
+            and self.incoming_owner_ownership_complete
+            and self.owner_only_without_deformation
+        )
+
+    @property
+    def requires_manual_review(self) -> bool:
+        """Hard-owner fallbacks are structurally safe but need C-grade review."""
+
+        return self.outcome in {
+            ForegroundOwnerHandoffOutcome.PAIR_LOCAL_HARD_OWNER,
+            ForegroundOwnerHandoffOutcome.FULL_CORRIDOR_HARD_CUT,
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        """Return scalar-only handoff evidence suitable for renderer metadata."""
+
+        return {
+            "policy": "foreground_owner_only_handoff_audit_v1",
+            "pair_index": int(self.pair_index),
+            "track_id": self.track_id,
+            "outgoing_run_id": self.outgoing_run_id,
+            "incoming_run_id": self.incoming_run_id,
+            "outcome": self.outcome.value,
+            "current_pair_source_indices": [
+                int(self.current_pair_source_indices[0]),
+                int(self.current_pair_source_indices[1]),
+            ],
+            "outgoing_source_index": int(self.outgoing_source_index),
+            "incoming_source_index": int(self.incoming_source_index),
+            "handoff_pixel_count": int(self.handoff_pixel_count),
+            "incoming_owner_pixel_count": int(self.incoming_owner_pixel_count),
+            "other_adjacent_owner_pixel_count": int(
+                self.other_adjacent_owner_pixel_count
+            ),
+            "nonadjacent_owner_pixel_count": int(self.nonadjacent_owner_pixel_count),
+            "invalid_owner_pixel_count": int(self.invalid_owner_pixel_count),
+            "pair_corridor_pixel_count": (
+                None
+                if self.pair_corridor_pixel_count is None
+                else int(self.pair_corridor_pixel_count)
+            ),
+            "coverage_pixel_count": int(self.incoming_owner_pixel_count),
+            "coverage_required_pixel_count": int(self.handoff_pixel_count),
+            "incoming_owner_coverage_ratio": self.incoming_owner_coverage_ratio,
+            "coverage_ratio": self.incoming_owner_coverage_ratio,
+            "incoming_owner_is_adjacent": self.incoming_owner_is_adjacent,
+            "outgoing_owner_is_adjacent": self.outgoing_owner_is_adjacent,
+            "incoming_owner_ownership_complete": (
+                self.incoming_owner_ownership_complete
+            ),
+            "foreground_owner_only": True,
+            "owner_only_without_deformation": bool(
+                self.owner_only_without_deformation
+            ),
+            "foreground_blend_pixel_count": int(self.foreground_blend_pixel_count),
+            "foreground_deformation_pixel_count": int(
+                self.foreground_deformation_pixel_count
+            ),
+            "apap_authorized": False,
+            "flow_authorized": False,
+            "local_deformation_allowed": False,
+            "prohibited_apap_or_flow_requested": (
+                self.prohibited_apap_or_flow_requested
+            ),
+            "prohibited_deformation_attempted": self.prohibited_deformation_attempted,
+            "audit_complete": self.audit_complete,
+            "structurally_safe": self.structurally_safe,
+            "manual_review_required": self.requires_manual_review,
+            "selection_reasons": list(self.selection_reasons),
+            "rejection_reasons": list(self.rejection_reasons),
+            "evidence_storage": "scalar_only",
+        }
+
+
+def evaluate_foreground_owner_handoff(
+    *,
+    pair_index: int,
+    track_id: str | int,
+    outgoing_run_id: str | int,
+    incoming_run_id: str | int,
+    outcome: ForegroundOwnerHandoffOutcome | str,
+    outgoing_source_index: int,
+    incoming_source_index: int,
+    handoff_pixel_count: int,
+    incoming_owner_pixel_count: int,
+    other_adjacent_owner_pixel_count: int = 0,
+    nonadjacent_owner_pixel_count: int = 0,
+    invalid_owner_pixel_count: int = 0,
+    pair_corridor_pixel_count: int | None = None,
+    foreground_blend_pixel_count: int = 0,
+    foreground_deformation_pixel_count: int = 0,
+    current_pair_source_indices: tuple[int, int] | None = None,
+    apap_authorized: bool = False,
+    flow_authorized: bool = False,
+    local_deformation_attempted: bool = False,
+    audit_complete: bool = True,
+    selection_reasons: Iterable[str] = (),
+    rejection_reasons: Iterable[str] = (),
+) -> ForegroundOwnerHandoffAudit:
+    """Evaluate a planned foreground handoff from scalar owner evidence.
+
+    The preferred renderer integration point is after a planned owner-run
+    boundary has been rasterized, but before the pair metadata is published.
+    ``incoming_owner_pixel_count`` must count pixels owned by the designated
+    incoming source, not the union of both current-pair sources.  ``APAP`` and
+    flow requests are converted into a structural failure; they cannot become
+    a foreground authorization through this API.
+    """
+
+    normalized_pair_index = _nonnegative_integer(pair_index, "pair_index")
+    requested_outcome = _coerce_foreground_owner_handoff_outcome(outcome)
+    pair_sources = _current_pair_source_indices(
+        current_pair_source_indices, pair_index=normalized_pair_index
+    )
+    outgoing_source = _nonnegative_integer(
+        outgoing_source_index, "outgoing_source_index"
+    )
+    incoming_source = _nonnegative_integer(
+        incoming_source_index, "incoming_source_index"
+    )
+    counts = {
+        "handoff_pixel_count": _nonnegative_integer(
+            handoff_pixel_count, "handoff_pixel_count"
+        ),
+        "incoming_owner_pixel_count": _nonnegative_integer(
+            incoming_owner_pixel_count, "incoming_owner_pixel_count"
+        ),
+        "other_adjacent_owner_pixel_count": _nonnegative_integer(
+            other_adjacent_owner_pixel_count, "other_adjacent_owner_pixel_count"
+        ),
+        "nonadjacent_owner_pixel_count": _nonnegative_integer(
+            nonadjacent_owner_pixel_count, "nonadjacent_owner_pixel_count"
+        ),
+        "invalid_owner_pixel_count": _nonnegative_integer(
+            invalid_owner_pixel_count, "invalid_owner_pixel_count"
+        ),
+        "foreground_blend_pixel_count": _nonnegative_integer(
+            foreground_blend_pixel_count, "foreground_blend_pixel_count"
+        ),
+        "foreground_deformation_pixel_count": _nonnegative_integer(
+            foreground_deformation_pixel_count, "foreground_deformation_pixel_count"
+        ),
+    }
+    if (
+        counts["incoming_owner_pixel_count"]
+        + counts["other_adjacent_owner_pixel_count"]
+        + counts["nonadjacent_owner_pixel_count"]
+        + counts["invalid_owner_pixel_count"]
+        != counts["handoff_pixel_count"]
+    ):
+        raise ValueError("foreground handoff owner counts must partition support")
+    corridor_count = (
+        None
+        if pair_corridor_pixel_count is None
+        else _nonnegative_integer(pair_corridor_pixel_count, "pair_corridor_pixel_count")
+    )
+    if corridor_count is not None and counts["handoff_pixel_count"] > corridor_count:
+        raise ValueError("handoff support cannot exceed the pair corridor")
+    requested_apap_or_flow = _strict_bool(apap_authorized, "apap_authorized") or _strict_bool(
+        flow_authorized, "flow_authorized"
+    )
+    requested_deformation = _strict_bool(
+        local_deformation_attempted, "local_deformation_attempted"
+    )
+    completed = _strict_bool(audit_complete, "audit_complete")
+    normalized_selection_reasons = _reason_strings(
+        selection_reasons, "selection_reasons"
+    )
+    reasons = list(_reason_strings(rejection_reasons, "rejection_reasons"))
+
+    if outgoing_source not in pair_sources:
+        reasons.append("outgoing_owner_is_not_current_pair_adjacent")
+    if incoming_source not in pair_sources:
+        reasons.append("incoming_owner_is_not_current_pair_adjacent")
+    if counts["incoming_owner_pixel_count"] != counts["handoff_pixel_count"]:
+        reasons.append("incoming_owner_coverage_incomplete")
+    if counts["other_adjacent_owner_pixel_count"]:
+        reasons.append("handoff_pixels_owned_by_other_adjacent_source")
+    if counts["nonadjacent_owner_pixel_count"]:
+        reasons.append("handoff_pixels_owned_by_nonadjacent_source")
+    if counts["invalid_owner_pixel_count"]:
+        reasons.append("handoff_pixels_without_valid_owner")
+    if counts["foreground_blend_pixel_count"]:
+        reasons.append("foreground_blending_detected")
+    if counts["foreground_deformation_pixel_count"]:
+        reasons.append("foreground_deformation_detected")
+    if requested_apap_or_flow:
+        reasons.append("foreground_apap_or_flow_authorization_prohibited")
+    if requested_deformation:
+        reasons.append("foreground_local_deformation_attempt_prohibited")
+    if not completed:
+        reasons.append("foreground_owner_handoff_audit_incomplete")
+    if (
+        requested_outcome is ForegroundOwnerHandoffOutcome.KEEP_SOURCE
+        and outgoing_source != incoming_source
+    ):
+        reasons.append("keep_source_outcome_changes_owner")
+    if (
+        requested_outcome is ForegroundOwnerHandoffOutcome.ADJACENT_OWNER_HANDOFF
+        and outgoing_source == incoming_source
+    ):
+        reasons.append("adjacent_owner_handoff_does_not_change_owner")
+    if requested_outcome is ForegroundOwnerHandoffOutcome.FULL_CORRIDOR_HARD_CUT and (
+        corridor_count is None
+        or corridor_count == 0
+        or counts["handoff_pixel_count"] != corridor_count
+    ):
+        reasons.append("full_corridor_hard_cut_lacks_complete_corridor_coverage")
+    if requested_outcome is ForegroundOwnerHandoffOutcome.STRUCTURAL_FAILURE and not reasons:
+        reasons.append("foreground_owner_handoff_marked_structural_failure")
+
+    final_outcome = (
+        ForegroundOwnerHandoffOutcome.STRUCTURAL_FAILURE
+        if reasons
+        else requested_outcome
+    )
+    return ForegroundOwnerHandoffAudit(
+        pair_index=normalized_pair_index,
+        track_id=track_id,
+        outgoing_run_id=outgoing_run_id,
+        incoming_run_id=incoming_run_id,
+        outcome=final_outcome,
+        current_pair_source_indices=pair_sources,
+        outgoing_source_index=outgoing_source,
+        incoming_source_index=incoming_source,
+        handoff_pixel_count=counts["handoff_pixel_count"],
+        incoming_owner_pixel_count=counts["incoming_owner_pixel_count"],
+        other_adjacent_owner_pixel_count=counts["other_adjacent_owner_pixel_count"],
+        nonadjacent_owner_pixel_count=counts["nonadjacent_owner_pixel_count"],
+        invalid_owner_pixel_count=counts["invalid_owner_pixel_count"],
+        pair_corridor_pixel_count=corridor_count,
+        foreground_blend_pixel_count=counts["foreground_blend_pixel_count"],
+        foreground_deformation_pixel_count=counts[
+            "foreground_deformation_pixel_count"
+        ],
+        prohibited_apap_or_flow_requested=requested_apap_or_flow,
+        prohibited_deformation_attempted=requested_deformation,
+        audit_complete=completed,
+        selection_reasons=normalized_selection_reasons,
+        rejection_reasons=tuple(reasons),
+    )
+
+
+def _owner_assignment_array(value: object, name: str) -> np.ndarray:
+    array = np.asarray(value)
+    if not array.size or array.dtype == np.dtype(bool) or array.dtype.kind not in {"i", "u"}:
+        raise ValueError(f"{name} must be a non-empty integer owner array")
+    return array
+
+
+def _same_shape_support_mask(
+    value: object, *, name: str, shape: tuple[int, ...]
+) -> np.ndarray:
+    raw = np.asarray(value)
+    mask = _support_mask(value, name)
+    if raw.shape != shape:
+        raise ValueError(f"{name} must have the same shape as handoff_support")
+    return mask.reshape(shape)
+
+
+def build_foreground_owner_handoff_audit(
+    *,
+    pair_index: int,
+    track_id: str | int,
+    outgoing_run_id: str | int,
+    incoming_run_id: str | int,
+    outcome: ForegroundOwnerHandoffOutcome | str,
+    outgoing_source_index: int,
+    incoming_source_index: int,
+    handoff_support: object,
+    owner_assignments: object,
+    pair_corridor_pixel_count: int | None = None,
+    current_pair_source_indices: tuple[int, int] | None = None,
+    foreground_blend_support: object | None = None,
+    foreground_deformation_support: object | None = None,
+    apap_authorized: bool = False,
+    flow_authorized: bool = False,
+    local_deformation_attempted: bool = False,
+    audit_complete: bool = True,
+    selection_reasons: Iterable[str] = (),
+    rejection_reasons: Iterable[str] = (),
+) -> ForegroundOwnerHandoffAudit:
+    """Consume temporary owner arrays and retain only scalar audit evidence."""
+
+    raw_support = np.asarray(handoff_support)
+    support = _same_shape_support_mask(
+        handoff_support, name="handoff_support", shape=raw_support.shape
+    )
+    owners = _owner_assignment_array(owner_assignments, "owner_assignments")
+    if owners.shape != support.shape:
+        raise ValueError("owner_assignments must have the same shape as handoff_support")
+    normalized_pair_index = _nonnegative_integer(pair_index, "pair_index")
+    pair_sources = _current_pair_source_indices(
+        current_pair_source_indices, pair_index=normalized_pair_index
+    )
+    incoming_source = _nonnegative_integer(
+        incoming_source_index, "incoming_source_index"
+    )
+    if foreground_blend_support is None:
+        blend = np.zeros_like(support, dtype=bool)
+    else:
+        blend = _same_shape_support_mask(
+            foreground_blend_support,
+            name="foreground_blend_support",
+            shape=support.shape,
+        )
+    if foreground_deformation_support is None:
+        deformation = np.zeros_like(support, dtype=bool)
+    else:
+        deformation = _same_shape_support_mask(
+            foreground_deformation_support,
+            name="foreground_deformation_support",
+            shape=support.shape,
+        )
+
+    selected = owners[support]
+    incoming = selected == incoming_source
+    adjacent = (selected == pair_sources[0]) | (selected == pair_sources[1])
+    valid = selected >= 0
+    other_adjacent = adjacent & ~incoming
+    nonadjacent = valid & ~adjacent
+    invalid = ~valid
+    return evaluate_foreground_owner_handoff(
+        pair_index=normalized_pair_index,
+        track_id=track_id,
+        outgoing_run_id=outgoing_run_id,
+        incoming_run_id=incoming_run_id,
+        outcome=outcome,
+        outgoing_source_index=outgoing_source_index,
+        incoming_source_index=incoming_source,
+        handoff_pixel_count=int(selected.size),
+        incoming_owner_pixel_count=int(np.count_nonzero(incoming)),
+        other_adjacent_owner_pixel_count=int(np.count_nonzero(other_adjacent)),
+        nonadjacent_owner_pixel_count=int(np.count_nonzero(nonadjacent)),
+        invalid_owner_pixel_count=int(np.count_nonzero(invalid)),
+        pair_corridor_pixel_count=pair_corridor_pixel_count,
+        foreground_blend_pixel_count=int(np.count_nonzero(support & blend)),
+        foreground_deformation_pixel_count=int(np.count_nonzero(support & deformation)),
+        current_pair_source_indices=pair_sources,
+        apap_authorized=apap_authorized,
+        flow_authorized=flow_authorized,
+        local_deformation_attempted=local_deformation_attempted,
+        audit_complete=audit_complete,
+        selection_reasons=selection_reasons,
+        rejection_reasons=rejection_reasons,
+    )
+
+
 def _coerce_handoff_method(value: object) -> HandoffMethod:
     if isinstance(value, HandoffMethod):
         return value
@@ -628,11 +1281,15 @@ def summarize_handoff_methods(
 
 
 __all__ = [
+    "ForegroundOwnerHandoffAudit",
+    "ForegroundOwnerHandoffOutcome",
     "HandoffContinuityAudit",
     "HandoffContinuityConfig",
     "HandoffDecision",
     "HandoffMethod",
+    "build_foreground_owner_handoff_audit",
     "build_handoff_continuity_audit",
+    "evaluate_foreground_owner_handoff",
     "evaluate_handoff_continuity",
     "summarize_handoff_methods",
 ]

@@ -54,6 +54,24 @@ def _write_complete_trajectory(stage_dir: Path, session: RGBDSession) -> None:
     )
 
 
+def test_staged_settings_explicitly_disable_orbslam3_far_point_filter(
+    tmp_path: Path,
+) -> None:
+    """The native Settings path must never consume an unset far-point value."""
+
+    session = _session(tmp_path)
+    settings_path = tmp_path / "gemini305_rgbd.yaml"
+
+    bridge._write_settings(
+        session.frames,
+        session.calibration,
+        settings_path,
+        bridge.ORBSLAM3Config(),
+    )
+
+    assert "System.thFarPoints: 0.0" in settings_path.read_text(encoding="utf-8")
+
+
 def test_sigsegv_139_retries_once_with_a_fresh_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

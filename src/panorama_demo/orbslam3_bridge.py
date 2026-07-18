@@ -356,6 +356,12 @@ def _write_settings(
         "Viewer.ViewpointY: -0.7",
         "Viewer.ViewpointZ: -1.8",
         "Viewer.ViewpointF: 500.0",
+        # The installed ORB-SLAM3 Settings implementation passes this value
+        # directly into LocalMapping without a default when the optional key
+        # is absent.  Declare the neutral no-far-point-filter setting
+        # explicitly so a staged real RGB-D run cannot inherit uninitialised
+        # native memory.
+        "System.thFarPoints: 0.0",
         "",
     ]
     path.write_text("\n".join(lines), encoding="utf-8")

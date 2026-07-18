@@ -152,7 +152,22 @@ def test_formal_pushbroom_receives_exact_optimized_se3_without_depth_projection(
                     "held_out_metrics_after": {},
                     "component_audit": {},
                     "topology_audit": {"accepted": True},
-                    "working_set_audit": {},
+                    "working_set_audit": {
+                        "foreground_segment_owner_plan": {
+                            "foreground_owner_continuity_summary": {
+                                "backend": "foreground_segment_owner_plan_v3",
+                                "track_count": 0,
+                                "multi_pair_track_count": 0,
+                                "owner_run_count": 0,
+                                "actual_owner_switch_count": 0,
+                                "minimum_feasible_owner_switch_count": 0,
+                                "avoidable_owner_switch_count": 0,
+                                "current_valid_nonadjacent_owner_pixel_count": 0,
+                                "foreground_blend_pixel_count": 0,
+                                "foreground_deformation_pixel_count": 0,
+                            }
+                        }
+                    },
                 },
                 "geometry_assisted_seam": {
                     "enabled": True,
@@ -186,15 +201,13 @@ def test_formal_pushbroom_receives_exact_optimized_se3_without_depth_projection(
                         "second_frame_id": int(frames[index + 1].frame_id),
                         "graphcut_used": True,
                         "hard_cut_row_count": 0,
-                        "foreground_anchor_handoff_continuity": {
-                            "policy": (
-                                "foreground_owner_only_continuity_audit_no_local_deformation"
-                            ),
+                        "foreground_owner_handoff_audit": {
+                            "policy": "foreground_owner_only_handoff_audit_v1",
                             "handoff_count": 0,
-                            "continuity_audit_count": 0,
-                            "coverage_complete_count": 0,
+                            "audit_complete_count": 0,
                             "owner_only_no_deformation_count": 0,
-                            "local_deformation_attempted": False,
+                            "structurally_safe_count": 0,
+                            "hard_owner_fallback_count": 0,
                             "audits": [],
                         },
                         "geometry_assistance": {

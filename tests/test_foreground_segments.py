@@ -80,7 +80,7 @@ def _depth_fragment(
     )
 
 
-def test_depth_observed_three_pair_chain_uses_deterministic_spans_not_a_fake_handoff() -> None:
+def test_depth_observed_three_pair_chain_uses_renderer_feasible_minimum_owner_runs() -> None:
     shared_one = _footprint(1, x0=20.0)
     shared_two = _footprint(2, x0=70.0)
     fragments = (
@@ -110,15 +110,89 @@ def test_depth_observed_three_pair_chain_uses_deterministic_spans_not_a_fake_han
     plan = plan_foreground_owners(fragments)
 
     assert plan.accepted
-    # Equal-cost links are deterministically resolved toward the earlier span.
-    assert plan.component_owner_constraints[0] == {1: 1}
-    assert plan.component_owner_constraints[1] == {1: 0}
-    assert plan.component_owner_constraints[2] == {}
+    # A run boundary at pair p must name exactly that pair's RGB sources
+    # {p, p + 1}.  The feasible minimum therefore starts with source 1, then
+    # keeps the terminal source 2 across pairs 1 and 2; an older unconstrained
+    # DP selected source 0 at pair 0 and emitted an invalid {0, 2} boundary.
+    assert plan.component_owner_constraints == ({1: 1}, {1: 1}, {1: 0})
     assert len(plan.segments) == 1
+    assert len(plan.tracks) == 1
+    assert plan.tracks[0].fragment_refs == ((0, 1), (1, 1), (2, 1))
+    assert len(plan.owner_runs) == 2
+    assert [
+        (run.owner_source_index, run.start_pair_index, run.end_pair_index)
+        for run in plan.owner_runs
+    ] == [(1, 0, 0), (2, 1, 2)]
+    assert plan.actual_owner_switch_count == 1
+    assert plan.minimum_feasible_owner_switch_count == 1
+    assert plan.avoidable_owner_switch_count == 0
     assert len(plan.spans) == 2
     assert len(plan.handoffs) == 1
     assert plan.handoffs[0].accepted is False
-    assert plan.handoffs[0].reason == "continuous_foreground_requires_unapproved_handoff"
+    assert plan.handoffs[0].reason == "foreground_owner_run_requires_handoff_audit"
+    assert (
+        plan.handoffs[0].pair_index,
+        plan.handoffs[0].outgoing_anchor_source_index,
+        plan.handoffs[0].incoming_anchor_source_index,
+    ) == (1, 1, 2)
+    audit = plan.as_dict()
+    assert audit["backend"] == "foreground_segment_owner_plan_v3"
+    assert audit["foreground_owner_continuity_summary"] == {
+        "backend": "foreground_segment_owner_plan_v3",
+        "track_count": 1,
+        "multi_pair_track_count": 1,
+        "owner_run_count": 2,
+        "actual_owner_switch_count": 1,
+        "minimum_feasible_owner_switch_count": 1,
+        "avoidable_owner_switch_count": 0,
+        "current_valid_nonadjacent_owner_pixel_count": 0,
+        "foreground_blend_pixel_count": 0,
+        "foreground_deformation_pixel_count": 0,
+    }
+
+
+def test_middle_observation_bridges_distinct_adjacent_depth_tokens() -> None:
+    """A pair can prove two different strict edges without fusing their tokens."""
+
+    token01 = _anchor_token(left_pair_index=0)
+    token12 = _anchor_token(left_pair_index=1)
+    shared_one = _footprint(1, x0=20.0)
+    shared_two = _footprint(2, x0=70.0)
+    first = foreground_fragment_from_protected(
+        _protected(0, 1),
+        frame_ids=(100, 101),
+        source_indices=(0, 1),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_tokens=(token01,),
+        raw_footprints=(_footprint(0, x0=5.0), shared_one),
+    )
+    middle = foreground_fragment_from_protected(
+        _protected(1, 1),
+        frame_ids=(101, 102),
+        source_indices=(1, 2),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_tokens=(token01, token12),
+        raw_footprints=(shared_one, shared_two),
+    )
+    last = foreground_fragment_from_protected(
+        _protected(2, 1),
+        frame_ids=(102, 103),
+        source_indices=(2, 3),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_tokens=(token12,),
+        raw_footprints=(shared_two, _footprint(3, x0=120.0)),
+    )
+
+    plan = plan_foreground_owners(((first,), (middle,), (last,)))
+
+    assert plan.accepted
+    assert len(plan.tracks) == 1
+    assert plan.tracks[0].direct_token_edge_count == 2
+    assert [edge.direct_token_supported for edge in plan.track_edges] == [True, True]
+    assert plan.as_dict()["planned_fragment_owners"]
 
 
 def test_disjoint_shared_raw_footprints_do_not_create_a_cross_pair_segment() -> None:
@@ -192,6 +266,122 @@ def test_depth_observed_shared_source_anchor_locks_each_pair_fragment() -> None:
     )
     assert preflight.accepted
     assert preflight.component_owner_constraints == ({7: 1}, {13: 0})
+
+
+def test_equal_direct_token_bundle_links_without_raw_footprint_evidence() -> None:
+    """Redundant exact anchors prove one identity edge without a raw summary."""
+
+    direct_tokens = (
+        _anchor_token(left_direct_component_label=3, right_direct_component_label=5),
+        _anchor_token(left_direct_component_label=7, right_direct_component_label=11),
+    )
+    first = foreground_fragment_from_protected(
+        _protected(0, 1),
+        frame_ids=(100, 101),
+        source_indices=(0, 1),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_tokens=direct_tokens,
+    )
+    second = foreground_fragment_from_protected(
+        _protected(1, 1),
+        frame_ids=(101, 102),
+        source_indices=(1, 2),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_tokens=direct_tokens,
+    )
+
+    plan = plan_foreground_owners(((first,), (second,)))
+
+    assert plan.accepted
+    assert len(plan.track_edges) == 1
+    assert len(plan.tracks) == 1
+    edge = plan.track_edges[0]
+    assert edge.direct_token_supported
+    assert edge.direct_anchor_token == direct_tokens[0]
+    assert edge.direct_anchor_tokens == direct_tokens
+    assert edge.raw_footprint_iou is None
+    audit = edge.as_dict()
+    assert audit["direct_anchor_token"] == direct_tokens[0].as_dict()
+    assert audit["direct_anchor_tokens"] == [token.as_dict() for token in direct_tokens]
+    assert audit["direct_anchor_token_count"] == 2
+    assert audit["raw_footprint_iou"] is None
+
+
+def test_partially_overlapping_direct_token_bundles_are_rejected() -> None:
+    """One shared token is not enough when either endpoint reports another."""
+
+    first_token = _anchor_token(
+        left_direct_component_label=3,
+        right_direct_component_label=5,
+    )
+    second_token = _anchor_token(
+        left_direct_component_label=7,
+        right_direct_component_label=11,
+    )
+    first = foreground_fragment_from_protected(
+        _protected(0, 1),
+        frame_ids=(100, 101),
+        source_indices=(0, 1),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_tokens=(first_token, second_token),
+    )
+    second = foreground_fragment_from_protected(
+        _protected(1, 1),
+        frame_ids=(101, 102),
+        source_indices=(1, 2),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_tokens=(first_token,),
+    )
+
+    plan = plan_foreground_owners(((first,), (second,)))
+
+    assert plan.accepted
+    assert not plan.track_edges
+    assert plan.rejected_association_counts == {"source_anchor_token_mismatch": 1}
+
+
+def test_competing_direct_token_routes_from_one_component_are_rejected() -> None:
+    """Equal bundles do not relax the graph's split/merge fail-closed rule."""
+
+    direct_tokens = (_anchor_token(),)
+    first = foreground_fragment_from_protected(
+        _protected(0, 1),
+        frame_ids=(100, 101),
+        source_indices=(0, 1),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_tokens=direct_tokens,
+    )
+    first_peer = foreground_fragment_from_protected(
+        _protected(1, 1),
+        frame_ids=(101, 102),
+        source_indices=(1, 2),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_tokens=direct_tokens,
+    )
+    second_peer = foreground_fragment_from_protected(
+        _protected(1, 2, x=18),
+        frame_ids=(101, 102),
+        source_indices=(1, 2),
+        geometry_mode=GeometryMode.DEPTH_OBSERVED,
+        bidirectional_visibility_supported=True,
+        depth_anchor_tokens=direct_tokens,
+    )
+
+    plan = plan_foreground_owners(((first,), (first_peer, second_peer)))
+
+    assert plan.accepted
+    assert not plan.track_edges
+    assert not plan.tracks
+    assert plan.component_owner_constraints == ({}, {})
+    assert plan.rejected_association_counts == {
+        "split_merge_or_multiple_candidate_association": 2
+    }
 
 
 def test_different_sparse_anchor_tokens_cannot_link_on_coarse_footprint_overlap() -> None:

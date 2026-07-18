@@ -6,6 +6,7 @@ import json
 import math
 import os
 import shutil
+import struct
 import sys
 import tempfile
 import time
@@ -337,155 +338,171 @@ def _require_audit_pair_frame_ids(
     return actual
 
 
-def _validate_foreground_anchor_handoff_continuity(
+def _validate_foreground_owner_handoff_audit(
     pair: Mapping[str, object], *, pair_index: int, frame_ids: list[int]
 ) -> dict[str, int]:
-    """Validate scalar foreground handoff evidence without enabling a warp.
+    """Validate v3 foreground owner-run handoffs independently of background flow.
 
-    Direct signed-occlusion foreground is owner-only by construction.  The
-    renderer reports its lack of same-layer/deformation eligibility through
-    ``handoff_continuity`` while separately proving complete current-pair RGB
-    ownership.  A continuity module fallback request must never become an
-    APAP/flow authorization for foreground content.
+    This audit deliberately has no same-layer, APAP, or flow decision.  A
+    foreground handoff is valid only when every audited pixel belongs to the
+    named incoming RGB source, which itself must be one of the current pair's
+    two real sources.  Missing evidence is structural rather than a reason to
+    reuse the background handoff policy.
     """
 
-    value = pair.get("foreground_anchor_handoff_continuity")
+    value = pair.get("foreground_owner_handoff_audit")
     if not isinstance(value, Mapping):
-        raise RuntimeError(
-            "Handoff audit omits foreground anchor continuity evidence"
-        )
+        raise RuntimeError("Handoff audit omits foreground owner-run evidence")
     audit = dict(value)
-    if audit.get("policy") != (
-        "foreground_owner_only_continuity_audit_no_local_deformation"
-    ):
-        raise RuntimeError("Foreground anchor continuity audit has an unknown policy")
+    if audit.get("policy") != "foreground_owner_only_handoff_audit_v1":
+        raise RuntimeError("Foreground owner handoff audit has an unknown policy")
     handoff_count = _require_audit_int(
         audit.get("handoff_count"),
         context=f"handoff pair {pair_index} foreground handoff_count",
     )
-    continuity_count = _require_audit_int(
-        audit.get("continuity_audit_count"),
-        context=f"handoff pair {pair_index} foreground continuity_audit_count",
-    )
-    coverage_complete_count = _require_audit_int(
-        audit.get("coverage_complete_count"),
-        context=f"handoff pair {pair_index} foreground coverage_complete_count",
+    complete_count = _require_audit_int(
+        audit.get("audit_complete_count"),
+        context=f"handoff pair {pair_index} foreground audit_complete_count",
     )
     owner_only_count = _require_audit_int(
         audit.get("owner_only_no_deformation_count"),
         context=f"handoff pair {pair_index} foreground owner_only_no_deformation_count",
     )
+    safe_count = _require_audit_int(
+        audit.get("structurally_safe_count"),
+        context=f"handoff pair {pair_index} foreground structurally_safe_count",
+    )
+    hard_owner_count = _require_audit_int(
+        audit.get("hard_owner_fallback_count"),
+        context=f"handoff pair {pair_index} foreground hard_owner_fallback_count",
+    )
     if (
-        min(
-            handoff_count,
-            continuity_count,
-            coverage_complete_count,
-            owner_only_count,
-        )
+        min(handoff_count, complete_count, owner_only_count, safe_count, hard_owner_count)
         < 0
-        or continuity_count != handoff_count
-        or coverage_complete_count != handoff_count
+        or complete_count != handoff_count
         or owner_only_count != handoff_count
+        or safe_count != handoff_count
+        or hard_owner_count > handoff_count
     ):
-        raise RuntimeError("Foreground anchor continuity audit has inconsistent counts")
-    if _require_audit_bool(
-        audit.get("local_deformation_attempted"),
-        context=f"handoff pair {pair_index} foreground local deformation attempted",
-    ):
-        raise RuntimeError("Foreground anchor continuity audit attempted a deformation")
+        raise RuntimeError("Foreground owner handoff audit has inconsistent counts")
     values = audit.get("audits")
     if not isinstance(values, list) or len(values) != handoff_count:
-        raise RuntimeError("Foreground anchor continuity audit lacks one scalar record per handoff")
+        raise RuntimeError("Foreground owner handoff audit lacks one scalar record per handoff")
+
+    expected_sources = [pair_index, pair_index + 1]
+    observed_hard_owner_count = 0
+    allowed_outcomes = {
+        "keep_source",
+        "adjacent_owner_handoff",
+        "pair_local_hard_owner",
+        "full_corridor_hard_cut",
+    }
     for audit_index, entry_value in enumerate(values):
         if not isinstance(entry_value, Mapping):
-            raise RuntimeError(
-                "Foreground anchor continuity audit contains a non-mapping record"
-            )
+            raise RuntimeError("Foreground owner handoff audit contains a non-mapping record")
         entry = dict(entry_value)
-        entry_pair = _require_audit_int(
-            entry.get("pair_index"),
-            context=(
-                f"handoff pair {pair_index} foreground continuity "
-                f"record {audit_index} pair_index"
-            ),
-        )
-        candidate_frame = _require_audit_int(
-            entry.get("candidate_anchor_frame_id"),
-            context=(
-                f"handoff pair {pair_index} foreground continuity "
-                f"record {audit_index} candidate_anchor_frame_id"
-            ),
-        )
-        coverage_count = _require_audit_int(
-            entry.get("coverage_pixel_count"),
-            context=(
-                f"handoff pair {pair_index} foreground continuity "
-                f"record {audit_index} coverage_pixel_count"
-            ),
-        )
-        coverage_required = _require_audit_int(
-            entry.get("coverage_required_pixel_count"),
-            context=(
-                f"handoff pair {pair_index} foreground continuity "
-                f"record {audit_index} coverage_required_pixel_count"
-            ),
-        )
-        coverage_ratio = entry.get("coverage_ratio")
+        prefix = f"handoff pair {pair_index} foreground record {audit_index}"
+        entry_pair = _require_audit_int(entry.get("pair_index"), context=f"{prefix} pair_index")
+        current_sources = entry.get("current_pair_source_indices")
+        if not isinstance(current_sources, list) or len(current_sources) != 2:
+            raise RuntimeError("Foreground owner handoff audit has the wrong current pair")
+        normalized_sources = [
+            _require_audit_int(current_sources[0], context=f"{prefix} first source"),
+            _require_audit_int(current_sources[1], context=f"{prefix} second source"),
+        ]
         if (
             entry_pair != pair_index
-            or candidate_frame not in frame_ids
-            or coverage_required <= 0
-            or coverage_count != coverage_required
-            or isinstance(coverage_ratio, bool)
-            or not isinstance(coverage_ratio, (int, float, np.integer, np.floating))
-            or not math.isfinite(float(coverage_ratio))
-            or not math.isclose(float(coverage_ratio), 1.0, rel_tol=0.0, abs_tol=1e-12)
+            or normalized_sources != expected_sources
         ):
-            raise RuntimeError(
-                "Foreground anchor continuity audit lacks complete current-pair coverage"
-            )
+            raise RuntimeError("Foreground owner handoff audit has the wrong current pair")
+        for field in ("track_id", "outgoing_run_id", "incoming_run_id"):
+            if not isinstance(entry.get(field), str) or not str(entry[field]).strip():
+                raise RuntimeError(f"{prefix} omits {field}")
+        outcome = entry.get("outcome")
+        if outcome not in allowed_outcomes:
+            raise RuntimeError("Foreground owner handoff is structurally unsafe")
+        outgoing = _require_audit_int(entry.get("outgoing_source_index"), context=f"{prefix} outgoing source")
+        incoming = _require_audit_int(entry.get("incoming_source_index"), context=f"{prefix} incoming source")
+        support = _require_audit_int(entry.get("handoff_pixel_count"), context=f"{prefix} handoff pixels")
+        corridor = _require_audit_int(
+            entry.get("pair_corridor_pixel_count"),
+            context=f"{prefix} pair corridor pixels",
+        )
+        incoming_pixels = _require_audit_int(entry.get("incoming_owner_pixel_count"), context=f"{prefix} incoming owner pixels")
+        other_adjacent = _require_audit_int(entry.get("other_adjacent_owner_pixel_count"), context=f"{prefix} other adjacent owner pixels")
+        nonadjacent = _require_audit_int(entry.get("nonadjacent_owner_pixel_count"), context=f"{prefix} nonadjacent owner pixels")
+        invalid = _require_audit_int(entry.get("invalid_owner_pixel_count"), context=f"{prefix} invalid owner pixels")
+        blend = _require_audit_int(entry.get("foreground_blend_pixel_count"), context=f"{prefix} blend pixels")
+        deformation = _require_audit_int(entry.get("foreground_deformation_pixel_count"), context=f"{prefix} deformation pixels")
         if (
-            _require_audit_bool(
-                entry.get("accepted"),
-                context=(
-                    f"handoff pair {pair_index} foreground continuity "
-                    f"record {audit_index} accepted"
-                ),
-            )
-            or entry.get("decision") != "apap_flow_fallback"
+            outgoing not in expected_sources
+            or incoming not in expected_sources
+            or support > corridor
+            or incoming_pixels + other_adjacent + nonadjacent + invalid != support
+            or incoming_pixels != support
+            or other_adjacent != 0
+            or nonadjacent != 0
+            or invalid != 0
+            or blend != 0
+            or deformation != 0
+            or _require_audit_bool(entry.get("audit_complete"), context=f"{prefix} audit_complete") is not True
+            or _require_audit_bool(entry.get("incoming_owner_ownership_complete"), context=f"{prefix} incoming ownership complete") is not True
+            or _require_audit_bool(entry.get("owner_only_without_deformation"), context=f"{prefix} owner-only") is not True
+            or _require_audit_bool(entry.get("structurally_safe"), context=f"{prefix} structurally_safe") is not True
+            or _require_audit_bool(entry.get("apap_authorized"), context=f"{prefix} APAP authorization")
+            or _require_audit_bool(entry.get("flow_authorized"), context=f"{prefix} flow authorization")
+            or _require_audit_bool(entry.get("local_deformation_allowed"), context=f"{prefix} deformation authorization")
             or _require_audit_bool(
-                entry.get("foreground_owner_only"),
-                context=(
-                    f"handoff pair {pair_index} foreground continuity "
-                    f"record {audit_index} foreground_owner_only"
-                ),
-            )
-            is not True
-            or _require_audit_bool(
-                entry.get("local_deformation_allowed"),
-                context=(
-                    f"handoff pair {pair_index} foreground continuity "
-                    f"record {audit_index} local_deformation_allowed"
-                ),
+                entry.get("prohibited_apap_or_flow_requested"),
+                context=f"{prefix} prohibited APAP/flow request",
             )
             or _require_audit_bool(
-                entry.get("local_deformation_attempted"),
-                context=(
-                    f"handoff pair {pair_index} foreground continuity "
-                    f"record {audit_index} local_deformation_attempted"
-                ),
+                entry.get("prohibited_deformation_attempted"),
+                context=f"{prefix} prohibited deformation attempt",
             )
-            or entry.get("decision_consumed_as")
-            != "owner_only_guarded_current_pair_rewrite"
+            or _require_audit_bool(
+                entry.get("foreground_owner_only"), context=f"{prefix} foreground owner-only"
+            ) is not True
+            or _require_audit_bool(
+                entry.get("incoming_owner_is_adjacent"),
+                context=f"{prefix} incoming adjacency",
+            ) is not True
+            or _require_audit_bool(
+                entry.get("outgoing_owner_is_adjacent"),
+                context=f"{prefix} outgoing adjacency",
+            ) is not True
             or entry.get("evidence_storage") != "scalar_only"
         ):
+            raise RuntimeError("Foreground owner handoff audit violates the owner-only contract")
+        if outcome == "keep_source" and outgoing != incoming:
+            raise RuntimeError("Foreground KEEP_SOURCE handoff changes owner")
+        if outcome == "adjacent_owner_handoff" and outgoing == incoming:
+            raise RuntimeError("Foreground adjacent owner handoff does not change owner")
+        requires_manual_review = outcome in {
+            "pair_local_hard_owner",
+            "full_corridor_hard_cut",
+        }
+        if _require_audit_bool(
+            entry.get("manual_review_required"),
+            context=f"{prefix} manual review requirement",
+        ) is not requires_manual_review:
+            raise RuntimeError("Foreground owner handoff manual-review flag is inconsistent")
+        if outcome == "full_corridor_hard_cut" and (
+            corridor == 0 or support != corridor
+        ):
             raise RuntimeError(
-                "Foreground anchor continuity audit incorrectly authorizes deformation"
+                "Foreground full-corridor hard cut lacks complete corridor support"
             )
+        observed_hard_owner_count += int(
+            outcome in {"pair_local_hard_owner", "full_corridor_hard_cut"}
+        )
+    if observed_hard_owner_count != hard_owner_count:
+        raise RuntimeError("Foreground owner handoff audit hard-owner count is inconsistent")
     return {
         "handoff_count": handoff_count,
-        "continuity_audit_count": continuity_count,
+        "audit_complete_count": complete_count,
         "owner_only_no_deformation_count": owner_only_count,
+        "hard_owner_fallback_count": hard_owner_count,
     }
 
 
@@ -524,7 +541,7 @@ def _derive_handoff_outcomes(
         )
         if hard_cut_rows < 0:
             raise RuntimeError("Handoff audit hard-cut row count cannot be negative")
-        foreground_handoff = _validate_foreground_anchor_handoff_continuity(
+        foreground_handoff = _validate_foreground_owner_handoff_audit(
             pair, pair_index=pair_index, frame_ids=frame_ids
         )
 
@@ -588,7 +605,13 @@ def _derive_handoff_outcomes(
         # true local APAP candidate retains its own B-grade label.  Any hard
         # row or GraphCut absence is deliberately classified as C even if
         # another pair-local check happened to pass.
-        if accepted and graphcut_used and hard_cut_rows == 0:
+        # A foreground-only hard-owner outcome is intentionally independent of
+        # the background geometry branch.  It is structurally safe, but it is
+        # the documented C-grade fallback for an identity handoff that could
+        # not remain an ordinary anchor/owner transition.
+        if foreground_handoff["hard_owner_fallback_count"]:
+            method = "hard_cut_degraded"
+        elif accepted and graphcut_used and hard_cut_rows == 0:
             if local_method == "apap":
                 method = "apap"
             elif local_method in {None, "flow_mesh", "apap_plus_dense_flow"}:
@@ -609,18 +632,91 @@ def _derive_handoff_outcomes(
                 "structurally_safe": True,
                 "audit_complete": True,
                 "reason": reason,
-                "foreground_anchor_handoff_count": foreground_handoff[
-                    "handoff_count"
+                "foreground_owner_handoff_count": foreground_handoff["handoff_count"],
+                "foreground_owner_handoff_audit_complete_count": foreground_handoff[
+                    "audit_complete_count"
                 ],
-                "foreground_anchor_handoff_continuity_audit_count": (
-                    foreground_handoff["continuity_audit_count"]
-                ),
-                "foreground_anchor_handoff_owner_only_count": foreground_handoff[
+                "foreground_owner_handoff_owner_only_count": foreground_handoff[
                     "owner_only_no_deformation_count"
+                ],
+                "foreground_owner_handoff_hard_owner_fallback_count": foreground_handoff[
+                    "hard_owner_fallback_count"
                 ],
             }
         )
     return tuple(outcomes)
+
+
+def _validate_foreground_owner_continuity_summary(
+    render_metadata: Mapping[str, object], *, frame_ids: list[int]
+) -> dict[str, int | str]:
+    """Validate the v3 plan-wide foreground ownership invariants.
+
+    Pair audits prove each transition; this bounded sequence summary makes the
+    no-nonadjacent-owner/no-blend/no-deformation contract inspectable without
+    serialising masks.  A missing or contradictory summary is a structural
+    failure, not a C-grade quality warning.
+    """
+
+    residual_value = render_metadata.get("residual_alignment")
+    if not isinstance(residual_value, Mapping):
+        raise RuntimeError("Calibrated RGB pushbroom omits residual alignment metadata")
+    working_value = residual_value.get("working_set_audit")
+    if not isinstance(working_value, Mapping):
+        raise RuntimeError("Calibrated RGB pushbroom omits working-set audit")
+    plan_value = working_value.get("foreground_segment_owner_plan")
+    if not isinstance(plan_value, Mapping):
+        raise RuntimeError("Calibrated RGB pushbroom omits foreground owner plan")
+    value = plan_value.get("foreground_owner_continuity_summary")
+    if not isinstance(value, Mapping):
+        raise RuntimeError("Foreground owner plan omits continuity summary")
+    summary = dict(value)
+    if summary.get("backend") != "foreground_segment_owner_plan_v3":
+        raise RuntimeError("Foreground owner continuity summary has an unknown backend")
+    normalized: dict[str, int | str] = {
+        "backend": "foreground_segment_owner_plan_v3",
+    }
+    for key in (
+        "track_count",
+        "multi_pair_track_count",
+        "owner_run_count",
+        "actual_owner_switch_count",
+        "minimum_feasible_owner_switch_count",
+        "avoidable_owner_switch_count",
+        "current_valid_nonadjacent_owner_pixel_count",
+        "foreground_blend_pixel_count",
+        "foreground_deformation_pixel_count",
+    ):
+        count = _require_audit_int(summary.get(key), context=f"foreground summary {key}")
+        if count < 0:
+            raise RuntimeError("Foreground owner continuity summary has a negative count")
+        normalized[key] = count
+    if (
+        int(normalized["multi_pair_track_count"]) > int(normalized["track_count"])
+        or int(normalized["owner_run_count"]) < int(normalized["track_count"])
+        or int(normalized["actual_owner_switch_count"])
+        != int(normalized["owner_run_count"])
+        - int(normalized["track_count"])
+        or int(normalized["minimum_feasible_owner_switch_count"])
+        > int(normalized["actual_owner_switch_count"])
+        or int(normalized["avoidable_owner_switch_count"])
+        != int(normalized["actual_owner_switch_count"])
+        - int(normalized["minimum_feasible_owner_switch_count"])
+    ):
+        raise RuntimeError("Foreground owner continuity summary has inconsistent run costs")
+    if (
+        int(normalized["avoidable_owner_switch_count"]) != 0
+        or int(normalized["current_valid_nonadjacent_owner_pixel_count"]) != 0
+        or int(normalized["foreground_blend_pixel_count"]) != 0
+        or int(normalized["foreground_deformation_pixel_count"]) != 0
+    ):
+        raise RuntimeError("Foreground owner continuity violates formal owner-only invariants")
+    # A summary applies to this exact render order.  The explicit count makes
+    # accidental use of a cached sidecar impossible without leaking it into
+    # the delivery schema.
+    if len(frame_ids) < 2:
+        raise RuntimeError("Foreground owner continuity requires at least two real sources")
+    return normalized
 
 
 def _handoff_fallback_summary(
@@ -656,6 +752,10 @@ def _assess_publication(
     """
 
     outcomes = _derive_handoff_outcomes(render_metadata, frame_ids)
+    foreground_summary = _validate_foreground_owner_continuity_summary(
+        render_metadata, frame_ids=frame_ids
+    )
+    render_metadata["foreground_owner_continuity_summary"] = dict(foreground_summary)
     render_metadata["handoff_outcomes"] = [dict(value) for value in outcomes]
     summary = _handoff_fallback_summary(outcomes)
     render_metadata["handoff_fallback_summary"] = dict(summary)
@@ -2635,6 +2735,48 @@ def _write_bytes(path: Path, data: bytes) -> Path:
     return path
 
 
+def _validate_glb_bytes(data: bytes) -> None:
+    """Reject a staged mesh that is non-empty but not a valid GLB envelope.
+
+    This is intentionally a compact container validation rather than a mesh
+    quality gate: TSDF remains display-only and never influences panorama
+    ownership or quality classification.  It still prevents publishing an
+    arbitrary/truncated byte stream as the required viewer sibling.
+    """
+
+    if len(data) < 20:
+        raise RuntimeError("TSDF mesh export returned a truncated GLB")
+    magic, version, declared_length = struct.unpack_from("<III", data, 0)
+    if magic != 0x46546C67 or version != 2:
+        raise RuntimeError("TSDF mesh export did not return a GLB v2 payload")
+    if declared_length != len(data):
+        raise RuntimeError("TSDF GLB declared length does not match staged bytes")
+    offset = 12
+    json_chunk: bytes | None = None
+    while offset < len(data):
+        if offset + 8 > len(data):
+            raise RuntimeError("TSDF GLB has a truncated chunk header")
+        chunk_length, chunk_type = struct.unpack_from("<II", data, offset)
+        offset += 8
+        chunk_end = offset + chunk_length
+        if chunk_length % 4 or chunk_end > len(data):
+            raise RuntimeError("TSDF GLB has an invalid chunk length")
+        if json_chunk is None:
+            if chunk_type != 0x4E4F534A:  # JSON, little-endian FourCC
+                raise RuntimeError("TSDF GLB must start with a JSON chunk")
+            json_chunk = data[offset:chunk_end]
+        offset = chunk_end
+    if offset != len(data) or json_chunk is None:
+        raise RuntimeError("TSDF GLB has no complete JSON chunk")
+    try:
+        document = json.loads(json_chunk.rstrip(b" \t\r\n\x00").decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("TSDF GLB JSON chunk is invalid") from exc
+    asset = document.get("asset") if isinstance(document, Mapping) else None
+    if not isinstance(asset, Mapping) or asset.get("version") != "2.0":
+        raise RuntimeError("TSDF GLB JSON lacks glTF 2.0 asset metadata")
+
+
 def _mesh_viewer_html(mesh_filename: str) -> str:
     """Build a self-contained entry page for a locally served GLB mesh."""
 
@@ -2665,7 +2807,7 @@ def _export_display_only_tsdf_mesh(
     intrinsics: CameraIntrinsics,
     config: dict[str, Any],
 ) -> tuple[bytes, dict[str, object]]:
-    """Build the optional 3-D inspection asset after RGB rendering is complete.
+    """Build the required 3-D inspection asset after RGB rendering is complete.
 
     This delayed import is intentionally below the RGB panorama quality gate.
     The exported mesh has no return path into calibrated RGB pushbroom, seam,
@@ -2680,6 +2822,74 @@ def _export_display_only_tsdf_mesh(
         _pinhole_intrinsics(intrinsics),
         config=config,
     )
+
+
+def _stage_required_tsdf_visualization(
+    output: Path,
+    frames: list[RGBDFrame],
+    poses: list[np.ndarray],
+    intrinsics: CameraIntrinsics,
+    config: dict[str, Any],
+) -> tuple[Path, Path, dict[str, object]]:
+    """Stage the mandatory display-only mesh and its sibling viewer.
+
+    A formal A/B/C delivery requires both files.  This helper deliberately
+    executes after the RGB panorama decision and only returns staged assets;
+    it cannot feed TSDF information back into the panorama renderer or its
+    publication assessment.
+    """
+
+    mesh_glb, mesh_metadata = _export_display_only_tsdf_mesh(
+        frames,
+        poses,
+        intrinsics,
+        config,
+    )
+    if not isinstance(mesh_glb, bytes) or not mesh_glb:
+        raise RuntimeError("TSDF mesh export must return non-empty GLB bytes")
+    _validate_glb_bytes(mesh_glb)
+    if not isinstance(mesh_metadata, Mapping):
+        raise RuntimeError("TSDF mesh export must return metadata as a mapping")
+    if mesh_metadata.get("display_only") is not True:
+        raise RuntimeError("TSDF mesh export must be explicitly display-only")
+    if mesh_metadata.get("participates_in_panorama") is not False:
+        raise RuntimeError(
+            "TSDF mesh export must not participate in panorama generation"
+        )
+
+    mesh_filename = "tsdf_mesh.glb"
+    viewer_filename = "tsdf_mesh_viewer.html"
+    viewer_html = _mesh_viewer_html(mesh_filename)
+    if f'src="{mesh_filename}"' not in viewer_html:
+        raise RuntimeError("TSDF viewer must reference its sibling tsdf_mesh.glb")
+
+    pending_mesh = output / ".tsdf_mesh.pending.glb"
+    pending_viewer = output / ".tsdf_mesh_viewer.pending.html"
+    try:
+        _write_bytes(pending_mesh, mesh_glb)
+        pending_viewer.write_text(viewer_html, encoding="utf-8")
+    except Exception:
+        # ``run`` also clears these on the failure path, but leave the helper
+        # safe if it is exercised directly in a focused delivery test.
+        for path in (pending_mesh, pending_viewer):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+
+    visualization = dict(mesh_metadata)
+    visualization.update(
+        {
+            "status": "published",
+            "required_for_delivery": True,
+            "display_only": True,
+            "participates_in_panorama": False,
+            "mesh": mesh_filename,
+            "viewer": viewer_filename,
+        }
+    )
+    return pending_mesh, pending_viewer, visualization
 
 
 def _intrinsics_payload(intrinsics: CameraIntrinsics) -> dict[str, object]:
@@ -4149,75 +4359,26 @@ def _run_pipeline(
     # TSDF is deliberately an output-only 3-D inspection stage.  It executes
     # only after the RGB-only panorama has passed all of its own gates, and it
     # receives real RGB-D poses without returning any result to that renderer.
+    # A formal A/B/C delivery requires this staged mesh/viewer pair; an export
+    # or staging error is therefore a fail-closed F, not a degraded RGB-only
+    # publication.
     tsdf_visualization: dict[str, object] | None = None
-    tsdf_mesh_glb: bytes | None = None
+    pending_mesh: Path | None = None
+    pending_mesh_viewer: Path | None = None
     if not diagnostic_force:
         assert publication_assessment is not None
         visualization_config = dict(stitch_config.get("tsdf_visualization", {}))
-        if publication_assessment.quality_grade == "C":
-            # The mesh is a non-authoritative post-quality inspection asset.
-            # A manual-review delivery must never be held hostage by a TSDF
-            # export, nor imply that it improved the RGB panorama.
-            tsdf_visualization = {
-                "status": "skipped_degraded",
-                "display_only": True,
-                "participates_in_panorama": False,
-                "reason": "manual_review_required",
-            }
-        elif bool(visualization_config.get("enabled", True)):
-            # TSDF is a read-only inspection artefact.  It has no authority
-            # over the already-audited RGB panorama, so an unavailable
-            # Open3D/TSDF export must never turn a structurally valid A/B
-            # publication into F.
-            try:
-                tsdf_mesh_glb, mesh_metadata = _export_display_only_tsdf_mesh(
-                    pose_frames,
-                    pose_values,
-                    session.calibration,
-                    visualization_config,
-                )
-            except Exception as exc:
-                tsdf_visualization = {
-                    "status": "unavailable",
-                    "display_only": True,
-                    "participates_in_panorama": False,
-                    "reason": "tsdf_export_failed_nonblocking",
-                    "error_type": type(exc).__name__,
-                }
-            else:
-                tsdf_visualization = {
-                    **mesh_metadata,
-                    "mesh": str(output / "tsdf_mesh.glb"),
-                    "viewer": str(output / "tsdf_mesh_viewer.html"),
-                }
-
-    # Stage optional viewer files before the report is serialised, so a file
-    # system failure can be represented as a non-blocking TSDF status rather
-    # than leaving report.json to claim an artefact that was not published.
-    pending_mesh: Path | None = None
-    pending_mesh_viewer: Path | None = None
-    if tsdf_mesh_glb is not None:
-        try:
-            pending_mesh = _write_bytes(output / ".tsdf_mesh.pending.glb", tsdf_mesh_glb)
-            pending_mesh_viewer = output / ".tsdf_mesh_viewer.pending.html"
-            pending_mesh_viewer.write_text(
-                _mesh_viewer_html("tsdf_mesh.glb"), encoding="utf-8"
-            )
-        except Exception as exc:
-            if pending_mesh is not None:
-                pending_mesh.unlink(missing_ok=True)
-            if pending_mesh_viewer is not None:
-                pending_mesh_viewer.unlink(missing_ok=True)
-            pending_mesh = None
-            pending_mesh_viewer = None
-            tsdf_mesh_glb = None
-            tsdf_visualization = {
-                "status": "unavailable",
-                "display_only": True,
-                "participates_in_panorama": False,
-                "reason": "tsdf_staging_failed_nonblocking",
-                "error_type": type(exc).__name__,
-            }
+        (
+            pending_mesh,
+            pending_mesh_viewer,
+            tsdf_visualization,
+        ) = _stage_required_tsdf_visualization(
+            output,
+            pose_frames,
+            pose_values,
+            session.calibration,
+            visualization_config,
+        )
 
     panorama_path = output / (
         "diagnostic_panorama.jpg" if diagnostic_force else "panorama.jpg"
@@ -4312,6 +4473,11 @@ def _run_pipeline(
         "projection": render_transforms_payload,
         "render_strategy": "calibrated_rgb_pushbroom",
         "render": render_metadata,
+        "foreground_owner_continuity_summary": (
+            render_metadata.get("foreground_owner_continuity_summary")
+            if publication_assessment is not None
+            else None
+        ),
         "tsdf_visualization": tsdf_visualization,
         "publication": (
             publication_assessment.as_dict()
@@ -4367,30 +4533,10 @@ def _run_pipeline(
         os.replace(pending_report, report_path)
         return report
 
-    pending_panorama = _write_bgr(output / ".panorama.pending.jpg", panorama)
-    pending_transforms = output / ".transforms.pending.json"
-    pending_render_transforms = output / ".render_transforms.pending.json"
-    pending_report = output / ".report.pending.json"
-    pending_transforms.write_text(
-        json.dumps(transforms_payload, indent=2), encoding="utf-8"
-    )
-    pending_render_transforms.write_text(
-        json.dumps(render_transforms_payload, indent=2), encoding="utf-8"
-    )
-    pending_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    os.replace(pending_panorama, output / "panorama.jpg")
-    if pending_mesh is not None and pending_mesh_viewer is not None:
-        os.replace(pending_mesh, output / "tsdf_mesh.glb")
-        os.replace(pending_mesh_viewer, output / "tsdf_mesh_viewer.html")
-    else:
-        # A new C-grade run or a non-blocking TSDF failure must not leave a
-        # stale mesh from a prior delivery beside the fresh panorama.
-        (output / "tsdf_mesh.glb").unlink(missing_ok=True)
-        (output / "tsdf_mesh_viewer.html").unlink(missing_ok=True)
-    os.replace(pending_transforms, output / "transforms.json")
-    os.replace(pending_render_transforms, output / "render_transforms.json")
-    os.replace(pending_report, output / "report.json")
     assert publication_assessment is not None
+    assert pending_mesh is not None
+    assert pending_mesh_viewer is not None
+    assert tsdf_visualization is not None
     delivery = {
         "schema": "gemini305-panorama-delivery/v9",
         "published_utc": datetime.now(timezone.utc).isoformat(),
@@ -4409,6 +4555,9 @@ def _run_pipeline(
         "handoff_outcomes": [
             dict(value) for value in publication_assessment.handoff_outcomes
         ],
+        "foreground_owner_continuity_summary": render_metadata.get(
+            "foreground_owner_continuity_summary"
+        ),
         "manual_review_required": publication_assessment.manual_review_required,
         "pose_backend": (
             "hybrid_orbslam3_rgbd"
@@ -4449,8 +4598,28 @@ def _run_pipeline(
         "tsdf_visualization": tsdf_visualization,
         "report": str(output / "report.json"),
     }
+
+    # Stage every formal payload before exposing any final filename.  The
+    # success marker itself is still replaced last below.
+    pending_panorama = _write_bgr(output / ".panorama.pending.jpg", panorama)
+    pending_transforms = output / ".transforms.pending.json"
+    pending_render_transforms = output / ".render_transforms.pending.json"
+    pending_report = output / ".report.pending.json"
     pending_delivery = output / ".delivery.pending.json"
+    pending_transforms.write_text(
+        json.dumps(transforms_payload, indent=2), encoding="utf-8"
+    )
+    pending_render_transforms.write_text(
+        json.dumps(render_transforms_payload, indent=2), encoding="utf-8"
+    )
+    pending_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
     pending_delivery.write_text(json.dumps(delivery, indent=2), encoding="utf-8")
+    os.replace(pending_panorama, output / "panorama.jpg")
+    os.replace(pending_mesh, output / "tsdf_mesh.glb")
+    os.replace(pending_mesh_viewer, output / "tsdf_mesh_viewer.html")
+    os.replace(pending_transforms, output / "transforms.json")
+    os.replace(pending_render_transforms, output / "render_transforms.json")
+    os.replace(pending_report, output / "report.json")
     os.replace(pending_delivery, output / "delivery.json")
     return report
 

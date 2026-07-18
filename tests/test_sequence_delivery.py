@@ -3,13 +3,33 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+import struct
 
 import numpy as np
 import pytest
 
 import panorama_demo.calibrated_rgb_pushbroom as pushbroom_module
 import panorama_demo.stitch_sequence as sequence
+from panorama_demo.handoff_continuity import (
+    ForegroundOwnerHandoffOutcome,
+    build_foreground_owner_handoff_audit,
+)
 from panorama_demo.synthetic import generate_sequence
+
+
+def _test_glb(label: str) -> bytes:
+    """Return a small, structurally valid glTF 2.0 binary for staging tests."""
+
+    document = json.dumps(
+        {"asset": {"version": "2.0", "generator": label}},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    document += b" " * (-len(document) % 4)
+    return (
+        struct.pack("<III", 0x46546C67, 2, 20 + len(document))
+        + struct.pack("<II", len(document), 0x4E4F534A)
+        + document
+    )
 
 
 class _DeliveryTestRGBDBackend:
@@ -366,21 +386,37 @@ def _complete_anchor_render_metadata(
 ) -> dict[str, object]:
     return {
         "quality_metrics": {"quality_pass": quality_pass},
+        "residual_alignment": {
+            "working_set_audit": {
+                "foreground_segment_owner_plan": {
+                    "foreground_owner_continuity_summary": {
+                        "backend": "foreground_segment_owner_plan_v3",
+                        "track_count": 0,
+                        "multi_pair_track_count": 0,
+                        "owner_run_count": 0,
+                        "actual_owner_switch_count": 0,
+                        "minimum_feasible_owner_switch_count": 0,
+                        "avoidable_owner_switch_count": 0,
+                        "current_valid_nonadjacent_owner_pixel_count": 0,
+                        "foreground_blend_pixel_count": 0,
+                        "foreground_deformation_pixel_count": 0,
+                    }
+                }
+            }
+        },
         "pairs": [
             {
                 "first_frame_id": frame_ids[index],
                 "second_frame_id": frame_ids[index + 1],
                 "graphcut_used": True,
                 "hard_cut_row_count": 0,
-                "foreground_anchor_handoff_continuity": {
-                    "policy": (
-                        "foreground_owner_only_continuity_audit_no_local_deformation"
-                    ),
+                "foreground_owner_handoff_audit": {
+                    "policy": "foreground_owner_only_handoff_audit_v1",
                     "handoff_count": 0,
-                    "continuity_audit_count": 0,
-                    "coverage_complete_count": 0,
+                    "audit_complete_count": 0,
                     "owner_only_no_deformation_count": 0,
-                    "local_deformation_attempted": False,
+                    "structurally_safe_count": 0,
+                    "hard_owner_fallback_count": 0,
                     "audits": [],
                 },
                 "geometry_assistance": {
@@ -393,6 +429,113 @@ def _complete_anchor_render_metadata(
             for index in range(len(frame_ids) - 1)
         ],
     }
+
+
+def _foreground_handoff_record(
+    *,
+    outcome: str,
+    outgoing_source: int = 0,
+    incoming_source: int = 1,
+    support: int = 8,
+    corridor: int = 12,
+) -> dict[str, object]:
+    """Build scalar-only v3 foreground evidence for publication tests."""
+
+    return {
+        "pair_index": 0,
+        "track_id": "track-0",
+        "outgoing_run_id": "run-0",
+        "incoming_run_id": "run-1",
+        "outcome": outcome,
+        "current_pair_source_indices": [0, 1],
+        "outgoing_source_index": outgoing_source,
+        "incoming_source_index": incoming_source,
+        "handoff_pixel_count": support,
+        "incoming_owner_pixel_count": support,
+        "other_adjacent_owner_pixel_count": 0,
+        "nonadjacent_owner_pixel_count": 0,
+        "invalid_owner_pixel_count": 0,
+        "pair_corridor_pixel_count": corridor,
+        "coverage_pixel_count": support,
+        "coverage_required_pixel_count": support,
+        "incoming_owner_coverage_ratio": 1.0,
+        "coverage_ratio": 1.0,
+        "incoming_owner_is_adjacent": True,
+        "outgoing_owner_is_adjacent": True,
+        "incoming_owner_ownership_complete": True,
+        "foreground_owner_only": True,
+        "owner_only_without_deformation": True,
+        "foreground_blend_pixel_count": 0,
+        "foreground_deformation_pixel_count": 0,
+        "apap_authorized": False,
+        "flow_authorized": False,
+        "local_deformation_allowed": False,
+        "prohibited_apap_or_flow_requested": False,
+        "prohibited_deformation_attempted": False,
+        "audit_complete": True,
+        "structurally_safe": True,
+        "manual_review_required": outcome
+        in {"pair_local_hard_owner", "full_corridor_hard_cut"},
+        "selection_reasons": ["planned_owner_run"],
+        "rejection_reasons": [],
+        "evidence_storage": "scalar_only",
+    }
+
+
+def test_foreground_handoff_serializer_satisfies_delivery_validator() -> None:
+    """Keep the scalar producer and formal v3 delivery consumer in lockstep."""
+
+    audit = build_foreground_owner_handoff_audit(
+        pair_index=35,
+        track_id="hose_track_35",
+        outgoing_run_id="run_35",
+        incoming_run_id="run_36",
+        outcome=ForegroundOwnerHandoffOutcome.ADJACENT_OWNER_HANDOFF,
+        outgoing_source_index=35,
+        incoming_source_index=36,
+        handoff_support=np.ones((2, 2), dtype=bool),
+        owner_assignments=np.full((2, 2), 36, dtype=np.int16),
+        pair_corridor_pixel_count=8,
+        current_pair_source_indices=(35, 36),
+    )
+    record = audit.as_dict()
+    pair = {
+        "foreground_owner_handoff_audit": {
+            "policy": "foreground_owner_only_handoff_audit_v1",
+            "handoff_count": 1,
+            "audit_complete_count": 1,
+            "owner_only_no_deformation_count": 1,
+            "structurally_safe_count": 1,
+            "hard_owner_fallback_count": 0,
+            "audits": [record],
+        }
+    }
+
+    assert sequence._validate_foreground_owner_handoff_audit(
+        pair,
+        pair_index=35,
+        frame_ids=list(range(37)),
+    ) == {
+        "handoff_count": 1,
+        "audit_complete_count": 1,
+        "owner_only_no_deformation_count": 1,
+        "hard_owner_fallback_count": 0,
+    }
+
+
+def _set_single_track_summary(metadata: dict[str, object]) -> None:
+    summary = metadata["residual_alignment"]["working_set_audit"][
+        "foreground_segment_owner_plan"
+    ]["foreground_owner_continuity_summary"]
+    summary.update(
+        {
+            "track_count": 1,
+            "multi_pair_track_count": 1,
+            "owner_run_count": 2,
+            "actual_owner_switch_count": 1,
+            "minimum_feasible_owner_switch_count": 1,
+        }
+    )
 
 
 def test_publication_assessment_marks_complete_strict_failure_as_c() -> None:
@@ -424,9 +567,10 @@ def test_publication_assessment_marks_complete_strict_failure_as_c() -> None:
             "structurally_safe": True,
             "audit_complete": True,
             "reason": "rgb_preview_below_geometry_trigger",
-            "foreground_anchor_handoff_count": 0,
-            "foreground_anchor_handoff_continuity_audit_count": 0,
-            "foreground_anchor_handoff_owner_only_count": 0,
+            "foreground_owner_handoff_count": 0,
+            "foreground_owner_handoff_audit_complete_count": 0,
+            "foreground_owner_handoff_owner_only_count": 0,
+            "foreground_owner_handoff_hard_owner_fallback_count": 0,
         }
     ]
 
@@ -499,11 +643,176 @@ def test_publication_assessment_rejects_incomplete_handoff_audit() -> None:
         )
 
 
-def test_publication_assessment_requires_foreground_owner_only_continuity_audit() -> None:
+def test_publication_assessment_requires_foreground_owner_handoff_audit() -> None:
     metadata = _complete_anchor_render_metadata(frame_ids=[10, 11])
-    del metadata["pairs"][0]["foreground_anchor_handoff_continuity"]
+    del metadata["pairs"][0]["foreground_owner_handoff_audit"]
 
-    with pytest.raises(RuntimeError, match="foreground anchor continuity evidence"):
+    with pytest.raises(RuntimeError, match="foreground owner-run evidence"):
+        sequence._assess_publication(
+            {"quality_pass": True},
+            {"quality_pass": True},
+            metadata,
+            [10, 11],
+        )
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["pair_local_hard_owner", "full_corridor_hard_cut"],
+)
+def test_publication_assessment_marks_foreground_hard_owner_handoff_as_c(
+    outcome: str,
+) -> None:
+    metadata = _complete_anchor_render_metadata(frame_ids=[10, 11])
+    _set_single_track_summary(metadata)
+    support = 12 if outcome == "full_corridor_hard_cut" else 8
+    record = _foreground_handoff_record(outcome=outcome, support=support)
+    metadata["pairs"][0]["foreground_owner_handoff_audit"] = {
+        "policy": "foreground_owner_only_handoff_audit_v1",
+        "handoff_count": 1,
+        "audit_complete_count": 1,
+        "owner_only_no_deformation_count": 1,
+        "structurally_safe_count": 1,
+        "hard_owner_fallback_count": int(
+            outcome in {"pair_local_hard_owner", "full_corridor_hard_cut"}
+        ),
+        "audits": [record],
+    }
+
+    assessment = sequence._assess_publication(
+        {"quality_pass": True},
+        {"quality_pass": True},
+        metadata,
+        [10, 11],
+    )
+
+    assert assessment.quality_grade == "C"
+    assert assessment.delivery_state == "published_degraded"
+    assert assessment.manual_review_required is True
+    assert assessment.handoff_fallback_summary == {
+        "anchor": 0,
+        "apap": 0,
+        "flow_mesh": 0,
+        "hard_cut": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("outcome", "mutation", "message"),
+    [
+        (
+            "keep_source",
+            lambda record: record.update(incoming_source_index=1),
+            "KEEP_SOURCE handoff changes owner",
+        ),
+        (
+            "adjacent_owner_handoff",
+            lambda record: record.update(incoming_source_index=0),
+            "does not change owner",
+        ),
+        (
+            "full_corridor_hard_cut",
+            lambda record: record.update(pair_corridor_pixel_count=13),
+            "lacks complete corridor support",
+        ),
+        (
+            "pair_local_hard_owner",
+            lambda record: record.update(prohibited_apap_or_flow_requested=True),
+            "violates the owner-only contract",
+        ),
+        (
+            "pair_local_hard_owner",
+            lambda record: record.update(manual_review_required=False),
+            "manual-review flag is inconsistent",
+        ),
+    ],
+)
+def test_publication_assessment_revalidates_foreground_handoff_semantics(
+    outcome: str,
+    mutation: object,
+    message: str,
+) -> None:
+    metadata = _complete_anchor_render_metadata(frame_ids=[10, 11])
+    record = _foreground_handoff_record(
+        outcome=outcome,
+        incoming_source=0 if outcome == "keep_source" else 1,
+        support=12 if outcome == "full_corridor_hard_cut" else 8,
+    )
+    assert callable(mutation)
+    mutation(record)
+    metadata["pairs"][0]["foreground_owner_handoff_audit"] = {
+        "policy": "foreground_owner_only_handoff_audit_v1",
+        "handoff_count": 1,
+        "audit_complete_count": 1,
+        "owner_only_no_deformation_count": 1,
+        "structurally_safe_count": 1,
+        "hard_owner_fallback_count": int(
+            outcome in {"pair_local_hard_owner", "full_corridor_hard_cut"}
+        ),
+        "audits": [record],
+    }
+
+    with pytest.raises(RuntimeError, match=message):
+        sequence._assess_publication(
+            {"quality_pass": True},
+            {"quality_pass": True},
+            metadata,
+            [10, 11],
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("avoidable_owner_switch_count", 1),
+        ("current_valid_nonadjacent_owner_pixel_count", 1),
+        ("foreground_blend_pixel_count", 1),
+        ("foreground_deformation_pixel_count", 1),
+    ],
+)
+def test_publication_assessment_rejects_foreground_owner_invariant_violation(
+    field: str, value: int
+) -> None:
+    metadata = _complete_anchor_render_metadata(frame_ids=[10, 11])
+    summary = metadata["residual_alignment"]["working_set_audit"][
+        "foreground_segment_owner_plan"
+    ]["foreground_owner_continuity_summary"]
+    summary[field] = value
+    if field == "avoidable_owner_switch_count":
+        summary["actual_owner_switch_count"] = value
+        summary["owner_run_count"] = value + summary["track_count"]
+        summary["minimum_feasible_owner_switch_count"] = 0
+
+    with pytest.raises(RuntimeError, match="Foreground owner continuity violates"):
+        sequence._assess_publication(
+            {"quality_pass": True},
+            {"quality_pass": True},
+            metadata,
+            [10, 11],
+        )
+
+
+@pytest.mark.parametrize(
+    ("track_count", "owner_run_count", "actual_switch_count"),
+    [(1, 0, 0), (1, 1, 1), (0, 1, 0)],
+)
+def test_publication_assessment_rejects_impossible_foreground_run_counts(
+    track_count: int, owner_run_count: int, actual_switch_count: int
+) -> None:
+    metadata = _complete_anchor_render_metadata(frame_ids=[10, 11])
+    summary = metadata["residual_alignment"]["working_set_audit"][
+        "foreground_segment_owner_plan"
+    ]["foreground_owner_continuity_summary"]
+    summary.update(
+        {
+            "track_count": track_count,
+            "owner_run_count": owner_run_count,
+            "actual_owner_switch_count": actual_switch_count,
+            "minimum_feasible_owner_switch_count": 0,
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="inconsistent run costs"):
         sequence._assess_publication(
             {"quality_pass": True},
             {"quality_pass": True},
@@ -513,12 +822,24 @@ def test_publication_assessment_requires_foreground_owner_only_continuity_audit(
 
 
 def test_structurally_valid_poor_pose_quality_publishes_degraded(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Low fitness/RMSE is a C-grade audit, never a fabricated trajectory."""
+    """C still requires the staged display-only TSDF delivery pair."""
 
     session = _make_session(tmp_path)
     output = tmp_path / "output"
+    monkeypatch.setattr(
+        sequence,
+        "_export_display_only_tsdf_mesh",
+        lambda *args, **kwargs: (
+            _test_glb("degraded-delivery-test"),
+            {
+                "backend": "fake_tsdf_display_only",
+                "display_only": True,
+                "participates_in_panorama": False,
+            },
+        ),
+    )
     args = sequence._parser().parse_args([str(session), "--output", str(output)])
 
     report = sequence.run(
@@ -535,14 +856,53 @@ def test_structurally_valid_poor_pose_quality_publishes_degraded(
     assert delivery["quality_pass"] is False
     assert delivery["manual_review_required"] is True
     assert report["strict_failure_reasons"]
-    assert report["tsdf_visualization"] == {
-        "status": "skipped_degraded",
+    visualization = report["tsdf_visualization"]
+    assert visualization == {
+        "backend": "fake_tsdf_display_only",
+        "status": "published",
+        "required_for_delivery": True,
         "display_only": True,
         "participates_in_panorama": False,
-        "reason": "manual_review_required",
+        "mesh": "tsdf_mesh.glb",
+        "viewer": "tsdf_mesh_viewer.html",
     }
-    assert not (output / "tsdf_mesh.glb").exists()
-    assert not (output / "tsdf_mesh_viewer.html").exists()
+    assert delivery["tsdf_visualization"] == visualization
+    assert (output / "tsdf_mesh.glb").read_bytes() == _test_glb(
+        "degraded-delivery-test"
+    )
+    assert 'src="tsdf_mesh.glb"' in (
+        output / "tsdf_mesh_viewer.html"
+    ).read_text(encoding="utf-8")
+
+
+def test_nonempty_invalid_tsdf_glb_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The required mesh must be a GLB envelope, not merely non-empty bytes."""
+
+    session = _make_session(tmp_path)
+    output = tmp_path / "output"
+    monkeypatch.setattr(
+        sequence,
+        "_export_display_only_tsdf_mesh",
+        lambda *args, **kwargs: (
+            b"glTF" + b"not-a-valid-glb" * 2,
+            {
+                "backend": "fake_tsdf_display_only",
+                "display_only": True,
+                "participates_in_panorama": False,
+            },
+        ),
+    )
+    args = sequence._parser().parse_args([str(session), "--output", str(output)])
+
+    with pytest.raises(RuntimeError, match="GLB"):
+        sequence.run(
+            args,
+            odometry_backend=_DeliveryTestRGBDBackend(session),
+        )
+
+    assert [path.name for path in output.iterdir()] == ["failure.json"]
 
 
 def test_reverse_optimized_pose_is_structural_failure_not_degraded_delivery(

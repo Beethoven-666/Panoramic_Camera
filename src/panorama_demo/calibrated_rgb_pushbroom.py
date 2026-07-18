@@ -33,6 +33,7 @@ from .calibrated_remap import camera_points_to_source_pixels
 from .foreground_segments import (
     DepthAnchorToken,
     ForegroundFragment,
+    ForegroundOwnerRun,
     GeometryMode,
     RawFootprintSummary,
     SegmentOwnerPlan,
@@ -52,7 +53,11 @@ from .geometry_assisted_local_warp import (
     mutually_consistent_correspondences,
     solve_active_mesh_forward_inverse,
 )
-from .handoff_continuity import evaluate_handoff_continuity
+from .handoff_continuity import (
+    ForegroundOwnerHandoffOutcome,
+    build_foreground_owner_handoff_audit,
+    evaluate_handoff_continuity,
+)
 from .local_apap_flow import (
     LocalAPAPFlowConfig,
     LocalAPAPFlowInverseWarp,
@@ -756,12 +761,14 @@ class _GeometryPairPlan:
 
 @dataclass(frozen=True)
 class _ForegroundAnchorReservation:
-    """Sparse RGB-owner reservation for one approved two-pair foreground span.
+    """RGB-owner reservation for one planned foreground owner run.
 
-    The fragments are existing guarded output masks, not a new object mask or
-    a depth image.  Each is written only after its own adjacent pair's owner
-    solve, then becomes a sparse completed lock until a later protected,
-    non-adjacent hard-owner handoff retires it.
+    The formal v3 path gives every reservation an explicit ``track_id`` and
+    ``run_id``.  A reservation is still only an owner-only RGB write over
+    existing protected pixels; it is neither a foreground mask delivery nor a
+    deformation request.  The optional legacy shape keeps the narrow
+    direct-token helper tests callable while the renderer itself uses owner
+    runs exclusively.
     """
 
     span_id: int
@@ -770,21 +777,42 @@ class _ForegroundAnchorReservation:
     frame_id: int
     fragment_refs: tuple[tuple[int, int], ...]
     fragments: tuple[ForegroundFragment, ...] = field(repr=False)
+    track_id: int | None = None
+    run_id: int | None = None
 
     def __post_init__(self) -> None:
         if (
             int(self.span_id) < 0
             or int(self.segment_id) < 0
             or int(self.source_index) < 0
-            or len(self.fragment_refs) != 2
-            or len(self.fragments) != 2
+            or not self.fragment_refs
+            or len(self.fragment_refs) != len(self.fragments)
         ):
             raise ValueError("Foreground anchor reservation is malformed")
-        if len(set(self.fragment_refs)) != 2:
+        if len(set(self.fragment_refs)) != len(self.fragment_refs):
             raise ValueError("Foreground anchor reservation references duplicate guards")
         if tuple(fragment.reference for fragment in self.fragments) != self.fragment_refs:
             raise ValueError("Foreground anchor reservation fragments do not match refs")
-        if any(fragment.depth_anchor_local_mask is None for fragment in self.fragments):
+        v3 = self.track_id is not None or self.run_id is not None
+        if v3:
+            if self.track_id is None or self.run_id is None:
+                raise ValueError("Foreground owner reservation needs track_id and run_id")
+            if int(self.track_id) < 0 or int(self.run_id) < 0:
+                raise ValueError("Foreground owner reservation ids must be non-negative")
+            for fragment in self.fragments:
+                if fragment.local_owner_for_source(int(self.source_index)) is None:
+                    raise ValueError(
+                        "Foreground owner run source does not cover its reserved guard"
+                    )
+            object.__setattr__(self, "track_id", int(self.track_id))
+            object.__setattr__(self, "run_id", int(self.run_id))
+            return
+
+        # Retain the old direct-token-only validation for compatibility with
+        # targeted unit tests.  Formal rendering never reaches this branch.
+        if len(self.fragments) != 2 or any(
+            fragment.depth_anchor_local_mask is None for fragment in self.fragments
+        ):
             raise ValueError("Foreground anchor reservation lacks a sparse depth anchor mask")
         tokens = {fragment.depth_anchor_token for fragment in self.fragments}
         if None in tokens or len(tokens) != 1:
@@ -799,8 +827,25 @@ class _ForegroundAnchorReservation:
             raise ValueError("Foreground anchor reservation token does not match its span")
 
     @property
+    def is_owner_run(self) -> bool:
+        return self.track_id is not None and self.run_id is not None
+
+    @property
+    def uses_sparse_anchor_mask(self) -> bool:
+        """Whether compatibility reservations select only their token subset."""
+
+        return not self.is_owner_run
+
+    @property
     def pixel_count(self) -> int:
-        return int(sum(fragment.anchor_pixel_count for fragment in self.fragments))
+        return int(
+            sum(
+                fragment.anchor_pixel_count
+                if self.uses_sparse_anchor_mask
+                else fragment.pixel_count
+                for fragment in self.fragments
+            )
+        )
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -808,18 +853,32 @@ class _ForegroundAnchorReservation:
             "segment_id": int(self.segment_id),
             "source_index": int(self.source_index),
             "frame_id": int(self.frame_id),
+            "track_id": self.track_id,
+            "run_id": self.run_id,
+            "reservation_kind": (
+                "foreground_owner_run" if self.is_owner_run else "legacy_sparse_token"
+            ),
             "fragment_refs": [
                 {"pair_index": int(pair), "component_label": int(label)}
                 for pair, label in self.fragment_refs
             ],
             "reserved_fragment_pixel_count": self.pixel_count,
-            "depth_anchor_token": self.fragments[0].depth_anchor_token.as_dict(),
+            "depth_anchor_token": (
+                None
+                if self.uses_sparse_anchor_mask
+                and self.fragments[0].depth_anchor_token is None
+                else (
+                    self.fragments[0].depth_anchor_token.as_dict()
+                    if self.uses_sparse_anchor_mask
+                    else None
+                )
+            ),
         }
 
 
 @dataclass(frozen=True)
 class _ForegroundAnchorHandoff:
-    """One exact old-anchor subset retired for a current hard-owner pair.
+    """One owner-run subset retired at an adjacent-pair handoff.
 
     A completed anchor may survive outside a later pair's valid RGB support:
     neither of that pair's adjacent sources can write those output pixels.  It
@@ -834,20 +893,61 @@ class _ForegroundAnchorHandoff:
     source_index: int
     fragment: ForegroundFragment = field(repr=False)
     protected_component_pixel_counts: Mapping[int, int] = field(default_factory=dict)
+    track_id: int | None = None
+    outgoing_run_id: int | None = None
+    incoming_run_id: int | None = None
+    incoming_source_index: int | None = None
+    planned_outcome: ForegroundOwnerHandoffOutcome | None = None
 
     def __post_init__(self) -> None:
         if (
             int(self.target_pair_index) < 0
             or int(self.span_id) < 0
             or int(self.source_index) < 0
-            or self.fragment.depth_anchor_local_mask is None
-            or self.fragment.anchor_pixel_count <= 0
+            or self.fragment.pixel_count <= 0
         ):
             raise ValueError("Foreground anchor handoff is malformed")
-        if self.source_index in {
+        v3 = any(
+            value is not None
+            for value in (
+                self.track_id,
+                self.outgoing_run_id,
+                self.incoming_run_id,
+                self.incoming_source_index,
+                self.planned_outcome,
+            )
+        )
+        current_sources = {
             int(self.target_pair_index),
             int(self.target_pair_index) + 1,
-        }:
+        }
+        if v3:
+            if (
+                self.track_id is None
+                or self.outgoing_run_id is None
+                or self.incoming_run_id is None
+                or self.incoming_source_index is None
+                or self.planned_outcome is None
+            ):
+                raise ValueError("Foreground owner handoff needs complete run identity")
+            if min(
+                int(self.track_id),
+                int(self.outgoing_run_id),
+                int(self.incoming_run_id),
+                int(self.incoming_source_index),
+            ) < 0:
+                raise ValueError("Foreground owner handoff ids must be non-negative")
+            if int(self.source_index) not in current_sources:
+                raise ValueError("Foreground handoff outgoing source is not pair-adjacent")
+            if int(self.incoming_source_index) not in current_sources:
+                raise ValueError("Foreground handoff incoming source is not pair-adjacent")
+            if not isinstance(self.planned_outcome, ForegroundOwnerHandoffOutcome):
+                raise ValueError("Foreground owner handoff outcome has the wrong type")
+            object.__setattr__(self, "track_id", int(self.track_id))
+            object.__setattr__(self, "outgoing_run_id", int(self.outgoing_run_id))
+            object.__setattr__(self, "incoming_run_id", int(self.incoming_run_id))
+            object.__setattr__(self, "incoming_source_index", int(self.incoming_source_index))
+        elif self.source_index in current_sources:
             raise ValueError("Foreground anchor handoff source is still pair-adjacent")
         counts = {
             int(label): int(count)
@@ -855,7 +955,7 @@ class _ForegroundAnchorHandoff:
         }
         if counts and min(counts) <= 0:
             raise ValueError("Foreground anchor handoff component evidence is invalid")
-        if sum(counts.values()) > self.fragment.anchor_pixel_count:
+        if sum(counts.values()) > self.pixel_count:
             raise ValueError("Foreground anchor handoff component evidence exceeds its mask")
         object.__setattr__(self, "target_pair_index", int(self.target_pair_index))
         object.__setattr__(self, "span_id", int(self.span_id))
@@ -864,10 +964,14 @@ class _ForegroundAnchorHandoff:
 
     @property
     def pixel_count(self) -> int:
-        return self.fragment.anchor_pixel_count
+        return int(
+            self.fragment.pixel_count
+            if self.track_id is not None
+            else self.fragment.anchor_pixel_count
+        )
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "pair_index": self.target_pair_index,
             "span_id": self.span_id,
             "source_index": self.source_index,
@@ -881,8 +985,27 @@ class _ForegroundAnchorHandoff:
                 str(label): count
                 for label, count in sorted(self.protected_component_pixel_counts.items())
             },
-            "reason": "nonadjacent_current_pair_hard_owner_handoff",
+            "reason": (
+                "planned_adjacent_owner_run_handoff"
+                if self.track_id is not None
+                else "nonadjacent_current_pair_hard_owner_handoff"
+            ),
         }
+        if self.track_id is not None:
+            result.update(
+                {
+                    "track_id": self.track_id,
+                    "outgoing_run_id": self.outgoing_run_id,
+                    "incoming_run_id": self.incoming_run_id,
+                    "incoming_source_index": self.incoming_source_index,
+                    "planned_outcome": (
+                        None
+                        if self.planned_outcome is None
+                        else self.planned_outcome.value
+                    ),
+                }
+            )
+        return result
 
 
 @dataclass(frozen=True)
@@ -4165,6 +4288,295 @@ def _protected_component_anchor_pixel_counts(
     return counts
 
 
+def _build_direct_token_identity_inputs(
+    plans: Sequence[_GeometryPairPlan],
+    protected_fragments_by_pair: Sequence[Sequence[ProtectedComponentFragment]],
+    *,
+    canvas_height: int,
+    pair_windows: Sequence[tuple[int, int]],
+) -> tuple[
+    dict[tuple[int, int], tuple[DepthAnchorToken, ...]],
+    dict[tuple[int, int], GeometryMode],
+    dict[tuple[int, int], bool],
+    dict[tuple[int, int, int], RawFootprintSummary],
+    dict[str, object],
+]:
+    """Convert direct depth tokens into v3 track-planner evidence only.
+
+    A token does not vote for a pair-local owner.  It merely attaches strict
+    identity evidence to the one protected component reached by its exact
+    sparse native-depth footprint.  The foreground planner then decides all
+    owner runs globally.  Ambiguous component attachment is discarded rather
+    than guessed, which turns it back into the already-safe owner-only path.
+    """
+
+    if len(plans) != len(protected_fragments_by_pair) or len(plans) != len(
+        pair_windows
+    ):
+        raise RuntimeError("Direct-token identity inputs do not cover every pair")
+
+    # token -> (pair, matching component label, local owner, raw footprint)
+    claims: dict[
+        DepthAnchorToken,
+        list[tuple[int, int, int, RawFootprintSummary]],
+    ] = {}
+    pair_audit: list[dict[str, int]] = []
+    rejected_claims = 0
+    for pair_index, plan in enumerate(plans):
+        evidence_by_label = dict(plan.source_anchor_evidence)
+        accepted_claims = 0
+        no_component_claims = 0
+        ambiguous_component_claims = 0
+        clipped_claims = 0
+        if evidence_by_label:
+            if (
+                plan.source_anchor_labels_path is None
+                or not plan.source_anchor_labels_path.exists()
+            ):
+                raise RuntimeError("Direct token evidence lacks its temporary label tile")
+            x0, labels = _load_source_anchor_labels(plan, height=int(canvas_height))
+            window_left, window_right = pair_windows[pair_index]
+            for instance_id, evidence in sorted(evidence_by_label.items()):
+                claim = _sparse_source_anchor_fragment(
+                    plan,
+                    instance_id=int(instance_id),
+                    evidence=evidence,
+                    x0=x0,
+                    labels=labels,
+                )
+                if claim is None:
+                    rejected_claims += 1
+                    continue
+                claim = _clip_foreground_anchor_fragment_to_window(
+                    claim,
+                    left=int(window_left),
+                    right=int(window_right),
+                    height=int(canvas_height),
+                )
+                if claim is None:
+                    rejected_claims += 1
+                    clipped_claims += 1
+                    continue
+                component_counts = _protected_component_anchor_pixel_counts(
+                    claim, protected_fragments_by_pair[pair_index]
+                )
+                if len(component_counts) != 1:
+                    rejected_claims += 1
+                    if component_counts:
+                        ambiguous_component_claims += 1
+                    else:
+                        no_component_claims += 1
+                    continue
+                component_label = next(iter(component_counts))
+                local_owner = claim.local_owner_for_source(
+                    evidence.token.shared_source_index
+                )
+                if local_owner is None:
+                    raise RuntimeError("Direct token is not local to its protected component")
+                claims.setdefault(evidence.token, []).append(
+                    (
+                        int(pair_index),
+                        int(component_label),
+                        int(local_owner),
+                        evidence.footprint,
+                    )
+                )
+                accepted_claims += 1
+        pair_audit.append(
+            {
+                "pair_index": int(pair_index),
+                "available_token_claim_count": int(len(evidence_by_label)),
+                "accepted_identity_candidate_claim_count": int(accepted_claims),
+                "rejected_no_matching_protected_component_count": int(
+                    no_component_claims
+                ),
+                "rejected_ambiguous_matching_component_count": int(
+                    ambiguous_component_claims
+                ),
+                "rejected_final_pair_window_claim_count": int(clipped_claims),
+            }
+        )
+
+    complete: dict[
+        DepthAnchorToken,
+        tuple[tuple[int, int, int, RawFootprintSummary], ...],
+    ] = {}
+    unpaired = 0
+    for token, values in claims.items():
+        ordered = tuple(sorted(values, key=lambda value: value[0]))
+        if (
+            len(ordered) != 2
+            or tuple(value[0] for value in ordered)
+            != (int(token.left_pair_index), int(token.right_pair_index))
+            or ordered[0][2] != 1
+            or ordered[1][2] != 0
+        ):
+            unpaired += 1
+            continue
+        complete[token] = ordered
+
+    def _token_key(token: DepthAnchorToken) -> tuple[int, int, int, int, int]:
+        return (
+            int(token.left_pair_index),
+            int(token.right_pair_index),
+            int(token.shared_source_index),
+            int(token.left_direct_component_label),
+            int(token.right_direct_component_label),
+        )
+
+    def _footprints_are_exactly_identical(
+        first: RawFootprintSummary,
+        second: RawFootprintSummary,
+    ) -> bool:
+        """Compare every compact raw-footprint field, including occupancy."""
+
+        return bool(
+            int(first.source_index) == int(second.source_index)
+            and tuple(first.source_size) == tuple(second.source_size)
+            and tuple(first.bounds_xyxy) == tuple(second.bounds_xyxy)
+            and int(first.sample_count) == int(second.sample_count)
+            and np.array_equal(first.occupancy, second.occupancy)
+        )
+
+    # A direct token joins exactly one left protected component to exactly one
+    # right protected component.  Redundant native-depth claims for the same
+    # component pair form one evidence bundle; they are deliberately retained
+    # together so the planner can exact-set-match the identity evidence.  A
+    # component may not point to two different peers for one interval: reject
+    # every affected bundle rather than choosing an arbitrary split/merge
+    # branch.
+    bundle_tokens: dict[
+        tuple[tuple[int, int], tuple[int, int]], list[DepthAnchorToken]
+    ] = {}
+    component_interval_peers: dict[
+        tuple[int, int, int, int], set[tuple[int, int]]
+    ] = {}
+    for token, values in complete.items():
+        left_pair, left_label, _left_owner, _left_footprint = values[0]
+        right_pair, right_label, _right_owner, _right_footprint = values[1]
+        left_ref = (int(left_pair), int(left_label))
+        right_ref = (int(right_pair), int(right_label))
+        interval = (int(token.left_pair_index), int(token.right_pair_index))
+        bundle_tokens.setdefault((left_ref, right_ref), []).append(token)
+        component_interval_peers.setdefault((*left_ref, *interval), set()).add(right_ref)
+        component_interval_peers.setdefault((*right_ref, *interval), set()).add(left_ref)
+
+    competing_slots = {
+        slot
+        for slot, peers in component_interval_peers.items()
+        if len(peers) > 1
+    }
+    competing_bundles = {
+        bundle
+        for bundle in bundle_tokens
+        if (
+            (*bundle[0], bundle[0][0], bundle[1][0])
+            in competing_slots
+            or (*bundle[1], bundle[0][0], bundle[1][0])
+            in competing_slots
+        )
+    }
+    competing_tokens = {
+        token
+        for bundle in competing_bundles
+        for token in bundle_tokens[bundle]
+    }
+    selected_bundles = tuple(
+        bundle
+        for bundle in sorted(bundle_tokens)
+        if bundle not in competing_bundles
+    )
+
+    token_sets: dict[tuple[int, int], list[DepthAnchorToken]] = {}
+    geometry_overrides: dict[tuple[int, int], GeometryMode] = {}
+    visibility_overrides: dict[tuple[int, int], bool] = {}
+    footprint_claims: dict[
+        tuple[int, int, int], list[RawFootprintSummary]
+    ] = {}
+    selected_tokens = 0
+    for bundle in selected_bundles:
+        tokens = tuple(sorted(bundle_tokens[bundle], key=_token_key))
+        for token in tokens:
+            values = complete[token]
+            for pair_index, component_label, local_owner, footprint in values:
+                reference = (int(pair_index), int(component_label))
+                token_sets.setdefault(reference, []).append(token)
+                geometry_overrides[reference] = GeometryMode.DEPTH_OBSERVED
+                visibility_overrides[reference] = True
+                footprint_claims.setdefault(
+                    (int(pair_index), int(component_label), int(local_owner)), []
+                ).append(footprint)
+        selected_tokens += len(tokens)
+
+    footprints: dict[tuple[int, int, int], RawFootprintSummary] = {}
+    omitted_nonidentical_footprint_slots = 0
+    for slot, claims_for_slot in sorted(footprint_claims.items()):
+        first_footprint = claims_for_slot[0]
+        if all(
+            _footprints_are_exactly_identical(first_footprint, candidate)
+            for candidate in claims_for_slot[1:]
+        ):
+            footprints[slot] = first_footprint
+        else:
+            # Direct token bundles retain their identity without electing a
+            # representative raw footprint.  The planner can validate their
+            # exact token set without a lossy or fabricated footprint summary.
+            omitted_nonidentical_footprint_slots += 1
+
+    return (
+        {
+            reference: tuple(
+                sorted(
+                    values,
+                    key=lambda token: (
+                        token.left_pair_index,
+                        token.right_pair_index,
+                        token.shared_source_index,
+                        token.left_direct_component_label,
+                        token.right_direct_component_label,
+                    ),
+                )
+            )
+            for reference, values in token_sets.items()
+        },
+        geometry_overrides,
+        visibility_overrides,
+        footprints,
+        {
+            "policy": "direct_tokens_as_v3_identity_candidates_no_pair_owner_voting",
+            "candidate_token_count": int(len(complete)),
+            "selected_identity_token_count": int(selected_tokens),
+            "candidate_identity_bundle_count": int(len(bundle_tokens)),
+            "selected_identity_bundle_count": int(len(selected_bundles)),
+            "unpaired_token_count": int(unpaired),
+            "rejected_sparse_claim_count": int(rejected_claims),
+            "rejected_ambiguous_identity_token_count": int(len(competing_tokens)),
+            "rejected_competing_transition_token_count": int(
+                len(competing_tokens)
+            ),
+            "rejected_competing_transition_bundle_count": int(
+                len(competing_bundles)
+            ),
+            "rejected_competing_transition_component_interval_count": int(
+                len(competing_slots)
+            ),
+            "raw_footprint_candidate_slot_count": int(len(footprint_claims)),
+            "raw_footprint_retained_slot_count": int(len(footprints)),
+            "raw_footprint_omitted_nonidentical_slot_count": int(
+                omitted_nonidentical_footprint_slots
+            ),
+            "rejection_reasons": {
+                "unpaired_or_invalid_two_pair_identity": int(unpaired),
+                "competing_component_transition": int(len(competing_tokens)),
+                "nonidentical_selected_raw_footprint_omitted": int(
+                    omitted_nonidentical_footprint_slots
+                ),
+            },
+            "pairs": pair_audit,
+        },
+    )
+
+
 def _build_shared_source_anchor_reservations(
     plans: Sequence[_GeometryPairPlan],
     protected_fragments_by_pair: Sequence[Sequence[ProtectedComponentFragment]],
@@ -4176,7 +4588,12 @@ def _build_shared_source_anchor_reservations(
     tuple[dict[int, int], ...],
     dict[str, object],
 ]:
-    """Compile exact two-pair token claims into sparse RGB-owner reservations.
+    """Legacy test-only compiler for the retired direct-token vote path.
+
+    Formal rendering uses :func:`_build_direct_token_identity_inputs` followed
+    by the v3 owner planner and :func:`_build_foreground_owner_run_reservations`.
+    This helper remains isolated for narrow compatibility regression tests;
+    it must not be reintroduced into the formal render path.
 
     Each token is retained as a separate sparse claim.  When several tokens
     touch one connected RGB guard, a strict exact-evidence vote selects at most
@@ -4423,11 +4840,17 @@ def _build_shared_source_anchor_reservations(
 
 
 def _fragments_overlap_in_canvas(
-    first: ForegroundFragment, second: ForegroundFragment
+    first: ForegroundFragment,
+    second: ForegroundFragment,
+    *,
+    anchor_only: bool = True,
 ) -> bool:
-    """Return whether two sparse direct anchor masks share an output pixel."""
+    """Return whether two reserved masks share an output pixel."""
 
-    if first.depth_anchor_local_mask is None or second.depth_anchor_local_mask is None:
+    if anchor_only and (
+        first.depth_anchor_local_mask is None
+        or second.depth_anchor_local_mask is None
+    ):
         raise RuntimeError("Foreground anchor comparison lacks a sparse depth mask")
 
     first_x, first_y, first_width, first_height = (
@@ -4440,11 +4863,14 @@ def _fragments_overlap_in_canvas(
     top, bottom = max(first_y, second_y), min(first_y + first_height, second_y + second_height)
     if right <= left or bottom <= top:
         return False
-    first_mask = np.asarray(first.depth_anchor_local_mask, dtype=bool)[
+    first_source = first.depth_anchor_local_mask if anchor_only else first.local_mask
+    second_source = second.depth_anchor_local_mask if anchor_only else second.local_mask
+    assert first_source is not None and second_source is not None
+    first_mask = np.asarray(first_source, dtype=bool)[
         top - first_y : bottom - first_y,
         left - first_x : right - first_x,
     ]
-    second_mask = np.asarray(second.depth_anchor_local_mask, dtype=bool)[
+    second_mask = np.asarray(second_source, dtype=bool)[
         top - second_y : bottom - second_y,
         left - second_x : right - second_x,
     ]
@@ -4513,7 +4939,7 @@ def _build_foreground_anchor_reservations(
             if reservation.source_index == other.source_index:
                 continue
             if any(
-                _fragments_overlap_in_canvas(first, second)
+                _fragments_overlap_in_canvas(first, second, anchor_only=False)
                 for first in reservation.fragments
                 for second in other.fragments
             ):
@@ -4522,6 +4948,139 @@ def _build_foreground_anchor_reservations(
                     "for one output pixel"
                 )
     return tuple(reservations)
+
+
+def _build_foreground_owner_run_reservations(
+    owner_plan: SegmentOwnerPlan,
+    fragments_by_pair: Sequence[Sequence[ForegroundFragment]],
+    component_owner_constraints: Sequence[Mapping[int, int]],
+    pair_level_hard_owners: Mapping[int, int],
+) -> tuple[_ForegroundAnchorReservation, ...]:
+    """Compile v3 planner owner runs into owner-only RGB reservations.
+
+    This is intentionally the only formal reservation compiler.  Direct depth
+    tokens influence it through ``owner_plan.tracks`` and ``owner_plan.owner_runs``;
+    no renderer-local token vote can override the global owner DP.
+    """
+
+    if len(component_owner_constraints) != len(fragments_by_pair):
+        raise RuntimeError("Foreground owner-run constraints do not cover every pair")
+    fragments = {
+        fragment.reference: fragment
+        for pair_fragments in fragments_by_pair
+        for fragment in pair_fragments
+    }
+    reservations: list[_ForegroundAnchorReservation] = []
+    for run in owner_plan.owner_runs:
+        if not isinstance(run, ForegroundOwnerRun):
+            raise RuntimeError("Foreground owner plan contains an invalid owner run")
+        try:
+            selected = tuple(fragments[reference] for reference in run.fragment_refs)
+        except KeyError as exc:
+            raise RuntimeError("Foreground owner run references an absent guard") from exc
+        if not selected:
+            raise RuntimeError("Foreground owner run has no guarded fragments")
+        for fragment, local_owner in zip(selected, run.local_owners, strict=True):
+            assignment = owner_plan.owner_for_fragment(*fragment.reference)
+            if assignment is None:
+                raise RuntimeError("Foreground owner run lost its planned fragment assignment")
+            if (
+                assignment.get("track_id") != int(run.track_id)
+                or int(assignment["run_id"]) != int(run.run_id)
+                or int(assignment["source_index"]) != int(run.owner_source_index)
+                or int(assignment["local_owner"]) != int(local_owner)
+            ):
+                raise RuntimeError("Foreground owner-run assignment disagrees with plan")
+            if fragment.local_owner_for_source(run.owner_source_index) != int(local_owner):
+                raise RuntimeError("Foreground owner run selected a non-adjacent source")
+            constrained = component_owner_constraints[fragment.pair_index].get(
+                fragment.component_label
+            )
+            if constrained != int(local_owner):
+                raise RuntimeError("Foreground owner run constraint was not preserved")
+            pair_owner = pair_level_hard_owners.get(fragment.pair_index)
+            if pair_owner is not None and int(pair_owner) != int(local_owner):
+                raise RuntimeError("Pair-level fallback conflicts with a foreground owner run")
+        reservations.append(
+            _ForegroundAnchorReservation(
+                span_id=int(run.run_id),
+                segment_id=int(run.track_id),
+                source_index=int(run.owner_source_index),
+                frame_id=int(run.owner_frame_id),
+                fragment_refs=tuple(run.fragment_refs),
+                fragments=selected,
+                track_id=int(run.track_id),
+                run_id=int(run.run_id),
+            )
+        )
+    for reservation_index, reservation in enumerate(reservations):
+        for other in reservations[reservation_index + 1 :]:
+            # Owner runs from distinct pair corridors may legitimately share
+            # canvas coordinates while their completed lock is retired at an
+            # audited handoff.  They are never current-pair competitors until
+            # they name the *same* pair.  Compare only those simultaneous
+            # pair-local guards here; later-pair interactions are guarded by
+            # the renderer's current-valid/non-adjacent-owner audit.
+            if reservation.source_index == other.source_index:
+                continue
+            by_pair = {
+                int(fragment.pair_index): fragment
+                for fragment in reservation.fragments
+            }
+            other_by_pair = {
+                int(fragment.pair_index): fragment
+                for fragment in other.fragments
+            }
+            for pair_index in sorted(set(by_pair) & set(other_by_pair)):
+                first = by_pair[pair_index]
+                second = other_by_pair[pair_index]
+                # Owner-run reservations cover their entire protected guard.
+                # A direct-token bundle may deliberately have no singular
+                # sparse anchor mask, so this preflight must compare the
+                # formal full guard rather than the legacy token subset.
+                if _fragments_overlap_in_canvas(first, second, anchor_only=False):
+                    raise RuntimeError(
+                        "Foreground owner runs select different RGB owners "
+                        "for one current-pair output pixel "
+                        f"(pair={pair_index}, first_run={reservation.run_id}, "
+                        f"second_run={other.run_id})"
+                    )
+    return tuple(reservations)
+
+
+def _foreground_owner_run_handoff_specs(
+    owner_plan: SegmentOwnerPlan,
+) -> dict[int, tuple[tuple[int, int, int, int, int], ...]]:
+    """Return every v3 run boundary, including zero-projective-support ones."""
+
+    by_track: dict[int, list[ForegroundOwnerRun]] = {}
+    for run in owner_plan.owner_runs:
+        by_track.setdefault(int(run.track_id), []).append(run)
+    result: dict[int, list[tuple[int, int, int, int, int]]] = {}
+    for track_id, runs in by_track.items():
+        ordered = sorted(runs, key=lambda run: (run.start_pair_index, run.run_id))
+        for outgoing, incoming in zip(ordered, ordered[1:]):
+            if int(outgoing.end_pair_index) + 1 != int(incoming.start_pair_index):
+                raise RuntimeError("Foreground owner runs do not form a contiguous track")
+            pair_index = int(incoming.start_pair_index)
+            if {
+                int(outgoing.owner_source_index),
+                int(incoming.owner_source_index),
+            } != {pair_index, pair_index + 1}:
+                raise RuntimeError("Foreground owner-run boundary is not adjacent")
+            result.setdefault(pair_index, []).append(
+                (
+                    int(track_id),
+                    int(outgoing.run_id),
+                    int(incoming.run_id),
+                    int(outgoing.owner_source_index),
+                    int(incoming.owner_source_index),
+                )
+            )
+    return {
+        pair_index: tuple(sorted(values))
+        for pair_index, values in result.items()
+    }
 
 
 def _fragment_mask_in_window(
@@ -4589,6 +5148,41 @@ def _clip_foreground_anchor_fragment_to_window(
     )
 
 
+def _clip_foreground_reservation_fragment_to_window(
+    reservation: _ForegroundAnchorReservation,
+    fragment: ForegroundFragment,
+    *,
+    left: int,
+    right: int,
+    height: int,
+) -> ForegroundFragment | None:
+    """Clip one reservation using its formal owner-run or legacy mask scope."""
+
+    if reservation.uses_sparse_anchor_mask:
+        return _clip_foreground_anchor_fragment_to_window(
+            fragment, left=left, right=right, height=height
+        )
+    clipped = _fragment_mask_in_window(
+        fragment, left=left, right=right, height=height, anchor_only=False
+    )
+    if clipped is None:
+        return None
+    y_slice, x_slice, local_mask = clipped
+    if not np.any(local_mask):
+        return None
+    return replace(
+        fragment,
+        global_bbox=(
+            int(left) + int(x_slice.start),
+            int(y_slice.start),
+            int(local_mask.shape[1]),
+            int(local_mask.shape[0]),
+        ),
+        local_mask=np.ascontiguousarray(local_mask),
+        depth_anchor_local_mask=None,
+    )
+
+
 def _foreground_anchor_mask_and_prior(
     reservations: Sequence[_ForegroundAnchorReservation],
     *,
@@ -4631,15 +5225,23 @@ def _foreground_anchor_mask_and_prior(
             raise RuntimeError(
                 "Current foreground anchor source is not adjacent to its pair"
             )
-        fragment = _clip_foreground_anchor_fragment_to_window(
-            matching[0], left=left, right=right, height=height
+        fragment = _clip_foreground_reservation_fragment_to_window(
+            reservation,
+            matching[0],
+            left=left,
+            right=right,
+            height=height,
         )
         if fragment is None:
             raise RuntimeError(
                 "Foreground anchor has no exact support in its final pair window"
             )
         clipped = _fragment_mask_in_window(
-            fragment, left=left, right=right, height=height, anchor_only=True
+            fragment,
+            left=left,
+            right=right,
+            height=height,
+            anchor_only=reservation.uses_sparse_anchor_mask,
         )
         if clipped is None:
             raise RuntimeError("Clipped foreground anchor unexpectedly left its pair window")
@@ -4669,7 +5271,11 @@ def _foreground_anchor_completed_lock_mask(
     source_owner = np.full(shape, -1, dtype=np.int16)
     for reservation, fragment in completed:
         clipped = _fragment_mask_in_window(
-            fragment, left=left, right=right, height=height, anchor_only=True
+            fragment,
+            left=left,
+            right=right,
+            height=height,
+            anchor_only=reservation.uses_sparse_anchor_mask,
         )
         if clipped is None:
             continue
@@ -4835,14 +5441,380 @@ def _foreground_anchor_handoff_mask(
     return protected
 
 
+def _advance_completed_foreground_owner_run_locks(
+    completed: Sequence[tuple[_ForegroundAnchorReservation, ForegroundFragment]],
+    *,
+    owner_runs: Sequence[ForegroundOwnerRun],
+    pair_index: int,
+    left: int,
+    right: int,
+    height: int,
+    current_pair_valid: np.ndarray,
+) -> tuple[
+    tuple[tuple[_ForegroundAnchorReservation, ForegroundFragment], ...],
+    tuple[_ForegroundAnchorHandoff, ...],
+]:
+    """Retire a completed run at its *planned adjacent* owner boundary.
+
+    The old v2 compatibility path waited until an old source became
+    non-adjacent and then asked the current pair to overwrite it.  v3 forbids
+    that semantics: an owner-run boundary is resolved in its shared adjacent
+    pair while both named sources are legal candidates and can be audited.
+    """
+
+    expected_shape = (int(height), max(0, int(right) - int(left)))
+    current_valid = np.asarray(current_pair_valid, dtype=bool)
+    if current_valid.shape != expected_shape:
+        raise RuntimeError("Current pair-valid mask does not match foreground owner runs")
+    runs_by_id = {int(run.run_id): run for run in owner_runs}
+    if len(runs_by_id) != len(owner_runs):
+        raise RuntimeError("Foreground owner plan contains duplicate run ids")
+    retained: list[tuple[_ForegroundAnchorReservation, ForegroundFragment]] = []
+    handoffs: list[_ForegroundAnchorHandoff] = []
+    for reservation, fragment in completed:
+        if not reservation.is_owner_run or reservation.run_id is None:
+            raise RuntimeError("Formal foreground locks must originate from an owner run")
+        outgoing = runs_by_id.get(int(reservation.run_id))
+        if outgoing is None:
+            raise RuntimeError("Completed foreground lock references an unknown owner run")
+        if int(outgoing.track_id) != int(reservation.track_id):
+            raise RuntimeError("Completed foreground lock track/run identity disagrees")
+        if int(pair_index) <= int(outgoing.end_pair_index):
+            # The same run still owns this pair.  It remains a sparse completed
+            # RGB lock until its next planned owner boundary.
+            retained.append((reservation, fragment))
+            continue
+
+        clipped = _fragment_mask_in_window(
+            fragment, left=left, right=right, height=height, anchor_only=False
+        )
+        writable = None
+        if clipped is not None:
+            y_slice, x_slice, local_mask = clipped
+            writable = np.ascontiguousarray(local_mask & current_valid[y_slice, x_slice])
+        if int(pair_index) != int(outgoing.end_pair_index) + 1:
+            if writable is not None and np.any(writable):
+                raise RuntimeError(
+                    "A non-adjacent foreground owner survived past its planned handoff"
+                )
+            retained.append((reservation, fragment))
+            continue
+
+        incoming_candidates = [
+            run
+            for run in owner_runs
+            if int(run.track_id) == int(outgoing.track_id)
+            and int(run.start_pair_index) == int(pair_index)
+        ]
+        if not incoming_candidates:
+            # A terminal owner run intentionally has no successor: the
+            # planner creates run-to-run handoffs with
+            # ``zip(track_runs, track_runs[1:])`` only.  Retire its completed
+            # lock before this later pair's ordinary owner solve rather than
+            # inventing an incoming run or a synthetic owner switch.  That
+            # solve still covers every current-valid pixel with one of its
+            # adjacent RGB sources; the renderer's existing current-pair,
+            # owner-only, blend, and deformation checks remain authoritative.
+            #
+            # Do not retain the no-longer-planned lock outside this pair
+            # either.  Carrying it forward would turn a terminal lifecycle
+            # event into a later non-adjacent owner write.
+            continue
+        if len(incoming_candidates) != 1:
+            raise RuntimeError("Foreground owner-run handoff lacks one planned incoming run")
+        incoming = incoming_candidates[0]
+        current_sources = {int(pair_index), int(pair_index) + 1}
+        if (
+            int(outgoing.owner_source_index) not in current_sources
+            or int(incoming.owner_source_index) not in current_sources
+            or int(outgoing.owner_source_index) == int(incoming.owner_source_index)
+        ):
+            raise RuntimeError("Foreground owner-run handoff is not an adjacent source switch")
+
+        source_mask = np.asarray(fragment.local_mask, dtype=bool)
+        retired_mask = np.zeros_like(source_mask, dtype=bool)
+        if clipped is not None and writable is not None and np.any(writable):
+            y_slice, x_slice, _local_mask = clipped
+            global_x, global_y, _width, _fragment_height = fragment.global_bbox
+            local_x0 = int(left) + int(x_slice.start) - int(global_x)
+            local_y0 = int(y_slice.start) - int(global_y)
+            retired_mask[
+                local_y0 : local_y0 + writable.shape[0],
+                local_x0 : local_x0 + writable.shape[1],
+            ] |= writable
+        if np.any(retired_mask):
+            retired_fragment = replace(
+                fragment,
+                local_mask=np.ascontiguousarray(retired_mask),
+                depth_anchor_local_mask=None,
+            )
+            handoffs.append(
+                _ForegroundAnchorHandoff(
+                    target_pair_index=int(pair_index),
+                    span_id=int(reservation.span_id),
+                    source_index=int(outgoing.owner_source_index),
+                    fragment=retired_fragment,
+                    track_id=int(outgoing.track_id),
+                    outgoing_run_id=int(outgoing.run_id),
+                    incoming_run_id=int(incoming.run_id),
+                    incoming_source_index=int(incoming.owner_source_index),
+                    planned_outcome=ForegroundOwnerHandoffOutcome.ADJACENT_OWNER_HANDOFF,
+                )
+            )
+        surviving_mask = np.ascontiguousarray(source_mask & ~retired_mask)
+        if np.any(surviving_mask):
+            retained.append(
+                (
+                    reservation,
+                    replace(
+                        fragment,
+                        local_mask=surviving_mask,
+                        depth_anchor_local_mask=None,
+                    ),
+                )
+            )
+    return tuple(retained), tuple(handoffs)
+
+
+def _foreground_owner_handoff_mask_and_prior(
+    handoffs: Sequence[_ForegroundAnchorHandoff],
+    *,
+    left: int,
+    right: int,
+    height: int,
+    pair_index: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return exact run-handoff support and the named incoming owner prior."""
+
+    shape = (int(height), max(0, int(right) - int(left)))
+    support = np.zeros(shape, dtype=bool)
+    prior = np.full(shape, -1, dtype=np.int8)
+    for handoff in handoffs:
+        if (
+            handoff.track_id is None
+            or handoff.incoming_source_index is None
+            or handoff.target_pair_index != int(pair_index)
+        ):
+            raise RuntimeError("Foreground owner handoff lacks a planned v3 identity")
+        incoming_local_owner = int(handoff.incoming_source_index) - int(pair_index)
+        if incoming_local_owner not in {0, 1}:
+            raise RuntimeError("Foreground handoff incoming source is not pair-adjacent")
+        clipped = _fragment_mask_in_window(
+            handoff.fragment, left=left, right=right, height=height, anchor_only=False
+        )
+        if clipped is None:
+            raise RuntimeError("Foreground owner handoff has no support in its planned pair")
+        y_slice, x_slice, local_mask = clipped
+        prior_view = prior[y_slice, x_slice]
+        conflict = local_mask & (prior_view >= 0) & (prior_view != incoming_local_owner)
+        if np.any(conflict):
+            raise RuntimeError("Foreground owner handoffs disagree on incoming RGB owner")
+        prior_view[local_mask] = incoming_local_owner
+        support[y_slice, x_slice] |= local_mask
+    return support, prior
+
+
+def _audit_foreground_owner_run_handoffs(
+    handoffs: Sequence[_ForegroundAnchorHandoff],
+    *,
+    planned_handoffs: Sequence[tuple[int, int, int, int, int]] = (),
+    pair_index: int,
+    left: int,
+    right: int,
+    height: int,
+    pair_valid: np.ndarray,
+    owner_canvas: np.ndarray,
+    blend_zone: np.ndarray,
+    deformation_zone: np.ndarray,
+) -> dict[str, object]:
+    """Publish scalar v3 foreground handoff evidence for one pair.
+
+    Dense support and owner arrays remain local to the renderer.  Only the
+    bounded scalar audits are returned, so no foreground mask is introduced
+    into delivery metadata.
+    """
+
+    expected_shape = (int(height), max(0, int(right) - int(left)))
+    if (
+        np.asarray(pair_valid, dtype=bool).shape != expected_shape
+        or np.asarray(blend_zone, dtype=bool).shape != expected_shape
+        or np.asarray(deformation_zone, dtype=bool).shape != expected_shape
+        or owner_canvas.shape[0] != int(height)
+    ):
+        raise RuntimeError("Foreground owner handoff audit has inconsistent pair arrays")
+    owner_view = np.asarray(owner_canvas[:, left:right], dtype=np.int16)
+    audits: list[dict[str, object]] = []
+    complete_count = 0
+    owner_only_count = 0
+    safe_count = 0
+    hard_owner_fallback_count = 0
+    corridor_count = int(np.count_nonzero(pair_valid))
+    planned_sources_by_run_boundary: dict[
+        tuple[int, int, int], tuple[int, int]
+    ] = {}
+    for (
+        track_id,
+        outgoing_run_id,
+        incoming_run_id,
+        outgoing_source,
+        incoming_source,
+    ) in planned_handoffs:
+        handoff_key = (int(track_id), int(outgoing_run_id), int(incoming_run_id))
+        source_pair = (int(outgoing_source), int(incoming_source))
+        prior_source_pair = planned_sources_by_run_boundary.setdefault(
+            handoff_key, source_pair
+        )
+        if prior_source_pair != source_pair:
+            raise RuntimeError(
+                "Foreground owner plan has conflicting handoff source tuples"
+            )
+    grouped_handoffs: dict[
+        tuple[int, int, int], list[_ForegroundAnchorHandoff]
+    ] = {}
+    for handoff in handoffs:
+        if (
+            handoff.track_id is None
+            or handoff.outgoing_run_id is None
+            or handoff.incoming_run_id is None
+            or handoff.incoming_source_index is None
+            or handoff.planned_outcome is None
+        ):
+            raise RuntimeError("Formal foreground handoff lacks owner-run metadata")
+        handoff_key = (
+            int(handoff.track_id),
+            int(handoff.outgoing_run_id),
+            int(handoff.incoming_run_id),
+        )
+        grouped_handoffs.setdefault(handoff_key, []).append(handoff)
+    actual_keys = set(grouped_handoffs)
+    for handoff_key, grouped in sorted(grouped_handoffs.items()):
+        first = grouped[0]
+        assert (
+            first.track_id is not None
+            and first.outgoing_run_id is not None
+            and first.incoming_run_id is not None
+            and first.incoming_source_index is not None
+            and first.planned_outcome is not None
+        )
+        if any(
+            (
+                handoff.source_index != first.source_index
+                or handoff.incoming_source_index != first.incoming_source_index
+                or handoff.planned_outcome != first.planned_outcome
+            )
+            for handoff in grouped[1:]
+        ):
+            raise RuntimeError("Foreground owner-run handoff fragments disagree")
+        expected_source_pair = planned_sources_by_run_boundary.get(handoff_key)
+        actual_source_pair = (
+            int(first.source_index),
+            int(first.incoming_source_index),
+        )
+        if (
+            expected_source_pair is not None
+            and actual_source_pair != expected_source_pair
+        ):
+            raise RuntimeError(
+                "Foreground owner-run handoff source tuple disagrees with the plan"
+            )
+        support = np.zeros(expected_shape, dtype=bool)
+        for handoff in grouped:
+            clipped = _fragment_mask_in_window(
+                handoff.fragment,
+                left=left,
+                right=right,
+                height=height,
+                anchor_only=False,
+            )
+            if clipped is None:
+                raise RuntimeError("Foreground handoff audit lost its planned support")
+            y_slice, x_slice, local_mask = clipped
+            support[y_slice, x_slice] |= local_mask
+        audit = build_foreground_owner_handoff_audit(
+            pair_index=int(pair_index),
+            track_id=int(first.track_id),
+            outgoing_run_id=int(first.outgoing_run_id),
+            incoming_run_id=int(first.incoming_run_id),
+            outcome=first.planned_outcome,
+            outgoing_source_index=int(first.source_index),
+            incoming_source_index=int(first.incoming_source_index),
+            handoff_support=support,
+            owner_assignments=owner_view,
+            pair_corridor_pixel_count=corridor_count,
+            current_pair_source_indices=(int(pair_index), int(pair_index) + 1),
+            foreground_blend_support=np.asarray(blend_zone, dtype=bool),
+            foreground_deformation_support=np.asarray(deformation_zone, dtype=bool),
+            apap_authorized=False,
+            flow_authorized=False,
+            local_deformation_attempted=False,
+            audit_complete=True,
+            selection_reasons=("planned_v3_owner_run_boundary",),
+        )
+        if not audit.structurally_safe:
+            raise RuntimeError("Foreground owner-run handoff audit was not structurally safe")
+        audits.append(audit.as_dict())
+        complete_count += int(audit.audit_complete)
+        owner_only_count += int(audit.owner_only_without_deformation)
+        safe_count += int(audit.structurally_safe)
+        hard_owner_fallback_count += int(audit.requires_manual_review)
+    expected_keys = set(planned_sources_by_run_boundary)
+    if not actual_keys <= expected_keys:
+        raise RuntimeError("Foreground renderer emitted an unplanned owner-run handoff")
+    for track_id, outgoing_run_id, incoming_run_id, outgoing_source, incoming_source in (
+        planned_handoffs
+    ):
+        handoff_key = (int(track_id), int(outgoing_run_id), int(incoming_run_id))
+        if handoff_key in actual_keys:
+            continue
+        empty_support = np.zeros(expected_shape, dtype=bool)
+        audit = build_foreground_owner_handoff_audit(
+            pair_index=int(pair_index),
+            track_id=int(track_id),
+            outgoing_run_id=int(outgoing_run_id),
+            incoming_run_id=int(incoming_run_id),
+            outcome=ForegroundOwnerHandoffOutcome.ADJACENT_OWNER_HANDOFF,
+            outgoing_source_index=int(outgoing_source),
+            incoming_source_index=int(incoming_source),
+            handoff_support=empty_support,
+            owner_assignments=owner_view,
+            pair_corridor_pixel_count=corridor_count,
+            current_pair_source_indices=(int(pair_index), int(pair_index) + 1),
+            foreground_blend_support=np.asarray(blend_zone, dtype=bool),
+            foreground_deformation_support=np.asarray(deformation_zone, dtype=bool),
+            apap_authorized=False,
+            flow_authorized=False,
+            local_deformation_attempted=False,
+            audit_complete=True,
+            selection_reasons=("planned_v3_owner_run_boundary_no_projected_overlap",),
+        )
+        if not audit.structurally_safe:
+            raise RuntimeError("Zero-support foreground owner handoff audit was unsafe")
+        audits.append(audit.as_dict())
+        complete_count += int(audit.audit_complete)
+        owner_only_count += int(audit.owner_only_without_deformation)
+        safe_count += int(audit.structurally_safe)
+        hard_owner_fallback_count += int(audit.requires_manual_review)
+    return {
+        "policy": "foreground_owner_only_handoff_audit_v1",
+        "handoff_count": int(len(audits)),
+        "audit_complete_count": int(complete_count),
+        "owner_only_no_deformation_count": int(owner_only_count),
+        "structurally_safe_count": int(safe_count),
+        "hard_owner_fallback_count": int(hard_owner_fallback_count),
+        "audits": audits,
+    }
+
+
 def _write_foreground_anchor_fragment(
     canvas: np.ndarray,
     valid_canvas: np.ndarray,
     owner_canvas: np.ndarray,
     contribution: PushbroomContribution,
     fragment: ForegroundFragment,
+    *,
+    anchor_only: bool = True,
 ) -> None:
-    """Write one already-remapped, exact anchor fragment from its RGB source."""
+    """Write one already-remapped, owner-only foreground fragment."""
 
     if contribution.rgb.shape[:2] != contribution.valid_mask.shape:
         raise RuntimeError("Foreground anchor contribution has inconsistent masks")
@@ -4852,10 +5824,11 @@ def _write_foreground_anchor_fragment(
     global_x, global_y, _width, _height = (
         int(value) for value in fragment.global_bbox
     )
-    if fragment.depth_anchor_local_mask is None:
+    source_mask = fragment.depth_anchor_local_mask if anchor_only else fragment.local_mask
+    if source_mask is None:
         raise RuntimeError("Foreground anchor write lacks a sparse depth mask")
     local_y, local_x = np.nonzero(
-        np.asarray(fragment.depth_anchor_local_mask, dtype=bool)
+        np.asarray(source_mask, dtype=bool)
     )
     if not local_x.size:
         raise RuntimeError("Foreground anchor fragment unexpectedly has no pixels")
@@ -4887,10 +5860,15 @@ def _verify_foreground_anchor_handoff(
     """Prove a retired exact anchor was rewritten by its current pair only."""
 
     fragment = handoff.fragment
-    if fragment.depth_anchor_local_mask is None:
+    source_mask = (
+        fragment.local_mask
+        if handoff.track_id is not None
+        else fragment.depth_anchor_local_mask
+    )
+    if source_mask is None:
         raise RuntimeError("Foreground anchor handoff verification lacks its mask")
     global_x, global_y, _width, _height = (int(value) for value in fragment.global_bbox)
-    local_y, local_x = np.nonzero(np.asarray(fragment.depth_anchor_local_mask, dtype=bool))
+    local_y, local_x = np.nonzero(np.asarray(source_mask, dtype=bool))
     output_x = global_x + local_x
     output_y = global_y + local_y
     if (
@@ -4902,11 +5880,34 @@ def _verify_foreground_anchor_handoff(
         raise RuntimeError("Foreground anchor handoff exceeds the output canvas")
     owners = owner_canvas[output_y, output_x]
     if np.any(owners == handoff.source_index):
-        raise RuntimeError("Foreground anchor handoff retained its non-adjacent source")
-    if not np.all(valid_canvas[output_y, output_x]) or not np.all(
-        (owners == handoff.target_pair_index)
-        | (owners == handoff.target_pair_index + 1)
-    ):
+        owner_values, owner_counts = np.unique(owners, return_counts=True)
+        owner_histogram = {
+            int(owner): int(count)
+            for owner, count in zip(owner_values, owner_counts, strict=True)
+        }
+        raise RuntimeError(
+            "Foreground anchor handoff retained its non-adjacent source "
+            f"(pair={handoff.target_pair_index}, track={handoff.track_id}, "
+            f"outgoing_run={handoff.outgoing_run_id}, "
+            f"incoming_run={handoff.incoming_run_id}, "
+            f"outgoing_source={handoff.source_index}, "
+            f"incoming_source={handoff.incoming_source_index}, "
+            f"owner_histogram={owner_histogram})"
+        )
+    expected_owner = (
+        int(handoff.incoming_source_index)
+        if handoff.track_id is not None and handoff.incoming_source_index is not None
+        else None
+    )
+    ownership_complete = (
+        np.all(owners == expected_owner)
+        if expected_owner is not None
+        else np.all(
+            (owners == handoff.target_pair_index)
+            | (owners == handoff.target_pair_index + 1)
+        )
+    )
+    if not np.all(valid_canvas[output_y, output_x]) or not ownership_complete:
         raise RuntimeError("Foreground anchor handoff was not written by its current pair")
 
 
@@ -5090,10 +6091,15 @@ def _verify_committed_foreground_anchor_locks(
             global_x, global_y, _width, _height = (
                 int(value) for value in fragment.global_bbox
             )
-            if fragment.depth_anchor_local_mask is None:
+            source_mask = (
+                fragment.depth_anchor_local_mask
+                if reservation.uses_sparse_anchor_mask
+                else fragment.local_mask
+            )
+            if source_mask is None:
                 raise RuntimeError("Committed foreground anchor verification lacks its mask")
             local_y, local_x = np.nonzero(
-                np.asarray(fragment.depth_anchor_local_mask, dtype=bool)
+                np.asarray(source_mask, dtype=bool)
             )
             output_x = global_x + local_x
             output_y = global_y + local_y
@@ -8088,15 +9094,33 @@ def render_calibrated_rgb_pushbroom(
                     nominal_boundary_x=layout.owner_boundaries_x[index],
                 )
             )
-        # Ordinary RGB guards retain their existing IMAGE_REGION planning.
-        # Shared-source signed-occlusion claims are compiled separately below:
-        # they must never turn a broad guard into one synthetic depth object.
+        # Direct depth tokens are strict identity candidates for the v3
+        # planner.  They do not cast independent per-pair owner votes.
+        (
+            direct_token_sets,
+            direct_token_geometry_overrides,
+            direct_token_visibility_overrides,
+            direct_token_raw_footprints,
+            shared_source_anchor_audit,
+        ) = _build_direct_token_identity_inputs(
+            geometry_plans,
+            preflight_fragments_by_pair,
+            canvas_height=layout.canvas_height,
+            pair_windows=preflight_pair_windows,
+        )
+        # Ordinary RGB guards retain their existing IMAGE_REGION semantics
+        # unless an exact bidirectional direct token promoted that particular
+        # component to a depth-observed identity candidate.
         foreground_fragments = build_foreground_fragments(
             preflight_fragments_by_pair,
             frame_ids=[frame.frame_id for frame in frames],
             geometry_modes=(GeometryMode.IMAGE_REGION,) * len(
                 preflight_fragments_by_pair
             ),
+            geometry_mode_overrides=direct_token_geometry_overrides,
+            bidirectional_visibility_overrides=direct_token_visibility_overrides,
+            depth_anchor_token_sets=direct_token_sets,
+            raw_footprints=direct_token_raw_footprints,
         )
         foreground_owner_plan = plan_foreground_owners(foreground_fragments)
         if not foreground_owner_plan.accepted:
@@ -8104,29 +9128,10 @@ def render_calibrated_rgb_pushbroom(
                 "Foreground segment owner planning failed: "
                 + str(foreground_owner_plan.structural_failure_reason)
             )
-        (
-            direct_anchor_reservations,
-            direct_anchor_component_constraints,
-            shared_source_anchor_audit,
-        ) = _build_shared_source_anchor_reservations(
-            geometry_plans,
-            preflight_fragments_by_pair,
-            canvas_height=layout.canvas_height,
-            pair_windows=preflight_pair_windows,
-        )
         segment_locked_constraints = [
             dict(constraints)
             for constraints in foreground_owner_plan.component_owner_constraints
         ]
-        for pair_index, constraints in enumerate(direct_anchor_component_constraints):
-            for component_label, owner in constraints.items():
-                existing = segment_locked_constraints[pair_index].setdefault(
-                    component_label, owner
-                )
-                if existing != owner:
-                    raise RuntimeError(
-                        "Sparse direct anchor conflicts with an existing RGB guard owner"
-                    )
         preflight_fragments_for_solver = list(preflight_fragments_by_pair)
         pair_level_hard_owner_pairs: set[int] = set()
         pair_level_hard_owner_reasons: dict[int, str] = {}
@@ -8223,15 +9228,14 @@ def render_calibrated_rgb_pushbroom(
             tuple(pair_level_hard_owner_pairs),
             geometry_pair_hard_owner_options,
         )
-        planned_foreground_anchor_reservations = _build_foreground_anchor_reservations(
+        foreground_anchor_reservations = _build_foreground_owner_run_reservations(
             foreground_owner_plan,
             foreground_fragments,
             segment_locked_constraints,
             pair_level_hard_owners,
         )
-        foreground_anchor_reservations = (
-            *planned_foreground_anchor_reservations,
-            *direct_anchor_reservations,
+        planned_foreground_owner_handoffs = _foreground_owner_run_handoff_specs(
+            foreground_owner_plan
         )
         runtime_pair_level_hard_owners: dict[int, int] = {}
         runtime_pair_level_hard_owner_reasons: dict[int, str] = {}
@@ -8303,6 +9307,10 @@ def render_calibrated_rgb_pushbroom(
         geometry_late_owner_closure_pairs = 0
         foreground_anchor_out_of_token_pair_write_suppressed_pixels = 0
         foreground_anchor_handoff_guard_pixels = 0
+        foreground_owner_handoff_audits: list[dict[str, object]] = []
+        foreground_current_valid_nonadjacent_owner_pixels = 0
+        foreground_blend_pixels = 0
+        foreground_deformation_pixels = 0
         completed_foreground_anchor_fragments: list[
             tuple[_ForegroundAnchorReservation, ForegroundFragment]
         ] = []
@@ -8366,15 +9374,14 @@ def render_calibrated_rgb_pushbroom(
             (
                 advanced_foreground_anchor_fragments,
                 current_anchor_handoff_retirements,
-            ) = _advance_completed_foreground_anchor_locks(
+            ) = _advance_completed_foreground_owner_run_locks(
                 completed_foreground_anchor_fragments,
+                owner_runs=foreground_owner_plan.owner_runs,
                 pair_index=index,
                 left=left,
                 right=right,
                 height=layout.canvas_height,
                 current_pair_valid=current_pair_valid,
-                protected_components=preflight_fragments_by_pair[index],
-                component_owner_constraints=segment_locked_constraints[index],
             )
             completed_foreground_anchor_fragments = list(
                 advanced_foreground_anchor_fragments
@@ -8412,11 +9419,15 @@ def render_calibrated_rgb_pushbroom(
                 raise RuntimeError(
                     "A completed foreground anchor remains writable by a non-adjacent pair"
                 )
-            current_anchor_handoff_guard = _foreground_anchor_handoff_mask(
+            (
+                current_anchor_handoff_guard,
+                foreground_handoff_owner_prior,
+            ) = _foreground_owner_handoff_mask_and_prior(
                 current_anchor_handoff_retirements,
                 left=left,
                 right=right,
                 height=layout.canvas_height,
+                pair_index=index,
             )
             if np.any(current_anchor_handoff_guard & ~current_pair_valid):
                 raise RuntimeError(
@@ -8433,15 +9444,30 @@ def render_calibrated_rgb_pushbroom(
                 right=right,
                 height=layout.canvas_height,
             )
+            prior_conflict = (
+                (foreground_anchor_owner_prior >= 0)
+                & (foreground_handoff_owner_prior >= 0)
+                & (foreground_anchor_owner_prior != foreground_handoff_owner_prior)
+            )
+            if np.any(prior_conflict):
+                raise RuntimeError(
+                    "Foreground owner-run handoff conflicts with a planned current owner"
+                )
+            foreground_anchor_owner_prior = np.where(
+                foreground_handoff_owner_prior >= 0,
+                foreground_handoff_owner_prior,
+                foreground_anchor_owner_prior,
+            ).astype(np.int8, copy=False)
             foreground_anchor_reserved = np.ascontiguousarray(
                 completed_foreground_anchor_reserved
                 | current_foreground_anchor_reserved
             )
             if np.any(
-                (foreground_anchor_owner_prior >= 0) & ~foreground_anchor_reserved
+                (foreground_anchor_owner_prior >= 0)
+                & ~(foreground_anchor_reserved | current_anchor_handoff_guard)
             ):
                 raise RuntimeError(
-                    "Foreground anchor owner prior extends outside its reserved RGB pixels"
+                    "Foreground owner prior extends outside its reservation or planned handoff"
                 )
             if np.any(geometry_active & foreground_anchor_reserved):
                 raise RuntimeError(
@@ -8762,12 +9788,6 @@ def render_calibrated_rgb_pushbroom(
             valid_view[pair_write] = True
             owner_view[owner0 & pair_write] = index
             owner_view[owner1 & pair_write] = index + 1
-            for handoff in current_anchor_handoff_retirements:
-                _verify_foreground_anchor_handoff(
-                    valid_canvas,
-                    owner_canvas,
-                    handoff,
-                )
             # A token becomes persistent only after its own adjacent pair has
             # completed the ordinary owner solve.  This uses the source's
             # already-remapped RGB strip; it never creates another remap or a
@@ -8787,20 +9807,57 @@ def render_calibrated_rgb_pushbroom(
                     owner_canvas,
                     anchor_contribution,
                     fragment,
+                    anchor_only=reservation.uses_sparse_anchor_mask,
                 )
                 completed_foreground_anchor_fragments.append((reservation, fragment))
-            foreground_anchor_handoff_continuity = (
-                _audit_foreground_anchor_handoff_continuity(
-                    current_anchor_handoff_retirements,
-                    pair_index=index,
-                    frame_ids=[int(frame.frame_id) for frame in frames],
-                    left=left,
-                    right=right,
-                    height=layout.canvas_height,
-                    valid_canvas=valid_canvas,
-                    owner_canvas=owner_canvas,
+            # ``pair_write`` deliberately excludes current owner-run guards:
+            # they are committed from their designated RGB contribution just
+            # above.  Verify the retiring run only after that current-run
+            # write, otherwise an overlapping adjacent owner handoff would
+            # incorrectly observe the outgoing source still on canvas.
+            for handoff in current_anchor_handoff_retirements:
+                _verify_foreground_anchor_handoff(
+                    valid_canvas,
+                    owner_canvas,
+                    handoff,
                 )
+            foreground_owner_handoff_audit = _audit_foreground_owner_run_handoffs(
+                current_anchor_handoff_retirements,
+                planned_handoffs=planned_foreground_owner_handoffs.get(index, ()),
+                pair_index=index,
+                left=left,
+                right=right,
+                height=layout.canvas_height,
+                pair_valid=pair_valid,
+                owner_canvas=owner_canvas,
+                blend_zone=blend_zone,
+                deformation_zone=geometry_active,
             )
+            foreground_owner_handoff_audits.append(foreground_owner_handoff_audit)
+            current_owner_view = np.asarray(owner_canvas[:, left:right], dtype=np.int16)
+            current_nonadjacent_owner = current_pair_valid & (
+                (current_owner_view < int(index))
+                | (current_owner_view > int(index) + 1)
+            )
+            current_nonadjacent_count = int(
+                np.count_nonzero(current_nonadjacent_owner)
+            )
+            if current_nonadjacent_count:
+                raise RuntimeError(
+                    "Current pair valid support retained a non-adjacent foreground owner"
+                )
+            foreground_current_valid_nonadjacent_owner_pixels += current_nonadjacent_count
+            foreground_guard = foreground_anchor_reserved | current_anchor_handoff_guard
+            foreground_blend_count = int(np.count_nonzero(blend_zone & foreground_guard))
+            foreground_deformation_count = int(
+                np.count_nonzero(geometry_active & foreground_guard)
+            )
+            if foreground_blend_count or foreground_deformation_count:
+                raise RuntimeError(
+                    "Foreground owner-only run entered a blend or deformation footprint"
+                )
+            foreground_blend_pixels += foreground_blend_count
+            foreground_deformation_pixels += foreground_deformation_count
             if not used_graphcut or hard_rows:
                 hard_cut_pairs += 1
             graphcut_pairs += int(used_graphcut)
@@ -8850,9 +9907,7 @@ def render_calibrated_rgb_pushbroom(
                     "foreground_anchor_handoff_guard_pixel_count": int(
                         np.count_nonzero(current_anchor_handoff_guard)
                     ),
-                    "foreground_anchor_handoff_continuity": (
-                        foreground_anchor_handoff_continuity
-                    ),
+                    "foreground_owner_handoff_audit": foreground_owner_handoff_audit,
                     "geometry_protected_pixel_count": int(
                         np.count_nonzero(geometry_protected)
                     ),
@@ -8929,6 +9984,39 @@ def render_calibrated_rgb_pushbroom(
             foreground_anchor_reservations,
             completed_foreground_anchor_fragments,
         )
+        expected_foreground_handoff_count = int(
+            sum(len(values) for values in planned_foreground_owner_handoffs.values())
+        )
+        published_foreground_handoff_count = int(
+            sum(
+                int(audit["handoff_count"])
+                for audit in foreground_owner_handoff_audits
+            )
+        )
+        if published_foreground_handoff_count != expected_foreground_handoff_count:
+            raise RuntimeError(
+                "Foreground owner-run handoff audit count does not cover the plan"
+            )
+        foreground_owner_continuity_summary = {
+            **foreground_owner_plan.foreground_owner_continuity_summary(),
+            "current_valid_nonadjacent_owner_pixel_count": int(
+                foreground_current_valid_nonadjacent_owner_pixels
+            ),
+            "foreground_blend_pixel_count": int(foreground_blend_pixels),
+            "foreground_deformation_pixel_count": int(
+                foreground_deformation_pixels
+            ),
+        }
+        if any(
+            int(foreground_owner_continuity_summary[name]) != 0
+            for name in (
+                "avoidable_owner_switch_count",
+                "current_valid_nonadjacent_owner_pixel_count",
+                "foreground_blend_pixel_count",
+                "foreground_deformation_pixel_count",
+            )
+        ):
+            raise RuntimeError("Foreground v3 owner continuity contract was violated")
         white_wall_l_p95 = (
             float(np.percentile(np.concatenate(white_wall_l_samples), 95.0))
             if white_wall_l_samples
@@ -9127,6 +10215,17 @@ def render_calibrated_rgb_pushbroom(
             "foreground_anchor_handoff_retired_pixel_count": int(
                 sum(handoff.pixel_count for handoff in foreground_anchor_handoff_retirements)
             ),
+            "foreground_owner_run_handoff_count": int(
+                expected_foreground_handoff_count
+            ),
+            "foreground_owner_handoff_audit_count": int(
+                published_foreground_handoff_count
+            ),
+            "foreground_current_valid_nonadjacent_owner_pixel_count": int(
+                foreground_current_valid_nonadjacent_owner_pixels
+            ),
+            "foreground_blend_pixel_count": int(foreground_blend_pixels),
+            "foreground_deformation_pixel_count": int(foreground_deformation_pixels),
             "strict_owner_partition": True,
             "graphcut_pair_count": graphcut_pairs,
             "hard_cut_pair_count": hard_cut_pairs,
@@ -9261,14 +10360,19 @@ def render_calibrated_rgb_pushbroom(
                 foreground_plan_audit.update(
                     {
                         "cross_pair_reservation_policy": (
-                            "current_pair_anchor_then_completed_sparse_rgb_lock_"
-                            "only_outside_current_pair_valid_support_with_"
-                            "nonadjacent_current_pair_hard_owner_handoffs"
+                            "v3_planned_foreground_owner_runs_with_adjacent_"
+                            "owner_run_handoff_audits_only"
+                        ),
+                        "foreground_owner_continuity_summary": (
+                            foreground_owner_continuity_summary
+                        ),
+                        "foreground_owner_handoff_audits": (
+                            foreground_owner_handoff_audits
                         ),
                         "out_of_token_pair_write_suppressed_pixel_count": int(
                             foreground_anchor_out_of_token_pair_write_suppressed_pixels
                         ),
-                        "hard_owner_handoffs": [
+                        "owner_run_handoffs": [
                             handoff.as_dict()
                             for handoff in foreground_anchor_handoff_retirements
                         ],

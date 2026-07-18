@@ -13,7 +13,7 @@
   → valid mask 最大内接矩形、严格质量分级（A/B/C）和原子交付
 ```
 
-正式全景像素只来自 RGB。深度除用于会话契约和 Open3D/ORB-SLAM3 真实轨迹验证外，只能在结构性 RGB 风险触发的相邻 `96–160 px` 接缝走廊中做双向重投影、z-buffer 可见性、深度分层、遮挡/透明保护、局部逆网格和 owner 决策；Lab-only 风险仍只约束 RGB owner 与融合，不能单独启动局部变形。深度不生成颜色、不补洞、不拟合参考平面、不改写真实 pose，也不产生全景深度。局部网格只修正一次 RGB inverse sampling，不是新的相机轨迹。正式流程不使用 UniStitch、LightGlue、MAGSAC、Torch、任何全局/pose/全景级 `3×3` 单应矩阵、二维累计或二维位姿插值。`local_apap_flow` 是一个受限候选：默认关闭；只有显式启用后，才可能在单个相邻 `96–160 px`、双向可见同层安全背景走廊内为一个 RGB owner 做局部 inverse sampling，前景实例仍保持 owner-only。它不能改 pose、生成颜色、写入全景级变换或保存稠密证据，且必须逐项通过保护域、held-out、flow 前后向、Jacobian、尺度、位移与边界审计。关闭时继续走既有局部逆网格/hard-owner 路径。A/B 级 RGB 全景交付后，`g305-panorama` 会尝试生成仅供浏览的 `tsdf_mesh.glb` 和 `tsdf_mesh_viewer.html`；TSDF/Open3D 或其文件发布不可用时，报告记录 `tsdf_visualization.status=unavailable`，不得撤销已审计的 RGB 全景。C 级人工复核交付会跳过它们。TSDF 使用同一严格 RGB-D 会话和真实轨迹，但不向条带、接缝、融合、裁剪或任何全景质量判定回传结果。ORB-SLAM3 仅负责输出真实 RGB-D 相机轨迹；未跟踪帧、非有限/非刚体 pose、图不连通、物理不连续/逆向、步长/扫描跨度、漂移、旋转或 RGB-D 边残差越界，或条带接缝结构不完整时流程会失败，不会伪造位姿或回退到二维拼接。低 fitness/RMSE、输入画质或最终图像等严格质量门限未过而上述结构审计完整时，才发布明确标记的 C 级结果。若 WSL 原生进程唯一以 `139`（SIGSEGV）退出，bridge 只会用全新完整 RGB-D 暂存再试一次，并在报告中记录两次的标量审计；其它退出、超时、缺帧或轨迹解析失败均不会重试。没有 `delivery.json` 就不是有效交付。
+正式全景像素只来自 RGB。深度除用于会话契约和 Open3D/ORB-SLAM3 真实轨迹验证外，只能在结构性 RGB 风险触发的相邻 `96–160 px` 接缝走廊中做双向重投影、z-buffer 可见性、深度分层、遮挡/透明保护、局部逆网格和 owner 决策；Lab-only 风险仍只约束 RGB owner 与融合，不能单独启动局部变形。深度不生成颜色、不补洞、不拟合参考平面、不改写真实 pose，也不产生全景深度。局部网格只修正一次 RGB inverse sampling，不是新的相机轨迹。正式流程不使用 UniStitch、LightGlue、MAGSAC、Torch、任何全局/pose/全景级 `3×3` 单应矩阵、二维累计或二维位姿插值。`local_apap_flow` 是一个受限候选：默认关闭；只有显式启用后，才可能在单个相邻 `96–160 px`、双向可见同层安全背景走廊内为一个 RGB owner 做局部 inverse sampling，前景实例仍保持 owner-only。它不能改 pose、生成颜色、写入全景级变换或保存稠密证据，且必须逐项通过保护域、held-out、flow 前后向、Jacobian、尺度、位移与边界审计。关闭时继续走既有局部逆网格/hard-owner 路径。A/B/C 级 RGB 全景必须成对交付仅供浏览的 `tsdf_mesh.glb` 与 `tsdf_mesh_viewer.html`；TSDF/Open3D、GLB 或 Viewer 的生成与 staging 任一失败都会使正式交付成为 F，且不写 `delivery.json`。TSDF 使用同一严格 RGB-D 会话和真实轨迹，但不向条带、接缝、融合、裁剪或任何全景质量判定回传结果。ORB-SLAM3 仅负责输出真实 RGB-D 相机轨迹；未跟踪帧、非有限/非刚体 pose、图不连通、物理不连续/逆向、步长/扫描跨度、漂移、旋转或 RGB-D 边残差越界，或条带接缝结构不完整时流程会失败，不会伪造位姿或回退到二维拼接。低 fitness/RMSE、输入画质或最终图像等严格质量门限未过而上述结构审计完整时，才发布明确标记的 C 级结果。若 WSL 原生进程唯一以 `139`（SIGSEGV）退出，bridge 只会用全新完整 RGB-D 暂存再试一次，并在报告中记录两次的标量审计；其它退出、超时、缺帧或轨迹解析失败均不会重试。没有 `delivery.json` 就不是有效交付。
 
 默认工况是相机连续单向水平侧移、场景基本静止、最近物体约 `0.5 m`、最高速度约 `1.5 m/s`。用户只需提供采集目录和输出目录，不需要调整曝光、步长、帧号、位姿、接缝或裁剪参数。
 
@@ -23,10 +23,10 @@
 
 - **A**：所有严格质量门通过，所有相邻 handoff 都是安全 anchor/owner。
 - **B**：所有严格质量门通过，至少一个相邻 handoff 使用已审计的既有局部逆网格（`flow_mesh`）；显式启用且审计完整的 `local_apap_flow` 也只能归入这一类。默认关闭时，现有 renderer 继续以既有局部逆网格/owner 路径工作；只有实际 audit 标明 APAP/flow 方法时才可声称使用了该候选。
-- **C**：会话、物理连续的真实轨迹、一次 RGB inverse remap、valid mask、owner 拓扑和每对 handoff 审计完整，但低 fitness/RMSE、输入/最终图像等严格质量未过，或完整有效走廊采用已审计的最低代价 hard cut。它仍发布 RGB 全景，`delivery_state=published_degraded` 且 `manual_review_required=true`。
+- **C**：会话、物理连续的真实轨迹、一次 RGB inverse remap、valid mask、owner 拓扑和每对 handoff 审计完整，但低 fitness/RMSE、输入/最终图像等严格质量未过，或完整有效走廊采用已审计的最低代价 hard cut。它发布 RGB 全景以及必需的 `tsdf_mesh.glb` / `tsdf_mesh_viewer.html`，`delivery_state=published_degraded` 且 `manual_review_required=true`。
 - **F**：标定、aligned depth/单位/元数据、真实 SE(3)、必需 RGB-D 边/图连通、有效 remap、owner/GraphCut/MultiBand 拓扑、资源硬限或原子交付失败；物理不连续/逆向、步长/扫描跨度、垂直或前后漂移、旋转和 RGB-D 边残差越界同样是 F。F 不发布全景和 `delivery.json`，只写 `failure.json`。
 
-正式 `report.json` 与 `delivery.json` 均为 v9，并公开 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary` 和 `manual_review_required`；其中 summary 固定计数 `anchor`、`apap`、`flow_mesh`、`hard_cut`。`quality_pass` 保留为 v8 兼容的严格质量别名，不是已发布状态的唯一依据；请同时检查最后原子写入的 `delivery.json` 与其 `delivery_state`。
+正式 `report.json` 与 `delivery.json` 均为 v9，并公开 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary`、`foreground_owner_continuity_summary`、`tsdf_visualization` 和 `manual_review_required`；其中 summary 固定计数 `anchor`、`apap`、`flow_mesh`、`hard_cut`。`quality_pass` 保留为 v8 兼容的严格质量别名，不是已发布状态的唯一依据；请同时检查最后原子写入的 `delivery.json` 与其 `delivery_state`。
 
 ## 命令概览
 
@@ -417,7 +417,7 @@ RGB (u, v)
 
 灭火器把手、软管、近景前景、遮挡区以及透明/反光斜带一律保持单源 RGB。透明斜带若已存在原始帧中，是受保护内容，不是要用 warp 或融合消除的“拼接错位”。所有真实 pose nodes 仍参与轨迹、布局和一次 RGB remap；如果经审计的组件/整走廊 hard-owner 决策完整覆盖一个窄条，报告会明确记录该源不再贡献最终颜色。
 
-为避免长软管或藤蔓只靠 pair-local bbox 关联，正式 owner 预检前还会构建独立的 `ForegroundSegment → ForegroundSpan → HandoffZone` 计划。只有共享源帧原始坐标足迹重叠、双向可见性/深度证据、轮廓方向和宽度连续、且不存在孔洞、遮挡、反光、分叉或其它关联歧义时，计划才可把一个 span 编译成现有 GraphCut 的硬 owner 约束。每个 span 必须由一张完整覆盖的 RGB anchor 负责；未获准的内部 handoff 只记录审计并保持原有 hard-owner/fail-closed 行为，绝不靠融合或非刚性网格掩盖。当前只含 aligned depth 的 legacy 会话一律标为 `IMAGE_REGION` owner-only，不能冒充 `DEPTH_OBSERVED` 或刚体代理；该规划不会增加正式图像、深度图或额外像素生成路径。
+为避免长软管或藤蔓只靠 pair-local bbox 关联，正式 owner 预检前会构建 `DepthAnchorToken → ForegroundTrackEdge → ForegroundInstanceTrack → ForegroundOwnerRun` 计划。两-pair token 只提供严格相邻身份候选；多个唯一、双向可见、共享源原始足迹连续的相邻证据才能串成会话内 `track_id`。split、merge、多个候选或身份不唯一时立即截断，不猜测。全轨迹 owner DP 先保证当前 pair 的完整 RGB 覆盖和 owner 拓扑，再按最少实际换源、最大 direct token/双向身份支持、最大覆盖余量、最小轮廓/中心线/方向残差与固定顺序打破平局。每个 run 的 owner 始终仅是当前 pair 的两个相邻 source；交接必须经过前景专用审计，且所有交接像素都属于指定 incoming owner。前景不得进入 MultiBand、flow mesh 或 APAP，也绝不执行形变；非相邻 owner、前景 blend 与前景 deformation 的审计计数必须为零。身份交接失败但当前 RGB 覆盖和 owner 拓扑完整时，可作为 C 级 hard-owner 交付；否则为 F。当前只含 aligned depth 的 legacy 会话一律标为 `IMAGE_REGION` owner-only，不能冒充 `DEPTH_OBSERVED` 或刚体代理；该规划不会增加正式图像、深度图或额外像素生成路径。
 
 ## RGB 风险、hard owner 与窄带 MultiBand
 
@@ -474,6 +474,8 @@ clamp(floor(0.20 × 较窄 owner 宽度), 2, 8) px
 ```text
 outputs/greenhouse_sequence/
 ├─ panorama.jpg
+├─ tsdf_mesh.glb
+├─ tsdf_mesh_viewer.html
 ├─ transforms.json
 ├─ render_transforms.json
 ├─ report.json
@@ -482,10 +484,10 @@ outputs/greenhouse_sequence/
 
 - `transforms.json`：`rgbd-pose-graph/v1`，包含坐标约定、毫米单位、pose nodes 的 4×4 `camera_to_world`、RGB-D 边、信息矩阵、残差、优化和连通状态；
 - `render_transforms.json`：`calibrated-rgb-pushbroom/v7`，包含 RGB-only 像素来源、真实 SE(3) 源、扫描布局、局部 RGB 像素/毫米标量、选源信息，以及不含预览图、flow 场、mask 或稠密 map 的残差、应用/拟合 flow 域与深度辅助局部网格 held-out/拓扑审计摘要；
-- `report.json`：`gemini305-calibrated-rgb-pushbroom/v9`，汇总 RGB-D 会话、输入质量、odometry、pose graph、pose quality、RGB 条带布局、残差/深度辅助证据、风险、hard owner、亮度增益、MultiBand 审计和嵌套 `publication`；顶层同时提供 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary`、逐 pair `handoff_outcomes` 与 `manual_review_required`；
-- `delivery.json`：`gemini305-panorama-delivery/v9`，最后发布；其 `alignment_backend` 与 `alignment_model` 标识最终采用的接缝后端和模型，并以 `geometry_assistance_gate` 声明最小连通网格支持、应用/拟合 flow 规则和实际直线观察规则。它还必须包含 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary` 和 `manual_review_required`；`quality_pass` 仅为 `strict_quality_pass` 的 v8 兼容别名。A/B 的 `delivery_state=published`，结构安全但需人工复核的 C 为 `published_degraded`，不能仅以 `quality_pass` 判断是否已经有效发布。
+- `report.json`：`gemini305-calibrated-rgb-pushbroom/v9`，汇总 RGB-D 会话、输入质量、odometry、pose graph、pose quality、RGB 条带布局、残差/深度辅助证据、风险、hard owner、亮度增益、MultiBand 审计和嵌套 `publication`；顶层同时提供 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary`、`foreground_owner_continuity_summary`、`tsdf_visualization`、逐 pair `handoff_outcomes` 与 `manual_review_required`；
+- `delivery.json`：`gemini305-panorama-delivery/v9`，最后发布；其 `alignment_backend` 与 `alignment_model` 标识最终采用的接缝后端和模型，并以 `geometry_assistance_gate` 声明最小连通网格支持、应用/拟合 flow 规则和实际直线观察规则。它还必须包含 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary`、`foreground_owner_continuity_summary`、`tsdf_visualization` 和 `manual_review_required`；`quality_pass` 仅为 `strict_quality_pass` 的 v8 兼容别名。A/B 的 `delivery_state=published`，结构安全但需人工复核的 C 为 `published_degraded`，不能仅以 `quality_pass` 判断是否已经有效发布。
 
-每次任务先删除旧 `delivery.json`，正式文件先写隐藏 pending 文件，再用 `os.replace` 原子发布；A/B/C 的 `delivery.json` 最后写入。C 级仍是 RGB-only 全景，但强制人工复核并跳过 TSDF 展示文件。普通异常和 F 会清除正式文件并写 `failure.json`。强制终止可能来不及写失败报告，但没有有效 `delivery.json` 仍表示未发布或失败；存在 `delivery.json` 时还必须读取其 `delivery_state`、等级和人工复核标记。
+每次任务先删除旧 `delivery.json`，全景、GLB、Viewer、报告、位姿和 `delivery.json` 都先写隐藏 pending 文件，再用 `os.replace` 发布；A/B/C 的 `delivery.json` 始终最后写入。C 级仍是 RGB-only 全景且强制人工复核，但同样必须交付成对的 TSDF 展示文件。TSDF、Viewer 或任意发布步骤失败都会清除正式文件并原子写入 `failure.json`。强制终止可能来不及写失败报告，但没有有效 `delivery.json` 仍表示未发布或失败；存在 `delivery.json` 时还必须读取其 `delivery_state`、等级和人工复核标记。
 
 旧诊断文件会在新的正式或失败任务开始时清除。历史 `pairs/` 不是交付目录，不能用于判断本次任务是否成功。
 
