@@ -52,6 +52,12 @@ from .geometry_assisted_local_warp import (
     mutually_consistent_correspondences,
     solve_active_mesh_forward_inverse,
 )
+from .handoff_continuity import evaluate_handoff_continuity
+from .local_apap_flow import (
+    LocalAPAPFlowConfig,
+    LocalAPAPFlowInverseWarp,
+    fit_local_apap_plus_dense_flow,
+)
 from .render import largest_valid_rectangle
 from .rgb_residual_alignment import (
     ProtectedComponentFragment,
@@ -433,6 +439,11 @@ class CalibratedRGBPushbroomConfig:
     geometry_assisted_seam: GeometryAssistedSeamConfig = field(
         default_factory=GeometryAssistedSeamConfig
     )
+    # This candidate is disabled unless the outer formal handoff policy
+    # explicitly opts in.  Its limits are closed in LocalAPAPFlowConfig.
+    local_apap_flow: LocalAPAPFlowConfig = field(
+        default_factory=LocalAPAPFlowConfig
+    )
 
     @classmethod
     def from_mapping(
@@ -442,6 +453,7 @@ class CalibratedRGBPushbroomConfig:
         supplied.pop("mode", None)
         alignment_value = supplied.pop("residual_alignment", None)
         geometry_value = supplied.pop("geometry_assisted_seam", None)
+        local_apap_flow_value = supplied.pop("local_apap_flow", None)
         allowed = {
             "maximum_central_band_fraction",
             "endpoint_outer_half_fov",
@@ -455,6 +467,7 @@ class CalibratedRGBPushbroomConfig:
             "scale_low_gradient_quantile",
             "scale_minimum_response",
             "scale_max_relative_mad",
+            "local_apap_flow",
         }
         unknown = sorted(set(supplied) - allowed)
         if unknown:
@@ -474,6 +487,11 @@ class CalibratedRGBPushbroomConfig:
                     geometry_value
                     if isinstance(geometry_value, GeometryAssistedSeamConfig)
                     else GeometryAssistedSeamConfig.from_mapping(geometry_value)
+                ),
+                local_apap_flow=(
+                    local_apap_flow_value
+                    if isinstance(local_apap_flow_value, LocalAPAPFlowConfig)
+                    else LocalAPAPFlowConfig.from_mapping(local_apap_flow_value)
                 ),
             )
         except TypeError as exc:
@@ -533,6 +551,9 @@ class CalibratedRGBPushbroomConfig:
                 "geometry_assisted_seam must be a GeometryAssistedSeamConfig"
             )
         self.geometry_assisted_seam._validate()
+        if not isinstance(self.local_apap_flow, LocalAPAPFlowConfig):
+            raise ValueError("local_apap_flow must be a LocalAPAPFlowConfig")
+        self.local_apap_flow.validate()
 
 
 @dataclass(frozen=True)
@@ -1406,6 +1427,7 @@ class CalibratedRGBPushbroomRenderer:
         self.remap_count = 0
         self.full_resolution_output_remap_count = 0
         self.analysis_preview_remap_count = 0
+        self.analysis_local_handoff_remap_count = 0
 
     def _inverse_map(
         self,
@@ -1500,6 +1522,36 @@ class CalibratedRGBPushbroomRenderer:
             source_map_y=np.ascontiguousarray(map_y),
             valid_mask=np.ascontiguousarray(valid),
         )
+
+    def render_local_handoff_analysis_rgb(
+        self, frame: RGBDFrame, tile: LocalGeometryContribution
+    ) -> np.ndarray:
+        """Sample one bounded local RGB tile for APAP/flow analysis only.
+
+        This does not write a strip or contribute a panorama pixel.  The final
+        source still performs exactly one calibrated full-resolution inverse
+        remap in :meth:`render_frame`; this temporary analysis tile is counted
+        separately so it cannot be mistaken for an output remap.
+        """
+
+        source_index = int(tile.source_index)
+        if not 0 <= source_index < len(self.poses):
+            raise IndexError("Pushbroom local handoff source index is out of range")
+        if int(frame.frame_id) != int(tile.frame_id):
+            raise ValueError("Local handoff frame and geometry tile do not match")
+        image = _read_bgr(frame.color_path, self.calibration)
+        rgb = cv2.remap(
+            image,
+            np.asarray(tile.source_map_x, dtype=np.float32),
+            np.asarray(tile.source_map_y, dtype=np.float32),
+            cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0),
+        )
+        rgb = np.ascontiguousarray(rgb)
+        rgb[~np.asarray(tile.valid_mask, dtype=bool)] = 0
+        self.analysis_local_handoff_remap_count += 1
+        return rgb
 
     def render_preview_frame(
         self,
@@ -2930,6 +2982,7 @@ def _plan_geometry_assisted_seams(
     preview_boundary_geometry: Sequence[Mapping[str, object]],
     preview_pair_origins: Sequence[tuple[float, float]],
     settings: GeometryAssistedSeamConfig,
+    local_apap_flow_settings: LocalAPAPFlowConfig,
     root: Path,
 ) -> tuple[tuple[object | None, ...], tuple[_GeometryPairPlan, ...]]:
     """Build only triggered adjacent mesh corrections and depth protection masks.
@@ -2951,6 +3004,7 @@ def _plan_geometry_assisted_seams(
         raise RuntimeError(
             "Geometry planning requires one RGB preview origin/scale per pair"
         )
+    local_apap_flow_settings.validate()
     warps: list[object | None] = [None] * len(frames)
     plans: list[_GeometryPairPlan] = []
     geometry_renderer = CalibratedRGBPushbroomRenderer(
@@ -3250,7 +3304,7 @@ def _plan_geometry_assisted_seams(
             fit_support_origin_xy=(float(x0), 0.0),
             config=settings.mesh_warp_config(),
         )
-        active = (
+        mesh_active = (
             _mesh_active_mask(
                 fit.warp, x0=x0, x1=x1, height=layout.canvas_height
             )
@@ -3258,8 +3312,10 @@ def _plan_geometry_assisted_seams(
             else np.zeros_like(same_layer)
         )
         mesh_accepted = fit.warp is not None and bool(fit.audit.accepted)
-        protected_active_overlap = int(np.count_nonzero(active & protected))
-        if protected_active_overlap:
+        mesh_protected_active_overlap = int(
+            np.count_nonzero(mesh_active & protected)
+        )
+        if mesh_protected_active_overlap:
             raise RuntimeError(
                 "A local mesh attempted to move an owner-protected depth layer"
             )
@@ -3267,15 +3323,17 @@ def _plan_geometry_assisted_seams(
         # a grid-cell bounding box.  Keep an explicit scalar proof that the
         # mesh evaluator did not move a pixel outside the final bilateral
         # depth/RGB same-layer mask even when its surrounding cell was fitted.
-        active_non_same_layer_overlap = int(np.count_nonzero(active & ~same_layer))
-        if active_non_same_layer_overlap:
+        mesh_active_non_same_layer_overlap = int(
+            np.count_nonzero(mesh_active & ~same_layer)
+        )
+        if mesh_active_non_same_layer_overlap:
             raise RuntimeError(
                 "A local mesh attempted to move a non-same-layer pixel"
             )
-        foreground_anchor_active_overlap = int(
-            np.count_nonzero(active & foreground_anchor_protected)
+        mesh_foreground_anchor_active_overlap = int(
+            np.count_nonzero(mesh_active & foreground_anchor_protected)
         )
-        if foreground_anchor_active_overlap:
+        if mesh_foreground_anchor_active_overlap:
             raise RuntimeError(
                 "A local mesh attempted to move a depth-anchored foreground instance"
             )
@@ -3291,7 +3349,7 @@ def _plan_geometry_assisted_seams(
                 pair_index=pair_index,
                 mesh_warp=fit.warp,
                 corridor_x=(x0, x1),
-                active_mask=active,
+                active_mask=mesh_active,
                 settings=settings,
             )
         else:
@@ -3301,10 +3359,129 @@ def _plan_geometry_assisted_seams(
                 "analysis_preview_remap_count": 0,
             }
         accepted = bool(mesh_accepted and flow_validation.get("accepted") is True)
-        # A candidate that fails RGB held-out flow remains a protected
-        # hard-owner corridor.  Do not leave its non-identity field resident
-        # for a later pair or accidentally report it as active.
-        accepted_active = active if accepted else np.zeros_like(active)
+        selected_warp: object | None = fit.warp if accepted else None
+        selected_active = mesh_active if accepted else np.zeros_like(mesh_active)
+        local_deformation: dict[str, object] = {
+            "enabled": bool(local_apap_flow_settings.enabled),
+            "attempted": False,
+            "accepted": bool(accepted),
+            "method": "flow_mesh" if accepted else "not_attempted",
+            "reason": (
+                "accepted_existing_rgbd_inverse_mesh"
+                if accepted
+                else "existing_rgbd_inverse_mesh_not_accepted"
+            ),
+            "analysis_rgb_remap_count": 0,
+            "correspondence_policy": (
+                "bidirectional_rgbd_mutual_virtual_coordinates"
+            ),
+        }
+        if not accepted and local_apap_flow_settings.enabled:
+            # The source is the right/second strip; the target is the left
+            # strip's nominal virtual coordinate.  Restrict supplied RGB-D
+            # correspondences on both sides before the local module performs
+            # its independent RANSAC/FB/Jacobian/held-out checks.
+            output_local = np.asarray(output_points, dtype=np.float64) - np.asarray(
+                (float(x0), 0.0), dtype=np.float64
+            )
+            sample_local = np.asarray(sample_points, dtype=np.float64) - np.asarray(
+                (float(x0), 0.0), dtype=np.float64
+            )
+            if (
+                output_local.ndim != 2
+                or sample_local.shape != output_local.shape
+                or output_local.shape[1:] != (2,)
+            ):
+                raise RuntimeError("Local APAP/flow received malformed RGB-D correspondences")
+            correspondence_keep = (
+                np.isfinite(output_local).all(axis=1)
+                & np.isfinite(sample_local).all(axis=1)
+            )
+            if np.any(correspondence_keep):
+                output_x = np.rint(output_local[:, 0]).astype(np.int64)
+                output_y = np.rint(output_local[:, 1]).astype(np.int64)
+                sample_x = np.rint(sample_local[:, 0]).astype(np.int64)
+                sample_y = np.rint(sample_local[:, 1]).astype(np.int64)
+                inside = (
+                    (output_x >= 0)
+                    & (output_x < x1 - x0)
+                    & (output_y >= 0)
+                    & (output_y < layout.canvas_height)
+                    & (sample_x >= 0)
+                    & (sample_x < x1 - x0)
+                    & (sample_y >= 0)
+                    & (sample_y < layout.canvas_height)
+                )
+                correspondence_keep &= inside
+                safe_indices = np.flatnonzero(correspondence_keep)
+                if safe_indices.size:
+                    correspondence_keep[safe_indices] &= (
+                        same_layer[output_y[safe_indices], output_x[safe_indices]]
+                        & same_layer[sample_y[safe_indices], sample_x[safe_indices]]
+                    )
+            first_analysis_rgb = geometry_renderer.render_local_handoff_analysis_rgb(
+                frames[pair_index], first_tile
+            )
+            second_analysis_rgb = geometry_renderer.render_local_handoff_analysis_rgb(
+                frames[pair_index + 1], second_tile
+            )
+            local_result = fit_local_apap_plus_dense_flow(
+                second_analysis_rgb,
+                first_analysis_rgb,
+                same_layer_mask=same_layer,
+                application_mask=same_layer,
+                protected_mask=protected,
+                correspondences=(
+                    np.ascontiguousarray(sample_local[correspondence_keep]),
+                    np.ascontiguousarray(output_local[correspondence_keep]),
+                ),
+                config=local_apap_flow_settings,
+            )
+            local_deformation = {
+                **local_result.as_dict(),
+                "enabled": True,
+                "attempted": True,
+                "analysis_rgb_remap_count": 2,
+                "correspondence_policy": (
+                    "bidirectional_rgbd_mutual_virtual_coordinates"
+                ),
+            }
+            if local_result.accepted:
+                assert (
+                    local_result.inverse_map_x is not None
+                    and local_result.inverse_map_y is not None
+                )
+                selected_warp = LocalAPAPFlowInverseWarp(
+                    corridor_x0=x0,
+                    inverse_map_x=local_result.inverse_map_x,
+                    inverse_map_y=local_result.inverse_map_y,
+                    active_mask=local_result.active_mask,
+                )
+                selected_active = np.asarray(local_result.active_mask, dtype=bool)
+                accepted = True
+        protected_active_overlap = int(np.count_nonzero(selected_active & protected))
+        if protected_active_overlap:
+            raise RuntimeError(
+                "A local deformation attempted to move an owner-protected depth layer"
+            )
+        active_non_same_layer_overlap = int(
+            np.count_nonzero(selected_active & ~same_layer)
+        )
+        if active_non_same_layer_overlap:
+            raise RuntimeError(
+                "A local deformation attempted to move a non-same-layer pixel"
+            )
+        foreground_anchor_active_overlap = int(
+            np.count_nonzero(selected_active & foreground_anchor_protected)
+        )
+        if foreground_anchor_active_overlap:
+            raise RuntimeError(
+                "A local deformation attempted to move a depth-anchored foreground instance"
+            )
+        # A rejected candidate remains a protected hard-owner corridor.  Do
+        # not leave its coordinate field resident for a later pair or report
+        # it as active.
+        accepted_active = selected_active if accepted else np.zeros_like(selected_active)
         protected_path = root / f"geometry-protected-{pair_index:04d}.npz"
         np.savez_compressed(
             protected_path,
@@ -3321,12 +3498,14 @@ def _plan_geometry_assisted_seams(
         )
         if accepted:
             # Exactly one source-local field is selected for each pair: the
-            # second source samples toward the first.  The mesh itself rejects
-            # any active-cell overlap with protected layers and remains
-            # identity outside the pair tile.
+            # second source samples toward the first.  The field is either the
+            # existing RGB-D inverse mesh or one fully audited APAP/flow
+            # candidate; they are never composed or allowed to overlap.
             if warps[pair_index + 1] is not None:
-                raise RuntimeError("Overlapping local geometry mesh for one source is forbidden")
-            warps[pair_index + 1] = fit.warp
+                raise RuntimeError("Overlapping local deformation for one source is forbidden")
+            if selected_warp is None:
+                raise RuntimeError("Accepted local deformation omitted its inverse field")
+            warps[pair_index + 1] = selected_warp
         plans.append(
             _GeometryPairPlan(
                 pair_index=pair_index,
@@ -3341,12 +3520,16 @@ def _plan_geometry_assisted_seams(
                 audit={
                     **base_audit,
                     "reason": (
-                        "accepted"
+                        str(local_deformation.get("reason", "accepted"))
                         if accepted
                         else (
-                            str(flow_validation.get("reason"))
-                            if mesh_accepted
-                            else fit.audit.reason
+                            str(local_deformation.get("reason"))
+                            if bool(local_deformation.get("attempted"))
+                            else (
+                                str(flow_validation.get("reason"))
+                                if mesh_accepted
+                                else fit.audit.reason
+                            )
                         )
                     ),
                     "geometry": geometry.audit.as_dict(),
@@ -3458,8 +3641,15 @@ def _plan_geometry_assisted_seams(
                         np.count_nonzero(fit_support)
                     ),
                     "protected_pixel_count": int(np.count_nonzero(protected)),
-                    "mesh_candidate_pixel_count": int(np.count_nonzero(active)),
-                    "mesh_active_pixel_count": int(np.count_nonzero(accepted_active)),
+                    "mesh_candidate_pixel_count": int(
+                        np.count_nonzero(mesh_active)
+                    ),
+                    "mesh_active_pixel_count": int(
+                        np.count_nonzero(mesh_active if mesh_accepted else np.zeros_like(mesh_active))
+                    ),
+                    "local_deformation_active_pixel_count": int(
+                        np.count_nonzero(accepted_active)
+                    ),
                     "protected_active_overlap_pixel_count": protected_active_overlap,
                     "active_non_same_layer_overlap_pixel_count": (
                         active_non_same_layer_overlap
@@ -3467,8 +3657,18 @@ def _plan_geometry_assisted_seams(
                     "foreground_instance_active_overlap_pixel_count": (
                         foreground_anchor_active_overlap
                     ),
+                    "mesh_protected_active_overlap_pixel_count": (
+                        mesh_protected_active_overlap
+                    ),
+                    "mesh_active_non_same_layer_overlap_pixel_count": (
+                        mesh_active_non_same_layer_overlap
+                    ),
+                    "mesh_foreground_instance_active_overlap_pixel_count": (
+                        mesh_foreground_anchor_active_overlap
+                    ),
                     "mesh": fit.audit.as_dict(),
                     "rgb_flow_validation": flow_validation,
+                    "local_deformation": local_deformation,
                 },
                 foreground_instance_footprints=foreground_instance_footprints,
                 source_anchor_labels_path=source_anchor_labels_path,
@@ -4708,6 +4908,121 @@ def _verify_foreground_anchor_handoff(
         | (owners == handoff.target_pair_index + 1)
     ):
         raise RuntimeError("Foreground anchor handoff was not written by its current pair")
+
+
+def _audit_foreground_anchor_handoff_continuity(
+    handoffs: Sequence[_ForegroundAnchorHandoff],
+    *,
+    pair_index: int,
+    frame_ids: Sequence[int],
+    left: int,
+    right: int,
+    height: int,
+    valid_canvas: np.ndarray,
+    owner_canvas: np.ndarray,
+) -> dict[str, object]:
+    """Publish scalar-only proof for guarded foreground-owner handoffs.
+
+    A signed-occlusion foreground claim is intentionally disjoint from the
+    bilateral ``same_layer`` domain used by local mesh/APAP candidates.  This
+    audit therefore records the continuity module's honest ``not eligible``
+    result while proving that every retired old-source pixel has complete
+    current-pair RGB ownership.  Its fallback vocabulary is never permission
+    to deform foreground: the existing hard-owner guard remains the sole
+    rendering action.
+    """
+
+    if int(pair_index) < 0 or int(pair_index) + 1 >= len(frame_ids):
+        raise RuntimeError("Foreground anchor handoff pair has invalid frame ids")
+    if valid_canvas.shape != owner_canvas.shape or valid_canvas.ndim != 2:
+        raise RuntimeError("Foreground anchor handoff audit canvas shapes are invalid")
+
+    audits: list[dict[str, object]] = []
+    coverage_complete_count = 0
+    for handoff in handoffs:
+        if int(handoff.target_pair_index) != int(pair_index):
+            raise RuntimeError("Foreground anchor handoff was attached to the wrong pair")
+        if not 0 <= int(handoff.source_index) < len(frame_ids):
+            raise RuntimeError("Foreground anchor handoff source is outside render order")
+        clipped = _fragment_mask_in_window(
+            handoff.fragment,
+            left=left,
+            right=right,
+            height=height,
+            anchor_only=True,
+        )
+        if clipped is None:
+            raise RuntimeError("Foreground anchor handoff has no exact pair support")
+        y_slice, x_slice, local_mask = clipped
+        required = int(np.count_nonzero(local_mask))
+        if required != int(handoff.pixel_count):
+            raise RuntimeError("Foreground anchor handoff exact support changed during audit")
+        canvas_x = slice(int(left) + int(x_slice.start), int(left) + int(x_slice.stop))
+        valid = np.asarray(valid_canvas[y_slice, canvas_x], dtype=bool)
+        owners = np.asarray(owner_canvas[y_slice, canvas_x], dtype=np.int16)
+        current_pair_owner = (owners == int(pair_index)) | (
+            owners == int(pair_index) + 1
+        )
+        covered = np.asarray(local_mask, dtype=bool) & valid & current_pair_owner
+        coverage_count = int(np.count_nonzero(covered))
+        old_owner_count = int(
+            np.count_nonzero(
+                np.asarray(local_mask, dtype=bool)
+                & (owners == int(handoff.source_index))
+            )
+        )
+        if coverage_count != required or old_owner_count:
+            raise RuntimeError(
+                "Foreground anchor handoff continuity audit found incomplete "
+                "current-pair ownership"
+            )
+
+        # Do not manufacture foreground same-layer or residual evidence.  The
+        # continuity module consequently asks for a fallback, which this
+        # renderer consumes only as an owner-only guarded rewrite.
+        continuity = evaluate_handoff_continuity(
+            pair_index=int(pair_index),
+            instance_id=(
+                f"span:{int(handoff.span_id)}:"
+                f"component:{int(handoff.fragment.component_label)}"
+            ),
+            candidate_anchor_frame_id=int(frame_ids[int(handoff.source_index)]),
+            normal_residual_sample_count=0,
+            normal_residual_p95_pixels=None,
+            normal_residual_max_pixels=None,
+            centreline_residual_sample_count=0,
+            centreline_residual_p95_pixels=None,
+            direction_sample_count=0,
+            direction_delta_p95_degrees=None,
+            same_layer_supported_pixel_count=0,
+            same_layer_candidate_pixel_count=required,
+            coverage_pixel_count=coverage_count,
+            coverage_required_pixel_count=required,
+        ).as_dict()
+        if continuity["accepted"] is not False or continuity["decision"] != "apap_flow_fallback":
+            raise RuntimeError("Foreground anchor continuity unexpectedly became deformation-eligible")
+        audits.append(
+            {
+                **continuity,
+                "foreground_owner_only": True,
+                "local_deformation_allowed": False,
+                "local_deformation_attempted": False,
+                "decision_consumed_as": "owner_only_guarded_current_pair_rewrite",
+                "current_pair_owner_pixel_count": coverage_count,
+                "old_nonadjacent_owner_pixel_count": old_owner_count,
+            }
+        )
+        coverage_complete_count += 1
+
+    return {
+        "policy": "foreground_owner_only_continuity_audit_no_local_deformation",
+        "handoff_count": int(len(handoffs)),
+        "continuity_audit_count": int(len(audits)),
+        "coverage_complete_count": int(coverage_complete_count),
+        "owner_only_no_deformation_count": int(len(audits)),
+        "local_deformation_attempted": False,
+        "audits": audits,
+    }
 
 
 def _verify_foreground_anchor_reservations(
@@ -7485,6 +7800,7 @@ def render_calibrated_rgb_pushbroom(
             preview_boundary_geometry=preview_boundary_geometry,
             preview_pair_origins=preview_pair_origins,
             settings=settings.geometry_assisted_seam,
+            local_apap_flow_settings=settings.local_apap_flow,
             root=root,
         )
         # Final owner decisions add scalar closure evidence below.  The mesh
@@ -8473,6 +8789,18 @@ def render_calibrated_rgb_pushbroom(
                     fragment,
                 )
                 completed_foreground_anchor_fragments.append((reservation, fragment))
+            foreground_anchor_handoff_continuity = (
+                _audit_foreground_anchor_handoff_continuity(
+                    current_anchor_handoff_retirements,
+                    pair_index=index,
+                    frame_ids=[int(frame.frame_id) for frame in frames],
+                    left=left,
+                    right=right,
+                    height=layout.canvas_height,
+                    valid_canvas=valid_canvas,
+                    owner_canvas=owner_canvas,
+                )
+            )
             if not used_graphcut or hard_rows:
                 hard_cut_pairs += 1
             graphcut_pairs += int(used_graphcut)
@@ -8521,6 +8849,9 @@ def render_calibrated_rgb_pushbroom(
                     ),
                     "foreground_anchor_handoff_guard_pixel_count": int(
                         np.count_nonzero(current_anchor_handoff_guard)
+                    ),
+                    "foreground_anchor_handoff_continuity": (
+                        foreground_anchor_handoff_continuity
                     ),
                     "geometry_protected_pixel_count": int(
                         np.count_nonzero(geometry_protected)
@@ -8866,6 +9197,11 @@ def render_calibrated_rgb_pushbroom(
         ):
             failures.append("periodic vertical stripe energy was not reduced by 40%")
         quality_metrics["quality_pass"] = not failures
+        # Keep the strict gate's scalar reasons even when the caller elects
+        # to publish a structurally safe, explicitly degraded C handoff.  The
+        # reasons contain no images, maps, or masks and make it impossible for
+        # a consumer to mistake the legacy boolean for a quality guarantee.
+        quality_metrics["strict_failure_reasons"] = list(failures)
         if quality_gate and failures:
             raise RuntimeError("Calibrated RGB pushbroom quality gate failed: " + "; ".join(failures))
         if analysis_renderer.analysis_preview_remap_count != len(frames):
@@ -8970,6 +9306,7 @@ def render_calibrated_rgb_pushbroom(
             "geometry_assisted_seam": {
                 "enabled": bool(settings.geometry_assisted_seam.enabled),
                 "config": settings.geometry_assisted_seam.as_dict(),
+                "local_apap_flow": settings.local_apap_flow.as_dict(),
                 "scope": "adjacent_seam_corridors_only",
                 "depth_used_for_output_pixels": False,
                 "depth_used_for_local_geometry": bool(
@@ -8977,6 +9314,26 @@ def render_calibrated_rgb_pushbroom(
                 ),
                 "triggered_pair_count": int(sum(plan.triggered for plan in geometry_plans)),
                 "accepted_pair_count": int(sum(plan.accepted for plan in geometry_plans)),
+                "local_apap_flow_attempted_pair_count": int(
+                    sum(
+                        bool(
+                            isinstance(plan.audit.get("local_deformation"), Mapping)
+                            and plan.audit["local_deformation"].get("attempted")
+                        )
+                        for plan in geometry_plans
+                    )
+                ),
+                "local_apap_flow_accepted_pair_count": int(
+                    sum(
+                        bool(
+                            isinstance(plan.audit.get("local_deformation"), Mapping)
+                            and plan.audit["local_deformation"].get("accepted")
+                            and plan.audit["local_deformation"].get("method")
+                            in {"apap", "apap_plus_dense_flow"}
+                        )
+                        for plan in geometry_plans
+                    )
+                ),
                 "hard_owner_fallback_pair_count": int(
                     sum(plan.fallback == "hard_owner" for plan in geometry_plans)
                 ),

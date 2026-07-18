@@ -120,7 +120,7 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert panorama.shape[0] >= 180
     assert (output / "delivery.json").is_file()
     assert not (output / "failure.json").exists()
-    assert report["schema"] == "gemini305-calibrated-rgb-pushbroom/v8"
+    assert report["schema"] == "gemini305-calibrated-rgb-pushbroom/v9"
     assert report["layout_selection"]["mode"] == "adaptive_rgbd_pose_nodes"
     assert report["render_strategy"] == "calibrated_rgb_pushbroom"
     assert report["render"]["backend"] == "calibrated_rgb_pushbroom"
@@ -135,6 +135,7 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert report["render"]["tsdf_constructed"] is False
     assert report["render"]["reference_plane_fitted"] is False
     assert report["render"]["quality_metrics"]["quality_pass"] is True
+    assert report["strict_failure_reasons"] == []
     assert report["pose_quality"]["quality_pass"] is True
     assert report["pose_graph"]["connected"] is True
     assert report["render"]["selection"]["interpolated_pose_count"] == 0
@@ -202,13 +203,30 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     )
     delivery = json.loads((output / "delivery.json").read_text(encoding="utf-8"))
     assert delivery["quality_pass"] is True
+    assert delivery["strict_quality_pass"] is True
+    assert delivery["delivery_state"] == "published"
+    assert delivery["quality_grade"] in {"A", "B"}
+    assert delivery["manual_review_required"] is False
+    assert sum(delivery["handoff_fallback_summary"].values()) == len(
+        backend.optimized_node_ids
+    ) - 1
     assert delivery["pose_backend"] == "open3d_rgbd"
     assert delivery["projection"] == "calibrated_rgb_pushbroom"
-    assert delivery["schema"] == "gemini305-panorama-delivery/v8"
+    assert delivery["schema"] == "gemini305-panorama-delivery/v9"
     assert delivery["pixel_source"] == "calibrated_rgb_source_samples"
     assert delivery["depth_used_for_output_pixels"] is False
     assert delivery["geometry_assistance_backend"] == compact_geometry["backend"]
-    assert delivery["geometry_assistance_gate"] == {
+    geometry_gate = delivery["geometry_assistance_gate"]
+    assert {
+        key: geometry_gate[key]
+        for key in (
+            "minimum_active_mesh_cells",
+            "maximum_straight_line_deviation_pixels",
+            "rgb_flow_application_policy",
+            "rgb_flow_fit_support_policy",
+            "actual_rgb_line_observation_policy",
+        )
+    } == {
         "minimum_active_mesh_cells": 4,
         "maximum_straight_line_deviation_pixels": 1.0,
         "rgb_flow_application_policy": (
@@ -221,6 +239,7 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
             "observed_hough_solver_line_veto_or_not_observed_non_veto"
         ),
     }
+    assert geometry_gate["local_apap_flow"]["enabled"] is False
     assert delivery["alignment_backend"] == compact_alignment["backend"]
     assert delivery["alignment_model"] == compact_alignment["selected_model"]
     assert delivery["seam_backend"] == "rgb_monotonic_hard_owner_graphcut"
@@ -243,6 +262,88 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert panorama.shape[:2] == (crop["height"], crop["width"])
     assert metrics["crop_height_ratio"] >= 0.85
     assert metrics["crop_width_ratio"] >= 0.95
+
+
+def test_tsdf_export_failure_is_nonblocking_for_valid_rgb_delivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The display-only mesh cannot invalidate an already-safe RGB delivery."""
+
+    session = _make_session(tmp_path, seed=19)
+    output = tmp_path / "output"
+    backend = _KnownTrajectoryRGBDBackend(session)
+    import panorama_demo.dense_fusion as dense_fusion
+
+    def fail_export(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise RuntimeError("forced display-only TSDF export failure")
+
+    monkeypatch.setattr(dense_fusion, "export_tsdf_mesh", fail_export)
+    args = sequence._parser().parse_args([str(session), "--output", str(output)])
+
+    report = sequence.run(args, odometry_backend=backend)
+
+    expected_visualization = {
+        "status": "unavailable",
+        "display_only": True,
+        "participates_in_panorama": False,
+        "reason": "tsdf_export_failed_nonblocking",
+        "error_type": "RuntimeError",
+    }
+    delivery = json.loads((output / "delivery.json").read_text(encoding="utf-8"))
+    assert (output / "panorama.jpg").is_file()
+    assert not (output / "failure.json").exists()
+    assert delivery["delivery_state"] == "published"
+    assert delivery["strict_quality_pass"] is True
+    assert delivery["tsdf_visualization"] == expected_visualization
+    assert report["tsdf_visualization"] == expected_visualization
+    assert not (output / "tsdf_mesh.glb").exists()
+    assert not (output / "tsdf_mesh_viewer.html").exists()
+
+
+def test_public_handoff_policy_enables_local_apap_without_a_duplicate_renderer_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The public policy is the one formal APAP/flow opt-in surface."""
+
+    session = _make_session(tmp_path, seed=31)
+    output = tmp_path / "output"
+    config = tmp_path / "policy.yaml"
+    config.write_text(
+        "stitch:\n"
+        "  handoff_fallback_policy:\n"
+        "    publish_degraded: true\n"
+        "    local_apap_flow_enabled: true\n"
+        "    manual_review_for_grade_c: true\n",
+        encoding="utf-8",
+    )
+    backend = _KnownTrajectoryRGBDBackend(session)
+    import panorama_demo.dense_fusion as dense_fusion
+
+    monkeypatch.setattr(
+        dense_fusion,
+        "export_tsdf_mesh",
+        lambda *args, **kwargs: (b"glTF-policy-test", {
+            "backend": "fake_tsdf_display_only",
+            "frame_count": 7,
+            "vertex_count": 3,
+            "triangle_count": 1,
+            "glb_byte_count": 16,
+            "translation_unit": "mm",
+            "display_only": True,
+            "participates_in_panorama": False,
+        }),
+    )
+    args = sequence._parser().parse_args(
+        [str(session), "--output", str(output), "--config", str(config)]
+    )
+
+    report = sequence.run(args, odometry_backend=backend)
+
+    delivery = json.loads((output / "delivery.json").read_text(encoding="utf-8"))
+    assert (output / "panorama.jpg").is_file()
+    assert report["render"]["geometry_assisted_seam"]["local_apap_flow"]["enabled"] is True
+    assert delivery["geometry_assistance_gate"]["local_apap_flow"]["enabled"] is True
 
 
 def test_importing_formal_sequence_does_not_load_legacy_model_stack() -> None:

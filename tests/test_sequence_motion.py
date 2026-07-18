@@ -9,6 +9,7 @@ import pytest
 
 import panorama_demo.stitch_sequence as sequence
 from panorama_demo.calibrated_rgb_pushbroom import GeometryAssistedSeamConfig
+from panorama_demo.local_apap_flow import LocalAPAPFlowConfig
 from panorama_demo.rgbd_odometry import RGBDOdometryConfig
 from panorama_demo.session import load_rgbd_session
 from panorama_demo.synthetic import generate_sequence
@@ -179,6 +180,32 @@ def test_formal_pushbroom_receives_exact_optimized_se3_without_depth_projection(
                         for index in range(len(frames) - 1)
                     ],
                 },
+                "pairs": [
+                    {
+                        "first_frame_id": int(frames[index].frame_id),
+                        "second_frame_id": int(frames[index + 1].frame_id),
+                        "graphcut_used": True,
+                        "hard_cut_row_count": 0,
+                        "foreground_anchor_handoff_continuity": {
+                            "policy": (
+                                "foreground_owner_only_continuity_audit_no_local_deformation"
+                            ),
+                            "handoff_count": 0,
+                            "continuity_audit_count": 0,
+                            "coverage_complete_count": 0,
+                            "owner_only_no_deformation_count": 0,
+                            "local_deformation_attempted": False,
+                            "audits": [],
+                        },
+                        "geometry_assistance": {
+                            "triggered": False,
+                            "accepted": False,
+                            "fallback": "not_needed",
+                            "audit": {"reason": "mock"},
+                        },
+                    }
+                    for index in range(len(frames) - 1)
+                ],
                 "quality_metrics": {"quality_pass": True},
             },
         )
@@ -198,7 +225,7 @@ def test_formal_pushbroom_receives_exact_optimized_se3_without_depth_projection(
     ):
         np.testing.assert_allclose(optimized, poses[frame_id])
     kwargs = received["kwargs"]
-    assert kwargs["quality_gate"] is True
+    assert kwargs["quality_gate"] is False
     assert kwargs["multiband_levels"] == 3
     assert len(kwargs["rgb_motions"]) == len(backend.optimized_node_ids) - 1
     assert report["render_strategy"] == "calibrated_rgb_pushbroom"
@@ -512,6 +539,61 @@ def test_geometry_compaction_rejects_dense_nested_audits_and_invalid_accepted_me
     def rejected_metadata() -> dict[str, object]:
         return render_metadata(
             json.loads(json.dumps(compact["pairs"][0]["audit"])), accepted=True
+        )
+
+    # A local APAP candidate inherits the same depth-layer, RGB protection and
+    # final owner-closure audits even when the older RGB-D mesh was rejected.
+    # It has its own scalar fit/held-out evidence and must not be accepted by a
+    # weaker sidecar branch.
+    local_settings = LocalAPAPFlowConfig(enabled=True)
+    accepted_apap = rejected_metadata()
+    accepted_apap_geometry = accepted_apap["geometry_assisted_seam"]
+    accepted_apap_geometry["local_apap_flow"] = local_settings.as_dict()
+    accepted_apap_geometry["local_apap_flow_attempted_pair_count"] = 1
+    accepted_apap_geometry["local_apap_flow_accepted_pair_count"] = 1
+    accepted_apap_audit = accepted_apap_geometry["pairs"][0]["audit"]
+    accepted_apap_audit["mesh"]["accepted"] = False
+    accepted_apap_audit["mesh_candidate_pixel_count"] = 0
+    accepted_apap_audit["mesh_active_pixel_count"] = 0
+    accepted_apap_audit["local_deformation_active_pixel_count"] = 64
+    accepted_apap_audit["foreground_instance_active_overlap_pixel_count"] = 0
+    accepted_apap_audit["local_deformation"] = {
+        "enabled": True,
+        "attempted": True,
+        "accepted": True,
+        "method": "apap",
+        "dense_evidence_storage": "temporary_only",
+        "application_policy": "same_layer_visible_nonprotected_instance_or_background_only",
+        "boundary_policy": "outer_corridor_border_identity",
+        "correspondence_policy": "bidirectional_rgbd_mutual_virtual_coordinates",
+        "analysis_rgb_remap_count": 2,
+        "active_pixel_count": 64,
+        "correspondence_count": 40,
+        "apap_inliers": 40,
+        "apap_inlier_ratio": 1.0,
+        "active_mesh_cell_count": 4,
+        "max_displacement_px": 2.0,
+        "jacobian_min": 0.8,
+        "local_scale_min": 0.9,
+        "local_scale_max": 1.1,
+        "held_out_pixel_count": 30,
+        "held_out_error_before_p95": 1.0,
+        "held_out_error_after_p95": 0.5,
+        "held_out_improvement_ratio": 0.5,
+    }
+    compact_apap = sequence._compact_geometry_assistance_for_transforms(
+        accepted_apap, settings, [10, 11], local_settings
+    )
+    assert compact_apap["local_apap_flow_accepted_pair_count"] == 1
+    assert compact_apap["pairs"][0]["audit"]["local_deformation"]["method"] == "apap"
+
+    bad_apap_owner_closure = json.loads(json.dumps(accepted_apap))
+    bad_apap_owner_closure["geometry_assisted_seam"]["pairs"][0]["audit"][
+        "final_owner"
+    ]["final_full_height_hard_cut"] = True
+    with pytest.raises(RuntimeError, match="final RGB owner-closure audit"):
+        sequence._compact_geometry_assistance_for_transforms(
+            bad_apap_owner_closure, settings, [10, 11], local_settings
         )
 
     # A safe wall is not required to retain a solver-valid Hough line after

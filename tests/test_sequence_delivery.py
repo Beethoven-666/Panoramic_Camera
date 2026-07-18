@@ -38,8 +38,8 @@ class _DeliveryTestRGBDBackend:
                 np.linalg.inv(self.poses[reference_id]) @ self.poses[source_id]
             ),
             "converged": self.mode != "disconnected_graph",
-            "fitness": 0.99,
-            "rmse_mm": 0.5,
+            "fitness": 0.0 if self.mode == "poor_quality" else 0.99,
+            "rmse_mm": 500.0 if self.mode == "poor_quality" else 0.5,
             "information": np.eye(6, dtype=np.float64) * 100.0,
             "backend": self.name,
         }
@@ -48,7 +48,17 @@ class _DeliveryTestRGBDBackend:
         self, *, node_ids, initial_camera_to_world, edges, config
     ):
         del node_ids, edges, config
-        return tuple(np.asarray(pose).copy() for pose in initial_camera_to_world)
+        optimized = tuple(
+            np.asarray(pose).copy() for pose in initial_camera_to_world
+        )
+        if self.mode == "reverse_motion":
+            # Keep every pose finite and rigid, but make one real scan step
+            # travel backwards.  This must stay a trajectory-structure F,
+            # rather than being reclassified as a publishable C-quality result.
+            reverse_pose = optimized[2].copy()
+            reverse_pose[0, 3] = optimized[0][0, 3]
+            optimized = (*optimized[:2], reverse_pose, *optimized[3:])
+        return optimized
 
 
 def _make_session(tmp_path: Path, *, seed: int = 41) -> Path:
@@ -180,7 +190,7 @@ def test_run_invalidates_delivery_before_configuration_loading(
         (True, True, False, "final render quality"),
     ],
 )
-def test_diagnostic_gate_overrides_cannot_publish(
+def test_legacy_strict_quality_helper_rejects_non_strict_results(
     capture_pass: bool,
     pose_pass: bool,
     render_pass: bool,
@@ -349,6 +359,216 @@ def test_rgbd_pipeline_stage_failure_never_leaves_delivery(
     assert not (output / "diagnostic_report.json").exists()
     failure = json.loads((output / "failure.json").read_text(encoding="utf-8"))
     assert message in failure["message"]
+
+
+def _complete_anchor_render_metadata(
+    *, frame_ids: list[int], quality_pass: bool = True
+) -> dict[str, object]:
+    return {
+        "quality_metrics": {"quality_pass": quality_pass},
+        "pairs": [
+            {
+                "first_frame_id": frame_ids[index],
+                "second_frame_id": frame_ids[index + 1],
+                "graphcut_used": True,
+                "hard_cut_row_count": 0,
+                "foreground_anchor_handoff_continuity": {
+                    "policy": (
+                        "foreground_owner_only_continuity_audit_no_local_deformation"
+                    ),
+                    "handoff_count": 0,
+                    "continuity_audit_count": 0,
+                    "coverage_complete_count": 0,
+                    "owner_only_no_deformation_count": 0,
+                    "local_deformation_attempted": False,
+                    "audits": [],
+                },
+                "geometry_assistance": {
+                    "triggered": False,
+                    "accepted": False,
+                    "fallback": "not_needed",
+                    "audit": {"reason": "rgb_preview_below_geometry_trigger"},
+                },
+            }
+            for index in range(len(frame_ids) - 1)
+        ],
+    }
+
+
+def test_publication_assessment_marks_complete_strict_failure_as_c() -> None:
+    frame_ids = [10, 11]
+    metadata = _complete_anchor_render_metadata(frame_ids=frame_ids, quality_pass=False)
+
+    assessment = sequence._assess_publication(
+        {"quality_pass": False},
+        {"quality_pass": False},
+        metadata,
+        frame_ids,
+    )
+
+    assert assessment.strict_quality_pass is False
+    assert assessment.quality_grade == "C"
+    assert assessment.delivery_state == "published_degraded"
+    assert assessment.manual_review_required is True
+    assert assessment.handoff_fallback_summary == {
+        "anchor": 1,
+        "apap": 0,
+        "flow_mesh": 0,
+        "hard_cut": 0,
+    }
+    assert metadata["handoff_outcomes"] == [
+        {
+            "pair_index": 0,
+            "frame_ids": [10, 11],
+            "method": "anchor",
+            "structurally_safe": True,
+            "audit_complete": True,
+            "reason": "rgb_preview_below_geometry_trigger",
+            "foreground_anchor_handoff_count": 0,
+            "foreground_anchor_handoff_continuity_audit_count": 0,
+            "foreground_anchor_handoff_owner_only_count": 0,
+        }
+    ]
+
+
+def test_publication_assessment_preserves_renderer_strict_failure_reasons() -> None:
+    frame_ids = [10, 11]
+    metadata = _complete_anchor_render_metadata(frame_ids=frame_ids, quality_pass=False)
+    metadata["quality_metrics"] = {
+        "quality_pass": False,
+        "strict_failure_reasons": [
+            "safe white-wall owner-boundary P95 delta E00 exceeds 2.0",
+            "periodic vertical stripe energy was not reduced by 40%",
+        ],
+    }
+
+    assessment = sequence._assess_publication(
+        {"quality_pass": True},
+        {"quality_pass": True},
+        metadata,
+        frame_ids,
+    )
+
+    assert assessment.quality_grade == "C"
+    assert assessment.strict_failure_reasons == (
+        "final render quality did not pass",
+        "final render: safe white-wall owner-boundary P95 delta E00 exceeds 2.0",
+        "final render: periodic vertical stripe energy was not reduced by 40%",
+    )
+    assert assessment.as_dict()["strict_failure_reasons"] == list(
+        assessment.strict_failure_reasons
+    )
+
+
+def test_publication_assessment_marks_accepted_local_mesh_as_b() -> None:
+    frame_ids = [10, 11]
+    metadata = _complete_anchor_render_metadata(frame_ids=frame_ids)
+    pair = metadata["pairs"][0]
+    pair["geometry_assistance"] = {
+        "triggered": True,
+        "accepted": True,
+        "fallback": "none",
+        "audit": {"reason": "accepted"},
+    }
+
+    assessment = sequence._assess_publication(
+        {"quality_pass": True},
+        {"quality_pass": True},
+        metadata,
+        frame_ids,
+    )
+
+    assert assessment.quality_grade == "B"
+    assert assessment.delivery_state == "published"
+    assert assessment.manual_review_required is False
+    assert assessment.handoff_fallback_summary == {
+        "anchor": 0,
+        "apap": 0,
+        "flow_mesh": 1,
+        "hard_cut": 0,
+    }
+
+
+def test_publication_assessment_rejects_incomplete_handoff_audit() -> None:
+    with pytest.raises(RuntimeError, match="complete handoff audit"):
+        sequence._assess_publication(
+            {"quality_pass": True},
+            {"quality_pass": True},
+            {"quality_metrics": {"quality_pass": True}, "pairs": []},
+            [10, 11],
+        )
+
+
+def test_publication_assessment_requires_foreground_owner_only_continuity_audit() -> None:
+    metadata = _complete_anchor_render_metadata(frame_ids=[10, 11])
+    del metadata["pairs"][0]["foreground_anchor_handoff_continuity"]
+
+    with pytest.raises(RuntimeError, match="foreground anchor continuity evidence"):
+        sequence._assess_publication(
+            {"quality_pass": True},
+            {"quality_pass": True},
+            metadata,
+            [10, 11],
+        )
+
+
+def test_structurally_valid_poor_pose_quality_publishes_degraded(
+    tmp_path: Path,
+) -> None:
+    """Low fitness/RMSE is a C-grade audit, never a fabricated trajectory."""
+
+    session = _make_session(tmp_path)
+    output = tmp_path / "output"
+    args = sequence._parser().parse_args([str(session), "--output", str(output)])
+
+    report = sequence.run(
+        args,
+        odometry_backend=_DeliveryTestRGBDBackend(session, mode="poor_quality"),
+    )
+
+    delivery = json.loads((output / "delivery.json").read_text(encoding="utf-8"))
+    assert (output / "panorama.jpg").is_file()
+    assert not (output / "failure.json").exists()
+    assert delivery["delivery_state"] == "published_degraded"
+    assert delivery["quality_grade"] == "C"
+    assert delivery["strict_quality_pass"] is False
+    assert delivery["quality_pass"] is False
+    assert delivery["manual_review_required"] is True
+    assert report["strict_failure_reasons"]
+    assert report["tsdf_visualization"] == {
+        "status": "skipped_degraded",
+        "display_only": True,
+        "participates_in_panorama": False,
+        "reason": "manual_review_required",
+    }
+    assert not (output / "tsdf_mesh.glb").exists()
+    assert not (output / "tsdf_mesh_viewer.html").exists()
+
+
+def test_reverse_optimized_pose_is_structural_failure_not_degraded_delivery(
+    tmp_path: Path,
+) -> None:
+    """A finite but physically reversing real trajectory is F, never C."""
+
+    session = _make_session(tmp_path)
+    output = tmp_path / "output"
+    args = sequence._parser().parse_args([str(session), "--output", str(output)])
+
+    with pytest.raises(
+        RuntimeError, match="violates formal side-scan structure"
+    ):
+        sequence.run(
+            args,
+            odometry_backend=_DeliveryTestRGBDBackend(
+                session, mode="reverse_motion"
+            ),
+        )
+
+    assert not (output / "delivery.json").exists()
+    assert not (output / "panorama.jpg").exists()
+    failure = json.loads((output / "failure.json").read_text(encoding="utf-8"))
+    assert failure["deliverable_published"] is False
+    assert "maximum_reverse_step_mm" in failure["message"]
 
 
 @pytest.mark.parametrize(

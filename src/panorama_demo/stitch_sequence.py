@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
@@ -26,6 +27,8 @@ from .calibrated_rgb_pushbroom import (
     render_calibrated_rgb_pushbroom,
 )
 from .config import load_config
+from .handoff_continuity import summarize_handoff_methods
+from .local_apap_flow import LocalAPAPFlowConfig
 from .rgb_residual_alignment import ResidualAlignmentConfig
 from .orbslam3_bridge import (
     ORBSLAM3PoseGraphOptimizer,
@@ -44,6 +47,7 @@ from .quality import (
 )
 from .rgbd_odometry import (
     PoseGraphConfig,
+    PoseQualityReport,
     PoseQualityThresholds,
     RGBDOdometryConfig,
     estimate_pair_rgbd_odometry,
@@ -250,12 +254,480 @@ def _parse_frame_ids(value: object) -> list[int]:
     return sorted(result)
 
 
+@dataclass(frozen=True)
+class _PublicationAssessment:
+    """One explicit formal-publication decision.
+
+    The strict gates remain visible to consumers, but no longer conflate a
+    recoverable visual-quality result with a malformed RGB-D session, pose
+    graph, or owner topology.  Structural validation happens before an
+    instance of this value is created; a C grade is therefore always an
+    intentionally audited hard-cut publication, never an exception that was
+    accidentally swallowed.
+    """
+
+    strict_quality_pass: bool
+    strict_failure_reasons: tuple[str, ...]
+    quality_grade: str
+    delivery_state: str
+    handoff_outcomes: tuple[dict[str, object], ...]
+    handoff_fallback_summary: dict[str, int]
+    manual_review_required: bool
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "delivery_state": self.delivery_state,
+            "strict_quality_pass": self.strict_quality_pass,
+            "quality_grade": self.quality_grade,
+            "strict_failure_reasons": list(self.strict_failure_reasons),
+            "handoff_outcomes": [dict(value) for value in self.handoff_outcomes],
+            "handoff_fallback_summary": dict(self.handoff_fallback_summary),
+            "manual_review_required": self.manual_review_required,
+        }
+
+
+def _require_audit_bool(value: object, *, context: str) -> bool:
+    if type(value) is not bool:
+        raise RuntimeError(f"{context} must be a boolean")
+    return bool(value)
+
+
+def _require_audit_int(value: object, *, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+        raise RuntimeError(f"{context} must be an integer")
+    return int(value)
+
+
+def _optional_audit_reasons(value: object, *, context: str) -> tuple[str, ...]:
+    """Return bounded scalar strict-gate reasons when a producer supplies them."""
+
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise RuntimeError(f"{context} must be a list of non-empty strings")
+    reasons: list[str] = []
+    for index, reason in enumerate(value):
+        if not isinstance(reason, str) or not reason:
+            raise RuntimeError(f"{context}[{index}] must be a non-empty string")
+        reasons.append(reason)
+    return tuple(reasons)
+
+
+def _require_audit_pair_frame_ids(
+    pair: Mapping[str, object],
+    *,
+    pair_index: int,
+    frame_ids: list[int],
+) -> list[int]:
+    """Validate the exact adjacent real-frame identity of one pair audit."""
+
+    first = _require_audit_int(
+        pair.get("first_frame_id"), context=f"handoff pair {pair_index} first_frame_id"
+    )
+    second = _require_audit_int(
+        pair.get("second_frame_id"),
+        context=f"handoff pair {pair_index} second_frame_id",
+    )
+    expected = [int(frame_ids[pair_index]), int(frame_ids[pair_index + 1])]
+    actual = [first, second]
+    if actual != expected:
+        raise RuntimeError(
+            "Handoff audit pair frame ids do not match the real render order"
+        )
+    return actual
+
+
+def _validate_foreground_anchor_handoff_continuity(
+    pair: Mapping[str, object], *, pair_index: int, frame_ids: list[int]
+) -> dict[str, int]:
+    """Validate scalar foreground handoff evidence without enabling a warp.
+
+    Direct signed-occlusion foreground is owner-only by construction.  The
+    renderer reports its lack of same-layer/deformation eligibility through
+    ``handoff_continuity`` while separately proving complete current-pair RGB
+    ownership.  A continuity module fallback request must never become an
+    APAP/flow authorization for foreground content.
+    """
+
+    value = pair.get("foreground_anchor_handoff_continuity")
+    if not isinstance(value, Mapping):
+        raise RuntimeError(
+            "Handoff audit omits foreground anchor continuity evidence"
+        )
+    audit = dict(value)
+    if audit.get("policy") != (
+        "foreground_owner_only_continuity_audit_no_local_deformation"
+    ):
+        raise RuntimeError("Foreground anchor continuity audit has an unknown policy")
+    handoff_count = _require_audit_int(
+        audit.get("handoff_count"),
+        context=f"handoff pair {pair_index} foreground handoff_count",
+    )
+    continuity_count = _require_audit_int(
+        audit.get("continuity_audit_count"),
+        context=f"handoff pair {pair_index} foreground continuity_audit_count",
+    )
+    coverage_complete_count = _require_audit_int(
+        audit.get("coverage_complete_count"),
+        context=f"handoff pair {pair_index} foreground coverage_complete_count",
+    )
+    owner_only_count = _require_audit_int(
+        audit.get("owner_only_no_deformation_count"),
+        context=f"handoff pair {pair_index} foreground owner_only_no_deformation_count",
+    )
+    if (
+        min(
+            handoff_count,
+            continuity_count,
+            coverage_complete_count,
+            owner_only_count,
+        )
+        < 0
+        or continuity_count != handoff_count
+        or coverage_complete_count != handoff_count
+        or owner_only_count != handoff_count
+    ):
+        raise RuntimeError("Foreground anchor continuity audit has inconsistent counts")
+    if _require_audit_bool(
+        audit.get("local_deformation_attempted"),
+        context=f"handoff pair {pair_index} foreground local deformation attempted",
+    ):
+        raise RuntimeError("Foreground anchor continuity audit attempted a deformation")
+    values = audit.get("audits")
+    if not isinstance(values, list) or len(values) != handoff_count:
+        raise RuntimeError("Foreground anchor continuity audit lacks one scalar record per handoff")
+    for audit_index, entry_value in enumerate(values):
+        if not isinstance(entry_value, Mapping):
+            raise RuntimeError(
+                "Foreground anchor continuity audit contains a non-mapping record"
+            )
+        entry = dict(entry_value)
+        entry_pair = _require_audit_int(
+            entry.get("pair_index"),
+            context=(
+                f"handoff pair {pair_index} foreground continuity "
+                f"record {audit_index} pair_index"
+            ),
+        )
+        candidate_frame = _require_audit_int(
+            entry.get("candidate_anchor_frame_id"),
+            context=(
+                f"handoff pair {pair_index} foreground continuity "
+                f"record {audit_index} candidate_anchor_frame_id"
+            ),
+        )
+        coverage_count = _require_audit_int(
+            entry.get("coverage_pixel_count"),
+            context=(
+                f"handoff pair {pair_index} foreground continuity "
+                f"record {audit_index} coverage_pixel_count"
+            ),
+        )
+        coverage_required = _require_audit_int(
+            entry.get("coverage_required_pixel_count"),
+            context=(
+                f"handoff pair {pair_index} foreground continuity "
+                f"record {audit_index} coverage_required_pixel_count"
+            ),
+        )
+        coverage_ratio = entry.get("coverage_ratio")
+        if (
+            entry_pair != pair_index
+            or candidate_frame not in frame_ids
+            or coverage_required <= 0
+            or coverage_count != coverage_required
+            or isinstance(coverage_ratio, bool)
+            or not isinstance(coverage_ratio, (int, float, np.integer, np.floating))
+            or not math.isfinite(float(coverage_ratio))
+            or not math.isclose(float(coverage_ratio), 1.0, rel_tol=0.0, abs_tol=1e-12)
+        ):
+            raise RuntimeError(
+                "Foreground anchor continuity audit lacks complete current-pair coverage"
+            )
+        if (
+            _require_audit_bool(
+                entry.get("accepted"),
+                context=(
+                    f"handoff pair {pair_index} foreground continuity "
+                    f"record {audit_index} accepted"
+                ),
+            )
+            or entry.get("decision") != "apap_flow_fallback"
+            or _require_audit_bool(
+                entry.get("foreground_owner_only"),
+                context=(
+                    f"handoff pair {pair_index} foreground continuity "
+                    f"record {audit_index} foreground_owner_only"
+                ),
+            )
+            is not True
+            or _require_audit_bool(
+                entry.get("local_deformation_allowed"),
+                context=(
+                    f"handoff pair {pair_index} foreground continuity "
+                    f"record {audit_index} local_deformation_allowed"
+                ),
+            )
+            or _require_audit_bool(
+                entry.get("local_deformation_attempted"),
+                context=(
+                    f"handoff pair {pair_index} foreground continuity "
+                    f"record {audit_index} local_deformation_attempted"
+                ),
+            )
+            or entry.get("decision_consumed_as")
+            != "owner_only_guarded_current_pair_rewrite"
+            or entry.get("evidence_storage") != "scalar_only"
+        ):
+            raise RuntimeError(
+                "Foreground anchor continuity audit incorrectly authorizes deformation"
+            )
+    return {
+        "handoff_count": handoff_count,
+        "continuity_audit_count": continuity_count,
+        "owner_only_no_deformation_count": owner_only_count,
+    }
+
+
+def _derive_handoff_outcomes(
+    render_metadata: Mapping[str, object], frame_ids: list[int]
+) -> tuple[dict[str, object], ...]:
+    """Turn the current renderer's pair audits into explicit terminal outcomes.
+
+    The renderer intentionally has no delivery-policy vocabulary yet.  Its
+    pair-level GraphCut/hard-cut and geometry audit is nevertheless sufficient
+    to make a conservative terminal decision for every adjacent real pair.
+    Missing, reordered, or internally inconsistent evidence is a structural
+    publication error rather than an implicit best-effort publication.
+    """
+
+    pairs = render_metadata.get("pairs")
+    if not isinstance(pairs, list) or len(pairs) != len(frame_ids) - 1:
+        raise RuntimeError(
+            "Calibrated RGB pushbroom omitted one complete handoff audit per pair"
+        )
+
+    outcomes: list[dict[str, object]] = []
+    for pair_index, pair_value in enumerate(pairs):
+        if not isinstance(pair_value, Mapping):
+            raise RuntimeError("Handoff audit contains a non-mapping pair entry")
+        pair = dict(pair_value)
+        pair_frame_ids = _require_audit_pair_frame_ids(
+            pair, pair_index=pair_index, frame_ids=frame_ids
+        )
+        graphcut_used = _require_audit_bool(
+            pair.get("graphcut_used"), context=f"handoff pair {pair_index} graphcut_used"
+        )
+        hard_cut_rows = _require_audit_int(
+            pair.get("hard_cut_row_count"),
+            context=f"handoff pair {pair_index} hard_cut_row_count",
+        )
+        if hard_cut_rows < 0:
+            raise RuntimeError("Handoff audit hard-cut row count cannot be negative")
+        foreground_handoff = _validate_foreground_anchor_handoff_continuity(
+            pair, pair_index=pair_index, frame_ids=frame_ids
+        )
+
+        geometry_value = pair.get("geometry_assistance")
+        if not isinstance(geometry_value, Mapping):
+            raise RuntimeError("Handoff audit omits geometry-assistance evidence")
+        geometry = dict(geometry_value)
+        triggered = _require_audit_bool(
+            geometry.get("triggered"),
+            context=f"handoff pair {pair_index} geometry triggered",
+        )
+        accepted = _require_audit_bool(
+            geometry.get("accepted"),
+            context=f"handoff pair {pair_index} geometry accepted",
+        )
+        fallback = geometry.get("fallback")
+        if not isinstance(fallback, str) or not fallback:
+            raise RuntimeError("Handoff audit omits its geometry fallback decision")
+        audit = geometry.get("audit")
+        if not isinstance(audit, Mapping):
+            raise RuntimeError("Handoff audit omits geometry audit details")
+        reason = audit.get("reason")
+        if not isinstance(reason, str) or not reason:
+            raise RuntimeError("Handoff geometry audit omits its terminal reason")
+
+        if accepted:
+            if not triggered or fallback != "none":
+                raise RuntimeError(
+                    "Accepted local geometry handoff has an inconsistent terminal audit"
+                )
+        elif triggered:
+            if fallback != "hard_owner":
+                raise RuntimeError(
+                    "Rejected triggered geometry handoff lacks a hard-owner fallback"
+                )
+        elif fallback != "not_needed":
+            raise RuntimeError(
+                "Untriggered geometry handoff has an unknown terminal fallback"
+            )
+
+        local_deformation = audit.get("local_deformation")
+        local_method: str | None = None
+        if local_deformation is not None:
+            if not isinstance(local_deformation, Mapping):
+                raise RuntimeError("Handoff local-deformation audit must be a mapping")
+            deformation_accepted = _require_audit_bool(
+                local_deformation.get("accepted"),
+                context=f"handoff pair {pair_index} local deformation accepted",
+            )
+            method_value = local_deformation.get("method")
+            if not isinstance(method_value, str) or not method_value:
+                raise RuntimeError("Handoff local-deformation audit omits its method")
+            if deformation_accepted != accepted:
+                raise RuntimeError(
+                    "Handoff local-deformation acceptance disagrees with geometry audit"
+                )
+            local_method = method_value
+
+        # A local mesh accepted by the existing audited geometry path is the
+        # present equivalent of an approved residual flow-mesh handoff.  A
+        # true local APAP candidate retains its own B-grade label.  Any hard
+        # row or GraphCut absence is deliberately classified as C even if
+        # another pair-local check happened to pass.
+        if accepted and graphcut_used and hard_cut_rows == 0:
+            if local_method == "apap":
+                method = "apap"
+            elif local_method in {None, "flow_mesh", "apap_plus_dense_flow"}:
+                method = "flow_mesh"
+            else:
+                raise RuntimeError(
+                    "Accepted handoff has an unsupported local-deformation method"
+                )
+        elif triggered or not graphcut_used or hard_cut_rows > 0:
+            method = "hard_cut_degraded"
+        else:
+            method = "anchor"
+        outcomes.append(
+            {
+                "pair_index": pair_index,
+                "frame_ids": pair_frame_ids,
+                "method": method,
+                "structurally_safe": True,
+                "audit_complete": True,
+                "reason": reason,
+                "foreground_anchor_handoff_count": foreground_handoff[
+                    "handoff_count"
+                ],
+                "foreground_anchor_handoff_continuity_audit_count": (
+                    foreground_handoff["continuity_audit_count"]
+                ),
+                "foreground_anchor_handoff_owner_only_count": foreground_handoff[
+                    "owner_only_no_deformation_count"
+                ],
+            }
+        )
+    return tuple(outcomes)
+
+
+def _handoff_fallback_summary(
+    outcomes: tuple[dict[str, object], ...]
+) -> dict[str, int]:
+    """Validate terminal audits and delegate their stable count to the shared API."""
+
+    for outcome in outcomes:
+        if _require_audit_bool(
+            outcome.get("structurally_safe"), context="handoff structurally_safe"
+        ) is not True or _require_audit_bool(
+            outcome.get("audit_complete"), context="handoff audit_complete"
+        ) is not True:
+            raise RuntimeError("Handoff audit is incomplete or structurally unsafe")
+    try:
+        return summarize_handoff_methods(outcomes)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Handoff audit contains an unknown terminal method") from exc
+
+
+def _assess_publication(
+    capture_quality: Mapping[str, object],
+    pose_quality: Mapping[str, object],
+    render_metadata: dict[str, Any],
+    frame_ids: list[int],
+) -> _PublicationAssessment:
+    """Classify a structurally valid formal render as A, B, or C.
+
+    This function is deliberately called only after strict RGB-D/pose and
+    renderer topology checks have succeeded.  It records strict quality
+    failure instead of throwing it, so a structurally complete C handoff can
+    be atomically published and clearly marked for manual review.
+    """
+
+    outcomes = _derive_handoff_outcomes(render_metadata, frame_ids)
+    render_metadata["handoff_outcomes"] = [dict(value) for value in outcomes]
+    summary = _handoff_fallback_summary(outcomes)
+    render_metadata["handoff_fallback_summary"] = dict(summary)
+
+    render_quality = render_metadata.get("quality_metrics")
+    if not isinstance(render_quality, Mapping):
+        raise RuntimeError("Calibrated RGB pushbroom omitted final quality metrics")
+    capture_pass = _require_audit_bool(
+        capture_quality.get("quality_pass"), context="input capture quality_pass"
+    )
+    pose_pass = _require_audit_bool(
+        pose_quality.get("quality_pass"), context="pose trajectory quality_pass"
+    )
+    render_pass = _require_audit_bool(
+        render_quality.get("quality_pass"), context="render quality_pass"
+    )
+    render_failure_reasons = _optional_audit_reasons(
+        render_quality.get("strict_failure_reasons"),
+        context="render strict_failure_reasons",
+    )
+    if render_pass and render_failure_reasons:
+        raise RuntimeError(
+            "Render quality audit claims a pass while retaining strict failure reasons"
+        )
+    strict_failures: list[str] = []
+    if not capture_pass:
+        strict_failures.append("input capture quality did not pass")
+    if not pose_pass:
+        strict_failures.append("RGB-D pose trajectory quality did not pass")
+    if not render_pass:
+        strict_failures.append("final render quality did not pass")
+        strict_failures.extend(
+            f"final render: {reason}" for reason in render_failure_reasons
+        )
+    strict_quality_pass = not strict_failures
+
+    methods = {str(outcome["method"]) for outcome in outcomes}
+    if not strict_quality_pass or "hard_cut_degraded" in methods:
+        quality_grade = "C"
+        delivery_state = "published_degraded"
+        manual_review_required = True
+    elif methods & {"apap", "flow_mesh"}:
+        quality_grade = "B"
+        delivery_state = "published"
+        manual_review_required = False
+    else:
+        quality_grade = "A"
+        delivery_state = "published"
+        manual_review_required = False
+    return _PublicationAssessment(
+        strict_quality_pass=strict_quality_pass,
+        strict_failure_reasons=tuple(strict_failures),
+        quality_grade=quality_grade,
+        delivery_state=delivery_state,
+        handoff_outcomes=outcomes,
+        handoff_fallback_summary=summary,
+        manual_review_required=manual_review_required,
+    )
+
+
 def _ensure_publishable_quality(
     capture_quality: dict[str, object],
     render_metadata: dict[str, Any],
     pose_quality: dict[str, Any] | None = None,
 ) -> None:
-    """Final assertion that diagnostic overrides can never publish a delivery."""
+    """Legacy strict-only assertion retained for isolated diagnostic callers.
+
+    The formal publication route intentionally does not call this helper: it
+    records strict failures through ``_assess_publication``.  Keeping the
+    small assertion preserves the independent diagnostic contract and avoids
+    silently changing callers that explicitly request strict-only behaviour.
+    """
 
     failures: list[str] = []
     if not bool(capture_quality.get("quality_pass", False)):
@@ -263,12 +735,137 @@ def _ensure_publishable_quality(
     if pose_quality is not None and not bool(pose_quality.get("quality_pass", False)):
         failures.append("RGB-D pose trajectory quality did not pass")
     render_quality = render_metadata.get("quality_metrics")
-    if not isinstance(render_quality, dict) or not bool(
+    if not isinstance(render_quality, Mapping) or not bool(
         render_quality.get("quality_pass", False)
     ):
         failures.append("final render quality did not pass")
     if failures:
         raise RuntimeError("Delivery quality gate failed: " + "; ".join(failures))
+
+
+def _validate_publishable_pose_structure(pose_graph: object) -> None:
+    """Reject invalid pose structure before any A/B/C quality assessment.
+
+    ``validate_pose_trajectory`` intentionally combines strict scan-quality
+    limits with structural facts.  Formal degraded publication needs the
+    latter to stay fail-closed, so retain a small explicit structural audit
+    here rather than classifying by the human-readable failure strings.
+    """
+
+    node_ids_value = getattr(pose_graph, "node_ids", None)
+    poses_value = getattr(pose_graph, "camera_to_world", None)
+    edges_value = getattr(pose_graph, "edges", None)
+    residuals_value = getattr(pose_graph, "edge_residuals", None)
+    if not isinstance(node_ids_value, tuple) or len(node_ids_value) < 2:
+        raise RuntimeError("Pose trajectory must contain at least two real nodes")
+    if len(set(node_ids_value)) != len(node_ids_value):
+        raise RuntimeError("Pose trajectory node ids are not unique")
+    if getattr(pose_graph, "optimized", None) is not True:
+        raise RuntimeError("Pose graph was not optimized")
+    if getattr(pose_graph, "connected", None) is not True:
+        raise RuntimeError("Pose graph is disconnected")
+    if not isinstance(poses_value, tuple) or len(poses_value) != len(node_ids_value):
+        raise RuntimeError("Pose trajectory has inconsistent node and pose counts")
+    if not isinstance(edges_value, tuple):
+        raise RuntimeError("Pose graph has no structural RGB-D edge audit")
+
+    for pose in poses_value:
+        matrix = np.asarray(pose, dtype=np.float64)
+        if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
+            raise RuntimeError("Optimized trajectory contains a non-finite SE(3)")
+        if not np.allclose(matrix[3], (0.0, 0.0, 0.0, 1.0), atol=1e-8):
+            raise RuntimeError("Optimized trajectory has an invalid homogeneous SE(3)")
+        rotation = matrix[:3, :3]
+        if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-5):
+            raise RuntimeError("Optimized trajectory contains a non-rigid SE(3)")
+        if not np.isclose(float(np.linalg.det(rotation)), 1.0, atol=1e-5):
+            raise RuntimeError("Optimized trajectory contains a reflected SE(3)")
+
+    for left, right in zip(node_ids_value[:-1], node_ids_value[1:], strict=True):
+        if not any(
+            bool(getattr(edge, "structurally_valid", False))
+            and {
+                getattr(edge, "reference_node_id", None),
+                getattr(edge, "source_node_id", None),
+            }
+            == {left, right}
+            for edge in edges_value
+        ):
+            raise RuntimeError(
+                f"Required adjacent RGB-D edge {left}<->{right} is not structurally valid"
+            )
+
+    if not isinstance(residuals_value, tuple) or not residuals_value:
+        raise RuntimeError("Pose graph has no auditable RGB-D edge residuals")
+    for residual in residuals_value:
+        if not isinstance(residual, Mapping):
+            raise RuntimeError("Pose graph contains a malformed edge residual")
+        for name in ("translation_residual_mm", "rotation_residual_deg"):
+            value = residual.get(name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float, np.integer, np.floating))
+                or not math.isfinite(float(value))
+            ):
+                raise RuntimeError("Pose graph contains a non-finite edge residual")
+
+
+def _validate_publishable_pose_motion_structure(
+    pose_quality: PoseQualityReport,
+) -> None:
+    """Keep invalid side-scan motion and inconsistent RGB-D poses in F.
+
+    Low odometry fitness/RMSE is useful strict-quality evidence and may still
+    produce an explicitly reviewed C panorama when the optimized RGB-D
+    trajectory is physically coherent.  Reverse travel, excessive drift or
+    rotation, implausible step size, insufficient scan span, and residuals
+    beyond the real-pose safety envelope instead invalidate that trajectory
+    for a side-scan deliverable.  They must fail before any A/B/C assessment.
+    """
+
+    metrics = pose_quality.metrics
+    limits = pose_quality.thresholds
+    if not isinstance(metrics, Mapping):
+        raise RuntimeError("Pose trajectory omits its physical-motion audit")
+
+    def metric(name: str) -> float:
+        value = metrics.get(name)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float, np.integer, np.floating))
+            or not math.isfinite(float(value))
+        ):
+            raise RuntimeError(f"Pose trajectory omits finite {name}")
+        return float(value)
+
+    scan_span = metric("scan_span_mm")
+    if scan_span < float(limits.minimum_scan_span_mm):
+        raise RuntimeError("Pose trajectory has insufficient lateral scan span")
+
+    structural_limits = (
+        ("maximum_reverse_step_mm", limits.maximum_reverse_step_mm),
+        ("reverse_fraction", limits.maximum_reverse_fraction),
+        ("maximum_step_translation_mm", limits.maximum_step_translation_mm),
+        ("maximum_step_vertical_mm", limits.maximum_step_vertical_mm),
+        ("maximum_step_forward_mm", limits.maximum_step_forward_mm),
+        ("maximum_total_vertical_drift_mm", limits.maximum_total_vertical_drift_mm),
+        ("maximum_total_forward_drift_mm", limits.maximum_total_forward_drift_mm),
+        ("maximum_step_rotation_deg", limits.maximum_step_rotation_deg),
+        ("maximum_total_rotation_deg", limits.maximum_total_rotation_deg),
+        (
+            "maximum_edge_translation_residual_mm",
+            limits.maximum_edge_translation_residual_mm,
+        ),
+        ("maximum_edge_rotation_residual_deg", limits.maximum_edge_rotation_residual_deg),
+    )
+    violations = [
+        name for name, maximum in structural_limits if metric(name) > float(maximum)
+    ]
+    if violations:
+        raise RuntimeError(
+            "Optimized RGB-D trajectory violates formal side-scan structure: "
+            + ", ".join(violations)
+        )
 
 
 def _compact_residual_alignment_for_transforms(
@@ -382,6 +979,7 @@ def _compact_geometry_assistance_for_transforms(
     render_metadata: dict[str, Any],
     settings: GeometryAssistedSeamConfig,
     frame_ids: list[int],
+    local_apap_flow_settings: LocalAPAPFlowConfig | None = None,
 ) -> dict[str, object]:
     """Publish scalar local-geometry evidence without paths, maps, or depth.
 
@@ -400,6 +998,21 @@ def _compact_geometry_assistance_for_transforms(
     config = geometry.get("config")
     if not isinstance(config, dict) or config != settings.as_dict():
         raise RuntimeError("Geometry assistance audit configuration disagrees with config")
+    expected_local_apap_flow = (
+        LocalAPAPFlowConfig()
+        if local_apap_flow_settings is None
+        else local_apap_flow_settings
+    )
+    expected_local_apap_flow.validate()
+    local_apap_flow = geometry.get("local_apap_flow")
+    if local_apap_flow is None:
+        if expected_local_apap_flow.enabled:
+            raise RuntimeError("Geometry assistance omitted enabled local APAP/flow config")
+        local_apap_flow = expected_local_apap_flow.as_dict()
+    if not isinstance(local_apap_flow, dict):
+        raise RuntimeError("Geometry assistance local APAP/flow config is malformed")
+    if local_apap_flow != expected_local_apap_flow.as_dict():
+        raise RuntimeError("Geometry assistance local APAP/flow config disagrees with config")
     pairs = geometry.get("pairs")
     if not isinstance(pairs, list) or len(pairs) != len(frame_ids) - 1:
         raise RuntimeError("Geometry assistance audit does not cover all adjacent pairs")
@@ -652,8 +1265,17 @@ def _compact_geometry_assistance_for_transforms(
         ):
             raise RuntimeError("Accepted geometry mesh has inconsistent owner probe")
 
-    def validate_accepted_depth_layer_audit(audit: Mapping[str, object]) -> None:
-        """Require scalar proof that a mesh stayed on one safe wall layer."""
+    def validate_accepted_depth_layer_audit(
+        audit: Mapping[str, object], *, local_apap: bool = False
+    ) -> None:
+        """Require scalar proof that one accepted local field stayed on one safe layer.
+
+        The older RGB-D inverse mesh and the opt-in APAP/flow candidate share
+        the same bidirectional depth, surface-safety, component-selection and
+        RGB-flow eligibility evidence.  The APAP path can legitimately follow
+        a rejected mesh candidate, so only its *mesh-specific* active-footprint
+        assertions are substituted with the final APAP footprint.
+        """
 
         context = "Accepted geometry depth-layer audit"
         pair_geometry = audit.get("geometry")
@@ -825,6 +1447,13 @@ def _compact_geometry_assistance_for_transforms(
         mesh_active_count = required_integer(
             audit, "mesh_active_pixel_count", context=context
         )
+        active_count = (
+            required_integer(
+                audit, "local_deformation_active_pixel_count", context=context
+            )
+            if local_apap
+            else mesh_active_count
+        )
         if (
             depth_component_count <= 0
             or crossing_component_count <= 0
@@ -841,10 +1470,18 @@ def _compact_geometry_assistance_for_transforms(
             or fit_support_count <= 0
             or fit_support_count > same_layer_count
             or fit_excluded_count != same_layer_count - fit_support_count
-            or mesh_candidate_count <= 0
+            or mesh_candidate_count < 0
             or mesh_candidate_count > same_layer_count
-            or mesh_active_count <= 0
-            or mesh_active_count > mesh_candidate_count
+            or mesh_active_count < 0
+            or (
+                not local_apap
+                and (
+                    mesh_candidate_count <= 0
+                    or mesh_active_count <= 0
+                    or mesh_active_count > mesh_candidate_count
+                )
+            )
+            or (local_apap and (active_count <= 0 or active_count > same_layer_count))
         ):
             raise RuntimeError(
                 "Accepted geometry mesh has invalid virtual background support"
@@ -865,6 +1502,265 @@ def _compact_geometry_assistance_for_transforms(
             raise RuntimeError(
                 "Accepted geometry mesh moves a non-same-layer component"
             )
+
+    def validate_accepted_local_apap_audit(audit: Mapping[str, object]) -> None:
+        """Validate a scalar-only APAP/flow field before it reaches a sidecar."""
+
+        context = "Accepted local APAP/flow audit"
+        local = audit.get("local_deformation")
+        if not isinstance(local, Mapping):
+            raise RuntimeError("Accepted local APAP/flow lacks its scalar audit")
+        if (
+            local.get("enabled") is not True
+            or local.get("attempted") is not True
+            or local.get("accepted") is not True
+            or local.get("dense_evidence_storage") != "temporary_only"
+            or local.get("application_policy")
+            != "same_layer_visible_nonprotected_instance_or_background_only"
+            or local.get("boundary_policy") != "outer_corridor_border_identity"
+            or local.get("correspondence_policy")
+            != "bidirectional_rgbd_mutual_virtual_coordinates"
+            or required_integer(
+                local, "analysis_rgb_remap_count", context=context
+            ) != 2
+        ):
+            raise RuntimeError("Accepted local APAP/flow has an incomplete safety audit")
+        method = local.get("method")
+        if method not in {"apap", "apap_plus_dense_flow"}:
+            raise RuntimeError("Accepted local APAP/flow has an unknown method")
+        active_count = required_integer(local, "active_pixel_count", context=context)
+        if (
+            active_count <= 0
+            or required_integer(
+                audit, "local_deformation_active_pixel_count", context=context
+            )
+            != active_count
+        ):
+            raise RuntimeError("Accepted local APAP/flow has an invalid active footprint")
+        for key in (
+            "protected_active_overlap_pixel_count",
+            "active_non_same_layer_overlap_pixel_count",
+            "foreground_instance_active_overlap_pixel_count",
+        ):
+            if required_integer(audit, key, context=context) != 0:
+                raise RuntimeError("Accepted local APAP/flow touches a protected layer")
+        if required_integer(audit, "same_layer_pixel_count", context=context) < active_count:
+            raise RuntimeError("Accepted local APAP/flow exceeds its same-layer support")
+
+        pair_geometry = audit.get("geometry")
+        if not isinstance(pair_geometry, Mapping):
+            raise RuntimeError("Accepted local APAP/flow lacks RGB-D layer evidence")
+        for direction in ("first_to_second", "second_to_first"):
+            directed = pair_geometry.get(direction)
+            if not isinstance(directed, Mapping):
+                raise RuntimeError("Accepted local APAP/flow lacks directed depth evidence")
+            if required_integer(
+                directed, "mutual_consistent_pixel_count", context=context
+            ) <= 0:
+                raise RuntimeError("Accepted local APAP/flow lacks mutual depth support")
+            p95 = required_finite_scalar(
+                directed, "mutual_depth_residual_ratio_p95", context=context
+            )
+            maximum = required_finite_scalar(
+                directed, "mutual_depth_residual_ratio_max", context=context
+            )
+            if p95 < 0.0 or maximum < p95 or maximum > 1.0 + 1e-6:
+                raise RuntimeError("Accepted local APAP/flow violates depth consistency")
+
+        correspondence_count = required_integer(
+            local, "correspondence_count", context=context
+        )
+        inliers = required_integer(local, "apap_inliers", context=context)
+        inlier_ratio = required_finite_scalar(
+            local, "apap_inlier_ratio", context=context
+        )
+        active_cells = required_integer(
+            local, "active_mesh_cell_count", context=context
+        )
+        if (
+            correspondence_count < int(expected_local_apap_flow.minimum_correspondences)
+            or inliers < int(expected_local_apap_flow.minimum_correspondences)
+            or inliers > correspondence_count
+            or inlier_ratio < float(expected_local_apap_flow.minimum_inlier_ratio)
+            or inlier_ratio > 1.0
+            or active_cells < int(expected_local_apap_flow.minimum_active_mesh_cells)
+        ):
+            raise RuntimeError("Accepted local APAP/flow lacks verified APAP support")
+        displacement = required_finite_scalar(
+            local, "max_displacement_px", context=context
+        )
+        jacobian = required_finite_scalar(local, "jacobian_min", context=context)
+        scale_min = required_finite_scalar(local, "local_scale_min", context=context)
+        scale_max = required_finite_scalar(local, "local_scale_max", context=context)
+        if (
+            displacement < 0.0
+            or displacement > float(expected_local_apap_flow.maximum_displacement_pixels)
+            or jacobian <= 0.0
+            or scale_min < float(expected_local_apap_flow.minimum_local_scale)
+            or scale_max > float(expected_local_apap_flow.maximum_local_scale)
+            or scale_max < scale_min
+        ):
+            raise RuntimeError("Accepted local APAP/flow violates deformation bounds")
+        held_count = required_integer(local, "held_out_pixel_count", context=context)
+        held_before = required_finite_scalar(
+            local, "held_out_error_before_p95", context=context
+        )
+        held_after = required_finite_scalar(
+            local, "held_out_error_after_p95", context=context
+        )
+        held_improvement = required_finite_scalar(
+            local, "held_out_improvement_ratio", context=context
+        )
+        recomputed_improvement = (
+            (held_before - held_after) / max(held_before, 1e-6)
+        )
+        if (
+            held_count < int(expected_local_apap_flow.minimum_held_out_pixels)
+            or held_before < 0.0
+            or held_after < 0.0
+            or not math.isclose(
+                held_improvement,
+                recomputed_improvement,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            or held_improvement
+            < float(expected_local_apap_flow.minimum_held_out_improvement_ratio)
+        ):
+            raise RuntimeError("Accepted local APAP/flow lacks held-out improvement")
+        if method == "apap_plus_dense_flow":
+            flow_p95 = required_finite_scalar(
+                local, "flow_fb_p95_px", context=context
+            )
+            flow_max = required_finite_scalar(
+                local, "flow_fb_max_px", context=context
+            )
+            if (
+                flow_p95 < 0.0
+                or flow_max < flow_p95
+                or flow_p95 > float(expected_local_apap_flow.maximum_flow_fb_p95_pixels)
+                or flow_max > float(expected_local_apap_flow.maximum_flow_fb_pixels)
+                or required_integer(
+                    local, "dense_flow_active_pixel_count", context=context
+                )
+                != active_count
+            ):
+                raise RuntimeError("Accepted local APAP/flow violates dense-flow gates")
+
+    def validate_accepted_rgb_protection_and_owner_closure(
+        audit: Mapping[str, object], *, context: str
+    ) -> None:
+        """Bind every accepted local field to the final owner-only safeguards.
+
+        An APAP candidate is not allowed to bypass the same transparency guards
+        or final GraphCut/hard-owner closure that protect the legacy inverse
+        mesh.  These values are scalar report evidence, but they describe the
+        actual final masks generated by the renderer.
+        """
+
+        transparency = audit.get("rgb_transparency_protection")
+        if (
+            not isinstance(transparency, dict)
+            or transparency.get("policy")
+            != "rgb_occlusion_or_any_strong_rgb_structure_dilated_guard"
+        ):
+            raise RuntimeError(f"{context} lacks RGB transparency/reflection protection")
+        if required_integer(
+            transparency, "guard_radius_pixels", context=context
+        ) != int(settings.edge_guard_radius_pixels):
+            raise RuntimeError(f"{context} has an inconsistent RGB transparency guard")
+        transparency_counts = {
+            key: required_integer(transparency, key, context=context)
+            for key in (
+                "preview_occluded_pixel_count",
+                "preview_strong_rgb_structure_pixel_count",
+                "preview_uncertain_or_rejected_strong_edge_pixel_count",
+                "preview_unsafe_pixel_count",
+                "full_resolution_unguarded_pixel_count",
+                "full_resolution_protected_pixel_count",
+                "full_resolution_tile_pixel_count",
+            )
+        }
+        if (
+            any(value < 0 for value in transparency_counts.values())
+            or transparency_counts["preview_unsafe_pixel_count"]
+            < transparency_counts["preview_occluded_pixel_count"]
+            or transparency_counts["preview_unsafe_pixel_count"]
+            < transparency_counts["preview_strong_rgb_structure_pixel_count"]
+            or transparency_counts["preview_strong_rgb_structure_pixel_count"]
+            < transparency_counts["preview_uncertain_or_rejected_strong_edge_pixel_count"]
+            or transparency_counts["full_resolution_protected_pixel_count"]
+            < transparency_counts["full_resolution_unguarded_pixel_count"]
+            or transparency_counts["full_resolution_protected_pixel_count"]
+            > transparency_counts["full_resolution_tile_pixel_count"]
+            or transparency_counts["full_resolution_tile_pixel_count"] <= 0
+        ):
+            raise RuntimeError(f"{context} has an invalid RGB transparency protection audit")
+        for key in (
+            "depth_protected_pixel_count",
+            "rgb_transparent_or_reflection_protected_pixel_count",
+            "protected_pixel_count",
+        ):
+            if required_integer(audit, key, context=context) < 0:
+                raise RuntimeError(f"{context} has a negative protection count")
+        if required_integer(audit, "protected_pixel_count", context=context) < max(
+            required_integer(audit, "depth_protected_pixel_count", context=context),
+            required_integer(
+                audit,
+                "rgb_transparent_or_reflection_protected_pixel_count",
+                context=context,
+            ),
+        ):
+            raise RuntimeError(f"{context} protection union disagrees with its inputs")
+
+        final_owner = audit.get("final_owner")
+        if (
+            not isinstance(final_owner, dict)
+            or final_owner.get("policy")
+            != "final_nominal_owner_boundary_rgb_risk_and_hard_cut_closure"
+        ):
+            raise RuntimeError(f"{context} lacks final RGB owner-closure audit")
+        final_owner_counts = {
+            key: required_integer(final_owner, key, context=context)
+            for key in (
+                "nominal_boundary_x",
+                "nominal_boundary_half_width_pixels",
+                "final_nominal_boundary_risk_pixel_count",
+                "final_nominal_boundary_risk_row_count",
+                "final_boundary_common_row_count",
+                "final_common_row_count",
+                "final_hard_cut_row_count",
+            )
+        }
+        final_full_hard_cut = final_owner.get("final_full_height_hard_cut")
+        final_graphcut_used = final_owner.get("final_graphcut_used")
+        final_pair_level = final_owner.get("final_pair_level_hard_owner")
+        if (
+            type(final_full_hard_cut) is not bool
+            or type(final_graphcut_used) is not bool
+            or type(final_pair_level) is not bool
+            or final_owner_counts["nominal_boundary_half_width_pixels"] != 2
+            or final_owner_counts["final_nominal_boundary_risk_row_count"]
+            > final_owner_counts["final_boundary_common_row_count"]
+            or final_owner_counts["final_boundary_common_row_count"]
+            > final_owner_counts["final_common_row_count"]
+            or (
+                not final_pair_level
+                and final_owner_counts["final_hard_cut_row_count"]
+                > final_owner_counts["final_common_row_count"]
+            )
+            or (
+                final_full_hard_cut
+                and not final_pair_level
+                and (
+                    final_owner_counts["final_common_row_count"] <= 0
+                    or final_owner_counts["final_hard_cut_row_count"]
+                    < final_owner_counts["final_common_row_count"]
+                )
+            )
+            or (final_pair_level and not final_full_hard_cut)
+        ):
+            raise RuntimeError(f"{context} has an invalid final RGB owner-closure audit")
 
     mesh_settings = settings.mesh_warp_config()
 
@@ -928,7 +1824,24 @@ def _compact_geometry_assistance_for_transforms(
             fallback != "hard_owner" or pair.get("warp_source_index") is not None
         ):
             raise RuntimeError("Rejected triggered geometry pair must use hard-owner fallback")
-        if accepted:
+        local_deformation = compact_audit.get("local_deformation")
+        accepted_apap = bool(
+            accepted
+            and isinstance(local_deformation, Mapping)
+            and local_deformation.get("method") in {"apap", "apap_plus_dense_flow"}
+        )
+        if accepted_apap:
+            if audit.get("reason") != "accepted":
+                raise RuntimeError("Accepted local APAP/flow lacks an accepted decision")
+            if pair.get("warp_source_index") != index + 1 or pair.get("fallback") != "none":
+                raise RuntimeError("Accepted local APAP/flow has an invalid local-warp owner")
+            validate_accepted_trigger_audit(compact_audit)
+            validate_accepted_local_apap_audit(compact_audit)
+            validate_accepted_depth_layer_audit(compact_audit, local_apap=True)
+            validate_accepted_rgb_protection_and_owner_closure(
+                compact_audit, context="Accepted local APAP/flow"
+            )
+        if accepted and not accepted_apap:
             if audit.get("reason") != "accepted":
                 raise RuntimeError("Accepted geometry pair lacks an accepted decision")
             if pair.get("warp_source_index") != index + 1 or pair.get("fallback") != "none":
@@ -1620,9 +2533,39 @@ def _compact_geometry_assistance_for_transforms(
         raise RuntimeError("Geometry assistance fallback aggregate disagrees with pair audits")
     if geometry.get("depth_used_for_local_geometry") is not bool(triggered_count):
         raise RuntimeError("Geometry assistance depth-use flag disagrees with pair audits")
+    local_attempted_count = int(
+        sum(
+            bool(
+                isinstance(pair["audit"].get("local_deformation"), Mapping)
+                and pair["audit"]["local_deformation"].get("attempted")
+            )
+            for pair in compact_pairs
+        )
+    )
+    local_accepted_count = int(
+        sum(
+            bool(
+                isinstance(pair["audit"].get("local_deformation"), Mapping)
+                and pair["audit"]["local_deformation"].get("accepted")
+                and pair["audit"]["local_deformation"].get("method")
+                in {"apap", "apap_plus_dense_flow"}
+            )
+            for pair in compact_pairs
+        )
+    )
+    for key, expected in (
+        ("local_apap_flow_attempted_pair_count", local_attempted_count),
+        ("local_apap_flow_accepted_pair_count", local_accepted_count),
+    ):
+        value = geometry.get(key)
+        if value is None and not expected_local_apap_flow.enabled:
+            continue
+        if required_integer(geometry, key, context="Geometry local APAP/flow aggregate") != expected:
+            raise RuntimeError("Geometry local APAP/flow aggregate disagrees with pair audits")
     return {
         "backend": "rgbd_bidirectional_visibility_local_inverse_mesh",
         "configuration": settings.as_dict(),
+        "local_apap_flow": expected_local_apap_flow.as_dict(),
         "scope": "adjacent_seam_corridors_only",
         "depth_used_for_output_pixels": False,
         "depth_used_for_local_geometry": bool(
@@ -1633,6 +2576,8 @@ def _compact_geometry_assistance_for_transforms(
         "hard_owner_fallback_pair_count": int(
             geometry.get("hard_owner_fallback_pair_count", 0)
         ),
+        "local_apap_flow_attempted_pair_count": local_attempted_count,
+        "local_apap_flow_accepted_pair_count": local_accepted_count,
         "pairs": compact_pairs,
     }
 
@@ -2105,6 +3050,50 @@ def _validate_backend_config(stitch_config: dict[str, Any]) -> None:
         )
 
 
+def _validate_formal_handoff_fallback_policy(
+    stitch_config: Mapping[str, object],
+) -> bool:
+    """Keep the A/B/C policy explicit and unable to hide a C-grade result."""
+
+    value = stitch_config.get("handoff_fallback_policy")
+    if not isinstance(value, Mapping):
+        raise ValueError("Formal handoff_fallback_policy must be a mapping")
+    policy = dict(value)
+    expected = {
+        "publish_degraded",
+        "local_apap_flow_enabled",
+        "manual_review_for_grade_c",
+    }
+    unknown = sorted(set(policy) - expected)
+    missing = sorted(expected - set(policy))
+    if unknown or missing:
+        details: list[str] = []
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if unknown:
+            details.append("unknown " + ", ".join(unknown))
+        raise ValueError(
+            "Formal handoff_fallback_policy has " + "; ".join(details)
+        )
+    if policy["publish_degraded"] is not True:
+        raise ValueError(
+            "Formal handoff_fallback_policy must publish structurally valid "
+            "degraded results"
+        )
+    if policy["manual_review_for_grade_c"] is not True:
+        raise ValueError(
+            "Formal handoff_fallback_policy must require manual review for grade C"
+        )
+    if type(policy["local_apap_flow_enabled"]) is not bool:
+        raise ValueError(
+            "Formal handoff_fallback_policy.local_apap_flow_enabled must be a boolean"
+        )
+    # This is intentionally only an opt-in switch.  All numerical APAP/flow
+    # limits live in the renderer's closed LocalAPAPFlowConfig and cannot be
+    # relaxed through a delivery policy.
+    return bool(policy["local_apap_flow_enabled"])
+
+
 def _validate_safety_envelope(
     stitch_config: dict[str, Any], *, diagnostic_force: bool
 ) -> None:
@@ -2180,6 +3169,8 @@ def _validate_safety_envelope(
 
     if diagnostic_force:
         return
+
+    _validate_formal_handoff_fallback_policy(stitch_config)
 
     visualization = dict(stitch_config.get("tsdf_visualization", {}))
     if visualization.get("enabled", True) is not True:
@@ -2721,15 +3712,11 @@ def _run_pipeline(
             stitch_config.get("maximum_motion_exposure_us", 1200.0)
         ),
     )
-    if (
-        not diagnostic_force
-        and bool(stitch_config.get("input_quality_gate", True))
-        and not bool(capture_quality["quality_pass"])
-    ):
-        reasons = "; ".join(
-            str(value) for value in capture_quality["failure_reasons"]
-        )
-        raise RuntimeError("Input capture quality gate failed: " + reasons)
+    # Appearance-quality evidence is retained for the formal A/B/C
+    # publication assessment below.  The strict session contract has already
+    # been enforced by ``load_rgbd_session``; an imperfect but structurally
+    # valid capture is no longer discarded before a safe hard-cut outcome can
+    # be audited.
 
     odometry_config = RGBDOdometryConfig.from_mapping(
         stitch_config.get("rgbd_odometry")
@@ -2801,17 +3788,19 @@ def _run_pipeline(
         edges,
         config=graph_config,
         backend=global_pose_backend,
-        enforce_edge_quality=not diagnostic_force,
+        # Low-fitness/high-RMSE measurements are strict-quality evidence, not
+        # a reason to manufacture a pose or skip an adjacent real node.
+        # ``optimize_rgbd_pose_graph`` still requires convergence, finite
+        # SE(3), positive information, required adjacency and connectivity.
+        enforce_edge_quality=False,
     )
+    _validate_publishable_pose_structure(pose_graph)
     pose_quality_result = validate_pose_trajectory(
         pose_graph, thresholds=pose_thresholds
     )
+    if not diagnostic_force:
+        _validate_publishable_pose_motion_structure(pose_quality_result)
     pose_quality = pose_quality_result.as_dict()
-    if not diagnostic_force and not pose_quality_result.quality_pass:
-        raise RuntimeError(
-            "RGB-D pose trajectory quality gate failed: "
-            + "; ".join(pose_quality_result.failure_reasons)
-        )
     pose_values = [pose_graph.pose_for(frame.frame_id) for frame in pose_frames]
 
     if (
@@ -3097,6 +4086,33 @@ def _run_pipeline(
 
     seam_config = dict(stitch_config.get("scan_seam", {}))
     pushbroom_config = dict(stitch_config.get("calibrated_rgb_pushbroom", {}))
+    formal_handoff_policy = dict(stitch_config.get("handoff_fallback_policy", {}))
+    local_apap_flow_enabled = bool(
+        formal_handoff_policy.get("local_apap_flow_enabled", False)
+    )
+    local_apap_flow_value = pushbroom_config.get("local_apap_flow")
+    if local_apap_flow_value is None:
+        # The public, formal opt-in lives in handoff_fallback_policy.  Keep the
+        # renderer submapping optional so a field-validation deployment can
+        # enable the policy without having to duplicate an implementation
+        # switch in user-facing YAML.
+        local_apap_flow_config: dict[str, object] = {}
+    elif not isinstance(local_apap_flow_value, Mapping):
+        raise ValueError("calibrated_rgb_pushbroom.local_apap_flow must be a mapping")
+    else:
+        local_apap_flow_config = dict(local_apap_flow_value)
+    if "enabled" in local_apap_flow_config:
+        configured_local_enabled = local_apap_flow_config["enabled"]
+        if type(configured_local_enabled) is not bool:
+            raise ValueError(
+                "calibrated_rgb_pushbroom.local_apap_flow.enabled must be a boolean"
+            )
+        if configured_local_enabled is not local_apap_flow_enabled:
+            raise ValueError(
+                "local_apap_flow.enabled must exactly match handoff_fallback_policy"
+            )
+    local_apap_flow_config["enabled"] = local_apap_flow_enabled
+    pushbroom_config["local_apap_flow"] = local_apap_flow_config
     pushbroom_result = render_calibrated_rgb_pushbroom(
         render_frames,
         render_poses,
@@ -3107,9 +4123,11 @@ def _run_pipeline(
             session.calibration.width / float(analysis_shape[1])
         ),
         multiband_levels=int(seam_config.get("multiband_levels", 3)),
-        quality_gate=(
-            not diagnostic_force and bool(seam_config.get("quality_gate", True))
-        ),
+        # The renderer always computes its strict metrics.  Collect them for
+        # the A/B/C publication decision instead of raising before an audited
+        # C hard-cut can be published.  Its topology/remap/resource checks are
+        # deliberately unconditional and remain fail-closed.
+        quality_gate=False,
     )
     panorama = pushbroom_result.panorama
     render_metadata = dict(pushbroom_result.metadata)
@@ -3119,11 +4137,13 @@ def _run_pipeline(
         str(frame.frame_id): quality.as_dict()
         for frame, quality in zip(render_frames, render_qualities, strict=True)
     }
+    publication_assessment: _PublicationAssessment | None = None
     if not diagnostic_force:
-        _ensure_publishable_quality(
+        publication_assessment = _assess_publication(
             capture_quality,
-            render_metadata,
             pose_quality,
+            render_metadata,
+            [frame.frame_id for frame in render_frames],
         )
 
     # TSDF is deliberately an output-only 3-D inspection stage.  It executes
@@ -3132,18 +4152,71 @@ def _run_pipeline(
     tsdf_visualization: dict[str, object] | None = None
     tsdf_mesh_glb: bytes | None = None
     if not diagnostic_force:
+        assert publication_assessment is not None
         visualization_config = dict(stitch_config.get("tsdf_visualization", {}))
-        if bool(visualization_config.get("enabled", True)):
-            tsdf_mesh_glb, mesh_metadata = _export_display_only_tsdf_mesh(
-                pose_frames,
-                pose_values,
-                session.calibration,
-                visualization_config,
-            )
+        if publication_assessment.quality_grade == "C":
+            # The mesh is a non-authoritative post-quality inspection asset.
+            # A manual-review delivery must never be held hostage by a TSDF
+            # export, nor imply that it improved the RGB panorama.
             tsdf_visualization = {
-                **mesh_metadata,
-                "mesh": str(output / "tsdf_mesh.glb"),
-                "viewer": str(output / "tsdf_mesh_viewer.html"),
+                "status": "skipped_degraded",
+                "display_only": True,
+                "participates_in_panorama": False,
+                "reason": "manual_review_required",
+            }
+        elif bool(visualization_config.get("enabled", True)):
+            # TSDF is a read-only inspection artefact.  It has no authority
+            # over the already-audited RGB panorama, so an unavailable
+            # Open3D/TSDF export must never turn a structurally valid A/B
+            # publication into F.
+            try:
+                tsdf_mesh_glb, mesh_metadata = _export_display_only_tsdf_mesh(
+                    pose_frames,
+                    pose_values,
+                    session.calibration,
+                    visualization_config,
+                )
+            except Exception as exc:
+                tsdf_visualization = {
+                    "status": "unavailable",
+                    "display_only": True,
+                    "participates_in_panorama": False,
+                    "reason": "tsdf_export_failed_nonblocking",
+                    "error_type": type(exc).__name__,
+                }
+            else:
+                tsdf_visualization = {
+                    **mesh_metadata,
+                    "mesh": str(output / "tsdf_mesh.glb"),
+                    "viewer": str(output / "tsdf_mesh_viewer.html"),
+                }
+
+    # Stage optional viewer files before the report is serialised, so a file
+    # system failure can be represented as a non-blocking TSDF status rather
+    # than leaving report.json to claim an artefact that was not published.
+    pending_mesh: Path | None = None
+    pending_mesh_viewer: Path | None = None
+    if tsdf_mesh_glb is not None:
+        try:
+            pending_mesh = _write_bytes(output / ".tsdf_mesh.pending.glb", tsdf_mesh_glb)
+            pending_mesh_viewer = output / ".tsdf_mesh_viewer.pending.html"
+            pending_mesh_viewer.write_text(
+                _mesh_viewer_html("tsdf_mesh.glb"), encoding="utf-8"
+            )
+        except Exception as exc:
+            if pending_mesh is not None:
+                pending_mesh.unlink(missing_ok=True)
+            if pending_mesh_viewer is not None:
+                pending_mesh_viewer.unlink(missing_ok=True)
+            pending_mesh = None
+            pending_mesh_viewer = None
+            tsdf_mesh_glb = None
+            tsdf_visualization = {
+                "status": "unavailable",
+                "display_only": True,
+                "participates_in_panorama": False,
+                "reason": "tsdf_staging_failed_nonblocking",
+                "error_type": type(exc).__name__,
             }
 
     panorama_path = output / (
@@ -3170,10 +4243,14 @@ def _run_pipeline(
     geometry_settings = GeometryAssistedSeamConfig.from_mapping(
         pushbroom_config.get("geometry_assisted_seam")
     )
+    local_apap_flow_settings = LocalAPAPFlowConfig.from_mapping(
+        pushbroom_config.get("local_apap_flow")
+    )
     compact_geometry_assistance = _compact_geometry_assistance_for_transforms(
         render_metadata,
         geometry_settings,
         [frame.frame_id for frame in render_frames],
+        local_apap_flow_settings,
     )
     render_transforms_payload = {
         "schema": "calibrated-rgb-pushbroom/v7",
@@ -3198,7 +4275,11 @@ def _run_pipeline(
         ],
     }
     report: dict[str, Any] = {
-        "schema": "gemini305-calibrated-rgb-pushbroom/v8",
+        "schema": (
+            "gemini305-calibrated-rgb-pushbroom/v8"
+            if diagnostic_force
+            else "gemini305-calibrated-rgb-pushbroom/v9"
+        ),
         "input": str(args.input.expanduser().resolve()),
         "panorama": str(panorama_path),
         "report": str(report_path),
@@ -3232,6 +4313,11 @@ def _run_pipeline(
         "render_strategy": "calibrated_rgb_pushbroom",
         "render": render_metadata,
         "tsdf_visualization": tsdf_visualization,
+        "publication": (
+            publication_assessment.as_dict()
+            if publication_assessment is not None
+            else None
+        ),
         "diagnostic_overrides": (
             {
                 "input_quality_thresholds_bypassed": True,
@@ -3247,6 +4333,30 @@ def _run_pipeline(
         "elapsed_seconds": time.perf_counter() - started,
     }
 
+    if publication_assessment is not None:
+        # Keep the consumer-facing publication fields at report top level as
+        # well as in the nested audit, so report.json and delivery.json can be
+        # inspected independently without changing their safety semantics.
+        report.update(
+            {
+                "delivery_state": publication_assessment.delivery_state,
+                "strict_quality_pass": publication_assessment.strict_quality_pass,
+                "strict_failure_reasons": list(
+                    publication_assessment.strict_failure_reasons
+                ),
+                "quality_grade": publication_assessment.quality_grade,
+                "handoff_fallback_summary": dict(
+                    publication_assessment.handoff_fallback_summary
+                ),
+                "handoff_outcomes": [
+                    dict(value) for value in publication_assessment.handoff_outcomes
+                ],
+                "manual_review_required": (
+                    publication_assessment.manual_review_required
+                ),
+            }
+        )
+
     if diagnostic_force:
         pending_panorama = _write_bgr(
             output / ".diagnostic_panorama.pending.jpg", panorama
@@ -3258,14 +4368,6 @@ def _run_pipeline(
         return report
 
     pending_panorama = _write_bgr(output / ".panorama.pending.jpg", panorama)
-    pending_mesh: Path | None = None
-    pending_mesh_viewer: Path | None = None
-    if tsdf_mesh_glb is not None:
-        pending_mesh = _write_bytes(output / ".tsdf_mesh.pending.glb", tsdf_mesh_glb)
-        pending_mesh_viewer = output / ".tsdf_mesh_viewer.pending.html"
-        pending_mesh_viewer.write_text(
-            _mesh_viewer_html("tsdf_mesh.glb"), encoding="utf-8"
-        )
     pending_transforms = output / ".transforms.pending.json"
     pending_render_transforms = output / ".render_transforms.pending.json"
     pending_report = output / ".report.pending.json"
@@ -3280,13 +4382,34 @@ def _run_pipeline(
     if pending_mesh is not None and pending_mesh_viewer is not None:
         os.replace(pending_mesh, output / "tsdf_mesh.glb")
         os.replace(pending_mesh_viewer, output / "tsdf_mesh_viewer.html")
+    else:
+        # A new C-grade run or a non-blocking TSDF failure must not leave a
+        # stale mesh from a prior delivery beside the fresh panorama.
+        (output / "tsdf_mesh.glb").unlink(missing_ok=True)
+        (output / "tsdf_mesh_viewer.html").unlink(missing_ok=True)
     os.replace(pending_transforms, output / "transforms.json")
     os.replace(pending_render_transforms, output / "render_transforms.json")
     os.replace(pending_report, output / "report.json")
+    assert publication_assessment is not None
     delivery = {
-        "schema": "gemini305-panorama-delivery/v8",
+        "schema": "gemini305-panorama-delivery/v9",
         "published_utc": datetime.now(timezone.utc).isoformat(),
-        "quality_pass": True,
+        # ``quality_pass`` remains as a v8-compatible alias for the strict
+        # result.  Publication validity is now represented by delivery_state.
+        "quality_pass": publication_assessment.strict_quality_pass,
+        "delivery_state": publication_assessment.delivery_state,
+        "strict_quality_pass": publication_assessment.strict_quality_pass,
+        "strict_failure_reasons": list(
+            publication_assessment.strict_failure_reasons
+        ),
+        "quality_grade": publication_assessment.quality_grade,
+        "handoff_fallback_summary": dict(
+            publication_assessment.handoff_fallback_summary
+        ),
+        "handoff_outcomes": [
+            dict(value) for value in publication_assessment.handoff_outcomes
+        ],
+        "manual_review_required": publication_assessment.manual_review_required,
         "pose_backend": (
             "hybrid_orbslam3_rgbd"
             if orbslam3_trajectory is not None
@@ -3320,6 +4443,7 @@ def _run_pipeline(
             "actual_rgb_line_observation_policy": (
                 "observed_hough_solver_line_veto_or_not_observed_non_veto"
             ),
+            "local_apap_flow": local_apap_flow_settings.as_dict(),
         },
         "panorama": str(output / "panorama.jpg"),
         "tsdf_visualization": tsdf_visualization,

@@ -368,16 +368,60 @@ def test_pair_diagnostic_route_requires_full_current_orb_then_publishes_two_file
             }
 
     class _Graph:
+        def __init__(self) -> None:
+            self.node_ids = tuple(sorted(poses))
+            self.camera_to_world = tuple(
+                poses[frame_id].copy() for frame_id in self.node_ids
+            )
+            self.edges = tuple(
+                SimpleNamespace(
+                    reference_node_id=left,
+                    source_node_id=right,
+                    structurally_valid=True,
+                )
+                for left, right in zip(
+                    self.node_ids[:-1], self.node_ids[1:], strict=True
+                )
+            )
+            self.optimized = True
+            self.connected = True
+            self.edge_residuals = tuple(
+                {
+                    "translation_residual_mm": 0.0,
+                    "rotation_residual_deg": 0.0,
+                }
+                for _ in self.edges
+            )
+
         def pose_for(self, frame_id: int) -> np.ndarray:
             return poses[int(frame_id)].copy()
 
     class _Quality:
         quality_pass = True
         failure_reasons: tuple[str, ...] = ()
+        thresholds = sequence.PoseQualityThresholds()
+        metrics = {
+            "scan_span_mm": 96.0,
+            "maximum_reverse_step_mm": 0.0,
+            "reverse_fraction": 0.0,
+            "maximum_step_translation_mm": 32.0,
+            "maximum_step_vertical_mm": 0.0,
+            "maximum_step_forward_mm": 0.0,
+            "maximum_total_vertical_drift_mm": 0.0,
+            "maximum_total_forward_drift_mm": 0.0,
+            "maximum_step_rotation_deg": 0.0,
+            "maximum_total_rotation_deg": 0.0,
+            "maximum_edge_translation_residual_mm": 0.0,
+            "maximum_edge_rotation_residual_deg": 0.0,
+        }
 
         @staticmethod
         def as_dict() -> dict[str, object]:
-            return {"quality_pass": True, "failure_reasons": [], "metrics": {}}
+            return {
+                "quality_pass": True,
+                "failure_reasons": [],
+                "metrics": dict(_Quality.metrics),
+            }
 
     def fake_edges(*args: object, **kwargs: object):
         del args, kwargs

@@ -28,6 +28,11 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
     assert config["capture"]["fps"] == 30
     assert config["stitch"]["max_canvas_megapixels"] == 200
     assert config["stitch"]["diagnostic_force"] is False
+    assert config["stitch"]["handoff_fallback_policy"] == {
+        "publish_degraded": True,
+        "local_apap_flow_enabled": False,
+        "manual_review_for_grade_c": True,
+    }
     assert config["stitch"]["pose_backend"] == "hybrid_orbslam3_rgbd"
     assert config["stitch"]["sequence_blend_mode"] == (
         "calibrated_rgb_pushbroom"

@@ -99,6 +99,14 @@ stitch:
   input_quality_gate: true
   # Diagnostic profiles may set this to true; formal defaults must remain false.
   diagnostic_force: false
+  # Structural RGB-D failures still cannot publish.  For a structurally valid
+  # scan, this policy makes any future audited hard-cut fallback explicit:
+  # publish the degraded result, keep local APAP/flow disabled by default, and
+  # require manual review for grade C.
+  handoff_fallback_policy:
+    publish_degraded: true
+    local_apap_flow_enabled: false
+    manual_review_for_grade_c: true
   # This experimental renderer is reachable only through
   # g305-central-strip-diagnostic's injected callback.  It is never a formal
   # g305-panorama backend or failure fallback, and its first release exposes no

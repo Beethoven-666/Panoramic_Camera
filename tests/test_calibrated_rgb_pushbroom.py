@@ -21,6 +21,7 @@ from panorama_demo.calibrated_rgb_pushbroom import (
     _boundary_rgb_risk_audit,
     _append_shared_source_signed_occlusion_anchors,
     _advance_completed_foreground_anchor_locks,
+    _audit_foreground_anchor_handoff_continuity,
     _build_shared_source_anchor_reservations,
     _foreground_anchor_completed_lock_mask,
     _foreground_anchor_mask_and_prior,
@@ -329,9 +330,61 @@ def test_completed_anchor_handoffs_before_a_nonadjacent_guard() -> None:
     valid = np.ones((8, 16), dtype=bool)
     owner = np.full((8, 16), 2, dtype=np.int16)
     _verify_foreground_anchor_handoff(valid, owner, retirements[0])
+    continuity = _audit_foreground_anchor_handoff_continuity(
+        retirements,
+        pair_index=2,
+        frame_ids=[100, 101, 102, 103],
+        left=8,
+        right=11,
+        height=8,
+        valid_canvas=valid,
+        owner_canvas=owner,
+    )
+    assert continuity["policy"] == (
+        "foreground_owner_only_continuity_audit_no_local_deformation"
+    )
+    assert continuity["handoff_count"] == 1
+    assert continuity["coverage_complete_count"] == 1
+    assert continuity["local_deformation_attempted"] is False
+    scalar_audit = continuity["audits"][0]
+    assert scalar_audit["candidate_anchor_frame_id"] == 101
+    assert scalar_audit["coverage_ratio"] == pytest.approx(1.0)
+    assert scalar_audit["decision"] == "apap_flow_fallback"
+    assert scalar_audit["foreground_owner_only"] is True
+    assert scalar_audit["local_deformation_allowed"] is False
+    assert scalar_audit["local_deformation_attempted"] is False
+    assert scalar_audit["decision_consumed_as"] == (
+        "owner_only_guarded_current_pair_rewrite"
+    )
     owner[2, 8] = 1
     with pytest.raises(RuntimeError, match="retained its non-adjacent source"):
         _verify_foreground_anchor_handoff(valid, owner, retirements[0])
+
+
+def test_empty_foreground_handoff_continuity_is_a_complete_scalar_mapping() -> None:
+    valid = np.zeros((4, 8), dtype=bool)
+    owner = np.full((4, 8), -1, dtype=np.int16)
+
+    continuity = _audit_foreground_anchor_handoff_continuity(
+        (),
+        pair_index=0,
+        frame_ids=[10, 11],
+        left=2,
+        right=6,
+        height=4,
+        valid_canvas=valid,
+        owner_canvas=owner,
+    )
+
+    assert continuity == {
+        "policy": "foreground_owner_only_continuity_audit_no_local_deformation",
+        "handoff_count": 0,
+        "continuity_audit_count": 0,
+        "coverage_complete_count": 0,
+        "owner_only_no_deformation_count": 0,
+        "local_deformation_attempted": False,
+        "audits": [],
+    }
 
 
 def _test_raw_footprint(source_index: int) -> RawFootprintSummary:
