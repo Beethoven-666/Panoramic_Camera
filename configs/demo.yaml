@@ -107,6 +107,12 @@ stitch:
     publish_degraded: true
     local_apap_flow_enabled: false
     manual_review_for_grade_c: true
+  # Diagnostic-only experimental foreground inverse deformation.  This marker
+  # is intentionally fixed off for g305-panorama and cannot change v9 A/B/C/F
+  # semantics.  The separate diagnostic command is the only consumer that
+  # may honor an explicit enabled=true override.
+  foreground_deformation_experiment:
+    enabled: false
   # This experimental renderer is reachable only through
   # g305-central-strip-diagnostic's injected callback.  It is never a formal
   # g305-panorama backend or failure fallback, and its first release exposes no

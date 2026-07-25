@@ -1,0 +1,5 @@
+# Explicit opt-in for the diagnostic-only foreground local-deformation branch.
+# It is rejected by g305-panorama and by all formal v9 delivery paths.
+stitch:
+  foreground_deformation_experiment:
+    enabled: true

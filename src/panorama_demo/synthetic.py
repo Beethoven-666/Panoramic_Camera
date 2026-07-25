@@ -21,6 +21,48 @@ NEAR_DEPTH_MM = 900
 DEPTH_SCALE_MM_PER_UNIT = 1.0
 
 
+def generate_foreground_deformation_hose_pair(
+    *, offset_pixels: float = 1.2
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return a native-resolution foreground deformation regression fixture.
+
+    This is deliberately a small image-pair fixture rather than a formal
+    RGB-D session scene.  It provides a 96--160 px diagnostic corridor with a
+    textured hose-like foreground and a measured 1--2 px source offset.  The
+    caller can add a protected coupling, source coverage hole, or transparent
+    band to exercise individual fail-closed gates.
+    """
+
+    height, width = 160, 160
+    reference = np.full((height, width, 3), 25, dtype=np.uint8)
+    reference_mask = np.zeros((height, width), dtype=np.uint8)
+    cv2.rectangle(reference_mask, (20, 40), (140, 120), 255, thickness=-1)
+    cv2.rectangle(reference, (20, 40), (140, 120), (20, 170, 230), thickness=-1)
+    for x in range(20, 140, 8):
+        cv2.line(reference, (x, 40), (x, 120), (15 + x % 100, 50, 100), 1)
+    # Surface marks give the RGB correspondence test two-dimensional local
+    # texture, avoiding the aperture ambiguity of a perfectly smooth hose.
+    for y in range(52, 116, 14):
+        for x in range(28, 136, 18):
+            cv2.circle(reference, (x, y), 3, (5, 10 + (x % 30), 25), thickness=-1)
+    matrix = np.float32([[1.0, 0.0, float(offset_pixels)], [0.0, 1.0, 0.0]])
+    source = cv2.warpAffine(
+        reference,
+        matrix,
+        (width, height),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    source_mask = cv2.warpAffine(
+        reference_mask,
+        matrix,
+        (width, height),
+        flags=cv2.INTER_NEAREST,
+        borderValue=0,
+    ).astype(bool)
+    return reference, source, reference_mask.astype(bool), source_mask
+
+
 def _write_image(path: Path, image: np.ndarray, parameters: list[int]) -> None:
     if not cv2.imwrite(str(path), image, parameters):
         raise OSError(f"OpenCV could not write synthetic image: {path}")

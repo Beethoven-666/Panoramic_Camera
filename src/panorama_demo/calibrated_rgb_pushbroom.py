@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import math
 import tempfile
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from itertools import product
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import cv2
 import numpy as np
@@ -8594,6 +8595,9 @@ def render_calibrated_rgb_pushbroom(
     motion_pixels_to_full_resolution: float = 1.0,
     multiband_levels: int = 3,
     quality_gate: bool = True,
+    foreground_deformation_diagnostic_pair_index: int | None = None,
+    foreground_deformation_diagnostic_pair_indices: Sequence[int] | None = None,
+    foreground_deformation_diagnostic_callback: Callable[..., None] | None = None,
 ) -> CalibratedRGBPushbroomResult:
     """Render real pose frames as a bounded-memory RGB-colour pushbroom.
 
@@ -8608,6 +8612,55 @@ def render_calibrated_rgb_pushbroom(
         if isinstance(config, CalibratedRGBPushbroomConfig)
         else CalibratedRGBPushbroomConfig.from_mapping(config)
     )
+    diagnostic_pair_indices: tuple[int, ...] = ()
+    if foreground_deformation_diagnostic_callback is None:
+        if (
+            foreground_deformation_diagnostic_pair_index is not None
+            or foreground_deformation_diagnostic_pair_indices is not None
+        ):
+            raise ValueError(
+                "foreground deformation diagnostic pair index requires its diagnostic callback"
+            )
+    elif not callable(foreground_deformation_diagnostic_callback):
+        raise TypeError("foreground deformation diagnostic callback must be callable")
+    elif (
+        foreground_deformation_diagnostic_pair_index is not None
+        and foreground_deformation_diagnostic_pair_indices is not None
+    ):
+        raise ValueError(
+            "foreground deformation diagnostic accepts either one pair index or a pair-index sequence"
+        )
+    elif foreground_deformation_diagnostic_pair_index is not None:
+        if (
+            isinstance(foreground_deformation_diagnostic_pair_index, bool)
+            or not isinstance(
+                foreground_deformation_diagnostic_pair_index, (int, np.integer)
+            )
+        ):
+            raise TypeError("foreground deformation diagnostic pair index must be an integer")
+        diagnostic_pair_indices = (int(foreground_deformation_diagnostic_pair_index),)
+    elif foreground_deformation_diagnostic_pair_indices is not None:
+        values = foreground_deformation_diagnostic_pair_indices
+        if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+            raise TypeError(
+                "foreground deformation diagnostic pair indices must be an integer sequence"
+            )
+        if not values:
+            raise ValueError(
+                "foreground deformation diagnostic pair-index sequence must not be empty"
+            )
+        if any(
+            isinstance(value, bool) or not isinstance(value, (int, np.integer))
+            for value in values
+        ):
+            raise TypeError(
+                "foreground deformation diagnostic pair indices must contain integers"
+            )
+        diagnostic_pair_indices = tuple(sorted({int(value) for value in values}))
+    else:
+        raise ValueError(
+            "foreground deformation diagnostic callback requires a pair index or pair-index sequence"
+        )
     if len(frames) != len(poses) or not 2 <= len(frames) <= settings.max_pose_count:
         raise ValueError("Calibrated RGB pushbroom requires 2-160 aligned frames/poses")
     if not 1 <= int(multiband_levels) <= 3:
@@ -9128,6 +9181,67 @@ def render_calibrated_rgb_pushbroom(
                 "Foreground segment owner planning failed: "
                 + str(foreground_owner_plan.structural_failure_reason)
             )
+        if foreground_deformation_diagnostic_callback is not None:
+            for diagnostic_pair_index in diagnostic_pair_indices:
+                if not 0 <= diagnostic_pair_index < len(frames) - 1:
+                    raise IndexError(
+                        "foreground deformation diagnostic pair index is not an adjacent pair"
+                    )
+                diagnostic_first = _load_contribution(strip_paths[diagnostic_pair_index])
+                diagnostic_second = _load_contribution(
+                    strip_paths[diagnostic_pair_index + 1]
+                )
+                (
+                    diagnostic_overlap_left,
+                    diagnostic_overlap_right,
+                    diagnostic_first_bgr,
+                    diagnostic_second_bgr,
+                    diagnostic_first_valid,
+                    diagnostic_second_valid,
+                ) = _pair_overlap(diagnostic_first, diagnostic_second)
+                # This hook is deliberately detached from formal rendering: it
+                # receives copies of the already calibrated/gain-corrected pair
+                # evidence and can only retain in-memory diagnostic state.  The
+                # formal canvas, hard-owner solve, handoff audit and v9 metadata
+                # below neither consume a callback result nor permit a mutation.
+                foreground_deformation_diagnostic_callback(
+                    pair_index=diagnostic_pair_index,
+                    frame_ids=(
+                        int(diagnostic_first.frame_id),
+                        int(diagnostic_second.frame_id),
+                    ),
+                    source_indices=(
+                        int(diagnostic_first.source_index),
+                        int(diagnostic_second.source_index),
+                    ),
+                    camera_to_world=(
+                        checked_poses[diagnostic_pair_index].copy(),
+                        checked_poses[diagnostic_pair_index + 1].copy(),
+                    ),
+                    nominal_owner_boundary_x=float(
+                        layout.owner_boundaries_x[diagnostic_pair_index]
+                    ),
+                    overlap_x=(
+                        int(diagnostic_overlap_left),
+                        int(diagnostic_overlap_right),
+                    ),
+                    first_bgr=diagnostic_first_bgr.copy(),
+                    second_bgr=diagnostic_second_bgr.copy(),
+                    first_valid=diagnostic_first_valid.copy(),
+                    second_valid=diagnostic_second_valid.copy(),
+                    # The experiment observes copies only.  Foreground fragments
+                    # retain ndarray masks and the owner plan retains mappings, so
+                    # a shallow tuple would let a diagnostic accidentally mutate
+                    # the formal solver state below.
+                    foreground_fragments=deepcopy(
+                        tuple(foreground_fragments[diagnostic_pair_index])
+                    ),
+                    foreground_owner_plan=deepcopy(foreground_owner_plan),
+                    preflight_window=preflight_pair_windows[diagnostic_pair_index],
+                    geometry_triggered=bool(
+                        geometry_plans[diagnostic_pair_index].triggered
+                    ),
+                )
         segment_locked_constraints = [
             dict(constraints)
             for constraints in foreground_owner_plan.component_owner_constraints

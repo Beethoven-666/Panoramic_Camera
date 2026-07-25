@@ -7,6 +7,7 @@ import pytest
 from panorama_demo.config import load_config
 from panorama_demo.stitch_sequence import (
     _central_strip_diagnostic_config,
+    _foreground_deformation_experiment_config,
     _validate_safety_envelope,
 )
 
@@ -32,6 +33,9 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
         "publish_degraded": True,
         "local_apap_flow_enabled": False,
         "manual_review_for_grade_c": True,
+    }
+    assert config["stitch"]["foreground_deformation_experiment"] == {
+        "enabled": False,
     }
     assert config["stitch"]["pose_backend"] == "hybrid_orbslam3_rgbd"
     assert config["stitch"]["sequence_blend_mode"] == (
@@ -147,6 +151,32 @@ def test_formal_delivery_requires_display_only_tsdf_export() -> None:
         "save_pair_previews",
     }
     assert legacy_formal_keys.isdisjoint(stitch)
+
+
+def test_foreground_deformation_cannot_activate_a_formal_or_legacy_diagnostic_run() -> None:
+    stitch = load_config()["stitch"]
+    stitch["foreground_deformation_experiment"] = {"enabled": True}
+
+    with pytest.raises(ValueError, match="g305-foreground-deformation-diagnostic"):
+        _foreground_deformation_experiment_config(
+            stitch, foreground_deformation_diagnostic_renderer=None
+        )
+
+
+def test_foreground_deformation_experiment_override_is_consumed_only_by_its_diagnostic() -> None:
+    override = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "foreground_deformation_experiment.yaml"
+    )
+    stitch = load_config(override)["stitch"]
+
+    effective = _foreground_deformation_experiment_config(
+        stitch, foreground_deformation_diagnostic_renderer=lambda **_kwargs: None
+    )
+
+    assert effective is not None
+    assert effective.enabled is True
 
 
 def test_default_rgbd_photo_mode_preserves_single_trigger_safety_contract() -> None:

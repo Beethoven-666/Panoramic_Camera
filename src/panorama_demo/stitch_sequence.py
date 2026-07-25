@@ -28,6 +28,7 @@ from .calibrated_rgb_pushbroom import (
     render_calibrated_rgb_pushbroom,
 )
 from .config import load_config
+from .foreground_deformation import ForegroundDeformationExperimentConfig
 from .handoff_continuity import summarize_handoff_methods
 from .local_apap_flow import LocalAPAPFlowConfig
 from .rgb_residual_alignment import ResidualAlignmentConfig
@@ -115,6 +116,10 @@ _CENTRAL_STRIP_DIAGNOSTIC_DEFAULTS: dict[str, object] = {
     "multiband_levels": 5,
 }
 _CENTRAL_STRIP_DIAGNOSTIC_KEYS = frozenset(_CENTRAL_STRIP_DIAGNOSTIC_DEFAULTS)
+_FOREGROUND_DEFORMATION_EXPERIMENT_DEFAULTS: dict[str, object] = {"enabled": False}
+_FOREGROUND_DEFORMATION_EXPERIMENT_KEYS = frozenset(
+    _FOREGROUND_DEFORMATION_EXPERIMENT_DEFAULTS
+)
 
 
 def _invalidate_delivery_marker(output: Path) -> None:
@@ -3748,6 +3753,44 @@ def _central_strip_diagnostic_config(
     return config
 
 
+def _foreground_deformation_experiment_config(
+    stitch_config: dict[str, Any],
+    *,
+    foreground_deformation_diagnostic_renderer: object | None,
+) -> ForegroundDeformationExperimentConfig | None:
+    """Keep foreground deformation outside the formal v9 renderer contract.
+
+    The public YAML contains an explicit disabled marker so its experimental
+    status is visible.  Turning that marker on cannot activate an ordinary
+    panorama or diagnostic-force path: only the independent callback may
+    honor it, with its fixed safety limits.
+    """
+
+    value = stitch_config.get("foreground_deformation_experiment", {})
+    if not isinstance(value, Mapping):
+        raise ValueError("stitch.foreground_deformation_experiment must be a mapping")
+    unknown = sorted(set(value) - _FOREGROUND_DEFORMATION_EXPERIMENT_KEYS)
+    if unknown:
+        raise ValueError(
+            "Unknown foreground_deformation_experiment configuration keys: "
+            + ", ".join(unknown)
+        )
+    config = ForegroundDeformationExperimentConfig.from_mapping(value)
+    if foreground_deformation_diagnostic_renderer is None:
+        if config.enabled:
+            raise ValueError(
+                "foreground_deformation_experiment.enabled can only be activated by "
+                "g305-foreground-deformation-diagnostic"
+            )
+        return None
+    if not callable(foreground_deformation_diagnostic_renderer):
+        raise TypeError("foreground_deformation_diagnostic_renderer must be callable")
+    # The diagnostic command is the only authorized consumer of an enabled
+    # marker; it does not silently turn the experiment on.  A caller must use
+    # the separate diagnostic-only override to request actual deformation.
+    return config
+
+
 def _sanitized_diagnostic_trajectory(
     trajectory: ORBSLAM3Trajectory | None, *, input_frame_count: int
 ) -> dict[str, object] | None:
@@ -3831,12 +3874,43 @@ def _geometry_pair_diagnostic_index(args: argparse.Namespace) -> int:
     return index
 
 
+def _foreground_deformation_diagnostic_index(args: argparse.Namespace) -> int:
+    """Return one adjacent pair index for the isolated foreground diagnostic."""
+
+    value = getattr(args, "pair_index", None)
+    if isinstance(value, bool):
+        raise ValueError("foreground deformation diagnostic pair_index must be an integer")
+    try:
+        index = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "foreground deformation diagnostic requires an integer --pair-index"
+        ) from exc
+    if index < 0:
+        raise ValueError(
+            "foreground deformation diagnostic pair_index must be non-negative"
+        )
+    return index
+
+
+def _foreground_deformation_diagnostic_whole_panorama(args: argparse.Namespace) -> bool:
+    """Return the explicit diagnostic-only full-panorama experiment selector."""
+
+    value = getattr(args, "whole_panorama", False)
+    if not isinstance(value, bool):
+        raise ValueError(
+            "foreground deformation diagnostic whole_panorama must be a boolean"
+        )
+    return value
+
+
 def _run_pipeline(
     args: argparse.Namespace,
     *,
     odometry_backend: object | None = None,
     diagnostic_renderer: object | None = None,
     geometry_pair_diagnostic_renderer: object | None = None,
+    foreground_deformation_diagnostic_renderer: object | None = None,
     orb_work_root: Path | None = None,
 ) -> dict[str, Any]:
     output = args.output.expanduser().resolve()
@@ -3844,8 +3918,15 @@ def _run_pipeline(
     # malformed configuration must not leave a previous success marker live.
     _invalidate_delivery_marker(output)
     if (
-        diagnostic_renderer is not None
-        and geometry_pair_diagnostic_renderer is not None
+        sum(
+            renderer is not None
+            for renderer in (
+                diagnostic_renderer,
+                geometry_pair_diagnostic_renderer,
+                foreground_deformation_diagnostic_renderer,
+            )
+        )
+        > 1
     ):
         raise ValueError("Only one diagnostic renderer may be active in a task")
     if (
@@ -3858,14 +3939,25 @@ def _run_pipeline(
     central_strip_config = _central_strip_diagnostic_config(
         stitch_config, diagnostic_renderer=diagnostic_renderer
     )
+    foreground_deformation_experiment_config = (
+        _foreground_deformation_experiment_config(
+            stitch_config,
+            foreground_deformation_diagnostic_renderer=(
+                foreground_deformation_diagnostic_renderer
+            ),
+        )
+    )
     _validate_backend_config(stitch_config)
     diagnostic_force = bool(
         getattr(args, "diagnostic_force", False)
         or stitch_config.get("diagnostic_force", False)
     )
-    if geometry_pair_diagnostic_renderer is not None and diagnostic_force:
+    if (
+        geometry_pair_diagnostic_renderer is not None
+        or foreground_deformation_diagnostic_renderer is not None
+    ) and diagnostic_force:
         raise ValueError(
-            "Geometry pair diagnostic cannot use diagnostic-force; its complete "
+            "Pair diagnostics cannot use diagnostic-force; their complete "
             "RGB-D/Open3D/ORB-SLAM3 chain remains quality-gated"
         )
     _validate_safety_envelope(
@@ -3886,9 +3978,12 @@ def _run_pipeline(
         getattr(args, "render_frame_ids", None)
         or stitch_config.get("render_frame_ids")
     )
-    if geometry_pair_diagnostic_renderer is not None and manual_render_ids:
+    if (
+        geometry_pair_diagnostic_renderer is not None
+        or foreground_deformation_diagnostic_renderer is not None
+    ) and manual_render_ids:
         raise ValueError(
-            "Geometry pair diagnostic always renders the complete scan; "
+            "Pair diagnostics always render the complete scan; "
             "render_frame_ids is not permitted"
         )
     if manual_render_ids and not diagnostic_force:
@@ -3954,10 +4049,10 @@ def _run_pipeline(
     pose_backend = str(stitch_config.get("pose_backend", "hybrid_orbslam3_rgbd"))
     if (
         geometry_pair_diagnostic_renderer is not None
-        and pose_backend != "hybrid_orbslam3_rgbd"
-    ):
+        or foreground_deformation_diagnostic_renderer is not None
+    ) and pose_backend != "hybrid_orbslam3_rgbd":
         raise RuntimeError(
-            "Geometry pair diagnostic requires hybrid_orbslam3_rgbd and a "
+            "Pair diagnostic requires hybrid_orbslam3_rgbd and a "
             "current full-scan ORB-SLAM3 trajectory"
         )
     orbslam3_trajectory: ORBSLAM3Trajectory | None = None
@@ -3970,6 +4065,7 @@ def _run_pipeline(
         if (
             diagnostic_renderer is not None
             or geometry_pair_diagnostic_renderer is not None
+            or foreground_deformation_diagnostic_renderer is not None
         ) and orb_work_root is None:
             raise RuntimeError(
                 "Diagnostic rendering requires an isolated ORB staging directory"
@@ -4015,10 +4111,10 @@ def _run_pipeline(
 
     if (
         geometry_pair_diagnostic_renderer is not None
-        and orbslam3_trajectory is None
-    ):
+        or foreground_deformation_diagnostic_renderer is not None
+    ) and orbslam3_trajectory is None:
         raise RuntimeError(
-            "Geometry pair diagnostic requires a current full-scan ORB-SLAM3 "
+            "Pair diagnostic requires a current full-scan ORB-SLAM3 "
             "trajectory; it cannot reuse a saved transform sidecar or an "
             "Open3D-only pose graph"
         )
@@ -4289,6 +4385,94 @@ def _run_pipeline(
             "pose_quality": pose_quality,
             "render_strategy": "full_sequence_geometry_pair_ab_crop",
             "geometry_pair_diagnostic": render_metadata,
+            "elapsed_seconds": time.perf_counter() - started,
+        }
+        _publish_central_strip_diagnostic(output, panorama, report)
+        return report
+
+    if foreground_deformation_diagnostic_renderer is not None:
+        if not all_real_sources:
+            raise RuntimeError(
+                "Foreground deformation diagnostic requires every real full-scan pose node"
+            )
+        if foreground_deformation_experiment_config is None:
+            raise RuntimeError(
+                "Foreground deformation diagnostic omitted its effective experiment config"
+            )
+        whole_panorama = _foreground_deformation_diagnostic_whole_panorama(args)
+        pair_index: int | None = None
+        if not whole_panorama:
+            pair_index = _foreground_deformation_diagnostic_index(args)
+            if pair_index >= len(render_frames) - 1:
+                raise ValueError(
+                    "Foreground deformation diagnostic pair_index must select one adjacent "
+                    f"pair in [0, {len(render_frames) - 2}]"
+                )
+        seam_config = dict(stitch_config.get("scan_seam", {}))
+        pushbroom_config = dict(stitch_config.get("calibrated_rgb_pushbroom", {}))
+        callback_result = foreground_deformation_diagnostic_renderer(
+            render_frames=render_frames,
+            render_poses=render_poses,
+            calibration=session.calibration,
+            config=pushbroom_config,
+            rgb_motions=render_motions,
+            motion_pixels_to_full_resolution=(
+                session.calibration.width / float(analysis_shape[1])
+            ),
+            multiband_levels=int(seam_config.get("multiband_levels", 3)),
+            pair_index=pair_index,
+            whole_panorama=whole_panorama,
+            experiment_config=foreground_deformation_experiment_config,
+        )
+        panorama, render_metadata = _validate_central_strip_result(callback_result)
+        panorama_path = output / "diagnostic_panorama.jpg"
+        report_path = output / "diagnostic_report.json"
+        trajectory_summary = _sanitized_diagnostic_trajectory(
+            orbslam3_trajectory, input_frame_count=len(scan_frames)
+        )
+        diagnostic = render_metadata.get("foreground_deformation")
+        if not isinstance(diagnostic, Mapping):
+            raise RuntimeError("Foreground deformation diagnostic omitted its audit")
+        audits = diagnostic.get("foreground_deformation_audits")
+        if not isinstance(audits, list):
+            raise RuntimeError(
+                "Foreground deformation diagnostic omitted per-candidate audits"
+            )
+        report = {
+            "schema": "gemini305-foreground-deformation-diagnostic/v1",
+            "input": str(args.input.expanduser().resolve()),
+            "panorama": str(panorama_path),
+            "report": str(report_path),
+            "diagnostic_only": True,
+            "deliverable_published": False,
+            "trajectory_provenance": "current_orbslam3_rgbd_full_scan",
+            "input_capture": capture_summary,
+            "rgbd_session": {
+                "frame_count": len(session.frames),
+                "depth_alignment": session.depth_alignment,
+                "depth_unit": "mm",
+                "calibration": _intrinsics_payload(session.calibration),
+            },
+            "odometry": {
+                "backend": "open3d_rgbd",
+                "edge_count": len(edges),
+                "required_adjacent_edge_count": len(pose_frames) - 1,
+                "all_adjacent_edges_required": True,
+                "optional_edge_failure_count": len(optional_edge_failures),
+            },
+            "global_trajectory": trajectory_summary,
+            "pose_quality": pose_quality,
+            "render_strategy": (
+                "full_sequence_foreground_deformation_experimental_panorama"
+                if whole_panorama
+                else "full_sequence_foreground_deformation_pair_ab_crop"
+            ),
+            "whole_panorama": whole_panorama,
+            "foreground_deformation_experiment": render_metadata.get(
+                "foreground_deformation_experiment"
+            ),
+            "foreground_deformation_audits": audits,
+            "foreground_deformation_diagnostic": render_metadata,
             "elapsed_seconds": time.perf_counter() - started,
         }
         _publish_central_strip_diagnostic(output, panorama, report)
@@ -4630,12 +4814,14 @@ def run(
     odometry_backend: object | None = None,
     diagnostic_renderer: object | None = None,
     geometry_pair_diagnostic_renderer: object | None = None,
+    foreground_deformation_diagnostic_renderer: object | None = None,
 ) -> dict[str, Any]:
     """Run one task and persist fail-closed state for every ordinary error.
 
     ``diagnostic_renderer`` is reserved for the independent central-strip
-    command.  ``geometry_pair_diagnostic_renderer`` is a separate diagnostic
-    seam for a full-sequence RGB-only A/B crop.  Neither can reach formal
+    command.  ``geometry_pair_diagnostic_renderer`` and
+    ``foreground_deformation_diagnostic_renderer`` are separate diagnostic
+    seams for full-sequence adjacent-pair crops.  None can reach formal
     delivery.
     """
 
@@ -4644,6 +4830,7 @@ def run(
         if (
             diagnostic_renderer is None
             and geometry_pair_diagnostic_renderer is None
+            and foreground_deformation_diagnostic_renderer is None
         ):
             return _run_pipeline(args, odometry_backend=odometry_backend)
 
@@ -4655,7 +4842,11 @@ def run(
         prefix = (
             "g305-central-strip-orbslam3-"
             if diagnostic_renderer is not None
-            else "g305-geometry-pair-orbslam3-"
+            else (
+                "g305-geometry-pair-orbslam3-"
+                if geometry_pair_diagnostic_renderer is not None
+                else "g305-foreground-deformation-orbslam3-"
+            )
         )
         with tempfile.TemporaryDirectory(prefix=prefix) as root:
             return _run_pipeline(
@@ -4663,6 +4854,9 @@ def run(
                 odometry_backend=odometry_backend,
                 diagnostic_renderer=diagnostic_renderer,
                 geometry_pair_diagnostic_renderer=geometry_pair_diagnostic_renderer,
+                foreground_deformation_diagnostic_renderer=(
+                    foreground_deformation_diagnostic_renderer
+                ),
                 orb_work_root=Path(root),
             )
     except Exception as exc:

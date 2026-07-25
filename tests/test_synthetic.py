@@ -16,6 +16,7 @@ from panorama_demo.session import (
 from panorama_demo.synthetic import (
     FAR_DEPTH_MM,
     NEAR_DEPTH_MM,
+    generate_foreground_deformation_hose_pair,
     generate_sequence,
 )
 
@@ -303,3 +304,21 @@ def test_dynamic_object_has_non_camera_motion(tmp_path: Path) -> None:
 def test_generate_sequence_rejects_unknown_scene(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Unsupported synthetic scene"):
         generate_sequence(tmp_path / "bad", scene="mirror")
+
+
+def test_foreground_deformation_hose_fixture_has_native_one_to_two_pixel_offset() -> None:
+    reference, source, reference_mask, source_mask = (
+        generate_foreground_deformation_hose_pair(offset_pixels=1.2)
+    )
+
+    assert reference.shape == source.shape == (160, 160, 3)
+    assert reference.dtype == source.dtype == np.uint8
+    assert reference_mask.shape == source_mask.shape == (160, 160)
+    assert reference_mask.dtype == source_mask.dtype == bool
+    assert np.any(reference_mask)
+    assert np.any(source_mask)
+    # The source footprint moves right by one native pixel at the left edge;
+    # the optical-flow regression asserts the more precise 1.2 px estimate.
+    assert int(np.flatnonzero(source_mask.any(axis=0)).min()) == (
+        int(np.flatnonzero(reference_mask.any(axis=0)).min()) + 1
+    )

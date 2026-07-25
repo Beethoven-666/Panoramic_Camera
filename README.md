@@ -36,6 +36,7 @@
 | `g305-panorama` | 正式 RGB-D 序列全景入口 |
 | `g305-central-strip-diagnostic` | 独立的参考平面中央条带诊断入口；绝不替代正式 RGB pushbroom 路径 |
 | `g305-geometry-pair-diagnostic` | 独立的完整序列相邻接缝 RGB A/B 诊断；不读取历史位姿或发布交付 |
+| `g305-foreground-deformation-diagnostic` | 默认关闭的前景局部 inverse mesh 实验诊断；可发布相邻 pair A/B 或显式全景诊断图及标量审计 |
 | `unistitch-sequence` | 一个版本内保留的弃用别名；运行同一 RGB-D 流程，不含 UniStitch 回退 |
 | `generate-panorama-demo` | 生成带标定、对齐深度和已知 SE(3) 轨迹的合成会话 |
 | `unistitch-pair` | 独立历史双图诊断工具，不进入正式序列流程 |
@@ -103,6 +104,19 @@ g305-geometry-pair-diagnostic `
   .\data\captures\run_YYYYMMDD_HHMMSS `
   --pair-index 48 `
   --output .\outputs\geometry_pair_48_49
+
+g305-foreground-deformation-diagnostic `
+  .\data\captures\run_YYYYMMDD_HHMMSS `
+  --config .\configs\foreground_deformation_experiment.yaml `
+  --pair-index 48 `
+  --output .\outputs\foreground_deformation_pair_48_49
+
+# 对所有相邻 pair 执行相同门禁；仍是诊断产物，不会写 delivery.json
+g305-foreground-deformation-diagnostic `
+  .\data\captures\run_YYYYMMDD_HHMMSS `
+  --config .\configs\foreground_deformation_experiment.yaml `
+  --whole-panorama `
+  --output .\outputs\foreground_deformation_experimental_panorama
 ```
 `unistitch-sequence` 会打印弃用提示，但调用与 `g305-panorama` 完全相同的 RGB-D `main`。它不会加载 UniStitch、Torch、LightGlue 或 MAGSAC。
 
@@ -111,6 +125,8 @@ g305-geometry-pair-diagnostic `
 `configs/demo.yaml` 中的 `stitch.central_strip_diagnostic.enabled` 故意默认为 `false`；它不能通过 `g305-panorama` 打开。独立命令本身是唯一显式 opt-in，并向 renderer 传递一个内部启用的、固定且拒绝未知键的配置副本。
 
 `g305-geometry-pair-diagnostic` 是检查某一条真实相邻接缝的独立 A/B 工具，而不是 `g305-panorama` 的算法开关。它始终先运行完整扫描的 Open3D 相邻边与本次 ORB-SLAM3 RGB-D 轨迹，随后用完整真实 pose-node 链各渲染一次：左栏为关闭局部 geometry 的 baseline，右栏为正常 geometry candidate，最后只裁出该 pair 的共同标定 RGB 走廊。它拒绝 `--render-frame-ids`、`--diagnostic-force`、Open3D-only 轨迹、历史 `render_transforms.json` 和历史 gain；因此不能把两帧当作端点，也不能借旧 pose 发布新的结果。`diagnostic_report.json` 记录左右栏坐标、两套 source/remap/gain 标量和 pair audit；若网格未获准，右栏必须是 hard-owner 回退，而不是强行变形。该命令只写 `diagnostic_panorama.jpg` 与 `diagnostic_report.json`，永不写 `delivery.json`。
+
+`g305-foreground-deformation-diagnostic` 是一个独立、默认关闭的实验分支；必须通过 `configs/foreground_deformation_experiment.yaml` 显式开启。默认模式只检查完整当前 Open3D/ORB-SLAM3 链中的一个相邻 `96–160 px` pair corridor；`--whole-panorama` 则在同一完整链中逐一审计全部相邻 pair，并只把通过门禁且不与其它已接受候选重叠的前景 RGB 采样替换进完成后的 baseline 全景。它只在高置信度、无 split/merge、双源完整覆盖的前景 track 上尝试 16/32 px 的边界固定 inverse mesh；真实接头、端点、遮挡、透明/保护域、非原始分辨率证据、尺度/Jacobian/held-out 门禁任一失败都会保持单源 hard owner。默认 A/B 图的左栏是变形前、右栏是候选后；全景模式仍不做 alpha、MultiBand、APAP、全局 flow、pose 改写或颜色生成。成功也仅写 `diagnostic_panorama.jpg` 与 `diagnostic_report.json`（含 `foreground_deformation_audits`），绝不写 `delivery.json`，更不会改变 v9 A/B/C/F 语义。
 
 该诊断路线的参考平面也采用 fail-closed 门禁：它必须是唯一主导、跨扫描有足够标定图像面积支持的实测平面；竞争平面、面积不足或结构残差过大只会写 `failure.json`。较严格的平面质量阈值只会令 `strip_quality_pass=false`，仍可留下两个诊断文件供 A/B 检查，绝不变成正式交付。
 

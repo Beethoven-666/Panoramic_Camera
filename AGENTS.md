@@ -21,7 +21,9 @@
   → 基于 valid mask 的最大内接矩形、严格质量分级（A/B/C）和原子交付
 ```
 
-正式全景输出像素只能取自 RGB。aligned depth 可在 RGB 风险已触发的 `96–160 px` 相邻接缝走廊内正式参与双向重投影、z-buffer 可见性、深度分层、遮挡/透明保护、局部逆网格和 owner 决策；它绝不生成颜色、补洞、拟合全局参考平面、改写/插值真实 pose、构造全景深度或向 TSDF 回传结果。局部网格只修正一次 RGB inverse sampling，不是新的相机轨迹。不得导入或回退到 UniStitch、LightGlue、MAGSAC、Torch、任何全局/pose/全景级 `3×3` 单应矩阵、二维累计或时间/二维运动位姿插值。`local_apap_flow` 是一个受限的相邻走廊候选：它只能在 `96–160 px`、双向可见的同层安全背景 RGB 区域中为单一 RGB owner 提供一次局部 inverse sampling，不能改 pose、生成颜色或持久化稠密证据；前景实例仍为 owner-only。默认策略 `handoff_fallback_policy.local_apap_flow_enabled=false`；只有显式启用、完成现场验证且逐项通过同层/保护域、held-out、前后向 flow、Jacobian、尺度、位移和边界审计时才可能使用，关闭时继续使用既有局部逆网格和 hard-owner 路径。A/B/C 级交付都必须成对构建并发布仅供浏览的 `tsdf_mesh.glb` 与 `tsdf_mesh_viewer.html`；Open3D/TSDF、GLB、Viewer 或其发布任一失败都是 F，且不得写 `delivery.json`。TSDF 绝不得向全景的条带、接缝、融合、裁剪或质量判定回传结果。ORB-SLAM3 仅提供真实 RGB-D 相机轨迹；未安装或未完整跟踪时应失败，不能回退为伪造位姿。`unistitch-pair` 暂时保留为可选历史双图诊断；`unistitch-sequence` 只是 `g305-panorama` 的弃用别名，运行同一 RGB-D 路径。`central_strip_plane_diagnostic` 只能由独立诊断命令通过 renderer callback 调用，绝不能成为正式 pushbroom backend、正式 CLI 选项或失败回退。
+正式全景输出像素只能取自 RGB。aligned depth 可在 RGB 风险已触发的 `96–160 px` 相邻接缝走廊内正式参与双向重投影、z-buffer 可见性、深度分层、遮挡/透明保护、局部逆网格和 owner 决策；它绝不生成颜色、补洞、拟合全局参考平面、改写/插值真实 pose、构造全景深度或向 TSDF 回传结果。局部网格只修正一次 RGB inverse sampling，不是新的相机轨迹。不得导入或回退到 UniStitch、LightGlue、MAGSAC、Torch、任何全局/pose/全景级 `3×3` 单应矩阵、二维累计或时间/二维运动位姿插值。`local_apap_flow` 是一个受限的相邻走廊候选：它只能在 `96–160 px`、双向可见的同层安全背景 RGB 区域中为单一 RGB owner 提供一次局部 inverse sampling，不能改 pose、生成颜色或持久化稠密证据；前景实例仍为 owner-only。默认策略 `handoff_fallback_policy.local_apap_flow_enabled=false`；只有显式启用、完成现场验证且逐项通过同层/保护域、held-out、前后向 flow、Jacobian、尺度、位移和边界审计时才可能使用，关闭时继续使用既有局部逆网格和 hard-owner 路径。`foreground_deformation_experiment` 是另一个默认关闭、仅诊断的前景局部 inverse mesh 候选；它只能由 `g305-foreground-deformation-diagnostic` 与显式实验配置消费，在单个相邻 `96–160 px` 走廊、同一高置信度无 split/merge track、双源完整覆盖、真实原始分辨率接缝残差、轮廓/中心线和双向 flow 门均通过后，才可对实例内部的一名 RGB owner 做一次 `≤2 px` 的边界固定 sampling。它不得写 pose、生成颜色、做 alpha/MultiBand/APAP/全局 flow、穿过 GraphCut 前景 owner 或进入 A/B/C/F、`report.json`、`delivery.json`。A/B/C 级交付都必须成对构建并发布仅供浏览的 `tsdf_mesh.glb` 与 `tsdf_mesh_viewer.html`；Open3D/TSDF、GLB、Viewer 或其发布任一失败都是 F，且不得写 `delivery.json`。TSDF 绝不得向全景的条带、接缝、融合、裁剪或质量判定回传结果。ORB-SLAM3 仅提供真实 RGB-D 相机轨迹；未安装或未完整跟踪时应失败，不能回退为伪造位姿。`unistitch-pair` 暂时保留为可选历史双图诊断；`unistitch-sequence` 只是 `g305-panorama` 的弃用别名，运行同一 RGB-D 路径。`central_strip_plane_diagnostic` 只能由独立诊断命令通过 renderer callback 调用，绝不能成为正式 pushbroom backend、正式 CLI 选项或失败回退。
+
+`g305-foreground-deformation-diagnostic --whole-panorama` 不是全局前景网格：它仅在诊断进程中逐一调用同一个单相邻 `96–160 px` 候选门禁，并只把最终通过且没有与其它接受实例重叠的单源 RGB replacement 写入诊断全景。它始终不进入正式 v9/A/B/C/F 或 `delivery.json`。
 
 ### 1.1 正式 A/B/C/F 交付语义
 
@@ -71,6 +73,8 @@ git diff --check
 | `geometry_assisted_local_warp.py` | 相邻 RGB-D 双向重投影、z-buffer/层分类、深度保护和受限 16/32 px 局部逆网格 |
 | `handoff_continuity.py` | 相邻 handoff 的标量审计、A/B/C 终局方法与稳定汇总；不保存稠密图像证据 |
 | `local_apap_flow.py` | `96–160 px` 同层局部 APAP/双向 flow 候选；由正式 policy 默认关闭，不改 pose、不生成颜色，只有启用并通过全部审计才可用于单一 owner |
+| `foreground_deformation.py` | 默认关闭、仅诊断的前景 track 局部 inverse mesh；边界固定、单 owner、无 pose/颜色/混合写入 |
+| `foreground_deformation_diagnostic.py` | 完整当前 ORB-SLAM3 链的前景变形 A/B pair 或显式全景诊断 CLI；只发布两个诊断文件 |
 | `rgbd_projection.py` | 仅限历史/独立诊断与回归的 RGB-D 投影模块，正式 renderer 不导入 |
 | `dense_fusion.py` | TSDF 仅供正式交付后的独立 3D 展示；正式 RGB renderer 不导入且不读取其结果 |
 | `central_strip.py` | 真实轨迹参考平面、扫描坐标、中央条带一次 remap 与诊断结果；只供独立诊断后端 |
@@ -88,6 +92,7 @@ CLI：
 - `g305-panorama`
 - `g305-central-strip-diagnostic`（独立、仅参考平面声明的中央条带诊断；只发布两个诊断文件）
 - `g305-geometry-pair-diagnostic`（独立、完整当前 ORB-SLAM3 链的相邻接缝 RGB A/B 诊断；只发布两个诊断文件）
+- `g305-foreground-deformation-diagnostic`（默认关闭、显式配置开启的前景局部 inverse mesh 诊断；`--whole-panorama` 仍只发布两个诊断文件）
 - `unistitch-sequence`（弃用别名，同一 RGB-D 流程）
 - `unistitch-pair`（可选历史诊断）
 - `generate-panorama-demo`
@@ -159,7 +164,7 @@ MultiBand 只能在 owner 验证之后运行。每条相邻 owner 边界使用�
 
 诊断成功只写 `diagnostic_panorama.jpg` 和 `diagnostic_report.json`，绝不写正式文件或 `delivery.json`。中央条带诊断同样严格只写这两个文件，不写 `transforms.json`、TSDF mesh 或其它附属产物；其 ORB-SLAM3 staging 必须使用系统临时目录，成功输出目录不得留下 `.orbslam3_rgbd`。其参考平面必须是唯一主导、跨扫描具备足够标定图像面积支持的实测平面；竞争平面、面积不足或结构残差过大是结构失败。更严格的平面残差只令诊断 `strip_quality_pass=false`，不会放宽为正式交付。`g305-geometry-pair-diagnostic` 也严格只发布这两个文件：它必须先以本次完整扫描运行 Open3D 和 ORB-SLAM3，再以全部真实 pose nodes 分别渲染关闭 geometry 的 baseline 与正常 candidate，并仅裁出请求相邻 pair 的共同 RGB 走廊（左 baseline、右 candidate；列映射、两套 gain 统计与 pair audit 写入报告）。它不得接受 `--render-frame-ids`、`--diagnostic-force`、Open3D-only 轨迹、保存的 `render_transforms.json` 或历史 gain；不获准的网格必须如实显示为 hard-owner candidate，而不是强行变形。
 
-正式输出使用 `gemini305-calibrated-rgb-pushbroom/v9` 与 `gemini305-panorama-delivery/v9`。两份文件都必须公开 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary`、`foreground_owner_continuity_summary`、`tsdf_visualization` 和 `manual_review_required`；报告另含逐 pair `handoff_outcomes`、严格失败原因和嵌套 `publication` 审计。`quality_pass` 是严格质量的兼容别名，**不是**“是否已发布”的唯一判断：A/B 使用 `published`，结构安全但需人工复核的 C 使用 `published_degraded`。C 级仍是 RGB-only 全景，必须标明人工复核并交付成对的 TSDF GLB/Viewer；诊断产物不采用这些正式交付语义。
+正式输出使用 `gemini305-calibrated-rgb-pushbroom/v9` 与 `gemini305-panorama-delivery/v9`。两份文件都必须公开 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary`、`foreground_owner_continuity_summary`、`tsdf_visualization` 和 `manual_review_required`；报告另含逐 pair `handoff_outcomes`、严格失败原因和嵌套 `publication` 审计。`quality_pass` 是严格质量的兼容别名，**不是**“是否已发布”的唯一判断：A/B 使用 `published`，结构安全但需人工复核的 C 使用 `published_degraded`。C 级仍是 RGB-only 全景，必须标明人工复核并交付成对的 TSDF GLB/Viewer；诊断产物不采用这些正式交付语义。`g305-foreground-deformation-diagnostic` 成功时同样严格只写 `diagnostic_panorama.jpg` 与 `diagnostic_report.json`；其默认模式检查一个 pair，显式 `--whole-panorama` 可在完整链中逐 pair 审计并合成诊断全景。报告使用独立 schema，包含 `foreground_deformation_audits`、候选/拒绝原因和 held-out 标量，绝不发布 `delivery.json`。
 
 每次 `run()` 的第一项文件动作必须使旧 `delivery.json` 失效。正式文件先写隐藏 pending，再 `os.replace`；A/B/C 的 `delivery.json` 最后写。普通异常与 F 无论从 CLI 还是直接调用 `run()`，都应清除正式/诊断产物并原子写 `failure.json`。强制终止可能来不及写失败报告，但没有有效 `delivery.json` 始终代表未发布或失败；有 `delivery.json` 后还必须检查其 `delivery_state`、等级和人工复核要求。
 
@@ -176,6 +181,7 @@ MultiBand 只能在 owner 验证之后运行。每条相邻 owner 边界使用�
 | `test_geometry_assisted_local_warp.py` | 双向 z-buffer/层分类、遮挡/孔洞/透明保护、局部网格、held-out 与 flow 门禁 |
 | `test_handoff_continuity.py` | 相邻 handoff 的 A/B/C 终局审计、审计完整性和标量汇总 |
 | `test_local_apap_flow.py` | 默认关闭的局部 APAP/flow 候选、同层/保护域、边界/尺度/Jacobian/flow 审计与 hard-cut 建议 |
+| `test_foreground_deformation.py` / `test_foreground_deformation_diagnostic.py` | 合成软管 1–2 px 错位、接头/遮挡/透明保护、边界恒等、held-out、完整链诊断隔离与两文件发布 |
 | `test_geometry_pair_diagnostic.py` | 完整源链 baseline/candidate A/B、共同走廊 RGB 裁切、无历史位姿回退与诊断原子交付 |
 | `test_rgbd_projection.py` | 视差、z-buffer、断层、空洞、黑色内容、资源限制 |
 | `test_render.py` | RGB 风险、历史深度 GraphCut、owner、逐 pair MultiBand、裁剪与风险 |
