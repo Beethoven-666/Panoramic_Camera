@@ -128,10 +128,78 @@ def test_formal_pushbroom_receives_exact_optimized_se3_without_depth_projection(
                 "depth_used_for_local_geometry": False,
                 "point_cloud_constructed": False,
                 "tsdf_constructed": False,
-                "reference_plane_fitted": False,
-                "layout": {},
-                "rgb_motion_scale": {},
-                "residual_alignment": {
+                    "reference_plane_fitted": False,
+                    "layout": {},
+                    "rgb_motion_scale": {},
+                    "source_owner_pixel_counts": [1 for _frame in frames],
+                    "redundant_pose_node_suppression": {
+                        "policy": (
+                            "near_duplicate_true_pose_nodes_remapped_once_then_"
+                            "covered_by_retained_adjacent_rgb_hard_owners"
+                        ),
+                        "minimum_independent_owner_step_pixels": 0.25,
+                        "suppressed_source_count": 0,
+                        "retained_owner_source_indices": list(range(len(frames))),
+                        "nodes": [],
+                        "foreground_owner_suppression": {
+                            "policy": (
+                                "redundant_pose_sources_excluded_from_persistent_"
+                                "foreground_owner_runs"
+                            ),
+                            "suppressed_source_indices": [],
+                            "changed_fragment_count": 0,
+                            "pair_local_only_fragment_count": 0,
+                            "stripped_depth_identity_fragment_count": 0,
+                            "full_resolution_owner_validity_clipped_pixel_count": 0,
+                            "complete": True,
+                        },
+                        "owner_rewrite_audits": [],
+                        "full_resolution_remap_count": len(frames),
+                        "all_real_pose_nodes_preserved": True,
+                        "interpolated_pose_count": 0,
+                        "generated_colour_pixel_count": 0,
+                        "blend_pixel_count": 0,
+                        "deformation_pixel_count": 0,
+                        "audit_complete": True,
+                    },
+                    "photometric_calibration": {
+                        "mode": "source_aware_global_linear_rgb_v2_two_stage",
+                        "model": "diagonal_linear_rgb_gain_only",
+                        "two_stage_background_gain_then_risk_recompute": True,
+                        "partial_observation_solver": False,
+                        "post_gain_risk_recomputed": True,
+                        "pre_gain_risk_pixel_count": 0,
+                        "pre_gain_risk_seed_pixel_count": 0,
+                        "post_gain_risk_pixel_count": 0,
+                        "post_gain_risk_seed_pixel_count": 0,
+                        "safe_same_layer_blend_rescue_pair_count": 0,
+                        "all_adjacent_pairs_complete": True,
+                        "provisional_rgb_panorama_written": False,
+                        "recomposited_from_source_strips": True,
+                        "full_resolution_remap_count_per_source": 1,
+                        "solver_condition": 1.0,
+                        "gain_min_max": [1.0, 1.0],
+                        "identity_hard_owner_fallback_used": False,
+                        "identity_hard_owner_fallback_pair_count": 0,
+                        "identity_hard_owner_fallback_pairs": [],
+                        "pairs": [
+                            {
+                                "first_frame_id": int(frames[index].frame_id),
+                                "second_frame_id": int(frames[index + 1].frame_id),
+                                "photometric_audit": {
+                                    "method": "safe_wall",
+                                    "spatial_tile_count": 8,
+                                    "training_pixel_count": 256,
+                                    "held_out_pixel_count": 64,
+                                    "held_out_log_residual_p95": 0.01,
+                                    "held_out_log_residual_max": 0.02,
+                                    "risk_or_protected_intersection": False,
+                                },
+                            }
+                            for index in range(len(frames) - 1)
+                        ],
+                    },
+                    "residual_alignment": {
                     "backend": "se3_epipolar_hierarchical_rgb",
                     "selected_model": "identity",
                     "preview_remap_count": len(frames),

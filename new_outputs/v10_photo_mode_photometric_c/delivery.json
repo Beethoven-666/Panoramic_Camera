@@ -1,0 +1,3627 @@
+{
+  "schema": "gemini305-panorama-delivery/v10",
+  "published_utc": "2026-07-25T12:51:40.957445+00:00",
+  "quality_pass": false,
+  "delivery_state": "published_degraded",
+  "strict_quality_pass": false,
+  "strict_failure_reasons": [
+    "final render quality did not pass",
+    "final render: photometric identity hard-owner fallback used for adjacent pair(s): 2 (insufficient_usable), 3 (insufficient_usable), 4 (insufficient_usable), 5 (insufficient_usable), 6 (insufficient_usable), 7 (held_out_failed), 8 (held_out_failed), 9 (insufficient_usable), 10 (insufficient_usable), 11 (insufficient_usable), 12 (held_out_failed), 13 (insufficient_usable), 14 (insufficient_usable), 15 (held_out_failed), 16 (held_out_failed), 17 (insufficient_usable), 18 (insufficient_usable), 19 (held_out_failed), 20 (insufficient_usable), 21 (insufficient_usable), 22 (insufficient_usable), 23 (held_out_failed), 24 (insufficient_usable), 25 (held_out_failed), 26 (held_out_failed), 27 (held_out_failed), 28 (insufficient_usable), 29 (insufficient_usable), 30 (insufficient_usable), 31 (held_out_failed), 32 (insufficient_usable), 33 (held_out_failed), 34 (held_out_failed), 35 (held_out_failed), 36 (insufficient_usable), 37 (held_out_failed), 38 (held_out_failed), 39 (insufficient_usable), 40 (held_out_failed), 41 (held_out_failed), 42 (held_out_failed), 43 (held_out_failed), 44 (held_out_failed), 45 (held_out_failed), 46 (held_out_failed), 47 (held_out_failed), 48 (held_out_failed), 50 (insufficient_usable), 51 (insufficient_usable), 52 (held_out_failed), 53 (held_out_failed), 54 (held_out_failed), 55 (held_out_failed), 56 (held_out_failed), 57 (held_out_failed), 58 (held_out_failed), 59 (held_out_failed), 60 (insufficient_usable), 61 (insufficient_usable), 62 (insufficient_usable), 63 (insufficient_usable), 64 (insufficient_usable), 65 (insufficient_usable), 66 (held_out_failed), 67 (insufficient_usable), 68 (insufficient_usable), 69 (insufficient_usable), 70 (insufficient_usable), 71 (insufficient_usable), 72 (insufficient_usable), 73 (insufficient_usable), 74 (insufficient_usable), 75 (insufficient_usable), 76 (held_out_failed), 77 (insufficient_usable), 78 (insufficient_usable), 79 (insufficient_usable), 80 (insufficient_usable), 81 (held_out_failed), 82 (insufficient_usable), 83 (insufficient_usable), 84 (cross_tile_relation_inconsistent), 85 (insufficient_usable), 86 (insufficient_usable), 87 (insufficient_usable), 88 (insufficient_usable)"
+  ],
+  "quality_grade": "C",
+  "handoff_fallback_summary": {
+    "anchor": 1,
+    "apap": 0,
+    "flow_mesh": 0,
+    "hard_cut": 89
+  },
+  "handoff_outcomes": [
+    {
+      "pair_index": 0,
+      "frame_ids": [
+        6,
+        7
+      ],
+      "method": "anchor",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 1,
+      "frame_ids": [
+        7,
+        8
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 2,
+      "frame_ids": [
+        8,
+        9
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 3,
+      "frame_ids": [
+        9,
+        10
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 4,
+      "frame_ids": [
+        10,
+        11
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 5,
+      "frame_ids": [
+        11,
+        12
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 6,
+      "frame_ids": [
+        12,
+        13
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 7,
+      "frame_ids": [
+        13,
+        14
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 8,
+      "frame_ids": [
+        14,
+        15
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 9,
+      "frame_ids": [
+        15,
+        16
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 10,
+      "frame_ids": [
+        16,
+        17
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 11,
+      "frame_ids": [
+        17,
+        18
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 12,
+      "frame_ids": [
+        18,
+        19
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 13,
+      "frame_ids": [
+        19,
+        20
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 14,
+      "frame_ids": [
+        20,
+        21
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 15,
+      "frame_ids": [
+        21,
+        22
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 16,
+      "frame_ids": [
+        22,
+        23
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 17,
+      "frame_ids": [
+        23,
+        24
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 18,
+      "frame_ids": [
+        24,
+        25
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 19,
+      "frame_ids": [
+        25,
+        26
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 20,
+      "frame_ids": [
+        26,
+        27
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 21,
+      "frame_ids": [
+        27,
+        28
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 22,
+      "frame_ids": [
+        28,
+        29
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 23,
+      "frame_ids": [
+        29,
+        30
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 24,
+      "frame_ids": [
+        30,
+        31
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 25,
+      "frame_ids": [
+        31,
+        32
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 26,
+      "frame_ids": [
+        32,
+        33
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 27,
+      "frame_ids": [
+        33,
+        34
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 28,
+      "frame_ids": [
+        34,
+        35
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 29,
+      "frame_ids": [
+        35,
+        36
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 30,
+      "frame_ids": [
+        36,
+        37
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 31,
+      "frame_ids": [
+        37,
+        38
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 32,
+      "frame_ids": [
+        38,
+        39
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 33,
+      "frame_ids": [
+        39,
+        40
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 34,
+      "frame_ids": [
+        40,
+        41
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 35,
+      "frame_ids": [
+        41,
+        42
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 36,
+      "frame_ids": [
+        42,
+        43
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 37,
+      "frame_ids": [
+        43,
+        44
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 38,
+      "frame_ids": [
+        44,
+        45
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 39,
+      "frame_ids": [
+        45,
+        46
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 40,
+      "frame_ids": [
+        46,
+        47
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 41,
+      "frame_ids": [
+        47,
+        48
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 42,
+      "frame_ids": [
+        48,
+        49
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 43,
+      "frame_ids": [
+        49,
+        50
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 44,
+      "frame_ids": [
+        50,
+        51
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 45,
+      "frame_ids": [
+        51,
+        52
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 46,
+      "frame_ids": [
+        52,
+        53
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 47,
+      "frame_ids": [
+        53,
+        54
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 48,
+      "frame_ids": [
+        54,
+        55
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 49,
+      "frame_ids": [
+        55,
+        56
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 50,
+      "frame_ids": [
+        56,
+        57
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 51,
+      "frame_ids": [
+        57,
+        58
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 52,
+      "frame_ids": [
+        58,
+        59
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 53,
+      "frame_ids": [
+        59,
+        60
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 54,
+      "frame_ids": [
+        60,
+        61
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 55,
+      "frame_ids": [
+        61,
+        62
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 56,
+      "frame_ids": [
+        62,
+        63
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 57,
+      "frame_ids": [
+        63,
+        64
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 58,
+      "frame_ids": [
+        64,
+        65
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 59,
+      "frame_ids": [
+        65,
+        66
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 60,
+      "frame_ids": [
+        66,
+        67
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 61,
+      "frame_ids": [
+        67,
+        68
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 62,
+      "frame_ids": [
+        68,
+        69
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 63,
+      "frame_ids": [
+        69,
+        70
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 64,
+      "frame_ids": [
+        70,
+        71
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 65,
+      "frame_ids": [
+        71,
+        72
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 66,
+      "frame_ids": [
+        72,
+        73
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 67,
+      "frame_ids": [
+        73,
+        74
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 68,
+      "frame_ids": [
+        74,
+        75
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 69,
+      "frame_ids": [
+        75,
+        76
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 70,
+      "frame_ids": [
+        76,
+        77
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 71,
+      "frame_ids": [
+        77,
+        78
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 72,
+      "frame_ids": [
+        78,
+        79
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 73,
+      "frame_ids": [
+        79,
+        80
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 74,
+      "frame_ids": [
+        80,
+        81
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 75,
+      "frame_ids": [
+        81,
+        82
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 76,
+      "frame_ids": [
+        82,
+        83
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 77,
+      "frame_ids": [
+        83,
+        84
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 78,
+      "frame_ids": [
+        84,
+        85
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 79,
+      "frame_ids": [
+        85,
+        86
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 80,
+      "frame_ids": [
+        86,
+        87
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 81,
+      "frame_ids": [
+        87,
+        88
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 82,
+      "frame_ids": [
+        88,
+        89
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 83,
+      "frame_ids": [
+        89,
+        90
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 84,
+      "frame_ids": [
+        90,
+        91
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 85,
+      "frame_ids": [
+        91,
+        92
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 86,
+      "frame_ids": [
+        92,
+        93
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 87,
+      "frame_ids": [
+        93,
+        94
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 1,
+      "foreground_owner_handoff_audit_complete_count": 1,
+      "foreground_owner_handoff_owner_only_count": 1,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 88,
+      "frame_ids": [
+        94,
+        95
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 89,
+      "frame_ids": [
+        95,
+        96
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    }
+  ],
+  "photometric_calibration": {
+    "mode": "source_aware_global_linear_rgb_v1",
+    "model": "diagonal_linear_rgb_gain_only",
+    "all_adjacent_pairs_complete": true,
+    "provisional_rgb_panorama_written": false,
+    "recomposited_from_source_strips": true,
+    "full_resolution_remap_count_per_source": 1,
+    "solver_condition": 1.0,
+    "gain_min_max": [
+      1.0,
+      1.0
+    ],
+    "identity_hard_owner_fallback_used": true,
+    "identity_hard_owner_fallback_pair_count": 86,
+    "identity_hard_owner_fallback_pairs": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68,
+      69,
+      70,
+      71,
+      72,
+      73,
+      74,
+      75,
+      76,
+      77,
+      78,
+      79,
+      80,
+      81,
+      82,
+      83,
+      84,
+      85,
+      86,
+      87,
+      88
+    ],
+    "pairs": [
+      {
+        "first_frame_id": 6,
+        "second_frame_id": 7,
+        "photometric_audit": {
+          "method": "rgb_texture_consistent",
+          "candidate_pixel_count": 11212,
+          "spatial_tile_count": 66,
+          "training_pixel_count": 8937,
+          "held_out_pixel_count": 2244,
+          "inlier_ratio": 1.0,
+          "log_relation_mad_bgr": [
+            0.01266324520111084,
+            0.014157295227050781,
+            0.01784062385559082
+          ],
+          "held_out_log_residual_p95": 0.04927369933174111,
+          "held_out_log_residual_max": 0.11005675974573131,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": 0.7843137383460999,
+          "held_out_delta_e00_p95": 1.0962805746400088,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": false,
+          "hard_owner_required": false,
+          "failure_reason": null
+        }
+      },
+      {
+        "first_frame_id": 7,
+        "second_frame_id": 8,
+        "photometric_audit": {
+          "method": "rgb_texture_consistent",
+          "candidate_pixel_count": 34306,
+          "spatial_tile_count": 183,
+          "training_pixel_count": 27306,
+          "held_out_pixel_count": 6821,
+          "inlier_ratio": 1.0,
+          "log_relation_mad_bgr": [
+            0.01259678602218628,
+            0.014412403106689453,
+            0.017709016799926758
+          ],
+          "held_out_log_residual_p95": 0.047675071988000896,
+          "held_out_log_residual_max": 0.11230899883444528,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": 0.7843137383460999,
+          "held_out_delta_e00_p95": 1.0262060842792244,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": false,
+          "hard_owner_required": false,
+          "failure_reason": null
+        }
+      },
+      {
+        "first_frame_id": 8,
+        "second_frame_id": 9,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 9,
+        "second_frame_id": 10,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 10,
+        "second_frame_id": 11,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 11,
+        "second_frame_id": 12,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 12,
+        "second_frame_id": 13,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 13,
+        "second_frame_id": 14,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 14,
+        "second_frame_id": 15,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 15,
+        "second_frame_id": 16,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 16,
+        "second_frame_id": 17,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 17,
+        "second_frame_id": 18,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 18,
+        "second_frame_id": 19,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 19,
+        "second_frame_id": 20,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 20,
+        "second_frame_id": 21,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 21,
+        "second_frame_id": 22,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 22,
+        "second_frame_id": 23,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 23,
+        "second_frame_id": 24,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 24,
+        "second_frame_id": 25,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 25,
+        "second_frame_id": 26,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 26,
+        "second_frame_id": 27,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 27,
+        "second_frame_id": 28,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 28,
+        "second_frame_id": 29,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 29,
+        "second_frame_id": 30,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 30,
+        "second_frame_id": 31,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 31,
+        "second_frame_id": 32,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 32,
+        "second_frame_id": 33,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 33,
+        "second_frame_id": 34,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 34,
+        "second_frame_id": 35,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 35,
+        "second_frame_id": 36,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 36,
+        "second_frame_id": 37,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 37,
+        "second_frame_id": 38,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 38,
+        "second_frame_id": 39,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 39,
+        "second_frame_id": 40,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 40,
+        "second_frame_id": 41,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 41,
+        "second_frame_id": 42,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 42,
+        "second_frame_id": 43,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 43,
+        "second_frame_id": 44,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 44,
+        "second_frame_id": 45,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 45,
+        "second_frame_id": 46,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 46,
+        "second_frame_id": 47,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 47,
+        "second_frame_id": 48,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 48,
+        "second_frame_id": 49,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 49,
+        "second_frame_id": 50,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 50,
+        "second_frame_id": 51,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 51,
+        "second_frame_id": 52,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 52,
+        "second_frame_id": 53,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 53,
+        "second_frame_id": 54,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 54,
+        "second_frame_id": 55,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 55,
+        "second_frame_id": 56,
+        "photometric_audit": {
+          "method": "safe_wall",
+          "candidate_pixel_count": 710,
+          "spatial_tile_count": 10,
+          "training_pixel_count": 568,
+          "held_out_pixel_count": 142,
+          "inlier_ratio": 1.0,
+          "log_relation_mad_bgr": [
+            0.020421266555786133,
+            0.017579317092895508,
+            0.017579317092895508
+          ],
+          "held_out_log_residual_p95": 0.04659867357107162,
+          "held_out_log_residual_max": 0.06814679573865891,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": 0.7843137383460999,
+          "held_out_delta_e00_p95": 0.9666979158478922,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": false,
+          "hard_owner_required": false,
+          "failure_reason": null
+        }
+      },
+      {
+        "first_frame_id": 56,
+        "second_frame_id": 57,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 57,
+        "second_frame_id": 58,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 58,
+        "second_frame_id": 59,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 59,
+        "second_frame_id": 60,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 60,
+        "second_frame_id": 61,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 61,
+        "second_frame_id": 62,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 62,
+        "second_frame_id": 63,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 63,
+        "second_frame_id": 64,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 64,
+        "second_frame_id": 65,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 65,
+        "second_frame_id": 66,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 66,
+        "second_frame_id": 67,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 67,
+        "second_frame_id": 68,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 68,
+        "second_frame_id": 69,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 69,
+        "second_frame_id": 70,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 70,
+        "second_frame_id": 71,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 71,
+        "second_frame_id": 72,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 72,
+        "second_frame_id": 73,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 73,
+        "second_frame_id": 74,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 74,
+        "second_frame_id": 75,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 75,
+        "second_frame_id": 76,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 76,
+        "second_frame_id": 77,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 77,
+        "second_frame_id": 78,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 78,
+        "second_frame_id": 79,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 79,
+        "second_frame_id": 80,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 80,
+        "second_frame_id": 81,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 81,
+        "second_frame_id": 82,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 82,
+        "second_frame_id": 83,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 83,
+        "second_frame_id": 84,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 84,
+        "second_frame_id": 85,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 85,
+        "second_frame_id": 86,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 86,
+        "second_frame_id": 87,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 87,
+        "second_frame_id": 88,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "held_out_failed"
+        }
+      },
+      {
+        "first_frame_id": 88,
+        "second_frame_id": 89,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 89,
+        "second_frame_id": 90,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 90,
+        "second_frame_id": 91,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "cross_tile_relation_inconsistent"
+        }
+      },
+      {
+        "first_frame_id": 91,
+        "second_frame_id": 92,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 92,
+        "second_frame_id": 93,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 93,
+        "second_frame_id": 94,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 94,
+        "second_frame_id": 95,
+        "photometric_audit": {
+          "method": "identity_hard_owner",
+          "candidate_pixel_count": 0,
+          "spatial_tile_count": 0,
+          "training_pixel_count": 0,
+          "held_out_pixel_count": 0,
+          "inlier_ratio": 0.0,
+          "log_relation_mad_bgr": null,
+          "held_out_log_residual_p95": null,
+          "held_out_log_residual_max": null,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": null,
+          "held_out_delta_e00_p95": null,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": true,
+          "hard_owner_required": true,
+          "failure_reason": "insufficient_usable"
+        }
+      },
+      {
+        "first_frame_id": 95,
+        "second_frame_id": 96,
+        "photometric_audit": {
+          "method": "rgb_texture_consistent",
+          "candidate_pixel_count": 13857,
+          "spatial_tile_count": 74,
+          "training_pixel_count": 11022,
+          "held_out_pixel_count": 2755,
+          "inlier_ratio": 1.0,
+          "log_relation_mad_bgr": [
+            0.012798309326171875,
+            0.014499306678771973,
+            0.017579317092895508
+          ],
+          "held_out_log_residual_p95": 0.0453313410979244,
+          "held_out_log_residual_max": 0.10604968660339925,
+          "held_out_improvement_ratio": null,
+          "held_out_delta_l_p95": 0.7843137383460999,
+          "held_out_delta_e00_p95": 0.9394265319008723,
+          "same_layer_corridor_used": false,
+          "risk_or_protected_intersection": false,
+          "unit_gain_fallback": false,
+          "hard_owner_required": false,
+          "failure_reason": null
+        }
+      }
+    ]
+  },
+  "foreground_owner_continuity_summary": {
+    "backend": "foreground_segment_owner_plan_v3",
+    "track_count": 12,
+    "multi_pair_track_count": 12,
+    "owner_run_count": 32,
+    "actual_owner_switch_count": 20,
+    "minimum_feasible_owner_switch_count": 20,
+    "avoidable_owner_switch_count": 0,
+    "current_valid_nonadjacent_owner_pixel_count": 0,
+    "foreground_blend_pixel_count": 0,
+    "foreground_deformation_pixel_count": 0
+  },
+  "manual_review_required": true,
+  "pose_backend": "hybrid_orbslam3_rgbd",
+  "projection": "calibrated_rgb_pushbroom",
+  "alignment_backend": "se3_epipolar_hierarchical_rgb",
+  "alignment_model": "identity",
+  "seam_backend": "rgb_monotonic_hard_owner_graphcut",
+  "blend_backend": "safe_wall_local_multiband_narrow_owner_boundary",
+  "pixel_source": "calibrated_rgb_source_samples",
+  "depth_used_for_output_pixels": false,
+  "depth_used_for_local_geometry": true,
+  "geometry_assistance_backend": "rgbd_bidirectional_visibility_local_inverse_mesh",
+  "geometry_assistance_gate": {
+    "minimum_active_mesh_cells": 4,
+    "maximum_straight_line_deviation_pixels": 1.0,
+    "rgb_flow_application_policy": "accepted_bidirectional_rgb_flow_and_epipolar_support_including_held_out",
+    "rgb_flow_fit_support_policy": "training_only_accepted_bidirectional_rgb_flow_and_epipolar_support",
+    "actual_rgb_line_observation_policy": "observed_hough_solver_line_veto_or_not_observed_non_veto",
+    "local_apap_flow": {
+      "enabled": false,
+      "minimum_correspondences": 40,
+      "minimum_inlier_ratio": 0.6,
+      "mesh_cell_pixels": 16,
+      "minimum_active_mesh_cells": 4,
+      "maximum_displacement_pixels": 8.0,
+      "minimum_local_scale": 0.8,
+      "maximum_local_scale": 1.25,
+      "maximum_flow_fb_p95_pixels": 1.0,
+      "maximum_flow_fb_pixels": 3.0,
+      "held_out_fraction": 0.2,
+      "minimum_held_out_pixels": 30,
+      "minimum_held_out_improvement_ratio": 0.3
+    }
+  },
+  "panorama": "D:\\central_strip_Panoramic_Camera\\new_outputs\\v10_photo_mode_photometric_c\\panorama.jpg",
+  "tsdf_visualization": {
+    "backend": "open3d_scalable_tsdf_display_only",
+    "frame_count": 91,
+    "vertex_count": 968137,
+    "triangle_count": 1191151,
+    "glb_byte_count": 40434756,
+    "translation_unit": "mm",
+    "configuration": {
+      "voxel_length_mm": 5.0,
+      "sdf_truncation_mm": 20.0,
+      "maximum_depth_mm": 10000.0
+    },
+    "display_only": true,
+    "participates_in_panorama": false,
+    "status": "published",
+    "required_for_delivery": true,
+    "mesh": "tsdf_mesh.glb",
+    "viewer": "tsdf_mesh_viewer.html"
+  },
+  "report": "D:\\central_strip_Panoramic_Camera\\new_outputs\\v10_photo_mode_photometric_c\\report.json"
+}

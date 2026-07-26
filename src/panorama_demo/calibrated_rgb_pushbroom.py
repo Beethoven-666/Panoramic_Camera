@@ -429,7 +429,7 @@ class CalibratedRGBPushbroomConfig:
     # calibrated support while their hard-owned cores remain unchanged.  The
     # actual common corridor is audited because the 20% central-strip limit
     # can make a requested width unavailable on sparse captures.
-    seam_search_width_pixels: int = 64
+    seam_search_width_pixels: int = 96
     max_canvas_megapixels: float = 200.0
     max_aggregate_megapixels: float = 200.0
     max_pose_count: int = _HARD_MAX_POSES
@@ -524,8 +524,8 @@ class CalibratedRGBPushbroomConfig:
             raise ValueError("maximum_central_band_fraction must be in (0, 0.20]")
         if type(self.endpoint_outer_half_fov) is not bool:
             raise ValueError("endpoint_outer_half_fov must be a boolean")
-        if not 32 <= int(self.seam_search_width_pixels) <= 64:
-            raise ValueError("seam_search_width_pixels must be in [32, 64]")
+        if not 64 <= int(self.seam_search_width_pixels) <= 160:
+            raise ValueError("seam_search_width_pixels must be in [64, 160]")
         if not 0.0 < self.max_canvas_megapixels <= _HARD_MAX_CANVAS_MEGAPIXELS:
             raise ValueError("max_canvas_megapixels must be in (0, 200]")
         if not 0.0 < self.max_aggregate_megapixels <= _HARD_MAX_CANVAS_MEGAPIXELS:
@@ -595,6 +595,8 @@ class PushbroomLayout:
     support_left_x: tuple[int, ...]
     support_right_x: tuple[int, ...]
     owner_boundaries_x: tuple[float, ...]
+    retained_owner_source_indices: tuple[int, ...]
+    redundant_pose_node_suppression: tuple[dict[str, object], ...]
     endpoint_outer_owner_intervals_x: tuple[tuple[float, float], ...]
     canvas_width: int
     canvas_height: int
@@ -628,6 +630,12 @@ class PushbroomLayout:
                 )
             ],
             "owner_boundaries_x": list(self.owner_boundaries_x),
+            "retained_owner_source_indices": list(
+                self.retained_owner_source_indices
+            ),
+            "redundant_pose_node_suppression": [
+                dict(value) for value in self.redundant_pose_node_suppression
+            ],
             "endpoint_policy": (
                 "outward_half_fov"
                 if self.endpoint_outer_owner_intervals_x
@@ -1050,10 +1058,8 @@ def _trajectory_axes(poses: Sequence[np.ndarray]) -> tuple[np.ndarray, np.ndarra
     centres = np.asarray([pose[:3, 3] for pose in checked], dtype=np.float64)
     temporal = _unit(centres[-1] - centres[0], "camera-centre scan span")
     signed_steps = np.diff(centres, axis=0) @ temporal
-    if not np.all(np.isfinite(signed_steps)) or np.any(signed_steps <= 1e-4):
-        raise RuntimeError(
-            "Calibrated RGB pushbroom requires strictly monotonic real camera centres"
-        )
+    if not np.all(np.isfinite(signed_steps)):
+        raise RuntimeError("Calibrated RGB pushbroom camera-centre steps are invalid")
 
     down_candidates = np.asarray([pose[:3, 1] for pose in checked], dtype=np.float64)
     down = np.median(down_candidates, axis=0)
@@ -1239,17 +1245,49 @@ def build_calibrated_rgb_pushbroom_layout(
         [validate_camera_to_world(pose)[:3, 3] for pose in poses], dtype=np.float64
     )
     positions = centres_mm @ temporal
-    if np.any(np.diff(positions) <= 1e-4):
-        raise RuntimeError("Pushbroom camera centres are not strictly monotonic")
+    if not np.isfinite(positions).all():
+        raise RuntimeError("Pushbroom camera-centre positions are invalid")
     centres_x_unshifted = (positions - positions[0]) * scale.pixels_per_mm
     steps = np.diff(centres_x_unshifted)
-    if not np.isfinite(steps).all() or np.any(steps <= 0.25):
-        raise RuntimeError("Pushbroom RGB scale produces collapsed adjacent strips")
-    owner_edges = np.concatenate(
+    if not np.isfinite(steps).all():
+        raise RuntimeError("Pushbroom RGB scale produced invalid adjacent steps")
+    minimum_owner_step_pixels = 0.25
+    retained_indices = [0]
+    for source_index in range(1, len(frame_ids) - 1):
+        if (
+            centres_x_unshifted[source_index]
+            - centres_x_unshifted[retained_indices[-1]]
+            > minimum_owner_step_pixels
+        ):
+            retained_indices.append(source_index)
+    # Preserve the real final endpoint.  If its immediate predecessor is
+    # effectively coincident, suppress that predecessor instead of trimming
+    # the outward endpoint field of view.
+    while (
+        len(retained_indices) > 1
+        and centres_x_unshifted[-1]
+        - centres_x_unshifted[retained_indices[-1]]
+        <= minimum_owner_step_pixels
+    ):
+        retained_indices.pop()
+    if (
+        centres_x_unshifted[-1]
+        - centres_x_unshifted[retained_indices[-1]]
+        <= minimum_owner_step_pixels
+    ):
+        raise RuntimeError(
+            "Pushbroom scan span collapses after redundant pose-node suppression"
+        )
+    retained_indices.append(len(frame_ids) - 1)
+    retained_centres = centres_x_unshifted[retained_indices]
+    retained_steps = np.diff(retained_centres)
+    if np.any(retained_steps <= minimum_owner_step_pixels):
+        raise RuntimeError("Pushbroom retained owner nodes are not separated")
+    retained_owner_edges = np.concatenate(
         (
-            [centres_x_unshifted[0] - 0.5 * steps[0]],
-            0.5 * (centres_x_unshifted[:-1] + centres_x_unshifted[1:]),
-            [centres_x_unshifted[-1] + 0.5 * steps[-1]],
+            [retained_centres[0] - 0.5 * retained_steps[0]],
+            0.5 * (retained_centres[:-1] + retained_centres[1:]),
+            [retained_centres[-1] + 0.5 * retained_steps[-1]],
         )
     )
     if config.endpoint_outer_half_fov:
@@ -1268,24 +1306,105 @@ def build_calibrated_rgb_pushbroom_layout(
             first_inward_extent = float(calibration.cx)
             last_inward_extent = float(calibration.width - 1 - calibration.cx)
             last_outward_extent = float(calibration.cx)
-        owner_edges[0] = centres_x_unshifted[0] - first_outward_extent
-        owner_edges[-1] = centres_x_unshifted[-1] + last_outward_extent
-        if owner_edges[1] > centres_x_unshifted[0] + first_inward_extent:
+        retained_owner_edges[0] = (
+            centres_x_unshifted[0] - first_outward_extent
+        )
+        retained_owner_edges[-1] = (
+            centres_x_unshifted[-1] + last_outward_extent
+        )
+        if (
+            retained_owner_edges[1]
+            > centres_x_unshifted[0] + first_inward_extent
+        ):
             raise RuntimeError(
                 "First endpoint cannot cover its midpoint owner interval within "
                 "the calibrated RGB field of view"
             )
-        if owner_edges[-2] < centres_x_unshifted[-1] - last_inward_extent:
+        if (
+            retained_owner_edges[-2]
+            < centres_x_unshifted[-1] - last_inward_extent
+        ):
             raise RuntimeError(
                 "Last endpoint cannot cover its midpoint owner interval within "
                 "the calibrated RGB field of view"
             )
-    if np.any(np.diff(owner_edges) <= 1e-4):
+    if np.any(np.diff(retained_owner_edges) <= 1e-4):
         raise RuntimeError("Pushbroom endpoint and midpoint owner intervals collapse")
-    origin = math.floor(float(owner_edges[0]))
-    owner_edges -= origin
+    owner_left_unshifted = np.empty(len(frame_ids), dtype=np.float64)
+    owner_right_unshifted = np.empty(len(frame_ids), dtype=np.float64)
+    redundant_audits: list[dict[str, object]] = []
+    for retained_position, source_index in enumerate(retained_indices):
+        owner_left_unshifted[source_index] = retained_owner_edges[
+            retained_position
+        ]
+        owner_right_unshifted[source_index] = retained_owner_edges[
+            retained_position + 1
+        ]
+        if retained_position + 1 >= len(retained_indices):
+            continue
+        next_source_index = retained_indices[retained_position + 1]
+        boundary = float(retained_owner_edges[retained_position + 1])
+        for redundant_index in range(source_index + 1, next_source_index):
+            nearest_retained_distance = min(
+                abs(
+                    float(
+                        centres_x_unshifted[redundant_index]
+                        - centres_x_unshifted[source_index]
+                    )
+                ),
+                abs(
+                    float(
+                        centres_x_unshifted[next_source_index]
+                        - centres_x_unshifted[redundant_index]
+                    )
+                ),
+            )
+            if nearest_retained_distance > minimum_owner_step_pixels:
+                raise RuntimeError(
+                    "Pushbroom camera centres contain a non-monotonic step beyond "
+                    "the near-duplicate owner-suppression tolerance"
+                )
+            owner_left_unshifted[redundant_index] = boundary
+            owner_right_unshifted[redundant_index] = boundary
+            redundant_audits.append(
+                {
+                    "source_index": int(redundant_index),
+                    "frame_id": int(frame_ids[redundant_index]),
+                    "previous_retained_source_index": int(source_index),
+                    "previous_retained_frame_id": int(frame_ids[source_index]),
+                    "next_retained_source_index": int(next_source_index),
+                    "next_retained_frame_id": int(frame_ids[next_source_index]),
+                    "preceding_scaled_step_pixels": float(
+                        centres_x_unshifted[redundant_index]
+                        - centres_x_unshifted[redundant_index - 1]
+                    ),
+                    "minimum_independent_owner_step_pixels": float(
+                        minimum_owner_step_pixels
+                    ),
+                    "nearest_retained_centre_distance_pixels": float(
+                        nearest_retained_distance
+                    ),
+                    "true_source_centre_x_unshifted": float(
+                        centres_x_unshifted[redundant_index]
+                    ),
+                    "collapsed_owner_boundary_x_unshifted": boundary,
+                    "full_resolution_remap_required": True,
+                    "independent_owner_interval": False,
+                    "coverage_policy": (
+                        "nearest_retained_real_pose_rgb_hard_owner_only"
+                    ),
+                }
+            )
+    if not np.isfinite(owner_left_unshifted).all() or not np.isfinite(
+        owner_right_unshifted
+    ).all():
+        raise RuntimeError("Pushbroom redundant owner-node layout is incomplete")
+    origin = math.floor(float(retained_owner_edges[0]))
+    retained_owner_edges -= origin
+    owner_left = owner_left_unshifted - origin
+    owner_right = owner_right_unshifted - origin
     centres_x = centres_x_unshifted - origin
-    width = int(math.ceil(float(owner_edges[-1])))
+    width = int(math.ceil(float(retained_owner_edges[-1])))
     if width < 2:
         raise RuntimeError("Pushbroom RGB canvas is degenerate")
     megapixels = width * calibration.height / 1_000_000.0
@@ -1303,12 +1422,15 @@ def build_calibrated_rgb_pushbroom_layout(
     maximum_band_width = max(
         2, int(math.floor(calibration.width * config.maximum_central_band_fraction))
     )
-    owner_left_int = np.ceil(owner_edges[:-1]).astype(np.int32)
-    owner_right_int = np.ceil(owner_edges[1:]).astype(np.int32)
+    owner_left_int = np.ceil(owner_left).astype(np.int32)
+    owner_right_int = np.ceil(owner_right).astype(np.int32)
     owner_widths = owner_right_int - owner_left_int
-    limited_owner_widths = (
-        owner_widths[1:-1] if config.endpoint_outer_half_fov else owner_widths
+    limited_indices = (
+        retained_indices[1:-1]
+        if config.endpoint_outer_half_fov
+        else retained_indices
     )
+    limited_owner_widths = owner_widths[limited_indices]
     if np.any(limited_owner_widths > maximum_band_width):
         raise RuntimeError(
             "An intermediate calibrated RGB pushbroom owner strip exceeds the "
@@ -1318,7 +1440,7 @@ def build_calibrated_rgb_pushbroom_layout(
     spare_width = np.maximum(0, maximum_band_width - owner_widths)
     # Keep the complete permitted central support on disk for photometric
     # statistics.  The *owner search* is selected separately below and remains
-    # exactly 32--64 px wide, so this does not broaden a hard-owned strip or a
+    # exactly 64--160 px wide, so this does not broaden a hard-owned strip or a
     # 2--8 px blend band.  Using the full 20% central strip for the global
     # colour solve avoids deriving a frame gain from a handful of pixels when a
     # foreground happens to cross the narrow seam corridor.
@@ -1351,19 +1473,34 @@ def build_calibrated_rgb_pushbroom_layout(
         frame_ids=tuple(int(value) for value in frame_ids),
         source_scan_positions_mm=tuple(float(value) for value in positions),
         source_centres_x=tuple(float(value) for value in centres_x),
-        owner_left_x=tuple(float(value) for value in owner_edges[:-1]),
-        owner_right_x=tuple(float(value) for value in owner_edges[1:]),
+        owner_left_x=tuple(float(value) for value in owner_left),
+        owner_right_x=tuple(float(value) for value in owner_right),
         support_left_x=tuple(int(value) for value in support_left),
         support_right_x=tuple(int(value) for value in support_right),
-        owner_boundaries_x=tuple(float(value) for value in owner_edges[1:-1]),
+        owner_boundaries_x=tuple(float(value) for value in owner_right[:-1]),
+        retained_owner_source_indices=tuple(int(value) for value in retained_indices),
+        redundant_pose_node_suppression=tuple(
+            {
+                **audit,
+                "true_source_centre_x": float(
+                    audit["true_source_centre_x_unshifted"]
+                )
+                - origin,
+                "collapsed_owner_boundary_x": float(
+                    audit["collapsed_owner_boundary_x_unshifted"]
+                )
+                - origin,
+            }
+            for audit in redundant_audits
+        ),
         endpoint_outer_owner_intervals_x=(
             (
-                float(owner_edges[0]),
+                float(retained_owner_edges[0]),
                 float(centres_x[0]),
             ),
             (
                 float(centres_x[-1]),
-                float(owner_edges[-1]),
+                float(retained_owner_edges[-1]),
             ),
         )
         if config.endpoint_outer_half_fov
@@ -3309,14 +3446,16 @@ def _plan_geometry_assisted_seams(
                     first_footprint,
                     second_footprint,
                 )
-        first_depth_protected = _sample_raw_boolean_nearest(
+        first_projection_protected = _sample_raw_boolean_nearest(
             geometry.first_to_second.protected_mask, first_tile
-        ) | _sample_raw_boolean_nearest(
+        )
+        second_projection_protected = _sample_raw_boolean_nearest(
+            geometry.second_to_first.protected_mask, second_tile
+        )
+        first_depth_protected = first_projection_protected | _sample_raw_boolean_nearest(
             geometry.first_surface_safety.hard_owner_mask, first_tile
         )
-        second_depth_protected = _sample_raw_boolean_nearest(
-            geometry.second_to_first.protected_mask, second_tile
-        ) | _sample_raw_boolean_nearest(
+        second_depth_protected = second_projection_protected | _sample_raw_boolean_nearest(
             geometry.second_surface_safety.hard_owner_mask, second_tile
         )
         depth_protected = first_depth_protected | second_depth_protected
@@ -3333,6 +3472,16 @@ def _plan_geometry_assisted_seams(
             geometry.second_to_first.mutual_consistent, second_tile
         )
         bilateral_mutual = first_mutual & second_mutual
+        first_depth_edge = _sample_raw_boolean_nearest(
+            geometry.first_to_second.source_depth_edge, first_tile
+        )
+        second_depth_edge = _sample_raw_boolean_nearest(
+            geometry.second_to_first.source_depth_edge, second_tile
+        )
+        blend_depth_edge_guard = cv2.dilate(
+            (first_depth_edge | second_depth_edge).astype(np.uint8),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        ) > 0
         first_mesh_safe = _sample_raw_boolean_nearest(
             geometry.first_surface_safety.mesh_safe_mask, first_tile
         )
@@ -3364,6 +3513,26 @@ def _plan_geometry_assisted_seams(
         # allowing a mesh's regularisation to bridge across it.
         candidate_depth_same_layer = (
             depth_same_layer_before_rgb_protection & ~rgb_transparency_protected
+        )
+        # Narrow RGB blending does not fit or apply a geometric field, so it
+        # does not require the mesh-only "single dominant far component"
+        # selection.  It still requires bilateral visibility/depth
+        # consistency and excludes every projection/depth-edge, foreground,
+        # transparent, or reflective protection.  Final post-gain RGB checks
+        # further restrict this mask before any blend pixel is authorized.
+        blend_same_layer = (
+            np.asarray(first_tile.valid_mask, dtype=bool)
+            & np.asarray(second_tile.valid_mask, dtype=bool)
+            & bilateral_mutual
+            & ~blend_depth_edge_guard
+            & ~foreground_anchor_protected
+            & ~rgb_transparency_protected
+        )
+        blend_protected = (
+            blend_depth_edge_guard
+            | ~bilateral_mutual
+            | foreground_anchor_protected
+            | rgb_transparency_protected
         )
         selected_background, component_selection = (
             _select_single_virtual_background_component(
@@ -3612,6 +3781,9 @@ def _plan_geometry_assisted_seams(
             x0=np.asarray(x0, dtype=np.int32),
             protected=protected.astype(np.uint8),
             active=accepted_active.astype(np.uint8),
+            same_layer=depth_same_layer.astype(np.uint8),
+            blend_same_layer=blend_same_layer.astype(np.uint8),
+            blend_protected=blend_protected.astype(np.uint8),
             foreground_instance_labels=foreground_instance_labels.astype(np.int32),
         )
         source_anchor_labels_path = root / f"source-anchor-{pair_index:04d}.npz"
@@ -3753,6 +3925,9 @@ def _plan_geometry_assisted_seams(
                     "depth_same_layer_pixel_count": int(
                         np.count_nonzero(depth_same_layer)
                     ),
+                    "blend_same_layer_pixel_count": int(
+                        np.count_nonzero(blend_same_layer)
+                    ),
                     "rgb_flow_application_pixel_count": int(
                         np.count_nonzero(flow_application)
                     ),
@@ -3859,6 +4034,77 @@ def _geometry_pair_masks(
     protected_result[:, destination] = protected[:, source]
     active_result[:, destination] = active[:, source]
     return protected_result, active_result
+
+
+def _geometry_pair_same_layer_mask(
+    plan: _GeometryPairPlan,
+    *,
+    left: int,
+    right: int,
+    height: int,
+) -> np.ndarray:
+    """Load bilateral RGB-D same-layer support reserved for safe RGB blending."""
+
+    result = np.zeros((int(height), max(0, int(right) - int(left))), dtype=bool)
+    if plan.protected_mask_path is None or not plan.protected_mask_path.exists():
+        return result
+    with np.load(plan.protected_mask_path, allow_pickle=False) as stored:
+        key = (
+            "blend_same_layer"
+            if "blend_same_layer" in stored
+            else "same_layer"
+        )
+        if key not in stored:
+            return result
+        stored_x0 = int(stored["x0"])
+        same_layer = np.asarray(stored[key], dtype=bool)
+    if same_layer.ndim != 2 or same_layer.shape[0] != int(height):
+        raise RuntimeError("Temporary geometry same-layer mask is malformed")
+    stored_x1 = stored_x0 + same_layer.shape[1]
+    common_left, common_right = max(int(left), stored_x0), min(
+        int(right), stored_x1
+    )
+    if common_right <= common_left:
+        return result
+    destination = slice(common_left - int(left), common_right - int(left))
+    source = slice(common_left - stored_x0, common_right - stored_x0)
+    result[:, destination] = same_layer[:, source]
+    return result
+
+
+def _geometry_pair_blend_protected_mask(
+    plan: _GeometryPairPlan,
+    *,
+    left: int,
+    right: int,
+    height: int,
+) -> np.ndarray:
+    """Load immutable depth/RGB protection for the narrow blend-only layer."""
+
+    result = np.zeros((int(height), max(0, int(right) - int(left))), dtype=bool)
+    if plan.protected_mask_path is None or not plan.protected_mask_path.exists():
+        return result
+    with np.load(plan.protected_mask_path, allow_pickle=False) as stored:
+        if "blend_protected" not in stored:
+            if "protected" not in stored:
+                return result
+            key = "protected"
+        else:
+            key = "blend_protected"
+        stored_x0 = int(stored["x0"])
+        protected = np.asarray(stored[key], dtype=bool)
+    if protected.ndim != 2 or protected.shape[0] != int(height):
+        raise RuntimeError("Temporary geometry blend-protection mask is malformed")
+    stored_x1 = stored_x0 + protected.shape[1]
+    common_left, common_right = max(int(left), stored_x0), min(
+        int(right), stored_x1
+    )
+    if common_right <= common_left:
+        return result
+    destination = slice(common_left - int(left), common_right - int(left))
+    source = slice(common_left - stored_x0, common_right - stored_x0)
+    result[:, destination] = protected[:, source]
+    return result
 
 
 def _load_source_anchor_labels(
@@ -5049,6 +5295,113 @@ def _build_foreground_owner_run_reservations(
     return tuple(reservations)
 
 
+def _suppress_redundant_pose_sources_in_foreground_plan(
+    fragments_by_pair: Sequence[Sequence[ForegroundFragment]],
+    redundant_pose_nodes: Sequence[Mapping[str, object]],
+) -> tuple[tuple[tuple[ForegroundFragment, ...], ...], dict[str, object]]:
+    """Keep near-duplicate nodes out of persistent cross-pair owner runs.
+
+    Pair-local protected components remain in the ordinary sequence preflight
+    and GraphCut path.  This filter applies only to foreground continuity:
+    a node declared to have no independent strip ownership cannot regain
+    persistent ownership through the foreground planner.
+    """
+
+    suppressed = {
+        int(value["source_index"])
+        for value in redundant_pose_nodes
+    }
+    if not suppressed:
+        return (
+            tuple(tuple(pair) for pair in fragments_by_pair),
+            {
+                "policy": (
+                    "redundant_pose_sources_excluded_from_persistent_"
+                    "foreground_owner_runs"
+                ),
+                "suppressed_source_indices": [],
+                "changed_fragment_count": 0,
+                "pair_local_only_fragment_count": 0,
+                "stripped_depth_identity_fragment_count": 0,
+                "complete": True,
+            },
+        )
+
+    filtered: list[tuple[ForegroundFragment, ...]] = []
+    changed = 0
+    pair_local_only = 0
+    stripped_depth_identity = 0
+    for pair_fragments in fragments_by_pair:
+        current: list[ForegroundFragment] = []
+        for fragment in pair_fragments:
+            allowed = tuple(
+                owner
+                for owner in fragment.allowed_local_owners
+                if int(fragment.source_indices[int(owner)]) not in suppressed
+            )
+            if not allowed:
+                # The immutable pair-local guard is still present in
+                # ``preflight_fragments_by_pair``.  It simply cannot form a
+                # persistent owner run backed only by a redundant source.
+                pair_local_only += 1
+                continue
+            preferred = fragment.preferred_local_owner
+            identity_uses_suppressed_source = any(
+                int(token.shared_source_index) in suppressed
+                for token in fragment.depth_anchor_tokens
+            )
+            if fragment.depth_anchor_token is not None:
+                identity_uses_suppressed_source |= (
+                    int(fragment.depth_anchor_token.shared_source_index)
+                    in suppressed
+                )
+            if (
+                allowed != tuple(fragment.allowed_local_owners)
+                or identity_uses_suppressed_source
+            ):
+                changed += 1
+                if preferred not in allowed:
+                    preferred = allowed[0] if len(allowed) == 1 else None
+                changes: dict[str, object] = {
+                    "allowed_local_owners": allowed,
+                    "preferred_local_owner": preferred,
+                    "natural_break_reason": (
+                        "near_duplicate_pose_source_has_no_independent_owner"
+                    ),
+                }
+                if identity_uses_suppressed_source:
+                    stripped_depth_identity += 1
+                    changes.update(
+                        {
+                            "depth_anchor_local_mask": None,
+                            "depth_anchor_token": None,
+                            "depth_anchor_tokens": (),
+                            "geometry_mode": GeometryMode.IMAGE_REGION,
+                            "bidirectional_visibility_supported": False,
+                        }
+                    )
+                current.append(replace(fragment, **changes))
+            else:
+                current.append(fragment)
+        filtered.append(tuple(current))
+    return (
+        tuple(filtered),
+        {
+            "policy": (
+                "redundant_pose_sources_excluded_from_persistent_"
+                "foreground_owner_runs"
+            ),
+            "suppressed_source_indices": sorted(suppressed),
+            "changed_fragment_count": int(changed),
+            "pair_local_only_fragment_count": int(pair_local_only),
+            "stripped_depth_identity_fragment_count": int(
+                stripped_depth_identity
+            ),
+            "complete": True,
+        },
+    )
+
+
 def _foreground_owner_run_handoff_specs(
     owner_plan: SegmentOwnerPlan,
 ) -> dict[int, tuple[tuple[int, int, int, int, int], ...]]:
@@ -5191,6 +5544,7 @@ def _foreground_anchor_mask_and_prior(
     left: int,
     right: int,
     height: int,
+    owner_valid_masks: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -5205,6 +5559,15 @@ def _foreground_anchor_mask_and_prior(
     """
 
     shape = (int(height), max(0, int(right) - int(left)))
+    checked_owner_valid: tuple[np.ndarray, np.ndarray] | None = None
+    if owner_valid_masks is not None:
+        checked_owner_valid = tuple(
+            np.asarray(mask, dtype=bool) for mask in owner_valid_masks
+        )  # type: ignore[assignment]
+        if any(mask.shape != shape for mask in checked_owner_valid):
+            raise ValueError(
+                "Foreground anchor owner-valid masks must match the pair window"
+            )
     reserved = np.zeros(shape, dtype=bool)
     owner_prior = np.full(shape, -1, dtype=np.int8)
     current: list[tuple[_ForegroundAnchorReservation, ForegroundFragment]] = []
@@ -5247,6 +5610,20 @@ def _foreground_anchor_mask_and_prior(
         if clipped is None:
             raise RuntimeError("Clipped foreground anchor unexpectedly left its pair window")
         y_slice, x_slice, local_mask = clipped
+        if checked_owner_valid is not None:
+            owner_valid = checked_owner_valid[local_owner][y_slice, x_slice]
+            local_mask = np.ascontiguousarray(local_mask & owner_valid)
+            if not np.any(local_mask):
+                # The pair-local protected guard remains active, but this
+                # persistent owner claim has no full-resolution RGB support.
+                # The ordinary adjacent hard-owner solve must cover it.
+                continue
+            fragment_changes: dict[str, object] = {
+                "local_mask": local_mask,
+            }
+            if reservation.uses_sparse_anchor_mask:
+                fragment_changes["depth_anchor_local_mask"] = local_mask
+            fragment = replace(fragment, **fragment_changes)
         reserved_view = reserved[y_slice, x_slice]
         reserved_view |= local_mask
         prior_view = owner_prior[y_slice, x_slice]
@@ -5613,6 +5990,77 @@ def _foreground_owner_handoff_mask_and_prior(
         prior_view[local_mask] = incoming_local_owner
         support[y_slice, x_slice] |= local_mask
     return support, prior
+
+
+def _clip_foreground_owner_handoffs_to_incoming_valid(
+    handoffs: Sequence[_ForegroundAnchorHandoff],
+    *,
+    left: int,
+    right: int,
+    height: int,
+    pair_index: int,
+    owner_valid_masks: tuple[np.ndarray, np.ndarray],
+) -> tuple[tuple[_ForegroundAnchorHandoff, ...], int]:
+    """Restrict redundant-node handoffs to real incoming RGB support."""
+
+    shape = (int(height), max(0, int(right) - int(left)))
+    checked_valid = tuple(
+        np.asarray(mask, dtype=bool) for mask in owner_valid_masks
+    )
+    if any(mask.shape != shape for mask in checked_valid):
+        raise ValueError(
+            "Foreground handoff owner-valid masks must match the pair window"
+        )
+    clipped_handoffs: list[_ForegroundAnchorHandoff] = []
+    clipped_pixel_count = 0
+    for handoff in handoffs:
+        if (
+            handoff.incoming_source_index is None
+            or handoff.target_pair_index != int(pair_index)
+        ):
+            raise RuntimeError("Foreground handoff lacks its incoming pair owner")
+        local_owner = int(handoff.incoming_source_index) - int(pair_index)
+        if local_owner not in {0, 1}:
+            raise RuntimeError("Foreground handoff incoming owner is not adjacent")
+        clipped = _fragment_mask_in_window(
+            handoff.fragment,
+            left=left,
+            right=right,
+            height=height,
+            anchor_only=False,
+        )
+        if clipped is None:
+            raise RuntimeError("Foreground handoff left its final pair window")
+        y_slice, x_slice, local_mask = clipped
+        kept_window = np.ascontiguousarray(
+            local_mask & checked_valid[local_owner][y_slice, x_slice]
+        )
+        clipped_pixel_count += int(
+            np.count_nonzero(local_mask) - np.count_nonzero(kept_window)
+        )
+        if not np.any(kept_window):
+            continue
+        global_x, global_y, _width, _fragment_height = (
+            int(value) for value in handoff.fragment.global_bbox
+        )
+        kept_source = np.zeros_like(handoff.fragment.local_mask, dtype=bool)
+        local_x0 = int(left) + int(x_slice.start) - global_x
+        local_y0 = int(y_slice.start) - global_y
+        kept_source[
+            local_y0 : local_y0 + kept_window.shape[0],
+            local_x0 : local_x0 + kept_window.shape[1],
+        ] = kept_window
+        clipped_handoffs.append(
+            replace(
+                handoff,
+                fragment=replace(
+                    handoff.fragment,
+                    local_mask=np.ascontiguousarray(kept_source),
+                    depth_anchor_local_mask=None,
+                ),
+            )
+        )
+    return tuple(clipped_handoffs), int(clipped_pixel_count)
 
 
 def _audit_foreground_owner_run_handoffs(
@@ -6242,34 +6690,68 @@ def _pair_level_hard_owner_masks(
 def _audit_suppressed_source_frames(
     frame_ids: Sequence[int],
     owner_pixel_counts: Sequence[int],
-    hard_owner_topology_pairs: set[int],
+    audited_owner_topology_pairs: set[int],
+    *,
+    redundant_pose_nodes: Sequence[Mapping[str, object]] = (),
 ) -> list[dict[str, object]]:
-    """Permit a zero-colour source only beside an audited hard-owner decision."""
+    """Permit a zero-colour source only beside complete adjacent owner audits."""
 
     if len(frame_ids) != len(owner_pixel_counts):
         raise ValueError("Frame IDs and source owner counts must have equal length")
+    redundant_by_source = {
+        int(value["source_index"]): dict(value) for value in redundant_pose_nodes
+    }
     suppressed: list[dict[str, object]] = []
     for source_index, (frame_id, pixel_count) in enumerate(
         zip(frame_ids, owner_pixel_counts, strict=True)
     ):
         if int(pixel_count) != 0:
+            if source_index in redundant_by_source:
+                raise RuntimeError(
+                    "A redundant pose node retained final RGB owner pixels"
+                )
+            continue
+        redundant = redundant_by_source.get(source_index)
+        if redundant is not None:
+            if int(redundant.get("frame_id", -1)) != int(frame_id):
+                raise RuntimeError(
+                    "Redundant pose-node suppression frame identity is inconsistent"
+                )
+            suppressed.append(
+                {
+                    **redundant,
+                    "source_index": int(source_index),
+                    "frame_id": int(frame_id),
+                    "adjacent_audited_owner_topology_pairs": [
+                        pair_index
+                        for pair_index in (source_index - 1, source_index)
+                        if 0 <= pair_index < len(frame_ids) - 1
+                    ],
+                    "reason": (
+                        "near_duplicate_real_pose_node_covered_by_retained_"
+                        "adjacent_rgb_owners"
+                    ),
+                }
+            )
             continue
         adjacent_pairs = tuple(
             pair_index
             for pair_index in (source_index - 1, source_index)
-            if pair_index in hard_owner_topology_pairs
+            if pair_index in audited_owner_topology_pairs
         )
         if not adjacent_pairs:
             raise RuntimeError(
                 "Calibrated RGB pushbroom crop removed all owned pixels from "
-                f"a source without an audited geometry seam decision: {int(frame_id)}"
+                f"a source without an audited adjacent owner decision: {int(frame_id)}"
             )
         suppressed.append(
             {
                 "source_index": int(source_index),
                 "frame_id": int(frame_id),
-                "adjacent_hard_owner_topology_pairs": list(adjacent_pairs),
-                "reason": "fully_covered_by_audited_hard_owner_topology_decision",
+                "adjacent_audited_owner_topology_pairs": list(adjacent_pairs),
+                "reason": (
+                    "fully_covered_by_complete_adjacent_rgb_owner_topology"
+                ),
             }
         )
     return suppressed
@@ -6278,6 +6760,8 @@ def _audit_suppressed_source_frames(
 def _resolve_pair_level_hard_owners(
     pair_indices: Sequence[int],
     options_by_pair: Mapping[int, Sequence[int]],
+    *,
+    required_owners: Mapping[int, int] | None = None,
 ) -> dict[int, int]:
     """Choose bounded hard owners while retaining shared-source participation.
 
@@ -6290,6 +6774,12 @@ def _resolve_pair_level_hard_owners(
     """
 
     selected = sorted({int(index) for index in pair_indices})
+    required = {
+        int(index): int(owner)
+        for index, owner in (required_owners or {}).items()
+    }
+    if any(owner not in {0, 1} for owner in required.values()):
+        raise ValueError("Required pair-level owners must be 0 or 1")
     resolved: dict[int, int] = {}
     run_start = 0
     while run_start < len(selected):
@@ -6307,7 +6797,17 @@ def _resolve_pair_level_hard_owners(
                 raise RuntimeError(
                     "Pair-level hard-owner fallback has no fully covering RGB source"
                 )
-            resolved[pair_index] = preferred if preferred in options else options[0]
+            required_owner = required.get(pair_index)
+            if required_owner is not None:
+                if required_owner not in options:
+                    raise RuntimeError(
+                        "Pair-level hard-owner fallback cannot preserve a locked owner"
+                    )
+                resolved[pair_index] = required_owner
+            else:
+                resolved[pair_index] = (
+                    preferred if preferred in options else options[0]
+                )
         run_start = run_end
     return resolved
 
@@ -7334,13 +7834,29 @@ class _RGBRiskDetails:
 
 @dataclass(frozen=True)
 class _PhotometricEdge:
-    """One reliable adjacent safe-wall observation in linear BGR log space."""
+    """One independently verified adjacent photometric observation.
+
+    The arrays retained while rendering are deliberately only temporary masks.
+    Delivery metadata is constructed from the scalar audit fields below; no
+    image, dense mask, or correspondence evidence escapes the renderer.
+    """
 
     log_relation_bgr: np.ndarray
     support_pixels: int
     mad_bgr: np.ndarray
     raw_signed_l_delta: float
     safe_mask: np.ndarray | None = None
+    method: str = "safe_wall"
+    candidate_pixels: int = 0
+    spatial_tile_count: int = 0
+    training_pixels: int = 0
+    held_out_pixels: int = 0
+    held_out_log_residual_p95: float | None = None
+    held_out_log_residual_max: float | None = None
+    held_out_improvement_ratio: float | None = None
+    held_out_delta_l_p95: float | None = None
+    held_out_delta_e00_p95: float | None = None
+    same_layer_corridor_used: bool = False
 
 
 def _fill_risk_components(seed: np.ndarray, common: np.ndarray, bridge_radius: int) -> np.ndarray:
@@ -7607,6 +8123,90 @@ def _safe_white_wall_mask(
     return candidates & (residual <= residual_limit)
 
 
+def _safe_same_layer_background_mask(
+    first: np.ndarray,
+    second: np.ndarray,
+    common: np.ndarray,
+    risk_guard: np.ndarray,
+    same_layer: np.ndarray,
+    *,
+    low_gradient_quantile: float,
+) -> np.ndarray:
+    """Return post-gain, non-neutral RGB-D same-layer blend support.
+
+    Unlike the neutral-wall estimator this mask accepts chromatic material,
+    but only after the final gain pass and only on the selected bilateral
+    RGB-D background layer.  It never includes a protected component, strong
+    structure, clipping, or a colour-disagreeing pixel.
+    """
+
+    usable = (
+        np.asarray(common, dtype=bool)
+        & np.asarray(same_layer, dtype=bool)
+        & ~np.asarray(risk_guard, dtype=bool)
+    )
+    if int(np.count_nonzero(usable)) < 16:
+        return np.zeros_like(usable)
+    distance = cv2.distanceTransform(usable.astype(np.uint8), cv2.DIST_L2, 3)
+    gradient0, gradient1 = _gradient_magnitude(first), _gradient_magnitude(second)
+    values = np.concatenate((gradient0[usable], gradient1[usable]))
+    if not values.size:
+        return np.zeros_like(usable)
+    gradient_limit = float(
+        np.clip(
+            np.percentile(
+                values,
+                100.0 * max(float(low_gradient_quantile), 0.65),
+            ),
+            18.0,
+            120.0,
+        )
+    )
+    lab0 = cv2.cvtColor(first, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab1 = cv2.cvtColor(second, cv2.COLOR_BGR2LAB).astype(np.float32)
+    delta_e = _delta_e00(lab0, lab1)
+    delta_l = np.abs(lab0[:, :, 0] - lab1[:, :, 0]) * (100.0 / 255.0)
+    unclipped = (
+        (np.min(first, axis=2) >= 8)
+        & (np.min(second, axis=2) >= 8)
+        & (np.max(first, axis=2) <= 247)
+        & (np.max(second, axis=2) <= 247)
+    )
+    return np.ascontiguousarray(
+        usable
+        & (distance >= 2.0)
+        & unclipped
+        & (gradient0 <= gradient_limit)
+        & (gradient1 <= gradient_limit)
+        & (delta_l <= 3.0)
+        & (delta_e <= 5.0)
+    )
+
+
+def _same_layer_owner_guard(
+    guard: np.ndarray,
+    safe_same_layer: np.ndarray,
+    geometry_blend_protected: np.ndarray,
+    common: np.ndarray,
+) -> np.ndarray:
+    """Open audited same-layer RGB only inside bilateral valid support."""
+
+    guard_mask = np.asarray(guard, dtype=bool)
+    safe_mask = np.asarray(safe_same_layer, dtype=bool)
+    geometry_mask = np.asarray(geometry_blend_protected, dtype=bool)
+    common_mask = np.asarray(common, dtype=bool)
+    if not (
+        guard_mask.shape
+        == safe_mask.shape
+        == geometry_mask.shape
+        == common_mask.shape
+    ):
+        raise ValueError("Same-layer owner guard inputs must share one shape")
+    return np.ascontiguousarray(
+        ((guard_mask & ~safe_mask) | geometry_mask) & common_mask
+    )
+
+
 def _robust_log_channel_relation(values: np.ndarray, minimum: int) -> tuple[float, float] | None:
     """Return a trimmed Huber log-ratio estimate and its robust MAD."""
 
@@ -7640,6 +8240,7 @@ def _safe_wall_log_relation(
     risk_guard: np.ndarray,
     *,
     low_gradient_quantile: float,
+    allowed_mask: np.ndarray | None = None,
 ) -> _PhotometricEdge | None:
     """Measure all three linear-BGR gain relations from safe neutral wall only."""
 
@@ -7650,32 +8251,279 @@ def _safe_wall_log_relation(
         risk_guard,
         low_gradient_quantile=low_gradient_quantile,
     )
-    support = int(np.count_nonzero(safe))
-    # A narrow but genuinely clean corridor can contain only a few dozen wall
-    # pixels; robust trimming still leaves a useful estimate at 64 samples.
-    # Anything below that is a structural no-support failure.
-    minimum = 64
-    if support < minimum:
-        return None
-    linear0 = _srgb_to_linear_bgr(first)
-    linear1 = _srgb_to_linear_bgr(second)
+    if allowed_mask is not None:
+        allowed = np.asarray(allowed_mask, dtype=bool)
+        if allowed.shape != safe.shape:
+            raise ValueError("Photometric allowed mask must match strip overlap")
+        safe &= allowed
+    return _audited_photometric_relation(
+        first,
+        second,
+        safe,
+        method="safe_wall",
+        same_layer_corridor_used=allowed_mask is not None,
+    )
+
+
+def _audited_photometric_relation(
+    first: np.ndarray,
+    second: np.ndarray,
+    candidates: np.ndarray,
+    *,
+    method: str,
+    same_layer_corridor_used: bool,
+    diagnostic: dict[str, object] | None = None,
+) -> _PhotometricEdge | None:
+    """Build a fixed-tile, train/held-out audited log RGB relation."""
+
+    candidate_mask = np.asarray(candidates, dtype=bool)
+    if candidate_mask.ndim != 2 or candidate_mask.shape != first.shape[:2]:
+        raise ValueError("Photometric candidate mask must match RGB overlap")
+    if diagnostic is not None:
+        diagnostic["initial_candidate_pixel_count"] = int(np.count_nonzero(candidate_mask))
+    height, width = candidate_mask.shape
+    yy, xx = np.indices((height, width), dtype=np.int32)
+    linear0, linear1 = _srgb_to_linear_bgr(first), _srgb_to_linear_bgr(second)
     ratios = np.log(np.maximum(linear0, 1e-4)) - np.log(np.maximum(linear1, 1e-4))
+    # Reject pixel-level outliers before the fixed split.  This is a surface
+    # membership test (a tile-local RGB ratio must be stable), not a search for
+    # another displacement or a fit on held-out data.
+    tile_y, tile_x = yy // 16, xx // 16
+    stable = np.zeros_like(candidate_mask)
+    for row in range((height + 15) // 16):
+        for column in range((width + 15) // 16):
+            tile = candidate_mask & (tile_y == row) & (tile_x == column)
+            if int(np.count_nonzero(tile)) < 40:
+                continue
+            values = ratios[tile]
+            centre = np.median(values, axis=0)
+            tile_mad = np.median(np.abs(values - centre.reshape(1, 3)), axis=0)
+            if np.any(tile_mad > 0.035):
+                continue
+            stable[tile] = np.all(
+                np.abs(values - centre.reshape(1, 3)) <= 0.05, axis=1
+            )
+    candidate_mask = stable
+    if diagnostic is not None:
+        diagnostic["stable_candidate_pixel_count"] = int(np.count_nonzero(candidate_mask))
+    # Fixed 16x16 tiles and a value-independent deterministic 80/20 split.
+    held_out_seed = ((xx + 3 * yy) % 5) == 0
+    keep = np.zeros_like(candidate_mask)
+    spatial_tiles = 0
+    for row in range((height + 15) // 16):
+        for column in range((width + 15) // 16):
+            tile = candidate_mask & (tile_y == row) & (tile_x == column)
+            if int(np.count_nonzero(tile & ~held_out_seed)) >= 32:
+                keep |= tile
+                spatial_tiles += 1
+    train = keep & ~held_out_seed
+    held_out = keep & held_out_seed
+    training_pixels = int(np.count_nonzero(train))
+    held_out_pixels = int(np.count_nonzero(held_out))
+    if spatial_tiles < 8 or training_pixels < 256 or held_out_pixels < 64:
+        if diagnostic is not None:
+            diagnostic.update(
+                reason="insufficient_tiles",
+                spatial_tile_count=spatial_tiles,
+                training_pixel_count=training_pixels,
+                held_out_pixel_count=held_out_pixels,
+            )
+        return None
+
     relation = np.empty(3, dtype=np.float64)
     mad = np.empty(3, dtype=np.float64)
     for channel in range(3):
-        robust = _robust_log_channel_relation(ratios[:, :, channel][safe], minimum)
+        robust = _robust_log_channel_relation(ratios[:, :, channel][train], 256)
         if robust is None:
             return None
         relation[channel], mad[channel] = robust
+    if np.any(mad > 0.035):
+        if diagnostic is not None:
+            diagnostic.update(reason="tile_log_ratio_mad", log_relation_mad_bgr=mad.tolist())
+        return None
+    tile_relations: list[np.ndarray] = []
+    for row in range((height + 15) // 16):
+        for column in range((width + 15) // 16):
+            tile_train = train & (tile_y == row) & (tile_x == column)
+            if int(np.count_nonzero(tile_train)) >= 32:
+                tile_relations.append(np.median(ratios[tile_train], axis=0))
+    if len(tile_relations) < 8:
+        if diagnostic is not None:
+            diagnostic.update(reason="insufficient_tile_relations")
+        return None
+    if float(np.percentile(np.abs(np.asarray(tile_relations) - relation), 95.0)) > 0.05:
+        if diagnostic is not None:
+            diagnostic.update(reason="cross_tile_relation_inconsistent")
+        return None
+    held_abs = np.abs(ratios[held_out] - relation.reshape(1, 3))
+    held_p95, held_max = float(np.percentile(held_abs, 95.0)), float(np.max(held_abs))
+    if held_p95 > 0.05 or held_max > 0.12:
+        if diagnostic is not None:
+            diagnostic.update(
+                reason="held_out_failed",
+                held_out_log_residual_p95=held_p95,
+                held_out_log_residual_max=held_max,
+            )
+        return None
+    raw_p95 = float(np.percentile(np.abs(ratios[held_out]), 95.0))
+    # A visually material raw discrepancy is required before demanding a
+    # percentage reduction.  Below 0.12 log the held-out absolute gate already
+    # proves a stable relation; a 30% ratio there would amplify quantisation.
+    improvement = float(1.0 - held_p95 / raw_p95) if raw_p95 > 0.12 else None
+    if improvement is not None and improvement < 0.30:
+        if diagnostic is not None:
+            diagnostic.update(reason="held_out_improvement_insufficient", improvement=improvement)
+        return None
     lab0 = cv2.cvtColor(first, cv2.COLOR_BGR2LAB).astype(np.float32)
     lab1 = cv2.cvtColor(second, cv2.COLOR_BGR2LAB).astype(np.float32)
-    signed_l_delta = float(np.median((lab0[:, :, 0] - lab1[:, :, 0])[safe]) * (100.0 / 255.0))
+    corrected_second = _linear_to_srgb_bgr(
+        linear1 * np.exp(relation).reshape(1, 1, 3).astype(np.float32)
+    )
+    corrected_lab1 = cv2.cvtColor(corrected_second, cv2.COLOR_BGR2LAB).astype(np.float32)
+    delta_l_p95 = float(
+        np.percentile(
+            np.abs(lab0[:, :, 0][held_out] - corrected_lab1[:, :, 0][held_out]), 95.0
+        )
+        * (100.0 / 255.0)
+    )
+    delta_e00_p95 = float(
+        np.percentile(_delta_e00(lab0, corrected_lab1)[held_out], 95.0)
+    )
+    signed_l_delta = float(
+        np.median((lab0[:, :, 0] - lab1[:, :, 0])[held_out]) * (100.0 / 255.0)
+    )
     return _PhotometricEdge(
         log_relation_bgr=relation,
-        support_pixels=support,
+        support_pixels=int(np.count_nonzero(keep)),
         mad_bgr=mad,
         raw_signed_l_delta=signed_l_delta,
-        safe_mask=np.ascontiguousarray(safe),
+        safe_mask=np.ascontiguousarray(held_out),
+        method=method,
+        candidate_pixels=int(np.count_nonzero(candidate_mask)),
+        spatial_tile_count=spatial_tiles,
+        training_pixels=training_pixels,
+        held_out_pixels=held_out_pixels,
+        held_out_log_residual_p95=held_p95,
+        held_out_log_residual_max=held_max,
+        held_out_improvement_ratio=improvement,
+        held_out_delta_l_p95=delta_l_p95,
+        held_out_delta_e00_p95=delta_e00_p95,
+        same_layer_corridor_used=same_layer_corridor_used,
+    )
+
+
+def _rgb_texture_consistent_log_relation(
+    first: np.ndarray,
+    second: np.ndarray,
+    common: np.ndarray,
+    risk_guard: np.ndarray,
+    *,
+    allowed_mask: np.ndarray | None = None,
+    diagnostic: dict[str, object] | None = None,
+) -> _PhotometricEdge | None:
+    """Use non-neutral texture only when it proves one stable surface."""
+
+    usable = np.asarray(common, dtype=bool) & ~np.asarray(risk_guard, dtype=bool)
+    if allowed_mask is not None:
+        allowed = np.asarray(allowed_mask, dtype=bool)
+        if allowed.shape != usable.shape:
+            raise ValueError("Photometric allowed mask must match strip overlap")
+        usable &= allowed
+    if int(np.count_nonzero(usable)) < 320:
+        if diagnostic is not None:
+            diagnostic.update(reason="insufficient_usable", usable_pixel_count=int(np.count_nonzero(usable)))
+        return None
+    valid_distance = cv2.distanceTransform(usable.astype(np.uint8), cv2.DIST_L2, 3)
+    linear0, linear1 = _srgb_to_linear_bgr(first), _srgb_to_linear_bgr(second)
+    in_linear_range = (
+        np.all((linear0 >= 0.02) & (linear0 <= 0.92), axis=2)
+        & np.all((linear1 >= 0.02) & (linear1 <= 0.92), axis=2)
+    )
+    gradient0, gradient1 = _gradient_magnitude(first), _gradient_magnitude(second)
+    values = np.concatenate((gradient0[usable], gradient1[usable]))
+    if not values.size:
+        if diagnostic is not None:
+            diagnostic.update(reason="empty_gradient_support")
+        return None
+    # Material texture remains eligible; strongest outlines, labels and lines
+    # are excluded even if a colour-only risk detector did not mark them.
+    strong_limit = max(80.0, float(np.percentile(values, 88.0)))
+    candidates = (
+        usable
+        & (valid_distance >= 3.0)
+        & in_linear_range
+        & (gradient0 < strong_limit)
+        & (gradient1 < strong_limit)
+    )
+    return _audited_photometric_relation(
+        first,
+        second,
+        candidates,
+        method="rgb_texture_consistent",
+        same_layer_corridor_used=allowed_mask is not None,
+        diagnostic=diagnostic,
+    )
+
+
+def _degraded_background_log_relation(
+    first: np.ndarray,
+    second: np.ndarray,
+    common: np.ndarray,
+    structural_guard: np.ndarray,
+) -> _PhotometricEdge | None:
+    """Estimate a C-only background gain edge without authorizing blending."""
+
+    usable = np.asarray(common, dtype=bool) & ~np.asarray(
+        structural_guard, dtype=bool
+    )
+    if int(np.count_nonzero(usable)) < 256:
+        return None
+    distance = cv2.distanceTransform(usable.astype(np.uint8), cv2.DIST_L2, 3)
+    gradient0, gradient1 = _gradient_magnitude(first), _gradient_magnitude(second)
+    values = np.concatenate((gradient0[usable], gradient1[usable]))
+    if not values.size:
+        return None
+    gradient_limit = float(
+        np.clip(np.percentile(values, 70.0), 24.0, 140.0)
+    )
+    linear0, linear1 = _srgb_to_linear_bgr(first), _srgb_to_linear_bgr(second)
+    candidate = (
+        usable
+        & (distance >= 2.0)
+        & (gradient0 <= gradient_limit)
+        & (gradient1 <= gradient_limit)
+        & np.all((linear0 >= 0.02) & (linear0 <= 0.94), axis=2)
+        & np.all((linear1 >= 0.02) & (linear1 <= 0.94), axis=2)
+    )
+    if int(np.count_nonzero(candidate)) < 256:
+        return None
+    ratios = np.log(np.maximum(linear0[candidate], 1e-4)) - np.log(
+        np.maximum(linear1[candidate], 1e-4)
+    )
+    relations: list[float] = []
+    mads: list[float] = []
+    for channel in range(3):
+        robust = _robust_log_channel_relation(ratios[:, channel], 128)
+        if robust is None:
+            return None
+        relation, mad = robust
+        if mad > 0.18:
+            return None
+        relations.append(float(np.clip(relation, -0.04, 0.04)))
+        mads.append(max(float(mad), 0.08))
+    lab0 = cv2.cvtColor(first, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab1 = cv2.cvtColor(second, cv2.COLOR_BGR2LAB).astype(np.float32)
+    return _PhotometricEdge(
+        log_relation_bgr=np.asarray(relations, dtype=np.float64),
+        support_pixels=int(np.count_nonzero(candidate)),
+        mad_bgr=np.asarray(mads, dtype=np.float64),
+        raw_signed_l_delta=float(
+            np.median((lab0[:, :, 0] - lab1[:, :, 0])[candidate])
+            * (100.0 / 255.0)
+        ),
+        safe_mask=None,
+        method="background_marginal_degraded",
+        candidate_pixels=int(np.count_nonzero(candidate)),
     )
 
 
@@ -7897,7 +8745,8 @@ def _select_seam_search_corridor(
 
     Full central-strip overlap is retained for reliable global photometry only.
     This helper is the sole path by which GraphCut, risk guards, owners, and
-    MultiBand see a corridor, keeping their search at 32--64 px even when the
+    MultiBand see a corridor, keeping their search within the adjacent
+    64--160 px safety corridor even when the
     source's legal 20% central support is substantially wider.
     """
 
@@ -7927,66 +8776,310 @@ def _select_seam_search_corridor(
     )
 
 
+def _content_aware_nominal_boundary(
+    risk_mask: np.ndarray,
+    common: np.ndarray,
+    pose_nominal_boundary: int,
+    *,
+    maximum_shift_pixels: int = 32,
+) -> int:
+    """Move the owner decision centre to the quietest nearby RGB column.
+
+    Camera motion still defines the corridor and its pose midpoint.  This
+    scalar selection only chooses where, inside that corridor, whole protected
+    components should prefer changing owner.  It uses the persisted raw
+    structure-risk footprint (never a Lab-only brightness residual), so
+    preflight and final composition make the same decision.
+    """
+
+    risk = np.asarray(risk_mask) > 0
+    support = np.asarray(common, dtype=bool)
+    if risk.shape != support.shape or risk.ndim != 2:
+        raise ValueError("Content-aware boundary inputs must be matching masks")
+    width = support.shape[1]
+    nominal = int(np.clip(int(pose_nominal_boundary), 0, width - 1))
+    radius = max(0, int(maximum_shift_pixels))
+    begin, end = max(0, nominal - radius), min(width, nominal + radius + 1)
+    support_count = np.count_nonzero(support, axis=0).astype(np.float64)
+    risk_count = np.count_nonzero(risk & support, axis=0).astype(np.float64)
+    density = np.divide(
+        risk_count,
+        np.maximum(support_count, 1.0),
+        out=np.ones_like(risk_count),
+        where=support_count > 0,
+    )
+    density = np.convolve(density, np.full(5, 0.2), mode="same")
+    candidates = np.arange(begin, end, dtype=np.int32)
+    candidates = candidates[support_count[candidates] > 0]
+    if not candidates.size:
+        return nominal
+    selected = int(
+        min(
+            candidates,
+            key=lambda column: (
+                float(density[int(column)])
+                + 0.001 * abs(int(column) - nominal),
+                abs(int(column) - nominal),
+                int(column),
+            ),
+        )
+    )
+    # Do not chase isolated edge pixels.  A shifted component decision must
+    # remove a meaningful fraction of the full-height structural obstruction.
+    if float(density[nominal]) - float(density[selected]) < 0.03:
+        return nominal
+    return selected
+
+
+def _preferred_safe_band_boundary(
+    safe_background: np.ndarray,
+    common: np.ndarray,
+    nominal_boundary: int,
+    *,
+    blend_width: int,
+    maximum_shift_pixels: int = 48,
+) -> tuple[int, int]:
+    """Choose a pre-GraphCut centre inside the best contiguous safe band."""
+
+    safe = np.asarray(safe_background, dtype=bool)
+    support = np.asarray(common, dtype=bool)
+    if safe.shape != support.shape or safe.ndim != 2:
+        raise ValueError("Safe-band boundary inputs must be matching masks")
+    height, width = safe.shape
+    nominal = int(np.clip(int(nominal_boundary), 0, width - 1))
+    left_span = (int(blend_width) - 1) // 2
+    right_span = int(blend_width) - left_span - 1
+    begin = max(left_span, nominal - int(maximum_shift_pixels))
+    end = min(width - right_span, nominal + int(maximum_shift_pixels) + 1)
+    best = nominal
+    best_rows = 0
+    for cut in range(begin, end):
+        start, stop = cut - left_span, cut + right_span + 1
+        rows = int(
+            np.count_nonzero(
+                np.all((safe & support)[:, start:stop], axis=1)
+            )
+        )
+        if (
+            rows > best_rows
+            or (
+                rows == best_rows
+                and (
+                    abs(cut - nominal),
+                    cut,
+                )
+                < (
+                    abs(best - nominal),
+                    best,
+                )
+            )
+        ):
+            best, best_rows = int(cut), rows
+    # A handful of isolated pixels cannot steer the component owner decision.
+    minimum_rows = max(8, int(math.ceil(0.01 * height)))
+    return (best, best_rows) if best_rows >= minimum_rows else (nominal, 0)
+
+
+def _same_layer_seam_aperture(
+    safe_same_layer: np.ndarray,
+    common: np.ndarray,
+    nominal_boundary: int,
+    *,
+    blend_width: int,
+) -> tuple[np.ndarray, int, int]:
+    """Keep one contiguous, blend-width same-layer opening near the seam."""
+
+    safe = np.asarray(safe_same_layer, dtype=bool)
+    support = np.asarray(common, dtype=bool)
+    boundary, _candidate_rows = _preferred_safe_band_boundary(
+        safe,
+        support,
+        nominal_boundary,
+        blend_width=blend_width,
+    )
+    aperture = np.zeros_like(safe)
+    left_span = (int(blend_width) - 1) // 2
+    right_span = int(blend_width) - left_span - 1
+    start = int(boundary) - left_span
+    stop = int(boundary) + right_span + 1
+    if start < 0 or stop > safe.shape[1]:
+        return aperture, int(nominal_boundary), 0
+    complete_rows = np.all((safe & support)[:, start:stop], axis=1)
+    minimum_rows = max(8, int(math.ceil(0.01 * safe.shape[0])))
+    best_start = 0
+    best_stop = 0
+    run_start: int | None = None
+    for row in range(safe.shape[0] + 1):
+        active = row < safe.shape[0] and bool(complete_rows[row])
+        if active and run_start is None:
+            run_start = row
+        elif not active and run_start is not None:
+            if row - run_start > best_stop - best_start:
+                best_start, best_stop = run_start, row
+            run_start = None
+    if best_stop - best_start < minimum_rows:
+        return aperture, int(nominal_boundary), 0
+    aperture[best_start:best_stop, start:stop] = True
+    # The final colour blend remains exactly ``blend_width`` pixels.  The
+    # owner solver nevertheless needs a tiny amount of audited same-layer
+    # context on both sides so the two source masks do not collapse to the
+    # same 2-pixel support.  This opens at most a local 6--10 px window and
+    # never reaches outside the already accepted same-layer background.
+    horizontal_radius = max(2, int(blend_width))
+    aperture = cv2.dilate(
+        aperture.astype(np.uint8),
+        cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (horizontal_radius * 2 + 1, 3),
+        ),
+    ) > 0
+    aperture &= safe & support
+    return aperture, int(boundary), int(best_stop - best_start)
+
+
 def _solve_global_linear_rgb_gains(
     source_count: int, edges: Sequence[_PhotometricEdge | None]
 ) -> tuple[np.ndarray, dict[str, int | float | bool]]:
-    """Jointly solve all 3N linear-light gains with robust smoothness.
+    """Jointly solve all 3N linear-light gains with audited partial evidence.
 
-    Every adjacent relation is mandatory.  Unlike sequential accumulation,
-    this makes all measurements participate in a single IRLS problem and uses
-    a second-difference penalty only on the *gain curve*, never on image
-    pixels.  A mean-zero gauge preserves the overall scene brightness.
+    Verified adjacent relations participate in one IRLS problem.  Missing
+    relations remain explicitly marked as C-grade pair evidence, but they no
+    longer erase every valid observation in the sequence.  A light first- and
+    second-difference prior extends only the one-dimensional colour-gain curve;
+    it never changes a pose, samples another RGB coordinate, or blends pixels.
     """
 
     if len(edges) != source_count - 1:
         raise ValueError("Photometric observations must cover every adjacent pair")
     missing = [index for index, edge in enumerate(edges) if edge is None]
+    degraded = [
+        index
+        for index, edge in enumerate(edges)
+        if edge is not None and edge.method == "background_marginal_degraded"
+    ]
+    checked_pairs = [
+        (index, edge)
+        for index, edge in enumerate(edges)
+        if edge is not None
+    ]
+    checked = [edge for _index, edge in checked_pairs]
+    if not checked:
+        return np.ones((source_count, 3), dtype=np.float64), {
+            "photometric_mode": "source_aware_global_linear_rgb_v2_two_stage",
+            "photometric_model": "diagonal_linear_rgb_gain_only",
+            "safe_exposure_pair_count": 0,
+            "safe_exposure_pair_fraction": 0.0,
+            "safe_exposure_support_pixel_count": 0,
+            "safe_exposure_support_pixel_count_per_channel": 0,
+            "photometric_global_solver": False,
+            "photometric_partial_observation_solver": False,
+            "photometric_global_identity_fallback": True,
+            "photometric_identity_fallback_pair_count": len(missing),
+            "photometric_solver_irls_iterations": 0,
+            "photometric_solver_first_difference_lambda": 0.0,
+            "photometric_solver_second_difference_lambda": 0.0,
+            "photometric_solver_condition": 1.0,
+            "photometric_log_residual_p95": 0.0,
+            "photometric_edge_log_mad_p95": 0.0,
+        }
     if missing:
-        raise RuntimeError(
-            "No reliable safe white-wall photometric support for adjacent pair(s): "
-            + ", ".join(str(index) for index in missing)
+        support = np.asarray(
+            [edge.support_pixels for edge in checked], dtype=np.float64
         )
-    checked = [edge for edge in edges if edge is not None]
-    assert len(checked) == source_count - 1
+        if any(
+            not np.isfinite(edge.log_relation_bgr).all()
+            or not np.isfinite(edge.mad_bgr).all()
+            or np.any(edge.mad_bgr < 0.0)
+            or edge.support_pixels <= 0
+            for edge in checked
+        ):
+            raise RuntimeError("Source-aware photometric observations are invalid")
     relations = np.asarray([edge.log_relation_bgr for edge in checked], dtype=np.float64)
+    degraded_observations = [
+        observation_index
+        for observation_index, (_pair_index, edge) in enumerate(checked_pairs)
+        if edge.method == "background_marginal_degraded"
+    ]
+    if degraded_observations:
+        degraded_values = relations[degraded_observations]
+        relations[degraded_observations] = degraded_values - np.median(
+            degraded_values, axis=0, keepdims=True
+        )
     mads = np.asarray([edge.mad_bgr for edge in checked], dtype=np.float64)
     support = np.asarray([edge.support_pixels for edge in checked], dtype=np.float64)
     if (
-        relations.shape != (source_count - 1, 3)
+        relations.shape != (len(checked), 3)
         or not np.isfinite(relations).all()
         or not np.isfinite(mads).all()
         or np.any(mads < 0.0)
         or np.any(support <= 0.0)
     ):
-        raise RuntimeError("Safe white-wall photometric observations are invalid")
+        raise RuntimeError("Source-aware photometric observations are invalid")
 
     log_gains = np.empty((source_count, 3), dtype=np.float64)
     residuals = np.empty_like(relations)
     maximum_condition = 0.0
     iterations = 4
     # The robust wall statistics are measured from thousands of pixels on most
-    # edges.  Keep a light second-difference prior to suppress an isolated bad
-    # edge without biasing the channel relations enough to leave a visible
-    # colour-temperature step at every owner boundary.
-    smoothness = 0.08
+    # edges.  Exposure and white balance are physically low-frequency across a
+    # short continuous scan, so use a strong curvature prior.  It leaves an
+    # affine gain ramp unbiased while spreading an isolated accepted edge over
+    # neighbouring real frames instead of producing a visible narrow stripe.
+    first_difference_smoothness = 0.015
+    smoothness = 8.0
+    incomplete_fraction = len(set(missing) | set(degraded)) / max(
+        1, source_count - 1
+    )
+    # A curvature term cannot see an affine drift.  When most adjacent pairs
+    # lack strict evidence, add a very weak unit-gain prior so their cumulative
+    # marginal relations cannot create an unsupported left-to-right exposure
+    # ramp.  Complete strict scans retain the exact unregularised affine fit.
+    gain_magnitude_smoothness = 0.003 * incomplete_fraction
     for channel in range(3):
         confidence = np.clip(support / 512.0, 0.25, 12.0) / np.maximum(
             np.square(np.maximum(mads[:, channel], 0.004) / 0.012), 1.0
         )
         base_weight = confidence / max(float(np.median(confidence)), 1e-9)
         base_weight = np.clip(base_weight, 0.10, 10.0)
-        robust_weight = np.ones(source_count - 1, dtype=np.float64)
+        method_weight = np.asarray(
+            [
+                0.08 if edge.method == "background_marginal_degraded" else 1.0
+                for edge in checked
+            ],
+            dtype=np.float64,
+        )
+        base_weight *= method_weight
+        robust_weight = np.ones(len(checked), dtype=np.float64)
         solution = np.zeros(source_count, dtype=np.float64)
         for _ in range(iterations):
             rows: list[np.ndarray] = []
             rhs: list[float] = []
-            for index, relation in enumerate(relations[:, channel]):
+            for observation_index, relation in enumerate(relations[:, channel]):
+                pair_index = int(checked_pairs[observation_index][0])
                 row = np.zeros(source_count, dtype=np.float64)
-                weight = math.sqrt(float(base_weight[index] * robust_weight[index]))
-                row[index] = -weight
-                row[index + 1] = weight
+                weight = math.sqrt(
+                    float(
+                        base_weight[observation_index]
+                        * robust_weight[observation_index]
+                    )
+                )
+                row[pair_index] = -weight
+                row[pair_index + 1] = weight
                 rows.append(row)
                 rhs.append(weight * float(relation))
+            # Missing observations are regularised only in the scalar gain
+            # curve.  This bounded temporal prior prevents a long unsupported
+            # interval from acquiring an arbitrary colour slope.
+            for pair_index in sorted(set(missing) | set(degraded)):
+                pair_smoothness = (
+                    0.50 if pair_index in degraded else first_difference_smoothness
+                )
+                slope_weight = math.sqrt(pair_smoothness)
+                row = np.zeros(source_count, dtype=np.float64)
+                row[pair_index] = -slope_weight
+                row[pair_index + 1] = slope_weight
+                rows.append(row)
+                rhs.append(0.0)
             if source_count >= 3:
                 curvature_weight = math.sqrt(smoothness)
                 for index in range(1, source_count - 1):
@@ -7996,6 +9089,13 @@ def _solve_global_linear_rgb_gains(
                         -2.0 * curvature_weight,
                         curvature_weight,
                     )
+                    rows.append(row)
+                    rhs.append(0.0)
+            if gain_magnitude_smoothness > 0.0:
+                magnitude_weight = math.sqrt(gain_magnitude_smoothness)
+                for index in range(source_count):
+                    row = np.zeros(source_count, dtype=np.float64)
+                    row[index] = magnitude_weight
                     rows.append(row)
                     rhs.append(0.0)
             gauge = np.full(source_count, math.sqrt(100.0 / source_count), dtype=np.float64)
@@ -8011,26 +9111,56 @@ def _solve_global_linear_rgb_gains(
             solution, _, _, _ = np.linalg.lstsq(matrix, target, rcond=None)
             if not np.isfinite(solution).all():
                 raise RuntimeError("Global RGB photometric solver returned non-finite gains")
-            residual = np.diff(solution) - relations[:, channel]
+            residual = np.asarray(
+                [
+                    solution[pair_index + 1]
+                    - solution[pair_index]
+                    - relations[observation_index, channel]
+                    for observation_index, (pair_index, _edge) in enumerate(
+                        checked_pairs
+                    )
+                ],
+                dtype=np.float64,
+            )
             scale = max(0.0025, 1.4826 * float(np.median(np.abs(residual))))
             robust_weight = np.minimum(
                 1.0, 1.5 * scale / np.maximum(np.abs(residual), 1e-9)
             )
         log_gains[:, channel] = solution
-        residuals[:, channel] = np.diff(solution) - relations[:, channel]
+        residuals[:, channel] = np.asarray(
+            [
+                solution[pair_index + 1]
+                - solution[pair_index]
+                - relations[observation_index, channel]
+                for observation_index, (pair_index, _edge) in enumerate(
+                    checked_pairs
+                )
+            ],
+            dtype=np.float64,
+        )
 
     gains = np.exp(log_gains)
     if not np.isfinite(gains).all() or np.any(gains < 0.45) or np.any(gains > 2.20):
         raise RuntimeError("Global linear RGB gains exceed the formal 0.45-2.20 range")
     return gains, {
-        "photometric_mode": "safe_wall_global_linear_rgb",
+        "photometric_mode": "source_aware_global_linear_rgb_v2_two_stage",
+        "photometric_model": "diagonal_linear_rgb_gain_only",
         "safe_exposure_pair_count": len(checked),
         "safe_exposure_pair_fraction": len(checked) / max(1, source_count - 1),
         "safe_exposure_support_pixel_count": int(np.sum(support)),
         "safe_exposure_support_pixel_count_per_channel": int(np.sum(support) * 3),
         "photometric_global_solver": True,
+        "photometric_partial_observation_solver": bool(missing),
+        "photometric_global_identity_fallback": False,
+        "photometric_identity_fallback_pair_count": len(missing),
         "photometric_solver_irls_iterations": iterations,
+        "photometric_solver_first_difference_lambda": (
+            first_difference_smoothness
+        ),
         "photometric_solver_second_difference_lambda": smoothness,
+        "photometric_solver_gain_magnitude_lambda": (
+            gain_magnitude_smoothness
+        ),
         "photometric_solver_condition": maximum_condition,
         "photometric_log_residual_p95": float(np.percentile(np.abs(residuals), 95.0)),
         "photometric_edge_log_mad_p95": float(np.percentile(mads, 95.0)),
@@ -8047,6 +9177,8 @@ def _graphcut_monotonic_owner(
     *,
     component_owner_constraints: Mapping[int, int] | None = None,
     owner_prior: np.ndarray | None = None,
+    preferred_safe_background: np.ndarray | None = None,
+    preferred_blend_width: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool, int, int, int]:
     """Constrain GraphCut to whole protected components and validate its seam.
 
@@ -8098,7 +9230,7 @@ def _graphcut_monotonic_owner(
     # two-image overlap and can legally choose the same image for every row,
     # silently erasing a narrow intermediate pose node.  These are single-pixel
     # terminal constraints at the outermost safe columns, not a restriction of
-    # the 32--64 px seam search itself.  Rows occupied completely by one
+    # the 64--160 px seam search itself.  Rows occupied completely by one
     # protected component deliberately get no such anchors; assigning that
     # component as a whole is safer than slicing it at an artificial terminal.
     anchor0 = np.full(height, -1, dtype=np.int32)
@@ -8133,6 +9265,31 @@ def _graphcut_monotonic_owner(
                 upper[row] = min(upper[row], int(np.flatnonzero(component[row])[0]) - 1)
     if np.any(force0 & force1):
         raise RuntimeError("Sequence owner constraints conflict in a protected component")
+    preferred = (
+        np.zeros_like(common)
+        if preferred_safe_background is None
+        else np.asarray(preferred_safe_background, dtype=bool)
+    )
+    if preferred.shape != common.shape:
+        raise ValueError("Preferred safe background must match the GraphCut corridor")
+    preferred_width = int(preferred_blend_width)
+    if preferred_width < 0:
+        raise ValueError("Preferred safe-background blend width must be non-negative")
+    if preferred_width:
+        preferred_left = (preferred_width - 1) // 2
+        preferred_right = preferred_width - preferred_left - 1
+        start = nominal_boundary - preferred_left
+        stop = nominal_boundary + preferred_right + 1
+        if 0 <= start < stop <= width:
+            preferred_rows = np.all(
+                (preferred & common)[:, start:stop], axis=1
+            )
+            for row in np.flatnonzero(preferred_rows):
+                # Only lock a row when the already-compiled whole-component
+                # constraints admit this exact safe-background cut.
+                if lower[row] <= nominal_boundary <= upper[row]:
+                    lower[row] = nominal_boundary
+                    upper[row] = nominal_boundary
     safe_common = common & ~protected
     for row in range(height):
         safe_columns = np.flatnonzero(safe_common[row])
@@ -8247,6 +9404,40 @@ def _graphcut_monotonic_owner(
 
     hard_candidate = np.zeros_like(common)
     hard_rows = 0
+    # If OpenCV's two-dimensional cut cannot be represented by the required
+    # monotonic hard-owner topology, choose a direct cut using the actual
+    # boundary appearance.  The old nearest-midpoint rule could place a seam
+    # through a cable, label, or device even when a quieter background column
+    # existed a few pixels away.  This is a deterministic row-local hard cut,
+    # not a DP/feather fallback: every output pixel still has exactly one RGB
+    # owner and all protected-component bounds remain authoritative.
+    first_float = np.asarray(first, dtype=np.float32)
+    second_float = np.asarray(second, dtype=np.float32)
+    same_source_residual = np.mean(
+        np.abs(first_float - second_float), axis=2
+    )
+    next_columns = np.minimum(np.arange(width, dtype=np.int32) + 1, width - 1)
+    cross_boundary_residual = np.mean(
+        np.abs(first_float - second_float[:, next_columns]), axis=2
+    )
+    gray0 = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray1 = cv2.cvtColor(second, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    structure_cost = (
+        cv2.magnitude(
+            cv2.Scharr(gray0, cv2.CV_32F, 1, 0),
+            cv2.Scharr(gray0, cv2.CV_32F, 0, 1),
+        )
+        + cv2.magnitude(
+            cv2.Scharr(gray1, cv2.CV_32F, 1, 0),
+            cv2.Scharr(gray1, cv2.CV_32F, 0, 1),
+        )
+    )
+    direct_cost = (
+        same_source_residual / 16.0
+        + cross_boundary_residual / 16.0
+        + structure_cost / 128.0
+    )
+    previous_cut = nominal_boundary
     for row in range(height):
         indices = np.flatnonzero(common[row])
         if not indices.size:
@@ -8277,7 +9468,30 @@ def _graphcut_monotonic_owner(
                 hard_rows += 1
                 continue
             raise RuntimeError("No safe direct hard cut exists outside the RGB risk guard")
-        cut = int(candidates[np.argmin(np.abs(candidates - nominal_boundary))])
+        central_candidates = candidates[
+            np.abs(candidates - nominal_boundary) <= 32
+        ]
+        if central_candidates.size:
+            candidates = central_candidates
+        candidate_cost = (
+            direct_cost[row, candidates]
+            + 0.50 * np.abs(candidates - previous_cut)
+            + 0.10 * np.abs(candidates - nominal_boundary)
+        )
+        cut = int(
+            candidates[
+                min(
+                    range(len(candidates)),
+                    key=lambda candidate_index: (
+                        float(candidate_cost[candidate_index]),
+                        abs(int(candidates[candidate_index]) - previous_cut),
+                        abs(int(candidates[candidate_index]) - nominal_boundary),
+                        int(candidates[candidate_index]),
+                    ),
+                )
+            ]
+        )
+        previous_cut = cut
         hard_candidate[row] = np.arange(width) <= cut
         hard_rows += 1
     owner0, owner1, cuts, split_count, boundary_guard = owners_from_prefix(hard_candidate)
@@ -8325,7 +9539,12 @@ def _blend_safe_pair_zone(
     )
     support = cv2.dilate(zone.astype(np.uint8), support_kernel) > 0
     support &= common & ~protected & safe_wall
-    owner_radius = max(1, int(math.ceil(blend_width / 2.0)))
+    # Half-width dilation makes both masks identical in a narrow verified
+    # corridor, which correctly rejects an implicit 50/50 average but also
+    # prevents any real local pyramid.  A one-third radius keeps complementary
+    # owner support distinct while still providing a 2--6 px cross-boundary
+    # overlap for the local MultiBand pass.
+    owner_radius = max(1, int(math.ceil(blend_width / 3.0)))
     owner_kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (owner_radius * 2 + 1, owner_radius * 2 + 1)
     )
@@ -8391,6 +9610,108 @@ def _blend_safe_pair_zone(
         int(np.count_nonzero(mask1)),
         True,
     )
+
+
+def _refine_cuts_on_contiguous_safe_background(
+    valid0: np.ndarray,
+    valid1: np.ndarray,
+    safe_background: np.ndarray,
+    owner_move_allowed: np.ndarray,
+    cuts: np.ndarray,
+    *,
+    nominal_boundary: int,
+    blend_width: int,
+    extended_same_layer_background: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int]:
+    """Move row cuts through protected-free background to a blend-safe run.
+
+    The route used to move a hard owner boundary and the final colour blending
+    support deliberately have different requirements.  A hard owner may move
+    across mutually valid, structure-free background without mixing colours;
+    only the final narrow band must satisfy the stricter photometric/same-layer
+    ``safe_background`` gate.
+    """
+
+    first_valid = np.asarray(valid0, dtype=bool)
+    second_valid = np.asarray(valid1, dtype=bool)
+    safe = np.asarray(safe_background, dtype=bool)
+    movable = np.asarray(owner_move_allowed, dtype=bool)
+    extended = (
+        np.zeros_like(safe)
+        if extended_same_layer_background is None
+        else np.asarray(extended_same_layer_background, dtype=bool)
+    )
+    refined = np.asarray(cuts, dtype=np.int32).copy()
+    if (
+        first_valid.shape != second_valid.shape
+        or safe.shape != first_valid.shape
+        or movable.shape != first_valid.shape
+        or extended.shape != first_valid.shape
+        or refined.shape != (first_valid.shape[0],)
+    ):
+        raise ValueError("Safe-background cut refinement inputs must match")
+    height, width = first_valid.shape
+    left_span = (int(blend_width) - 1) // 2
+    right_span = int(blend_width) - left_span - 1
+    changed_rows = 0
+    maximum_shift = 0
+    common = first_valid & second_valid
+    for row in range(height):
+        old_cut = int(refined[row])
+        if old_cut < 0 or old_cut >= width - 1:
+            continue
+        row_safe = safe[row] & common[row]
+        row_movable = movable[row] & common[row]
+        if int(np.count_nonzero(row_safe)) < int(blend_width):
+            continue
+        candidates: list[int] = []
+        for cut in range(left_span, width - right_span):
+            start = cut - left_span
+            stop = cut + right_span + 1
+            allowed_shift = (
+                48 if np.all(extended[row, start:stop]) else 32
+            )
+            if (
+                abs(int(cut) - int(nominal_boundary)) > allowed_shift
+                or abs(int(cut) - old_cut) > allowed_shift
+            ):
+                continue
+            if not np.all(row_safe[start:stop]):
+                continue
+            transition_left = min(old_cut + 1, cut)
+            transition_right = max(old_cut, cut + 1)
+            if transition_right > transition_left and not np.all(
+                row_movable[transition_left:transition_right]
+            ):
+                continue
+            candidates.append(cut)
+        if not candidates:
+            continue
+        new_cut = min(
+            candidates,
+            key=lambda value: (
+                abs(int(value) - int(nominal_boundary)),
+                abs(int(value) - old_cut),
+            ),
+        )
+        if new_cut == old_cut:
+            continue
+        refined[row] = int(new_cut)
+        changed_rows += 1
+        maximum_shift = max(maximum_shift, abs(int(new_cut) - old_cut))
+
+    x = np.arange(width, dtype=np.int32)[None, :]
+    owner0 = (first_valid & ~second_valid) | (
+        common & (x <= refined[:, None])
+    )
+    owner1 = (second_valid & ~first_valid) | (
+        common & (x > refined[:, None])
+    )
+    if np.any(owner0 & owner1) or not np.array_equal(
+        owner0 | owner1, first_valid | second_valid
+    ):
+        raise RuntimeError("Safe-background cut refinement broke owner coverage")
+    return owner0, owner1, refined, changed_rows, maximum_shift
 
 
 def _delta_e00(lab0: np.ndarray, lab1: np.ndarray) -> np.ndarray:
@@ -8583,6 +9904,171 @@ def _write_owner_core(
     canvas_view[usable] = source[usable]
     valid_view[usable] = True
     owner_view[usable] = contribution.source_index
+
+
+def _rewrite_redundant_pose_node_owners(
+    canvas: np.ndarray,
+    valid_canvas: np.ndarray,
+    owner_canvas: np.ndarray,
+    strip_paths: Sequence[Path],
+    layout: PushbroomLayout,
+) -> list[dict[str, object]]:
+    """Replace near-duplicate owners with adjacent retained real RGB sources.
+
+    Every source, including a redundant node, has already completed its one
+    full-resolution calibrated remap.  This pass changes no pose and performs
+    no sampling: it copies only already-remapped RGB from the two retained real
+    pose nodes bracketing one redundant run.  Each destination remains a hard
+    owner; no blend, interpolation, deformation, or generated colour is used.
+    """
+
+    audits = tuple(layout.redundant_pose_node_suppression)
+    if not audits:
+        return []
+    groups: dict[tuple[int, int], list[dict[str, object]]] = {}
+    for value in audits:
+        audit = dict(value)
+        key = (
+            int(audit["previous_retained_source_index"]),
+            int(audit["next_retained_source_index"]),
+        )
+        groups.setdefault(key, []).append(audit)
+
+    results: list[dict[str, object]] = []
+    for (previous_index, next_index), values in sorted(groups.items()):
+        redundant_indices = tuple(
+            sorted(int(value["source_index"]) for value in values)
+        )
+        candidate = np.isin(owner_canvas, redundant_indices)
+        source_pixel_counts_before = {
+            str(index): int(np.count_nonzero(owner_canvas == index))
+            for index in redundant_indices
+        }
+        candidate_count = int(np.count_nonzero(candidate))
+        if candidate_count == 0:
+            results.append(
+                {
+                    "previous_retained_source_index": previous_index,
+                    "next_retained_source_index": next_index,
+                    "redundant_source_indices": list(redundant_indices),
+                    "suppressed_owner_pixel_count": 0,
+                    "previous_owner_replacement_pixel_count": 0,
+                    "next_owner_replacement_pixel_count": 0,
+                    "uncovered_pixel_count": 0,
+                    "discarded_unique_invalid_output_pixel_count": 0,
+                    "blend_pixel_count": 0,
+                    "deformation_pixel_count": 0,
+                    "source_owner_pixel_counts_before": source_pixel_counts_before,
+                    "source_owner_pixel_counts_after": {
+                        str(index): 0 for index in redundant_indices
+                    },
+                    "audit_complete": True,
+                }
+            )
+            continue
+
+        yy, xx = np.nonzero(candidate)
+        left, right = int(np.min(xx)), int(np.max(xx)) + 1
+        previous = _load_contribution(strip_paths[previous_index])
+        following = _load_contribution(strip_paths[next_index])
+        height, width = candidate.shape[0], right - left
+        previous_valid = np.zeros((height, width), dtype=bool)
+        next_valid = np.zeros((height, width), dtype=bool)
+        previous_rgb = np.zeros((height, width, 3), dtype=np.uint8)
+        next_rgb = np.zeros((height, width, 3), dtype=np.uint8)
+
+        for contribution, local_valid, local_rgb in (
+            (previous, previous_valid, previous_rgb),
+            (following, next_valid, next_rgb),
+        ):
+            copy_left = max(left, contribution.x0)
+            copy_right = min(right, contribution.x1)
+            if copy_right <= copy_left:
+                continue
+            source_slice = slice(
+                copy_left - contribution.x0, copy_right - contribution.x0
+            )
+            destination = slice(copy_left - left, copy_right - left)
+            local_valid[:, destination] = contribution.valid_mask[:, source_slice]
+            local_rgb[:, destination] = contribution.rgb[:, source_slice]
+
+        candidate_view = candidate[:, left:right]
+        valid_view = valid_canvas[:, left:right]
+        if np.any(candidate_view & ~valid_view):
+            raise RuntimeError(
+                "Redundant pose-node suppression found an invalid owned pixel"
+            )
+        # A near-coincident source can expose a few distortion-border samples
+        # that neither retained neighbour considers a valid calibrated RGB
+        # sample.  Such pixels cannot make the redundant node an independent
+        # owner.  Remove them from output validity before the owner rewrite;
+        # the final largest-valid-rectangle crop will discard that invalid
+        # fringe, while every remaining redundant-owned output pixel is
+        # replaced by a real adjacent retained RGB owner.
+        unsupported_unique_validity = candidate_view & ~(
+            previous_valid | next_valid
+        )
+        discarded_unique_validity_count = int(
+            np.count_nonzero(unsupported_unique_validity)
+        )
+        if discarded_unique_validity_count:
+            canvas_view = canvas[:, left:right]
+            owner_view = owner_canvas[:, left:right]
+            canvas_view[unsupported_unique_validity] = 0
+            valid_view[unsupported_unique_validity] = False
+            owner_view[unsupported_unique_validity] = -1
+            candidate_view = candidate_view & ~unsupported_unique_validity
+        boundary = float(values[0]["collapsed_owner_boundary_x"])
+        x_grid = np.arange(left, right, dtype=np.float64)[None, :]
+        prefer_previous = x_grid < boundary
+        choose_previous = candidate_view & previous_valid & (
+            ~next_valid | prefer_previous
+        )
+        choose_next = candidate_view & next_valid & ~choose_previous
+        uncovered = candidate_view & ~(choose_previous | choose_next)
+        uncovered_count = int(np.count_nonzero(uncovered))
+        if uncovered_count:
+            raise RuntimeError(
+                "Redundant pose-node owner pixels lack retained adjacent RGB coverage"
+            )
+
+        canvas_view = canvas[:, left:right]
+        owner_view = owner_canvas[:, left:right]
+        canvas_view[choose_previous] = previous_rgb[choose_previous]
+        canvas_view[choose_next] = next_rgb[choose_next]
+        owner_view[choose_previous] = previous_index
+        owner_view[choose_next] = next_index
+        if np.any(np.isin(owner_canvas, redundant_indices)):
+            raise RuntimeError(
+                "Redundant pose-node suppression retained an output owner"
+            )
+        results.append(
+            {
+                "previous_retained_source_index": previous_index,
+                "next_retained_source_index": next_index,
+                "redundant_source_indices": list(redundant_indices),
+                "suppressed_owner_pixel_count": candidate_count,
+                "previous_owner_replacement_pixel_count": int(
+                    np.count_nonzero(choose_previous)
+                ),
+                "next_owner_replacement_pixel_count": int(
+                    np.count_nonzero(choose_next)
+                ),
+                "uncovered_pixel_count": uncovered_count,
+                "discarded_unique_invalid_output_pixel_count": (
+                    discarded_unique_validity_count
+                ),
+                "blend_pixel_count": 0,
+                "deformation_pixel_count": 0,
+                "source_owner_pixel_counts_before": source_pixel_counts_before,
+                "source_owner_pixel_counts_after": {
+                    str(index): int(np.count_nonzero(owner_canvas == index))
+                    for index in redundant_indices
+                },
+                "audit_complete": True,
+            }
+        )
+    return results
 
 
 def render_calibrated_rgb_pushbroom(
@@ -8884,10 +10370,14 @@ def render_calibrated_rgb_pushbroom(
             strip_paths.append(path)
 
         photometric_edges: list[_PhotometricEdge | None] = []
+        photometric_solver_edges: list[_PhotometricEdge | None] = []
+        degraded_background_solver_pair_count = 0
+        photometric_fallback_reasons: dict[int, str] = {}
         raw_risk_paths: list[Path] = []
         for index, (first_path, second_path) in enumerate(
             zip(strip_paths[:-1], strip_paths[1:], strict=True)
         ):
+            current_redundant_foreground_owner_validity_clipped_pixels = 0
             first, second = _load_contribution(first_path), _load_contribution(second_path)
             (
                 full_left,
@@ -8903,6 +10393,14 @@ def render_calibrated_rgb_pushbroom(
                 right=full_right,
                 height=layout.canvas_height,
             )
+            photometric_geometry_protected = (
+                _geometry_pair_blend_protected_mask(
+                    geometry_plans[index],
+                    left=full_left,
+                    right=full_right,
+                    height=layout.canvas_height,
+                )
+            )
             geometry_out_of_scope_first = _geometry_out_of_scope_first_mask(
                 geometry_plans,
                 index,
@@ -8915,24 +10413,109 @@ def render_calibrated_rgb_pushbroom(
             # the first member of this pair's photometric/owner evidence.
             valid0 = np.ascontiguousarray(valid0 & ~geometry_out_of_scope_first)
             raw_risk = _rgb_risk_details(rgb0, rgb1, valid0, valid1)
-            # The safe-wall estimator excludes the complete protection band,
+            # A pure Lab exposure/white-balance residual cannot disqualify a
+            # candidate whose purpose is to prove that this same static
+            # surface has one stable three-channel ratio. Structural RGB
+            # seeds, geometry and all depth/transparent protections remain
+            # excluded here; Lab risk is recomputed after gains are applied.
+            photometric_structural_seed = np.asarray(
+                raw_risk.structural_seed_mask, dtype=bool
+            )
+            photometric_structural_mask = _fill_risk_components(
+                photometric_structural_seed,
+                valid0 & valid1,
+                bridge_radius=2,
+            ).astype(np.uint8)
+            photometric_risk = _RGBRiskDetails(
+                mask=photometric_structural_mask,
+                seed_mask=photometric_structural_seed,
+                structural_seed_mask=photometric_structural_seed,
+                edge_offset_p95=raw_risk.edge_offset_p95,
+                seed_pixel_count=int(np.count_nonzero(photometric_structural_seed)),
+                component_count=int(
+                    cv2.connectedComponents(photometric_structural_mask)[0] - 1
+                ),
+            )
+            # The evidence estimator excludes structural/protected support,
             # including the largest permitted local pyramid footprint.
             preliminary_guard, _, _ = _risk_guard(
-                raw_risk,
+                photometric_risk,
                 valid0 & valid1,
                 blend_width=8,
                 requested_levels=multiband_levels,
-                geometry_protected=geometry_protected,
+                geometry_protected=photometric_geometry_protected,
             )
-            photometric_edges.append(
+            same_layer_allowed: np.ndarray | None = None
+            plan = geometry_plans[index]
+            if plan.triggered:
+                # Geometry was already read solely for this adjacent 96--160 px
+                # corridor.  Reuse its selected bilateral background only; a
+                # photometric fallback must never request more depth evidence.
+                if plan.corridor_x is None:
+                    photometric_fallback_reasons[index] = (
+                        "missing_rgbd_corridor_same_layer"
+                    )
+                else:
+                    same_layer_allowed = _geometry_pair_same_layer_mask(
+                        plan,
+                        left=full_left,
+                        right=full_right,
+                        height=layout.canvas_height,
+                    )
+                    same_layer_allowed &= ~geometry_protected
+                    same_layer_allowed &= valid0 & valid1
+                    if not np.any(same_layer_allowed):
+                        photometric_fallback_reasons[index] = (
+                            "missing_rgbd_corridor_same_layer"
+                        )
+            safe_wall = (
                 _safe_wall_log_relation(
                     rgb0,
                     rgb1,
                     valid0 & valid1,
                     preliminary_guard,
                     low_gradient_quantile=settings.scale_low_gradient_quantile,
+                    allowed_mask=same_layer_allowed,
                 )
+                if index not in photometric_fallback_reasons
+                else None
             )
+            texture_diagnostic: dict[str, object] = {}
+            texture = (
+                _rgb_texture_consistent_log_relation(
+                    rgb0,
+                    rgb1,
+                    valid0 & valid1,
+                    preliminary_guard,
+                    allowed_mask=same_layer_allowed,
+                    diagnostic=texture_diagnostic,
+                )
+                if index not in photometric_fallback_reasons
+                else None
+            )
+            if safe_wall is not None and texture is not None and np.any(
+                np.abs(safe_wall.log_relation_bgr - texture.log_relation_bgr) > 0.05
+            ):
+                photometric_fallback_reasons[index] = "cross_method_conflict"
+            edge = safe_wall if safe_wall is not None else texture
+            if edge is None and index not in photometric_fallback_reasons:
+                reason = texture_diagnostic.get("reason", "insufficient_verified_support")
+                photometric_fallback_reasons[index] = str(reason)
+            if index in photometric_fallback_reasons:
+                edge = None
+            photometric_edges.append(edge)
+            solver_edge = edge
+            if solver_edge is None:
+                solver_edge = _degraded_background_log_relation(
+                    rgb0,
+                    rgb1,
+                    valid0 & valid1,
+                    preliminary_guard,
+                )
+                degraded_background_solver_pair_count += int(
+                    solver_edge is not None
+                )
+            photometric_solver_edges.append(solver_edge)
             (
                 _seam_left,
                 _seam_right,
@@ -8958,11 +10541,22 @@ def render_calibrated_rgb_pushbroom(
             seam_raw_risk = _rgb_risk_details(
                 seam_rgb0, seam_rgb1, seam_valid0, seam_valid1
             )
+            pre_gain_structural_mask = _fill_risk_components(
+                np.asarray(
+                    seam_raw_risk.structural_seed_mask, dtype=bool
+                ),
+                seam_valid0 & seam_valid1,
+                bridge_radius=2,
+            ).astype(np.uint8)
             raw_risk_path = root / f"risk-{index:04d}.npz"
             np.savez_compressed(
                 raw_risk_path,
-                mask=seam_raw_risk.mask,
-                seed_mask=seam_raw_risk.seed_mask,
+                # Preserve only geometry-bearing pre-gain structure.  Pure
+                # Lab/exposure differences are recomputed after the global
+                # gain pass instead of being permanently expanded into the
+                # final owner guard.
+                mask=pre_gain_structural_mask,
+                seed_mask=seam_raw_risk.structural_seed_mask,
                 structural_seed_mask=seam_raw_risk.structural_seed_mask,
                 edge_offset_p95=np.asarray(
                     seam_raw_risk.edge_offset_p95, dtype=np.float64
@@ -8973,19 +10567,34 @@ def render_calibrated_rgb_pushbroom(
                 component_count=np.asarray(
                     seam_raw_risk.component_count, dtype=np.int32
                 ),
+                raw_risk_pixel_count=np.asarray(
+                    np.count_nonzero(seam_raw_risk.mask), dtype=np.int32
+                ),
+                raw_risk_seed_pixel_count=np.asarray(
+                    seam_raw_risk.seed_pixel_count, dtype=np.int32
+                ),
             )
             raw_risk_paths.append(raw_risk_path)
+        raw_strip_paths = tuple(strip_paths)
         gains, exposure_metrics = _solve_global_linear_rgb_gains(
-            len(frames), photometric_edges
+            len(frames), photometric_solver_edges
+        )
+        exposure_metrics["photometric_strict_audited_pair_count"] = int(
+            sum(edge is not None for edge in photometric_edges)
+        )
+        exposure_metrics["photometric_degraded_background_solver_pair_count"] = int(
+            degraded_background_solver_pair_count
         )
 
-        # Rewrite each temporary calibrated strip after one linear-light
-        # three-channel compensation.  Subsequent owner and blending passes
-        # only consume these corrected strips, never compound a gain.
-        for index, path in enumerate(strip_paths):
-            contribution = _load_contribution(path)
+        # Keep the once-remapped raw source strips immutable.  The final owner
+        # composition is made from separately spooled, once-gain-corrected
+        # source strips; no provisional panorama is ever written or reused.
+        corrected_strip_paths: list[Path] = []
+        for index, raw_path in enumerate(raw_strip_paths):
+            contribution = _load_contribution(raw_path)
+            corrected_path = root / f"corrected-{index:04d}.npz"
             _save_contribution(
-                path,
+                corrected_path,
                 PushbroomContribution(
                     source_index=contribution.source_index,
                     frame_id=contribution.frame_id,
@@ -8994,6 +10603,8 @@ def render_calibrated_rgb_pushbroom(
                     valid_mask=contribution.valid_mask,
                 ),
             )
+            corrected_strip_paths.append(corrected_path)
+        strip_paths = corrected_strip_paths
 
         # Compare the same preselected safe-wall samples before and after the
         # single global gain pass.  This makes the stripe-energy audit an
@@ -9009,7 +10620,9 @@ def render_calibrated_rgb_pushbroom(
             zip(strip_paths[:-1], strip_paths[1:], strict=True)
         ):
             edge = photometric_edges[index]
-            if edge is None or edge.safe_mask is None:
+            if edge is None:
+                continue
+            if edge.safe_mask is None:
                 raise RuntimeError("Global RGB photometric audit lost safe-wall support")
             first, second = _load_contribution(first_path), _load_contribution(second_path)
             _, _, rgb0, rgb1, _, _ = _pair_overlap(first, second)
@@ -9028,6 +10641,7 @@ def render_calibrated_rgb_pushbroom(
         # output owner image or an extra source remap.
         preflight_fragments_by_pair: list[tuple[ProtectedComponentFragment, ...]] = []
         preflight_pair_windows: list[tuple[int, int]] = []
+        preflight_pair_nominal_boundaries: list[int] = []
         # Every adjacent search corridor may need a strictly RGB pair-level
         # owner if component topology proves that no monotonic GraphCut seam
         # exists.  Geometry-triggered pairs still retain their additional
@@ -9076,6 +10690,18 @@ def render_calibrated_rgb_pushbroom(
                 right=right,
                 height=layout.canvas_height,
             )
+            geometry_same_layer = _geometry_pair_same_layer_mask(
+                geometry_plans[index],
+                left=left,
+                right=right,
+                height=layout.canvas_height,
+            )
+            geometry_blend_protected = _geometry_pair_blend_protected_mask(
+                geometry_plans[index],
+                left=left,
+                right=right,
+                height=layout.canvas_height,
+            )
             with np.load(raw_risk_paths[index], allow_pickle=False) as stored_risk:
                 raw_risk_mask = np.asarray(stored_risk["mask"], dtype=np.uint8)
                 raw_risk_seed = np.asarray(stored_risk["seed_mask"], dtype=bool)
@@ -9088,6 +10714,19 @@ def render_calibrated_rgb_pushbroom(
                 or raw_risk_structural_seed.shape != image0.shape[:2]
             ):
                 raise RuntimeError("Stored raw RGB-risk seed shape is inconsistent")
+            pose_nominal = int(
+                np.clip(
+                    int(round(layout.owner_boundaries_x[index])) - left,
+                    0,
+                    image0.shape[1] - 1,
+                )
+            )
+            content_nominal = _content_aware_nominal_boundary(
+                raw_risk_structural_seed,
+                valid0 & valid1,
+                pose_nominal,
+            )
+            preflight_pair_nominal_boundaries.append(content_nominal)
             risk = _rgb_risk_details(
                 image0,
                 image1,
@@ -9097,10 +10736,16 @@ def render_calibrated_rgb_pushbroom(
             )
             risk = _RGBRiskDetails(
                 mask=risk.mask,
-                seed_mask=risk.seed_mask,
-                structural_seed_mask=risk.structural_seed_mask,
+                seed_mask=np.ascontiguousarray(
+                    risk.seed_mask | raw_risk_seed
+                ),
+                structural_seed_mask=np.ascontiguousarray(
+                    risk.structural_seed_mask | raw_risk_structural_seed
+                ),
                 edge_offset_p95=max(raw_edge_offset, risk.edge_offset_p95),
-                seed_pixel_count=risk.seed_pixel_count,
+                seed_pixel_count=int(
+                    np.count_nonzero(risk.seed_mask | raw_risk_seed)
+                ),
                 component_count=risk.component_count,
             )
             owner_width = min(
@@ -9114,6 +10759,64 @@ def render_calibrated_rgb_pushbroom(
                 blend_width,
                 multiband_levels,
                 geometry_protected=geometry_protected,
+            )
+            structural_mask = _fill_risk_components(
+                np.asarray(risk.structural_seed_mask, dtype=bool),
+                valid0 & valid1,
+                bridge_radius=2,
+            ).astype(np.uint8)
+            structural_risk = _RGBRiskDetails(
+                mask=structural_mask,
+                seed_mask=np.asarray(risk.structural_seed_mask, dtype=bool),
+                structural_seed_mask=np.asarray(
+                    risk.structural_seed_mask, dtype=bool
+                ),
+                edge_offset_p95=risk.edge_offset_p95,
+                seed_pixel_count=int(
+                    np.count_nonzero(risk.structural_seed_mask)
+                ),
+                component_count=int(
+                    cv2.connectedComponents(structural_mask)[0] - 1
+                ),
+            )
+            structural_guard, _, _ = _risk_guard(
+                structural_risk,
+                valid0 & valid1,
+                blend_width,
+                multiband_levels,
+                geometry_protected=geometry_blend_protected,
+            )
+            safe_wall = _safe_white_wall_mask(
+                image0,
+                image1,
+                valid0 & valid1,
+                guard,
+                low_gradient_quantile=settings.scale_low_gradient_quantile,
+            )
+            safe_same_layer_candidate = _safe_same_layer_background_mask(
+                image0,
+                image1,
+                valid0 & valid1,
+                structural_guard,
+                geometry_same_layer,
+                low_gradient_quantile=settings.scale_low_gradient_quantile,
+            )
+            safe_same_layer_candidate &= ~safe_wall
+            (
+                safe_same_layer_aperture,
+                _same_layer_preferred_nominal,
+                _same_layer_preferred_rows,
+            ) = _same_layer_seam_aperture(
+                safe_same_layer_candidate,
+                valid0 & valid1,
+                content_nominal,
+                blend_width=blend_width,
+            )
+            owner_guard = _same_layer_owner_guard(
+                guard,
+                safe_same_layer_aperture,
+                geometry_blend_protected,
+                valid0 & valid1,
             )
             # A local warp belongs to one pair only, but the source it uses is
             # shared with either immediate neighbour.  A protected component
@@ -9139,12 +10842,12 @@ def render_calibrated_rgb_pushbroom(
                 geometry_pair_hard_owner_options[index] = options
             preflight_fragments_by_pair.append(
                 extract_protected_component_fragments(
-                    guard,
+                    owner_guard,
                     valid0,
                     valid1,
                     pair_index=index,
                     global_x0=left,
-                    nominal_boundary_x=layout.owner_boundaries_x[index],
+                    nominal_boundary_x=left + content_nominal,
                 )
             )
         # Direct depth tokens are strict identity candidates for the v3
@@ -9174,6 +10877,13 @@ def render_calibrated_rgb_pushbroom(
             bidirectional_visibility_overrides=direct_token_visibility_overrides,
             depth_anchor_token_sets=direct_token_sets,
             raw_footprints=direct_token_raw_footprints,
+        )
+        (
+            foreground_fragments,
+            redundant_foreground_owner_suppression,
+        ) = _suppress_redundant_pose_sources_in_foreground_plan(
+            foreground_fragments,
+            layout.redundant_pose_node_suppression,
         )
         foreground_owner_plan = plan_foreground_owners(foreground_fragments)
         if not foreground_owner_plan.accepted:
@@ -9316,6 +11026,23 @@ def render_calibrated_rgb_pushbroom(
                     for candidate in candidates
                     if candidate not in pair_level_hard_owner_pairs
                     and candidate in geometry_pair_hard_owner_options
+                    and len(
+                        set(segment_locked_constraints[candidate].values())
+                    )
+                    <= 1
+                    and (
+                        not segment_locked_constraints[candidate]
+                        or next(
+                            iter(
+                                set(
+                                    segment_locked_constraints[
+                                        candidate
+                                    ].values()
+                                )
+                            )
+                        )
+                        in geometry_pair_hard_owner_options[candidate]
+                    )
                 ),
                 None,
             )
@@ -9337,10 +11064,18 @@ def render_calibrated_rgb_pushbroom(
                 + f"{failed_pair}"
             )
             preflight_fragments_for_solver[fallback_pair] = ()
-            segment_locked_constraints[fallback_pair] = {}
+        required_pair_level_owners = {
+            pair_index: next(iter(set(constraints.values())))
+            for pair_index, constraints in enumerate(
+                segment_locked_constraints
+            )
+            if pair_index in pair_level_hard_owner_pairs
+            and constraints
+        }
         pair_level_hard_owners = _resolve_pair_level_hard_owners(
             tuple(pair_level_hard_owner_pairs),
             geometry_pair_hard_owner_options,
+            required_owners=required_pair_level_owners,
         )
         foreground_anchor_reservations = _build_foreground_owner_run_reservations(
             foreground_owner_plan,
@@ -9367,6 +11102,9 @@ def render_calibrated_rgb_pushbroom(
                 "foreground_segment_owner_plan": {
                     **foreground_owner_plan.as_dict(),
                     "shared_source_direct_anchor_evidence": shared_source_anchor_audit,
+                    "redundant_pose_owner_suppression": dict(
+                        redundant_foreground_owner_suppression
+                    ),
                     "anchor_reservations": [
                         reservation.as_dict()
                         for reservation in foreground_anchor_reservations
@@ -9425,6 +11163,23 @@ def render_calibrated_rgb_pushbroom(
         foreground_current_valid_nonadjacent_owner_pixels = 0
         foreground_blend_pixels = 0
         foreground_deformation_pixels = 0
+        foreground_owner_validity_clipped_pixels = 0
+        safe_same_layer_background_pixels = 0
+        safe_same_layer_blend_rescue_pairs = 0
+        post_gain_safe_background_blend_rescue_pairs = 0
+        safe_background_cut_refined_rows = 0
+        safe_background_cut_refined_pairs = 0
+        safe_background_cut_maximum_shift_pixels = 0
+        pre_gain_risk_pixels = 0
+        pre_gain_risk_seed_pixels = 0
+        post_gain_risk_pixels = 0
+        post_gain_risk_seed_pixels = 0
+        post_gain_lab_risk_reclassified_same_layer_pixels = 0
+        redundant_foreground_owner_validity_clipped_pixels = 0
+        redundant_source_indices = {
+            int(value["source_index"])
+            for value in layout.redundant_pose_node_suppression
+        }
         completed_foreground_anchor_fragments: list[
             tuple[_ForegroundAnchorReservation, ForegroundFragment]
         ] = []
@@ -9477,6 +11232,18 @@ def render_calibrated_rgb_pushbroom(
                 right=right,
                 height=layout.canvas_height,
             )
+            geometry_same_layer = _geometry_pair_same_layer_mask(
+                geometry_plans[index],
+                left=left,
+                right=right,
+                height=layout.canvas_height,
+            )
+            geometry_blend_protected = _geometry_pair_blend_protected_mask(
+                geometry_plans[index],
+                left=left,
+                right=right,
+                height=layout.canvas_height,
+            )
             geometry_out_of_scope_first = _geometry_out_of_scope_first_mask(
                 geometry_plans,
                 index,
@@ -9500,6 +11267,25 @@ def render_calibrated_rgb_pushbroom(
             completed_foreground_anchor_fragments = list(
                 advanced_foreground_anchor_fragments
             )
+            (
+                current_anchor_handoff_retirements,
+                clipped_handoff_pixels,
+            ) = _clip_foreground_owner_handoffs_to_incoming_valid(
+                current_anchor_handoff_retirements,
+                left=left,
+                right=right,
+                height=layout.canvas_height,
+                pair_index=index,
+                owner_valid_masks=(valid0, valid1),
+            )
+            foreground_owner_validity_clipped_pixels += clipped_handoff_pixels
+            if {int(index), int(index) + 1} & redundant_source_indices:
+                current_redundant_foreground_owner_validity_clipped_pixels += (
+                    clipped_handoff_pixels
+                )
+                redundant_foreground_owner_validity_clipped_pixels += (
+                    clipped_handoff_pixels
+                )
             foreground_anchor_handoff_retirements.extend(
                 current_anchor_handoff_retirements
             )
@@ -9558,6 +11344,35 @@ def render_calibrated_rgb_pushbroom(
                 right=right,
                 height=layout.canvas_height,
             )
+            unfiltered_foreground_anchor_pixels = int(
+                np.count_nonzero(foreground_anchor_owner_prior >= 0)
+            )
+            (
+                current_foreground_anchor_reserved,
+                foreground_anchor_owner_prior,
+                current_foreground_anchor_fragments,
+            ) = _foreground_anchor_mask_and_prior(
+                foreground_anchor_reservations,
+                pair_index=index,
+                left=left,
+                right=right,
+                height=layout.canvas_height,
+                owner_valid_masks=(valid0, valid1),
+            )
+            clipped_current_anchor_pixels = (
+                unfiltered_foreground_anchor_pixels
+                - int(np.count_nonzero(foreground_anchor_owner_prior >= 0))
+            )
+            foreground_owner_validity_clipped_pixels += (
+                clipped_current_anchor_pixels
+            )
+            if {int(index), int(index) + 1} & redundant_source_indices:
+                current_redundant_foreground_owner_validity_clipped_pixels += (
+                    clipped_current_anchor_pixels
+                )
+                redundant_foreground_owner_validity_clipped_pixels += (
+                    clipped_current_anchor_pixels
+                )
             prior_conflict = (
                 (foreground_anchor_owner_prior >= 0)
                 & (foreground_handoff_owner_prior >= 0)
@@ -9633,14 +11448,24 @@ def render_calibrated_rgb_pushbroom(
                     stored_risk["structural_seed_mask"], dtype=bool
                 )
                 raw_edge_offset = float(stored_risk["edge_offset_p95"])
+                raw_risk_pixel_count = int(stored_risk["raw_risk_pixel_count"])
+                raw_risk_seed_pixel_count = int(
+                    stored_risk["raw_risk_seed_pixel_count"]
+                )
             if (
                 raw_risk_seed.shape != image0.shape[:2]
                 or raw_risk_structural_seed.shape != image0.shape[:2]
             ):
                 raise RuntimeError("Stored raw RGB-risk seed shape is inconsistent")
-            # Re-evaluate risk after the global linear-RGB correction while
-            # retaining every raw risk component as an irreversible guard.
+            # Re-evaluate colour risk after the global linear-RGB correction.
+            # Only pre-gain geometry-bearing structure is irreversible; a
+            # brightness-only mismatch that the gain stage removed must not
+            # continue to block the safe background corridor.
             post_gain_risk = _rgb_risk_details(image0, image1, valid0, valid1)
+            pre_gain_risk_pixels += raw_risk_pixel_count
+            pre_gain_risk_seed_pixels += raw_risk_seed_pixel_count
+            post_gain_risk_pixels += int(np.count_nonzero(post_gain_risk.mask))
+            post_gain_risk_seed_pixels += int(post_gain_risk.seed_pixel_count)
             risk = _rgb_risk_details(
                 image0,
                 image1,
@@ -9650,9 +11475,8 @@ def render_calibrated_rgb_pushbroom(
             )
             risk = _RGBRiskDetails(
                 mask=risk.mask,
-                # The full guard retains every pre-gain risk component, but
-                # the geometry/late-closure topology must remain the union of
-                # true pre/post-gain *seeds*, never the dilated guard itself.
+                # Geometry/late-closure topology remains the union of true
+                # pre/post-gain structural seeds, never the dilated guard.
                 seed_mask=np.ascontiguousarray(post_gain_risk.seed_mask | raw_risk_seed),
                 structural_seed_mask=np.ascontiguousarray(
                     post_gain_risk.structural_seed_mask | raw_risk_structural_seed
@@ -9679,11 +11503,48 @@ def render_calibrated_rgb_pushbroom(
                 multiband_levels,
                 geometry_protected=geometry_protected,
             )
-            nominal = int(round(layout.owner_boundaries_x[index])) - left
+            structural_mask = _fill_risk_components(
+                np.asarray(risk.structural_seed_mask, dtype=bool),
+                valid0 & valid1,
+                bridge_radius=2,
+            ).astype(np.uint8)
+            structural_risk = _RGBRiskDetails(
+                mask=structural_mask,
+                seed_mask=np.asarray(risk.structural_seed_mask, dtype=bool),
+                structural_seed_mask=np.asarray(
+                    risk.structural_seed_mask, dtype=bool
+                ),
+                edge_offset_p95=risk.edge_offset_p95,
+                seed_pixel_count=int(
+                    np.count_nonzero(risk.structural_seed_mask)
+                ),
+                component_count=int(
+                    cv2.connectedComponents(structural_mask)[0] - 1
+                ),
+            )
+            structural_guard, _, _ = _risk_guard(
+                structural_risk,
+                valid0 & valid1,
+                blend_width,
+                multiband_levels,
+                geometry_protected=geometry_blend_protected,
+            )
+            pose_nominal = int(round(layout.owner_boundaries_x[index])) - left
             # Endpoint outward half-FOV ownership can leave the midpoint one
             # pixel beyond the overlap support.  The nearest real corridor
             # column is the only valid nominal reference in that case.
-            nominal = int(np.clip(nominal, 0, image0.shape[1] - 1))
+            pose_nominal = int(
+                np.clip(pose_nominal, 0, image0.shape[1] - 1)
+            )
+            nominal = _content_aware_nominal_boundary(
+                raw_risk_structural_seed,
+                valid0 & valid1,
+                pose_nominal,
+            )
+            if nominal != preflight_pair_nominal_boundaries[index]:
+                raise RuntimeError(
+                    "Content-aware RGB seam centre drifted after preflight"
+                )
             safe_wall = _safe_white_wall_mask(
                 image0,
                 image1,
@@ -9691,6 +11552,74 @@ def render_calibrated_rgb_pushbroom(
                 guard,
                 low_gradient_quantile=settings.scale_low_gradient_quantile,
             )
+            safe_same_layer_candidate = _safe_same_layer_background_mask(
+                image0,
+                image1,
+                valid0 & valid1,
+                structural_guard,
+                geometry_same_layer,
+                low_gradient_quantile=settings.scale_low_gradient_quantile,
+            )
+            # Neutral safe-wall support already has its own stricter route.
+            # This branch exists specifically for chromatic material on the
+            # same bilateral RGB-D background layer.
+            safe_same_layer_candidate &= ~safe_wall
+            (
+                safe_same_layer_aperture,
+                same_layer_preferred_nominal,
+                same_layer_preferred_row_count,
+            ) = _same_layer_seam_aperture(
+                safe_same_layer_candidate,
+                valid0 & valid1,
+                nominal,
+                blend_width=blend_width,
+            )
+            safe_background = np.ascontiguousarray(
+                safe_wall | safe_same_layer_candidate
+            )
+            owner_move_allowed = np.ascontiguousarray(
+                (valid0 & valid1)
+                & ~structural_guard
+                & ~geometry_blend_protected
+            )
+            blend_guard = _same_layer_owner_guard(
+                guard,
+                safe_same_layer_aperture,
+                geometry_blend_protected,
+                valid0 & valid1,
+            )
+            multiband_guard = _same_layer_owner_guard(
+                guard,
+                safe_same_layer_candidate,
+                geometry_blend_protected,
+                valid0 & valid1,
+            )
+            unresolved_blend_risk = np.ascontiguousarray(
+                (risk.mask > 0) & ~safe_same_layer_candidate
+            )
+            reclassified_same_layer_pixels = int(
+                np.count_nonzero(
+                    (risk.mask > 0) & safe_same_layer_candidate
+                )
+            )
+            post_gain_lab_risk_reclassified_same_layer_pixels += (
+                reclassified_same_layer_pixels
+            )
+            current_safe_same_layer_pixels = int(
+                np.count_nonzero(safe_same_layer_candidate)
+            )
+            safe_same_layer_background_pixels += (
+                current_safe_same_layer_pixels
+            )
+            photometric_hard_owner = index in photometric_fallback_reasons
+            photometric_blend_candidate = bool(
+                photometric_hard_owner
+                and np.any(safe_background)
+            )
+            same_layer_preferred_shift = int(
+                same_layer_preferred_nominal - nominal
+            )
+            nominal = int(same_layer_preferred_nominal)
             pair_level_hard_owner = pair_level_hard_owners.get(index)
             if pair_level_hard_owner is None:
                 try:
@@ -9707,12 +11636,14 @@ def render_calibrated_rgb_pushbroom(
                         image1,
                         valid0,
                         valid1,
-                        guard,
+                        blend_guard,
                         nominal,
                         component_owner_constraints=(
                             sequence_owner_preflight.component_owner_constraints[index]
                         ),
                         owner_prior=foreground_anchor_owner_prior,
+                        preferred_safe_background=safe_same_layer_aperture,
+                        preferred_blend_width=blend_width,
                     )
                 except RuntimeError as exc:
                     # Component-level ownership is preferred because it leaves
@@ -9743,6 +11674,33 @@ def render_calibrated_rgb_pushbroom(
                         if index in geometry_neighbourhood_pairs
                         else "rgb_component_owner_no_safe_boundary"
                     )
+            current_refined_rows = 0
+            current_maximum_cut_shift = 0
+            if pair_level_hard_owner is None:
+                (
+                    owner0,
+                    owner1,
+                    cuts,
+                    current_refined_rows,
+                    current_maximum_cut_shift,
+                ) = _refine_cuts_on_contiguous_safe_background(
+                    valid0,
+                    valid1,
+                    safe_background,
+                    owner_move_allowed,
+                    cuts,
+                    nominal_boundary=nominal,
+                    blend_width=blend_width,
+                    extended_same_layer_background=safe_same_layer_aperture,
+                )
+                safe_background_cut_refined_rows += current_refined_rows
+                safe_background_cut_refined_pairs += int(
+                    current_refined_rows > 0
+                )
+                safe_background_cut_maximum_shift_pixels = max(
+                    safe_background_cut_maximum_shift_pixels,
+                    current_maximum_cut_shift,
+                )
             if pair_level_hard_owner is not None:
                 if (
                     foreground_anchor_required_owners
@@ -9768,6 +11726,22 @@ def render_calibrated_rgb_pushbroom(
                 hard_rows = int(required.shape[0])
                 split_count = 0
                 boundary_guard_count = 0
+            elif photometric_hard_owner and not photometric_blend_candidate:
+                # Photometric evidence is not trustworthy enough to authorize
+                # any cross-owner colour blend.  Keep the already-audited
+                # monotonic owner partition, copy exactly one original RGB
+                # source at every pixel, and retain both strips where neither
+                # alone covers the complete valid corridor.
+                required = valid0 | valid1
+                pair_image = np.zeros_like(image0)
+                pair_image[owner0] = image0[owner0]
+                pair_image[owner1] = image1[owner1]
+                blend_zone = np.zeros_like(required)
+                pair_blend_pixels = 0
+                pair_levels = 0
+                mask0_pixels = 0
+                mask1_pixels = 0
+                masks_distinct = True
             else:
                 (
                     pair_image,
@@ -9781,14 +11755,37 @@ def render_calibrated_rgb_pushbroom(
                     image0,
                     image1,
                     valid0 & valid1,
-                    guard,
-                    safe_wall,
+                    multiband_guard,
+                    safe_background,
                     owner0,
                     owner1,
                     cuts,
                     blend_width,
                     multiband_levels,
                 )
+                if pair_blend_pixels == 0:
+                    # ``_blend_safe_pair_zone`` reports the bounded candidate
+                    # pyramid depth even when complementary owner masks leave
+                    # no actual shared zone.  Publication records applied
+                    # levels, so a zero-pixel result must remain level zero.
+                    pair_levels = 0
+            same_layer_blend_pixels = int(
+                np.count_nonzero(
+                    blend_zone & safe_same_layer_candidate
+                )
+            )
+            post_gain_safe_background_blend_rescued = bool(
+                photometric_blend_candidate and pair_blend_pixels > 0
+            )
+            photometric_same_layer_blend_rescued = bool(
+                photometric_blend_candidate and same_layer_blend_pixels > 0
+            )
+            safe_same_layer_blend_rescue_pairs += int(
+                photometric_same_layer_blend_rescued
+            )
+            post_gain_safe_background_blend_rescue_pairs += int(
+                post_gain_safe_background_blend_rescued
+            )
             final_boundary = _boundary_rgb_risk_audit(
                 risk.structural_seed_mask,
                 valid0 & valid1,
@@ -9858,21 +11855,56 @@ def render_calibrated_rgb_pushbroom(
                 plan,
                 audit={**dict(plan.audit), "final_owner": final_owner_audit},
             )
-            if np.any(blend_zone & (risk.mask > 0)):
+            if np.any(blend_zone & unresolved_blend_risk):
                 raise RuntimeError("RGB risk pixels reached a MultiBand blend zone")
-            if np.any(blend_zone & geometry_protected):
+            if np.any(blend_zone & geometry_blend_protected):
                 raise RuntimeError("Geometry-protected pixels reached a MultiBand blend zone")
             if np.any(blend_zone & foreground_anchor_reserved):
                 raise RuntimeError("Foreground anchor reached a MultiBand blend zone")
             if np.any(
                 (foreground_anchor_owner_prior == 0) & ~owner0
             ) or np.any((foreground_anchor_owner_prior == 1) & ~owner1):
+                lost_first = (
+                    (foreground_anchor_owner_prior == 0) & ~owner0
+                )
+                lost_second = (
+                    (foreground_anchor_owner_prior == 1) & ~owner1
+                )
                 raise RuntimeError(
-                    "Adjacent pair owner solve did not retain its foreground anchor"
+                    "Adjacent pair owner solve did not retain its foreground "
+                    f"anchor (pair={index}, "
+                    "required_first_pixels="
+                    f"{int(np.count_nonzero(foreground_anchor_owner_prior == 0))}, "
+                    "required_second_pixels="
+                    f"{int(np.count_nonzero(foreground_anchor_owner_prior == 1))}, "
+                    "lost_first_pixels="
+                    f"{int(np.count_nonzero(lost_first))}, "
+                    "lost_second_pixels="
+                    f"{int(np.count_nonzero(lost_second))}, "
+                    "lost_first_selected_rgb_valid_pixels="
+                    f"{int(np.count_nonzero(lost_first & valid0))}, "
+                    "lost_second_selected_rgb_valid_pixels="
+                    f"{int(np.count_nonzero(lost_second & valid1))}, "
+                    "lost_first_handoff_pixels="
+                    f"{int(np.count_nonzero(lost_first & (foreground_handoff_owner_prior == 0)))}, "
+                    "lost_second_handoff_pixels="
+                    f"{int(np.count_nonzero(lost_second & (foreground_handoff_owner_prior == 1)))}, "
+                    "lost_first_current_anchor_pixels="
+                    f"{int(np.count_nonzero(lost_first & (current_foreground_anchor_reserved)))}, "
+                    "lost_second_current_anchor_pixels="
+                    f"{int(np.count_nonzero(lost_second & (current_foreground_anchor_reserved)))}, "
+                    f"pair_level_hard_owner={pair_level_hard_owner}, "
+                    f"graphcut_used={used_graphcut}, hard_rows={hard_rows}, "
+                    f"photometric_hard_owner={photometric_hard_owner}, "
+                    "redundant_sources="
+                    f"{sorted(redundant_source_indices)})"
                 )
             if split_count or boundary_guard_count:
                 raise RuntimeError("Hard-owner protection audit failed")
-            if pair_level_hard_owner is None:
+            if pair_level_hard_owner is None and (
+                not photometric_hard_owner
+                or post_gain_safe_background_blend_rescued
+            ):
                 (
                     l_delta,
                     delta_e00,
@@ -9972,7 +12004,7 @@ def render_calibrated_rgb_pushbroom(
                 )
             foreground_blend_pixels += foreground_blend_count
             foreground_deformation_pixels += foreground_deformation_count
-            if not used_graphcut or hard_rows:
+            if photometric_hard_owner or not used_graphcut or hard_rows:
                 hard_cut_pairs += 1
             graphcut_pairs += int(used_graphcut)
             blend_pixels += pair_blend_pixels
@@ -9983,7 +12015,9 @@ def render_calibrated_rgb_pushbroom(
             geometry_out_of_scope_first_pixels += int(
                 np.count_nonzero(geometry_out_of_scope_first)
             )
-            geometry_blend_pixels += int(np.count_nonzero(blend_zone & geometry_protected))
+            geometry_blend_pixels += int(
+                np.count_nonzero(blend_zone & geometry_blend_protected)
+            )
             foreground_anchor_handoff_guard_pixels += int(
                 np.count_nonzero(current_anchor_handoff_guard)
             )
@@ -10002,12 +12036,45 @@ def render_calibrated_rgb_pushbroom(
                     "search_corridor_target_width_pixels": int(
                         settings.seam_search_width_pixels
                     ),
+                    "pose_nominal_boundary_local_x": int(pose_nominal),
+                    "content_aware_nominal_boundary_local_x": int(
+                        preflight_pair_nominal_boundaries[index]
+                    ),
+                    "content_aware_nominal_boundary_shift_pixels": int(
+                        preflight_pair_nominal_boundaries[index]
+                        - pose_nominal
+                    ),
+                    "same_layer_preferred_nominal_boundary_local_x": int(
+                        nominal
+                    ),
+                    "same_layer_preferred_boundary_shift_pixels": int(
+                        same_layer_preferred_shift
+                    ),
+                    "same_layer_preferred_boundary_row_count": int(
+                        same_layer_preferred_row_count
+                    ),
                     "blend_width_pixels": blend_width,
                     "multiband_levels": pair_levels,
                     "blend_zone_pixel_count": pair_blend_pixels,
-                    "blend_zone_risk_pixel_count": 0,
+                    "blend_zone_risk_pixel_count": int(
+                        np.count_nonzero(blend_zone & unresolved_blend_risk)
+                    ),
+                    "blend_zone_original_post_gain_risk_pixel_count": int(
+                        np.count_nonzero(blend_zone & (risk.mask > 0))
+                    ),
+                    "post_gain_lab_risk_reclassified_same_layer_pixel_count": (
+                        reclassified_same_layer_pixels
+                    ),
                     "risk_pixel_count": int(np.count_nonzero(risk.mask)),
                     "risk_seed_pixel_count": risk.seed_pixel_count,
+                    "pre_gain_risk_pixel_count": raw_risk_pixel_count,
+                    "pre_gain_risk_seed_pixel_count": raw_risk_seed_pixel_count,
+                    "post_gain_risk_pixel_count": int(
+                        np.count_nonzero(post_gain_risk.mask)
+                    ),
+                    "post_gain_risk_seed_pixel_count": int(
+                        post_gain_risk.seed_pixel_count
+                    ),
                     "risk_edge_offset_p95_pixels": risk.edge_offset_p95,
                     "protected_guard_pixel_count": int(np.count_nonzero(guard)),
                     "protected_guard_radius_pixels": guard_radius,
@@ -10025,6 +12092,9 @@ def render_calibrated_rgb_pushbroom(
                     "geometry_protected_pixel_count": int(
                         np.count_nonzero(geometry_protected)
                     ),
+                    "geometry_blend_protected_pixel_count": int(
+                        np.count_nonzero(geometry_blend_protected)
+                    ),
                     "geometry_active_mesh_pixel_count": int(
                         np.count_nonzero(geometry_active)
                     ),
@@ -10037,6 +12107,12 @@ def render_calibrated_rgb_pushbroom(
                     ),
                     "foreground_anchor_current_pair_prior_pixel_count": int(
                         np.count_nonzero(foreground_anchor_owner_prior >= 0)
+                    ),
+                    "redundant_pose_foreground_owner_validity_clipped_pixel_count": int(
+                        current_redundant_foreground_owner_validity_clipped_pixels
+                    ),
+                    "foreground_owner_validity_clipped_pixel_count": int(
+                        clipped_handoff_pixels + clipped_current_anchor_pixels
                     ),
                     "foreground_anchor_blend_zone_pixel_count": 0,
                     "foreground_anchor_pair_write_suppressed_pixel_count": int(
@@ -10060,12 +12136,34 @@ def render_calibrated_rgb_pushbroom(
                         if pair_level_hard_owner is not None
                         else None
                     ),
+                    "photometric_hard_owner_fallback": photometric_hard_owner,
                     "preflight_component_constraint_count": len(
                         sequence_owner_preflight.component_owner_constraints[index]
                     ),
                     "split_protected_component_count": split_count,
                     "owner_boundary_risk_guard_pixel_count": boundary_guard_count,
                     "safe_white_wall_pixel_count": white_support,
+                    "safe_same_layer_background_pixel_count": (
+                        current_safe_same_layer_pixels
+                    ),
+                    "safe_background_blend_pixel_count": int(
+                        np.count_nonzero(blend_zone & safe_background)
+                    ),
+                    "safe_same_layer_blend_pixel_count": int(
+                        same_layer_blend_pixels
+                    ),
+                    "safe_background_cut_refined_row_count": int(
+                        current_refined_rows
+                    ),
+                    "safe_background_cut_maximum_shift_pixels": int(
+                        current_maximum_cut_shift
+                    ),
+                    "photometric_blend_rescued_by_post_gain_same_layer": (
+                        photometric_same_layer_blend_rescued
+                    ),
+                    "photometric_blend_rescued_by_post_gain_safe_background": (
+                        post_gain_safe_background_blend_rescued
+                    ),
                     "safe_white_wall_delta_l_p95": l_delta,
                     "safe_white_wall_delta_e00_p95": delta_e00,
                     "multiband_mask0_pixel_count": mask0_pixels,
@@ -10079,7 +12177,73 @@ def render_calibrated_rgb_pushbroom(
                     "photometric_log_mad_bgr": (
                         photometric.mad_bgr.tolist() if photometric is not None else None
                     ),
+                    "photometric_audit": {
+                        "method": (
+                            photometric.method
+                            if photometric is not None
+                            else "identity_hard_owner"
+                        ),
+                        "candidate_pixel_count": (
+                            photometric.candidate_pixels if photometric is not None else 0
+                        ),
+                        "spatial_tile_count": (
+                            photometric.spatial_tile_count if photometric is not None else 0
+                        ),
+                        "training_pixel_count": (
+                            photometric.training_pixels if photometric is not None else 0
+                        ),
+                        "held_out_pixel_count": (
+                            photometric.held_out_pixels if photometric is not None else 0
+                        ),
+                        "inlier_ratio": 1.0 if photometric is not None else 0.0,
+                        "log_relation_mad_bgr": (
+                            photometric.mad_bgr.tolist()
+                            if photometric is not None
+                            else None
+                        ),
+                        "held_out_log_residual_p95": (
+                            photometric.held_out_log_residual_p95
+                            if photometric is not None
+                            else None
+                        ),
+                        "held_out_log_residual_max": (
+                            photometric.held_out_log_residual_max
+                            if photometric is not None
+                            else None
+                        ),
+                        "held_out_improvement_ratio": (
+                            photometric.held_out_improvement_ratio
+                            if photometric is not None
+                            else None
+                        ),
+                        "held_out_delta_l_p95": (
+                            photometric.held_out_delta_l_p95
+                            if photometric is not None
+                            else None
+                        ),
+                        "held_out_delta_e00_p95": (
+                            photometric.held_out_delta_e00_p95
+                            if photometric is not None
+                            else None
+                        ),
+                        "same_layer_corridor_used": (
+                            photometric.same_layer_corridor_used
+                            if photometric is not None
+                            else False
+                        ),
+                        "risk_or_protected_intersection": False,
+                        "unit_gain_fallback": photometric is None,
+                        "hard_owner_required": photometric is None,
+                        "failure_reason": (
+                            photometric_fallback_reasons.get(index)
+                            if photometric is None
+                            else None
+                        ),
+                    },
                     "graphcut_used": used_graphcut,
+                    "direct_hard_cut_selection": (
+                        "protected_free_rgb_boundary_cost_with_row_continuity"
+                    ),
                     "hard_cut_row_count": hard_rows,
                     "geometry_assistance": {
                         "triggered": geometry_plans[index].triggered,
@@ -10090,6 +12254,16 @@ def render_calibrated_rgb_pushbroom(
                 }
             )
 
+        redundant_pose_owner_audits = _rewrite_redundant_pose_node_owners(
+            canvas,
+            valid_canvas,
+            owner_canvas,
+            strip_paths,
+            layout,
+        )
+        redundant_foreground_owner_suppression[
+            "full_resolution_owner_validity_clipped_pixel_count"
+        ] = int(redundant_foreground_owner_validity_clipped_pixels)
         if protected_split_components or owner_boundary_guard_pixels:
             raise RuntimeError("RGB hard-owner structural protection audit failed")
         foreground_anchor_verification = _verify_committed_foreground_anchor_locks(
@@ -10119,6 +12293,9 @@ def render_calibrated_rgb_pushbroom(
             "foreground_blend_pixel_count": int(foreground_blend_pixels),
             "foreground_deformation_pixel_count": int(
                 foreground_deformation_pixels
+            ),
+            "full_resolution_owner_validity_clipped_pixel_count": int(
+                foreground_owner_validity_clipped_pixels
             ),
         }
         if any(
@@ -10170,24 +12347,15 @@ def render_calibrated_rgb_pushbroom(
             int(np.count_nonzero(cropped_owner == source_index))
             for source_index in range(len(frames))
         ]
-        effective_pair_level_hard_owners = {
-            **pair_level_hard_owners,
-            **runtime_pair_level_hard_owners,
-        }
         effective_pair_level_hard_owner_reasons = {
             **pair_level_hard_owner_reasons,
             **runtime_pair_level_hard_owner_reasons,
         }
-        owner_topology_fallback_pairs = set(effective_pair_level_hard_owners) | set(
-            component_hard_owner_fallbacks
-        )
-        hard_owner_topology_pairs = owner_topology_fallback_pairs | {
-            int(plan.pair_index) for plan in geometry_plans if plan.triggered
-        }
         suppressed_source_frames = _audit_suppressed_source_frames(
             [int(frame.frame_id) for frame in frames],
             source_owner_pixel_counts,
-            hard_owner_topology_pairs,
+            set(range(len(frames) - 1)),
+            redundant_pose_nodes=layout.redundant_pose_node_suppression,
         )
         endpoint_outer_owner_pixel_counts: list[int] = []
         endpoint_outer_trimmed_invalid_pixel_counts: list[int] = []
@@ -10343,13 +12511,19 @@ def render_calibrated_rgb_pushbroom(
             "strict_owner_partition": True,
             "graphcut_pair_count": graphcut_pairs,
             "hard_cut_pair_count": hard_cut_pairs,
+            "direct_hard_cut_selection": (
+                "protected_free_rgb_boundary_cost_with_row_continuity"
+            ),
             "multiband_levels": max(applied_multiband_levels, default=0),
             "multiband_requested_max_levels": int(multiband_levels),
             "search_corridor_target_width_pixels": int(settings.seam_search_width_pixels),
             "search_corridor_width_min_pixels": min(actual_search_widths, default=0),
             "search_corridor_width_max_pixels": max(actual_search_widths, default=0),
             "search_corridor_target_pair_fraction": float(
-                sum(width >= 32 for width in actual_search_widths)
+                sum(
+                    width >= int(settings.seam_search_width_pixels)
+                    for width in actual_search_widths
+                )
                 / max(1, len(actual_search_widths))
             ),
             "owner_boundary_risk_guard_pixel_count": owner_boundary_guard_pixels,
@@ -10358,6 +12532,72 @@ def render_calibrated_rgb_pushbroom(
             "safe_white_wall_boundary_delta_e00_p95": white_wall_delta_e00_p95,
             "safe_white_wall_boundary_measurement_count": white_wall_measurement_count,
             "safe_white_wall_boundary_metric_tile_pixels": [64, 4],
+            "safe_same_layer_background_pixel_count": int(
+                safe_same_layer_background_pixels
+            ),
+            "safe_same_layer_blend_rescue_pair_count": int(
+                safe_same_layer_blend_rescue_pairs
+            ),
+            "post_gain_safe_background_blend_rescue_pair_count": int(
+                post_gain_safe_background_blend_rescue_pairs
+            ),
+            "safe_background_cut_refined_pair_count": int(
+                safe_background_cut_refined_pairs
+            ),
+            "safe_background_cut_refined_row_count": int(
+                safe_background_cut_refined_rows
+            ),
+            "safe_background_cut_maximum_shift_pixels": int(
+                safe_background_cut_maximum_shift_pixels
+            ),
+            "photometric_two_stage_post_gain_risk_recomputed": True,
+            "pre_gain_risk_pixel_count": int(pre_gain_risk_pixels),
+            "pre_gain_risk_seed_pixel_count": int(pre_gain_risk_seed_pixels),
+            "post_gain_risk_pixel_count": int(post_gain_risk_pixels),
+            "post_gain_risk_seed_pixel_count": int(post_gain_risk_seed_pixels),
+            "post_gain_lab_risk_reclassified_same_layer_pixel_count": int(
+                post_gain_lab_risk_reclassified_same_layer_pixels
+            ),
+            "photometric_held_out_log_residual_p95": float(
+                max(
+                    (
+                        float(edge.held_out_log_residual_p95 or 0.0)
+                        for edge in photometric_edges
+                        if edge is not None
+                    ),
+                    default=0.0,
+                )
+            ),
+            "photometric_held_out_log_residual_max": float(
+                max(
+                    (
+                        float(edge.held_out_log_residual_max or 0.0)
+                        for edge in photometric_edges
+                        if edge is not None
+                    ),
+                    default=0.0,
+                )
+            ),
+            "photometric_held_out_delta_l_p95": float(
+                max(
+                    (
+                        float(edge.held_out_delta_l_p95 or 0.0)
+                        for edge in photometric_edges
+                        if edge is not None
+                    ),
+                    default=0.0,
+                )
+            ),
+            "photometric_held_out_delta_e00_p95": float(
+                max(
+                    (
+                        float(edge.held_out_delta_e00_p95 or 0.0)
+                        for edge in photometric_edges
+                        if edge is not None
+                    ),
+                    default=0.0,
+                )
+            ),
             "periodic_stripe_energy_before": stripe_energy_before,
             "periodic_stripe_energy_after": stripe_energy_after,
             "periodic_stripe_energy_ratio": stripe_energy_ratio,
@@ -10377,6 +12617,41 @@ def render_calibrated_rgb_pushbroom(
             "all_sources_have_owned_pixels": not bool(suppressed_source_frames),
             "all_real_pose_nodes_rendered": True,
             "suppressed_source_frame_count": int(len(suppressed_source_frames)),
+            "redundant_pose_node_suppression_count": int(
+                len(layout.redundant_pose_node_suppression)
+            ),
+            "redundant_pose_node_owner_rewrite_run_count": int(
+                len(redundant_pose_owner_audits)
+            ),
+            "redundant_pose_node_owner_rewrite_pixel_count": int(
+                sum(
+                    int(value["suppressed_owner_pixel_count"])
+                    for value in redundant_pose_owner_audits
+                )
+            ),
+            "redundant_pose_node_owner_rewrite_uncovered_pixel_count": int(
+                sum(
+                    int(value["uncovered_pixel_count"])
+                    for value in redundant_pose_owner_audits
+                )
+            ),
+            "redundant_pose_node_discarded_unique_invalid_output_pixel_count": int(
+                sum(
+                    int(
+                        value.get(
+                            "discarded_unique_invalid_output_pixel_count",
+                            0,
+                        )
+                    )
+                    for value in redundant_pose_owner_audits
+                )
+            ),
+            "redundant_pose_foreground_owner_validity_clipped_pixel_count": int(
+                redundant_foreground_owner_validity_clipped_pixels
+            ),
+            "foreground_owner_validity_clipped_pixel_count": int(
+                foreground_owner_validity_clipped_pixels
+            ),
             "endpoint_outer_half_fov_owner_pixel_counts": endpoint_outer_owner_pixel_counts,
             "endpoint_outer_half_fov_trimmed_invalid_pixel_counts": endpoint_outer_trimmed_invalid_pixel_counts,
             "endpoint_outer_half_fov_trimmed_column_counts": endpoint_outer_trimmed_column_counts,
@@ -10400,15 +12675,55 @@ def render_calibrated_rgb_pushbroom(
             failures.append("RGB risk entered a MultiBand blend zone")
         if geometry_blend_pixels:
             failures.append("geometry-protected pixels entered a MultiBand blend zone")
-        if white_wall_l_p95 is None or white_wall_l_p95 > 1.5:
-            failures.append("safe white-wall owner-boundary P95 |delta L*| exceeds 1.5")
-        if white_wall_delta_e00_p95 is None or white_wall_delta_e00_p95 > 2.0:
-            failures.append("safe white-wall owner-boundary P95 delta E00 exceeds 2.0")
+        if quality_metrics["photometric_held_out_log_residual_p95"] > 0.05:
+            failures.append("photometric held-out log residual P95 exceeds 0.05")
+        if quality_metrics["photometric_held_out_log_residual_max"] > 0.12:
+            failures.append("photometric held-out log residual maximum exceeds 0.12")
+        if quality_metrics["photometric_held_out_delta_l_p95"] > 1.5:
+            failures.append("photometric held-out P95 |delta L*| exceeds 1.5")
+        if quality_metrics["photometric_held_out_delta_e00_p95"] > 2.0:
+            failures.append("photometric held-out P95 delta E00 exceeds 2.0")
         if (
             stripe_reduction_required
             and (stripe_energy_ratio is None or stripe_energy_ratio > 0.60)
         ):
             failures.append("periodic vertical stripe energy was not reduced by 40%")
+        if photometric_fallback_reasons:
+            failures.append(
+                "photometric identity hard-owner fallback used for adjacent pair(s): "
+                + ", ".join(
+                    f"{index} ({reason})"
+                    for index, reason in sorted(
+                        photometric_fallback_reasons.items()
+                    )
+                )
+            )
+        if layout.redundant_pose_node_suppression:
+            failures.append(
+                "near-duplicate real pose node owner suppression used for source(s): "
+                + ", ".join(
+                    str(value["source_index"])
+                    for value in layout.redundant_pose_node_suppression
+                )
+            )
+        covered_nonredundant_sources = [
+            int(value["source_index"])
+            for value in suppressed_source_frames
+            if value.get("reason")
+            == "fully_covered_by_complete_adjacent_rgb_owner_topology"
+        ]
+        if covered_nonredundant_sources:
+            failures.append(
+                "real source retained its pose/remap but was fully covered by "
+                "complete adjacent RGB owner topology: "
+                + ", ".join(str(value) for value in covered_nonredundant_sources)
+            )
+        if foreground_owner_validity_clipped_pixels:
+            failures.append(
+                "foreground persistent-owner support was clipped to final "
+                "full-resolution RGB validity for "
+                f"{foreground_owner_validity_clipped_pixels} pixel(s)"
+            )
         quality_metrics["quality_pass"] = not failures
         # Keep the strict gate's scalar reasons even when the caller elects
         # to publish a structurally safe, explicitly degraded C handoff.  The
@@ -10465,6 +12780,9 @@ def render_calibrated_rgb_pushbroom(
                     "foreground_anchor_reservation_verification": (
                         foreground_anchor_verification
                     ),
+                    "redundant_pose_node_owner_rewrite_audits": [
+                        dict(value) for value in redundant_pose_owner_audits
+                    ],
                 }
             )
             foreground_plan_audit = working_set_audit.get(
@@ -10473,6 +12791,9 @@ def render_calibrated_rgb_pushbroom(
             if isinstance(foreground_plan_audit, dict):
                 foreground_plan_audit.update(
                     {
+                        "redundant_pose_owner_suppression": dict(
+                            redundant_foreground_owner_suppression
+                        ),
                         "cross_pair_reservation_policy": (
                             "v3_planned_foreground_owner_runs_with_adjacent_"
                             "owner_run_handoff_audits_only"
@@ -10495,6 +12816,61 @@ def render_calibrated_rgb_pushbroom(
                         ),
                     }
                 )
+        photometric_pair_audits = [
+            {
+                "first_frame_id": pair["first_frame_id"],
+                "second_frame_id": pair["second_frame_id"],
+                "photometric_audit": dict(pair["photometric_audit"]),
+            }
+            for pair in pair_metadata
+        ]
+        photometric_calibration = {
+            "mode": "source_aware_global_linear_rgb_v2_two_stage",
+            "model": "diagonal_linear_rgb_gain_only",
+            "two_stage_background_gain_then_risk_recompute": True,
+            "partial_observation_solver": bool(
+                exposure_metrics["photometric_partial_observation_solver"]
+            ),
+            "strict_audited_solver_pair_count": int(
+                exposure_metrics["photometric_strict_audited_pair_count"]
+            ),
+            "degraded_background_solver_pair_count": int(
+                exposure_metrics[
+                    "photometric_degraded_background_solver_pair_count"
+                ]
+            ),
+            "post_gain_risk_recomputed": True,
+            "pre_gain_risk_pixel_count": int(pre_gain_risk_pixels),
+            "pre_gain_risk_seed_pixel_count": int(pre_gain_risk_seed_pixels),
+            "post_gain_risk_pixel_count": int(post_gain_risk_pixels),
+            "post_gain_risk_seed_pixel_count": int(post_gain_risk_seed_pixels),
+            "post_gain_lab_risk_reclassified_same_layer_pixel_count": int(
+                post_gain_lab_risk_reclassified_same_layer_pixels
+            ),
+            "safe_same_layer_blend_rescue_pair_count": int(
+                safe_same_layer_blend_rescue_pairs
+            ),
+            "post_gain_safe_background_blend_rescue_pair_count": int(
+                post_gain_safe_background_blend_rescue_pairs
+            ),
+            "all_adjacent_pairs_complete": len(photometric_pair_audits)
+            == len(frames) - 1,
+            "provisional_rgb_panorama_written": False,
+            "recomposited_from_source_strips": True,
+            "full_resolution_remap_count_per_source": 1,
+            "solver_condition": exposure_metrics["photometric_solver_condition"],
+            "gain_min_max": [float(np.min(gains)), float(np.max(gains))],
+            "identity_hard_owner_fallback_used": bool(
+                photometric_fallback_reasons
+            ),
+            "identity_hard_owner_fallback_pair_count": len(
+                photometric_fallback_reasons
+            ),
+            "identity_hard_owner_fallback_pairs": sorted(
+                photometric_fallback_reasons
+            ),
+            "pairs": photometric_pair_audits,
+        }
         metadata: dict[str, object] = {
             "backend": "calibrated_rgb_pushbroom",
             "pixel_source": "calibrated_rgb_source_samples",
@@ -10515,11 +12891,55 @@ def render_calibrated_rgb_pushbroom(
             "frame_ids": [frame.frame_id for frame in frames],
             "source_owner_pixel_counts": source_owner_pixel_counts,
             "suppressed_source_frames": suppressed_source_frames,
+            "redundant_pose_node_suppression": {
+                "policy": (
+                    "near_duplicate_true_pose_nodes_remapped_once_then_"
+                    "covered_by_retained_adjacent_rgb_hard_owners"
+                ),
+                "minimum_independent_owner_step_pixels": 0.25,
+                "suppressed_source_count": int(
+                    len(layout.redundant_pose_node_suppression)
+                ),
+                "retained_owner_source_indices": list(
+                    layout.retained_owner_source_indices
+                ),
+                "nodes": [
+                    dict(value)
+                    for value in layout.redundant_pose_node_suppression
+                ],
+                "foreground_owner_suppression": dict(
+                    redundant_foreground_owner_suppression
+                ),
+                "owner_rewrite_audits": [
+                    dict(value) for value in redundant_pose_owner_audits
+                ],
+                "discarded_unique_invalid_output_pixel_count": int(
+                    sum(
+                        int(
+                            value.get(
+                                "discarded_unique_invalid_output_pixel_count",
+                                0,
+                            )
+                        )
+                        for value in redundant_pose_owner_audits
+                    )
+                ),
+                "full_resolution_remap_count": int(
+                    renderer.full_resolution_output_remap_count
+                ),
+                "all_real_pose_nodes_preserved": True,
+                "interpolated_pose_count": 0,
+                "generated_colour_pixel_count": 0,
+                "blend_pixel_count": 0,
+                "deformation_pixel_count": 0,
+                "audit_complete": True,
+            },
             "color_gain_channel_order": "RGB",
             "color_gain_application": "single_linear_rgb_pass",
             "color_gains": [
                 [float(value) for value in gain[::-1]] for gain in gains
             ],
+            "photometric_calibration": photometric_calibration,
             "residual_alignment": residual_metadata,
             "geometry_assisted_seam": {
                 "enabled": bool(settings.geometry_assisted_seam.enabled),

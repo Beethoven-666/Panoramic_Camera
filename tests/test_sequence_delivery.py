@@ -384,8 +384,55 @@ def test_rgbd_pipeline_stage_failure_never_leaves_delivery(
 def _complete_anchor_render_metadata(
     *, frame_ids: list[int], quality_pass: bool = True
 ) -> dict[str, object]:
+    photometric_pairs = [
+        {
+            "first_frame_id": frame_ids[index],
+            "second_frame_id": frame_ids[index + 1],
+            "photometric_audit": {
+                "method": "safe_wall",
+                "spatial_tile_count": 8,
+                "training_pixel_count": 256,
+                "held_out_pixel_count": 64,
+                "held_out_log_residual_p95": 0.01,
+                "held_out_log_residual_max": 0.02,
+                "risk_or_protected_intersection": False,
+            },
+        }
+        for index in range(len(frame_ids) - 1)
+    ]
     return {
         "quality_metrics": {"quality_pass": quality_pass},
+        "source_owner_pixel_counts": [1 for _ in frame_ids],
+        "redundant_pose_node_suppression": {
+            "policy": (
+                "near_duplicate_true_pose_nodes_remapped_once_then_"
+                "covered_by_retained_adjacent_rgb_hard_owners"
+            ),
+            "minimum_independent_owner_step_pixels": 0.25,
+            "suppressed_source_count": 0,
+            "retained_owner_source_indices": list(range(len(frame_ids))),
+            "nodes": [],
+            "foreground_owner_suppression": {
+                "policy": (
+                    "redundant_pose_sources_excluded_from_persistent_"
+                    "foreground_owner_runs"
+                ),
+                "suppressed_source_indices": [],
+                "changed_fragment_count": 0,
+                "pair_local_only_fragment_count": 0,
+                "stripped_depth_identity_fragment_count": 0,
+                "full_resolution_owner_validity_clipped_pixel_count": 0,
+                "complete": True,
+            },
+            "owner_rewrite_audits": [],
+            "full_resolution_remap_count": len(frame_ids),
+            "all_real_pose_nodes_preserved": True,
+            "interpolated_pose_count": 0,
+            "generated_colour_pixel_count": 0,
+            "blend_pixel_count": 0,
+            "deformation_pixel_count": 0,
+            "audit_complete": True,
+        },
         "residual_alignment": {
             "working_set_audit": {
                 "foreground_segment_owner_plan": {
@@ -428,6 +475,25 @@ def _complete_anchor_render_metadata(
             }
             for index in range(len(frame_ids) - 1)
         ],
+        "photometric_calibration": {
+            "mode": "source_aware_global_linear_rgb_v2_two_stage",
+            "model": "diagonal_linear_rgb_gain_only",
+            "two_stage_background_gain_then_risk_recompute": True,
+            "partial_observation_solver": False,
+            "post_gain_risk_recomputed": True,
+            "pre_gain_risk_pixel_count": 0,
+            "pre_gain_risk_seed_pixel_count": 0,
+            "post_gain_risk_pixel_count": 0,
+            "post_gain_risk_seed_pixel_count": 0,
+            "safe_same_layer_blend_rescue_pair_count": 0,
+            "all_adjacent_pairs_complete": True,
+            "provisional_rgb_panorama_written": False,
+            "recomposited_from_source_strips": True,
+            "full_resolution_remap_count_per_source": 1,
+            "solver_condition": 10.0,
+            "gain_min_max": [0.9, 1.1],
+            "pairs": photometric_pairs,
+        },
     }
 
 
@@ -602,6 +668,173 @@ def test_publication_assessment_preserves_renderer_strict_failure_reasons() -> N
     assert assessment.as_dict()["strict_failure_reasons"] == list(
         assessment.strict_failure_reasons
     )
+
+
+def test_publication_assessment_publishes_photometric_identity_hard_owner_as_c() -> None:
+    frame_ids = [10, 11]
+    metadata = _complete_anchor_render_metadata(
+        frame_ids=frame_ids, quality_pass=False
+    )
+    metadata["quality_metrics"] = {
+        "quality_pass": False,
+        "strict_failure_reasons": [
+            "photometric identity hard-owner fallback used for adjacent pair(s): "
+            "0 (held_out_failed)"
+        ],
+    }
+    pair = metadata["pairs"][0]
+    pair.update(
+        {
+            "photometric_hard_owner_fallback": True,
+            "blend_zone_pixel_count": 0,
+            "multiband_levels": 0,
+        }
+    )
+    calibration = metadata["photometric_calibration"]
+    calibration.update(
+        {
+            "solver_condition": 1.0,
+            "gain_min_max": [1.0, 1.0],
+            "identity_hard_owner_fallback_used": True,
+            "identity_hard_owner_fallback_pair_count": 1,
+            "identity_hard_owner_fallback_pairs": [0],
+        }
+    )
+    calibration["pairs"][0]["photometric_audit"] = {
+        "method": "identity_hard_owner",
+        "unit_gain_fallback": True,
+        "hard_owner_required": True,
+        "failure_reason": "held_out_failed",
+        "risk_or_protected_intersection": False,
+    }
+
+    assessment = sequence._assess_publication(
+        {"quality_pass": True},
+        {"quality_pass": True},
+        metadata,
+        frame_ids,
+    )
+
+    assert assessment.strict_quality_pass is False
+    assert assessment.quality_grade == "C"
+    assert assessment.delivery_state == "published_degraded"
+    assert assessment.manual_review_required is True
+    assert assessment.handoff_fallback_summary == {
+        "anchor": 0,
+        "apap": 0,
+        "flow_mesh": 0,
+        "hard_cut": 1,
+    }
+
+
+def test_photometric_identity_pair_allows_only_audited_same_layer_narrow_blend() -> None:
+    frame_ids = [10, 11]
+    metadata = _complete_anchor_render_metadata(frame_ids=frame_ids)
+    metadata["pairs"][0].update(
+        {
+            "photometric_hard_owner_fallback": True,
+            "photometric_blend_rescued_by_post_gain_same_layer": True,
+            "photometric_blend_rescued_by_post_gain_safe_background": True,
+            "safe_same_layer_background_pixel_count": 320,
+            "safe_same_layer_blend_pixel_count": 12,
+            "safe_background_blend_pixel_count": 12,
+            "blend_zone_pixel_count": 12,
+            "blend_zone_risk_pixel_count": 0,
+            "multiband_levels": 2,
+        }
+    )
+    calibration = metadata["photometric_calibration"]
+    calibration.update(
+        {
+            "identity_hard_owner_fallback_used": True,
+            "identity_hard_owner_fallback_pair_count": 1,
+            "identity_hard_owner_fallback_pairs": [0],
+            "safe_same_layer_blend_rescue_pair_count": 1,
+        }
+    )
+    calibration["pairs"][0]["photometric_audit"] = {
+        "method": "identity_hard_owner",
+        "unit_gain_fallback": True,
+        "hard_owner_required": True,
+        "failure_reason": "insufficient_usable",
+        "risk_or_protected_intersection": False,
+    }
+
+    audit = sequence._validate_photometric_calibration(metadata, frame_ids)
+
+    assert audit["identity_hard_owner_fallback_pairs"] == [0]
+    assert audit["safe_same_layer_blend_rescue_pair_count"] == 1
+
+
+def test_publication_assessment_validates_redundant_pose_node_suppression() -> None:
+    frame_ids = [10, 11, 12]
+    metadata = _complete_anchor_render_metadata(
+        frame_ids=frame_ids, quality_pass=False
+    )
+    metadata["quality_metrics"] = {
+        "quality_pass": False,
+        "strict_failure_reasons": [
+            "near-duplicate real pose node owner suppression used for source(s): 1"
+        ],
+    }
+    metadata["source_owner_pixel_counts"] = [100, 0, 100]
+    suppression = metadata["redundant_pose_node_suppression"]
+    suppression.update(
+        {
+            "suppressed_source_count": 1,
+            "retained_owner_source_indices": [0, 2],
+            "foreground_owner_suppression": {
+                "policy": (
+                    "redundant_pose_sources_excluded_from_persistent_"
+                    "foreground_owner_runs"
+                ),
+                "suppressed_source_indices": [1],
+                "changed_fragment_count": 2,
+                "pair_local_only_fragment_count": 0,
+                "stripped_depth_identity_fragment_count": 1,
+                "full_resolution_owner_validity_clipped_pixel_count": 3,
+                "complete": True,
+            },
+            "nodes": [
+                {
+                    "source_index": 1,
+                    "frame_id": 11,
+                    "previous_retained_source_index": 0,
+                    "previous_retained_frame_id": 10,
+                    "next_retained_source_index": 2,
+                    "next_retained_frame_id": 12,
+                    "full_resolution_remap_required": True,
+                    "independent_owner_interval": False,
+                    "coverage_policy": (
+                        "nearest_retained_real_pose_rgb_hard_owner_only"
+                    ),
+                }
+            ],
+            "owner_rewrite_audits": [
+                {
+                    "redundant_source_indices": [1],
+                    "uncovered_pixel_count": 0,
+                    "blend_pixel_count": 0,
+                    "deformation_pixel_count": 0,
+                    "source_owner_pixel_counts_after": {"1": 0},
+                    "audit_complete": True,
+                }
+            ],
+        }
+    )
+
+    assessment = sequence._assess_publication(
+        {"quality_pass": True},
+        {"quality_pass": True},
+        metadata,
+        frame_ids,
+    )
+
+    assert assessment.quality_grade == "C"
+    assert assessment.delivery_state == "published_degraded"
+    assert metadata["redundant_pose_node_suppression"][
+        "suppressed_source_indices"
+    ] == [1]
 
 
 def test_publication_assessment_marks_accepted_local_mesh_as_b() -> None:

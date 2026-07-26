@@ -136,7 +136,7 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert panorama.shape[0] >= 180
     assert (output / "delivery.json").is_file()
     assert not (output / "failure.json").exists()
-    assert report["schema"] == "gemini305-calibrated-rgb-pushbroom/v9"
+    assert report["schema"] == "gemini305-calibrated-rgb-pushbroom/v10"
     assert report["layout_selection"]["mode"] == "adaptive_rgbd_pose_nodes"
     assert report["render_strategy"] == "calibrated_rgb_pushbroom"
     assert report["render"]["backend"] == "calibrated_rgb_pushbroom"
@@ -228,7 +228,7 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     ) - 1
     assert delivery["pose_backend"] == "open3d_rgbd"
     assert delivery["projection"] == "calibrated_rgb_pushbroom"
-    assert delivery["schema"] == "gemini305-panorama-delivery/v9"
+    assert delivery["schema"] == "gemini305-panorama-delivery/v10"
     assert delivery["pixel_source"] == "calibrated_rgb_source_samples"
     assert delivery["depth_used_for_output_pixels"] is False
     assert delivery["geometry_assistance_backend"] == compact_geometry["backend"]

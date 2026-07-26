@@ -35,6 +35,7 @@ from panorama_demo.calibrated_rgb_pushbroom import (
     _geometry_trigger_from_preview,
     _held_out_strong_rgb_edge_gate,
     _rgb_transparent_or_reflection_protection_from_preview,
+    _rgb_texture_consistent_log_relation,
     _lift_rgb_flow_application_and_fit_support_to_geometry_tile,
     _lift_training_rgb_flow_consistency_to_geometry_tile,
     _force_monotonic_component_owners,
@@ -47,6 +48,8 @@ from panorama_demo.calibrated_rgb_pushbroom import (
     _resolve_pair_level_hard_owners,
     _audit_suppressed_source_frames,
     _select_pair_level_hard_owner,
+    _clip_foreground_owner_handoffs_to_incoming_valid,
+    _suppress_redundant_pose_sources_in_foreground_plan,
     _PhotometricEdge,
     _adaptive_multiband_levels,
     _apply_linear_bgr_gain,
@@ -84,7 +87,7 @@ def _make_rgb_pushbroom_input(tmp_path: Path, *, seed: int) -> tuple[RGBDSession
         frame_count=5,
         frame_width=320,
         frame_height=200,
-        # Dense real pose nodes leave a 32--64 px calibrated seam-search
+        # Dense real pose nodes leave a 64--160 px calibrated seam-search
         # corridor inside the unchanged 20% central source-band limit.
         step=16,
         seed=seed,
@@ -573,6 +576,69 @@ def test_v3_direct_token_enters_owner_plan_and_reservation_run() -> None:
     assert reservation.uses_sparse_anchor_mask is False
 
 
+def test_redundant_pose_source_cannot_become_persistent_foreground_owner() -> None:
+    token = DepthAnchorToken(
+        shared_source_index=1,
+        left_pair_index=0,
+        right_pair_index=1,
+        left_direct_component_label=7,
+        right_direct_component_label=11,
+    )
+    fragments = (
+        (
+            ForegroundFragment(
+                pair_index=0,
+                component_label=7,
+                frame_ids=(100, 101),
+                source_indices=(0, 1),
+                global_bbox=(20, 1, 4, 4),
+                local_mask=np.ones((4, 4), dtype=bool),
+                depth_anchor_tokens=(token,),
+                allowed_local_owners=(0, 1),
+                preferred_local_owner=1,
+                geometry_mode=GeometryMode.DEPTH_OBSERVED,
+                bidirectional_visibility_supported=True,
+            ),
+        ),
+        (
+            ForegroundFragment(
+                pair_index=1,
+                component_label=11,
+                frame_ids=(101, 102),
+                source_indices=(1, 2),
+                global_bbox=(20, 1, 4, 4),
+                local_mask=np.ones((4, 4), dtype=bool),
+                depth_anchor_tokens=(token,),
+                allowed_local_owners=(0, 1),
+                preferred_local_owner=0,
+                geometry_mode=GeometryMode.DEPTH_OBSERVED,
+                bidirectional_visibility_supported=True,
+            ),
+        ),
+    )
+
+    filtered, audit = _suppress_redundant_pose_sources_in_foreground_plan(
+        fragments,
+        ({"source_index": 1},),
+    )
+
+    assert filtered[0][0].allowed_local_owners == (0,)
+    assert filtered[1][0].allowed_local_owners == (1,)
+    assert all(
+        fragment.geometry_mode is GeometryMode.IMAGE_REGION
+        for pair in filtered
+        for fragment in pair
+    )
+    assert all(
+        not fragment.depth_anchor_tokens
+        for pair in filtered
+        for fragment in pair
+    )
+    assert audit["suppressed_source_indices"] == [1]
+    assert audit["changed_fragment_count"] == 2
+    assert audit["stripped_depth_identity_fragment_count"] == 2
+
+
 def test_v3_owner_run_preflight_uses_full_guards_without_sparse_anchor_masks() -> None:
     """Multiple owner runs may compare bundled-token guards without a legacy mask."""
 
@@ -1050,6 +1116,23 @@ def test_v3_handoff_writes_incoming_run_before_owner_verification() -> None:
     handoff = handoffs[0]
     assert handoff.source_index == 1
     assert handoff.incoming_source_index == 2
+    second_valid_for_handoff = np.ones((height, right - left), dtype=bool)
+    second_valid_for_handoff[1, 0] = False
+    clipped_handoffs, clipped_handoff_pixels = (
+        _clip_foreground_owner_handoffs_to_incoming_valid(
+            handoffs,
+            left=left,
+            right=right,
+            height=height,
+            pair_index=1,
+            owner_valid_masks=(
+                np.ones((height, right - left), dtype=bool),
+                second_valid_for_handoff,
+            ),
+        )
+    )
+    assert clipped_handoff_pixels == 1
+    assert clipped_handoffs[0].pixel_count == handoff.pixel_count - 1
 
     reserved, owner_prior, current_fragments = _foreground_anchor_mask_and_prior(
         (incoming_reservation,),
@@ -1060,6 +1143,25 @@ def test_v3_handoff_writes_incoming_run_before_owner_verification() -> None:
     )
     assert len(current_fragments) == 1
     assert np.all(owner_prior[reserved] == 1)
+    second_valid = np.ones((height, right - left), dtype=bool)
+    reserved_y, reserved_x = np.argwhere(reserved)[0]
+    second_valid[reserved_y, reserved_x] = False
+    clipped_reserved, clipped_prior, clipped_fragments = (
+        _foreground_anchor_mask_and_prior(
+            (incoming_reservation,),
+            pair_index=1,
+            left=left,
+            right=right,
+            height=height,
+            owner_valid_masks=(
+                np.ones((height, right - left), dtype=bool),
+                second_valid,
+            ),
+        )
+    )
+    assert np.count_nonzero(clipped_reserved) == np.count_nonzero(reserved) - 1
+    assert clipped_prior[reserved_y, reserved_x] == -1
+    assert len(clipped_fragments) == 1
 
     def pair_canvas() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         canvas = np.zeros((height, 8, 3), dtype=np.uint8)
@@ -2165,6 +2267,18 @@ def test_geometry_topology_fallback_preserves_shared_sources_across_a_run() -> N
     # the isolated corridor prefers its first source.
     assert resolved == {17: 1, 18: 1, 19: 1, 42: 0}
 
+    locked = _resolve_pair_level_hard_owners(
+        (17, 18, 19, 42),
+        {
+            17: (0, 1),
+            18: (0, 1),
+            19: (0, 1),
+            42: (0, 1),
+        },
+        required_owners={18: 0, 42: 1},
+    )
+    assert locked == {17: 1, 18: 0, 19: 1, 42: 1}
+
 
 def test_geometry_component_fallback_preserves_safe_pair_coverage() -> None:
     left = ProtectedComponentFragment(
@@ -2209,11 +2323,11 @@ def test_geometry_pair_hard_owner_and_source_suppression_are_audited() -> None:
         {
             "source_index": 1,
             "frame_id": 101,
-            "adjacent_hard_owner_topology_pairs": [0],
-            "reason": "fully_covered_by_audited_hard_owner_topology_decision",
+            "adjacent_audited_owner_topology_pairs": [0],
+            "reason": "fully_covered_by_complete_adjacent_rgb_owner_topology",
         }
     ]
-    with pytest.raises(RuntimeError, match="without an audited geometry seam decision"):
+    with pytest.raises(RuntimeError, match="without an audited adjacent owner decision"):
         _audit_suppressed_source_frames((100, 101), (1, 0), set())
 
 
@@ -2295,6 +2409,59 @@ def test_pushbroom_uses_every_real_frame_once_with_bounded_strip_residency(
     assert metrics["endpoint_outer_half_fov_trimmed_invalid_pixel_counts"] == [0, 0]
 
 
+@pytest.mark.parametrize("duplicate_distance_mm", [16.1, 15.9])
+def test_pushbroom_suppresses_near_duplicate_pose_owner_but_remaps_it_once(
+    tmp_path: Path, duplicate_distance_mm: float
+) -> None:
+    session, original_poses = _make_rgb_pushbroom_input(tmp_path, seed=18)
+    scan_axis = (
+        original_poses[-1][:3, 3] - original_poses[0][:3, 3]
+    )
+    scan_axis /= np.linalg.norm(scan_axis)
+    distances_mm = (0.0, 16.0, duplicate_distance_mm, 32.0, 48.0)
+    poses: list[np.ndarray] = []
+    for original, distance_mm in zip(
+        original_poses, distances_mm, strict=True
+    ):
+        pose = original.copy()
+        pose[:3, 3] = original_poses[0][:3, 3] + scan_axis * distance_mm
+        poses.append(pose)
+
+    result = render_calibrated_rgb_pushbroom(
+        session.frames,
+        poses,
+        session.calibration,
+        rgb_motions=[
+            {"dx": 16.0, "reliable": True}
+            for _ in range(len(session.frames) - 1)
+        ],
+        quality_gate=False,
+    )
+
+    layout = result.metadata["layout"]
+    suppression = result.metadata["redundant_pose_node_suppression"]
+    assert layout["retained_owner_source_indices"] == [0, 1, 3, 4]
+    assert len(layout["redundant_pose_node_suppression"]) == 1
+    assert layout["redundant_pose_node_suppression"][0]["source_index"] == 2
+    assert layout["owner_intervals_x"][2][0] == layout["owner_intervals_x"][2][1]
+    assert result.metadata["source_owner_pixel_counts"][2] == 0
+    assert result.metadata["quality_metrics"]["full_resolution_output_remap_count"] == 5
+    assert suppression["suppressed_source_count"] == 1
+    assert suppression["full_resolution_remap_count"] == 5
+    assert suppression["all_real_pose_nodes_preserved"] is True
+    assert suppression["foreground_owner_suppression"][
+        "suppressed_source_indices"
+    ] == [2]
+    assert suppression["foreground_owner_suppression"]["complete"] is True
+    assert suppression["owner_rewrite_audits"][0]["uncovered_pixel_count"] == 0
+    assert result.metadata["suppressed_source_frames"][0]["source_index"] == 2
+    assert result.metadata["quality_metrics"]["quality_pass"] is False
+    assert any(
+        "near-duplicate real pose node owner suppression" in reason
+        for reason in result.metadata["quality_metrics"]["strict_failure_reasons"]
+    )
+
+
 def test_pushbroom_keeps_outward_endpoint_coverage_when_virtual_x_is_reversed(
     tmp_path: Path,
 ) -> None:
@@ -2338,7 +2505,7 @@ def test_pushbroom_pair_blends_are_narrow_and_never_include_rgb_risk(
     assert len(pairs) == len(session.frames) - 1
     assert all(2 <= pair["blend_width_pixels"] <= 8 for pair in pairs)
     # Endpoint supports may be shortened by the outward-half-FOV policy, but
-    # interior seams retain a 32--64 px search corridor that is independent
+    # interior seams retain a 64--160 px search corridor that is independent
     # from the 2--8 px output blend band.
     assert all(2 <= pair["search_corridor_width_pixels"] <= 64 for pair in pairs)
     assert all(
@@ -2363,7 +2530,9 @@ def test_pushbroom_crops_from_valid_mask_and_preserves_valid_black_rgb(
     )
     # Preserve a neutral wall rail solely for the mandatory photometric
     # measurement; the large black region remains valid output content.
-    black[:40, :, :] = 190
+    # Eight 16x16 spatial tiles are mandatory for the v10 independent
+    # photometric train/held-out audit.
+    black[:64, :, :] = 190
     for frame in session.frames:
         assert cv2.imwrite(str(frame.color_path), black)
         # Rendering after this deletion proves output pixels are not read from
@@ -2418,7 +2587,7 @@ def test_pushbroom_rejects_unstable_rgb_motion_scale(tmp_path: Path) -> None:
         )
 
 
-def test_global_linear_rgb_gain_solver_is_joint_per_channel_and_fail_closed() -> None:
+def test_global_linear_rgb_gain_solver_uses_verified_partial_edges() -> None:
     source_count = 5
     # Each BGR channel has its own linear log-gain slope.  The mean-zero gauge
     # is known analytically, and affine gain curves are not biased by the
@@ -2439,14 +2608,320 @@ def test_global_linear_rgb_gain_solver_is_joint_per_channel_and_fail_closed() ->
 
     gains, metrics = _solve_global_linear_rgb_gains(source_count, edges)
 
-    assert metrics["photometric_mode"] == "safe_wall_global_linear_rgb"
+    assert metrics["photometric_mode"] == (
+        "source_aware_global_linear_rgb_v2_two_stage"
+    )
     assert metrics["photometric_global_solver"] is True
     np.testing.assert_allclose(np.log(gains), expected_log_gains, atol=1e-8)
     assert not np.allclose(gains[:, 0], gains[:, 1])
     assert not np.allclose(gains[:, 1], gains[:, 2])
 
-    with pytest.raises(RuntimeError, match="No reliable safe white-wall"):
-        _solve_global_linear_rgb_gains(source_count, [edges[0], None, *edges[2:]])
+    fallback_gains, fallback_metrics = _solve_global_linear_rgb_gains(
+        source_count, [edges[0], None, *edges[2:]]
+    )
+    assert not np.array_equal(fallback_gains, np.ones((source_count, 3)))
+    assert fallback_metrics["photometric_global_solver"] is True
+    assert fallback_metrics["photometric_partial_observation_solver"] is True
+    assert fallback_metrics["photometric_global_identity_fallback"] is False
+    assert fallback_metrics["photometric_identity_fallback_pair_count"] == 1
+
+
+def test_rgb_texture_consistent_relation_uses_fixed_tiles_and_held_out_pixels() -> None:
+    height, width = 96, 96
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    # Deliberately chromatic material texture: no neutral-wall criterion may
+    # be needed for a stable same-surface relation.
+    first = np.stack(
+        (
+            48.0 + xx * 1.1,
+            55.0 + yy * 0.8,
+            70.0 + (xx + yy) * 0.55,
+        ),
+        axis=2,
+    ).astype(np.uint8)
+    expected_gain = np.array((0.91, 1.08, 0.96), dtype=np.float64)
+    second = pushbroom_module._linear_to_srgb_bgr(
+        pushbroom_module._srgb_to_linear_bgr(first) / expected_gain.reshape(1, 1, 3)
+    )
+    common = np.ones((height, width), dtype=bool)
+    observation = _rgb_texture_consistent_log_relation(
+        first, second, common, np.zeros_like(common)
+    )
+
+    assert observation is not None
+    assert observation.method == "rgb_texture_consistent"
+    assert observation.spatial_tile_count >= 8
+    assert observation.training_pixels >= 256
+    assert observation.held_out_pixels >= 64
+    assert observation.held_out_log_residual_p95 is not None
+    np.testing.assert_allclose(
+        observation.log_relation_bgr, np.log(expected_gain), atol=0.025
+    )
+
+
+def test_safe_same_layer_background_accepts_chromatic_post_gain_support() -> None:
+    first = np.full((64, 64, 3), (48, 112, 176), dtype=np.uint8)
+    second = first.copy()
+    common = np.ones((64, 64), dtype=bool)
+    same_layer = np.zeros_like(common)
+    same_layer[:, :40] = True
+    risk_guard = np.zeros_like(common)
+    risk_guard[20:44, 20:24] = True
+
+    safe = pushbroom_module._safe_same_layer_background_mask(
+        first,
+        second,
+        common,
+        risk_guard,
+        same_layer,
+        low_gradient_quantile=0.45,
+    )
+
+    assert np.count_nonzero(safe) > 0
+    assert not np.any(safe & risk_guard)
+    assert not np.any(safe & ~same_layer)
+    # The deliberately saturated orange material is not a neutral safe wall.
+    assert not np.any(
+        pushbroom_module._safe_white_wall_mask(
+            first,
+            second,
+            common,
+            risk_guard,
+            low_gradient_quantile=0.45,
+        )
+    )
+
+
+def test_same_layer_owner_guard_does_not_reintroduce_single_source_geometry() -> None:
+    common = np.zeros((8, 16), dtype=bool)
+    common[:, 3:13] = True
+    guard = np.zeros_like(common)
+    guard[:, 5:11] = True
+    same_layer = np.zeros_like(common)
+    same_layer[:, 7:9] = True
+    geometry = np.zeros_like(common)
+    geometry[:, 1:4] = True
+    geometry[:, 12:15] = True
+
+    owner_guard = pushbroom_module._same_layer_owner_guard(
+        guard,
+        same_layer,
+        geometry,
+        common,
+    )
+
+    assert not np.any(owner_guard & ~common)
+    assert not np.any(owner_guard[:, 7:9])
+    assert np.all(owner_guard[:, 3])
+    assert np.all(owner_guard[:, 12])
+    assert np.all(owner_guard[:, 5:7])
+    assert np.all(owner_guard[:, 9:11])
+
+
+def test_safe_background_cut_can_move_across_unblended_protected_free_route() -> None:
+    valid = np.ones((1, 12), dtype=bool)
+    safe = np.zeros_like(valid)
+    safe[:, 7:10] = True
+    movable = np.zeros_like(valid)
+    movable[:, 3:10] = True
+
+    owner0, owner1, cuts, changed_rows, maximum_shift = (
+        pushbroom_module._refine_cuts_on_contiguous_safe_background(
+            valid,
+            valid,
+            safe,
+            movable,
+            np.array([2], dtype=np.int32),
+            nominal_boundary=8,
+            blend_width=3,
+        )
+    )
+
+    assert cuts.tolist() == [8]
+    assert changed_rows == 1
+    assert maximum_shift == 6
+    assert np.all(owner0[:, :9])
+    assert np.all(owner1[:, 9:])
+    assert not np.any(owner0 & owner1)
+
+    movable[:, 5] = False
+    _, _, blocked_cuts, blocked_rows, _ = (
+        pushbroom_module._refine_cuts_on_contiguous_safe_background(
+            valid,
+            valid,
+            safe,
+            movable,
+            np.array([2], dtype=np.int32),
+            nominal_boundary=8,
+            blend_width=3,
+        )
+    )
+    assert blocked_cuts.tolist() == [2]
+    assert blocked_rows == 0
+
+
+def test_same_layer_cut_can_use_extended_half_corridor_without_relaxing_wall() -> None:
+    valid = np.ones((1, 96), dtype=bool)
+    safe = np.zeros_like(valid)
+    safe[:, 76:79] = True
+    movable = np.ones_like(valid)
+    old = np.array([38], dtype=np.int32)
+
+    _, _, wall_cuts, wall_rows, _ = (
+        pushbroom_module._refine_cuts_on_contiguous_safe_background(
+            valid,
+            valid,
+            safe,
+            movable,
+            old,
+            nominal_boundary=38,
+            blend_width=3,
+        )
+    )
+    _, _, layer_cuts, layer_rows, maximum_shift = (
+        pushbroom_module._refine_cuts_on_contiguous_safe_background(
+            valid,
+            valid,
+            safe,
+            movable,
+            old,
+            nominal_boundary=38,
+            blend_width=3,
+            extended_same_layer_background=safe,
+        )
+    )
+
+    assert wall_cuts.tolist() == [38]
+    assert wall_rows == 0
+    assert layer_cuts.tolist() == [77]
+    assert layer_rows == 1
+    assert maximum_shift == 39
+
+
+def test_content_aware_nominal_boundary_avoids_a_protected_object() -> None:
+    common = np.ones((40, 96), dtype=bool)
+    risk = np.zeros_like(common, dtype=np.uint8)
+    risk[4:38, 45:53] = 255
+
+    selected = pushbroom_module._content_aware_nominal_boundary(
+        risk,
+        common,
+        48,
+    )
+
+    assert abs(selected - 48) <= 32
+    assert not 45 <= selected < 53
+    assert selected in {42, 43, 54, 55}
+
+    sparse_risk = np.zeros_like(common, dtype=np.uint8)
+    sparse_risk[10, 48] = 255
+    assert (
+        pushbroom_module._content_aware_nominal_boundary(
+            sparse_risk,
+            common,
+            48,
+        )
+        == 48
+    )
+
+
+def test_preferred_safe_band_boundary_moves_before_graphcut() -> None:
+    safe = np.zeros((40, 96), dtype=bool)
+    safe[8:34, 70:76] = True
+    common = np.ones_like(safe)
+
+    boundary, rows = pushbroom_module._preferred_safe_band_boundary(
+        safe,
+        common,
+        40,
+        blend_width=4,
+    )
+
+    assert 71 <= boundary <= 73
+    assert rows == 26
+    sparse = np.zeros_like(safe)
+    sparse[0:2, 70:76] = True
+    assert pushbroom_module._preferred_safe_band_boundary(
+        sparse,
+        common,
+        40,
+        blend_width=4,
+    ) == (40, 0)
+
+    aperture, aperture_boundary, aperture_rows = (
+        pushbroom_module._same_layer_seam_aperture(
+            safe,
+            common,
+            40,
+            blend_width=4,
+        )
+    )
+    assert aperture_boundary == boundary
+    assert aperture_rows == 26
+    assert np.count_nonzero(aperture) > 26 * 4
+    assert not np.any(aperture & ~safe)
+
+
+def test_photometric_failure_uses_identity_gain_and_full_hard_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, poses = _make_rgb_pushbroom_input(tmp_path, seed=49)
+    monkeypatch.setattr(
+        pushbroom_module,
+        "_safe_wall_log_relation",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pushbroom_module,
+        "_rgb_texture_consistent_log_relation",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pushbroom_module,
+        "_degraded_background_log_relation",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pushbroom_module,
+        "_safe_white_wall_mask",
+        lambda first, *args, **kwargs: np.zeros(first.shape[:2], dtype=bool),
+    )
+    monkeypatch.setattr(
+        pushbroom_module,
+        "_safe_same_layer_background_mask",
+        lambda first, *args, **kwargs: np.zeros(first.shape[:2], dtype=bool),
+    )
+
+    result = render_calibrated_rgb_pushbroom(
+        session.frames,
+        poses,
+        session.calibration,
+        rgb_motions=_reliable_adjacent_rgb_motions(len(session.frames)),
+        quality_gate=False,
+    )
+
+    assert result.metadata["color_gains"] == [
+        [1.0, 1.0, 1.0] for _ in session.frames
+    ]
+    calibration = result.metadata["photometric_calibration"]
+    assert calibration["identity_hard_owner_fallback_used"] is True
+    assert calibration["identity_hard_owner_fallback_pair_count"] == (
+        len(session.frames) - 1
+    )
+    assert all(
+        pair["photometric_audit"]["method"] == "identity_hard_owner"
+        and pair["photometric_audit"]["unit_gain_fallback"] is True
+        and pair["photometric_audit"]["hard_owner_required"] is True
+        and pair["photometric_hard_owner_fallback"] is True
+        and pair["blend_zone_pixel_count"] == 0
+        and pair["multiband_levels"] == 0
+        for pair in result.metadata["pairs"]
+    )
+    assert result.metadata["quality_metrics"]["quality_pass"] is False
+    assert any(
+        "photometric identity hard-owner fallback" in reason
+        for reason in result.metadata["quality_metrics"]["strict_failure_reasons"]
+    )
 
 
 def test_linear_rgb_gain_application_is_per_channel_not_gamma_scalar() -> None:
@@ -2493,6 +2968,33 @@ def test_protected_foreground_component_is_owned_wholly_by_one_source() -> None:
     assert split_count == 0
     assert boundary_guard_count == 0
     assert np.all(cuts[12:20] < 18) or np.all(cuts[12:20] >= 46)
+
+
+def test_graphcut_locks_only_complete_same_layer_safe_rows() -> None:
+    height, width = 24, 64
+    first = np.full((height, width, 3), 120, dtype=np.uint8)
+    second = first.copy()
+    valid = np.ones((height, width), dtype=bool)
+    protected = np.zeros_like(valid)
+    safe = np.zeros_like(valid)
+    safe[5:19, 30:34] = True
+
+    _, _, cuts, _, _, split_count, boundary_guard_count = (
+        _graphcut_monotonic_owner(
+            first,
+            second,
+            valid,
+            valid,
+            protected,
+            nominal_boundary=31,
+            preferred_safe_background=safe,
+            preferred_blend_width=4,
+        )
+    )
+
+    assert np.all(cuts[5:19] == 31)
+    assert split_count == 0
+    assert boundary_guard_count == 0
 
 
 def test_local_multiband_uses_distinct_owner_masks_and_adaptive_levels(

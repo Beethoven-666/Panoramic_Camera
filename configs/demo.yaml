@@ -184,7 +184,7 @@ stitch:
     # This is a read-only GraphCut search corridor, not a blend width.  The
     # owner contribution remains bounded by the central-strip policy, while
     # the eventual safe MultiBand band remains 2-8 pixels.
-    seam_search_width_pixels: 64
+    seam_search_width_pixels: 96
     max_canvas_megapixels: 200
     max_aggregate_megapixels: 200
     max_pose_count: 160
@@ -194,8 +194,11 @@ stitch:
     # 2-D trajectory or a depth/plane proxy.
     minimum_valid_scale_pairs: 3
     scale_central_fraction: 0.20
-    # Safe-wall gain estimation uses only the low-gradient portion of the
-    # adjacent RGB overlap; it never averages foreground/label details.
+    # Source-aware photometric evidence first prefers a neutral safe wall,
+    # then admits only verified same-surface RGB texture on its fixed 16px
+    # train/held-out audit.  Failure keeps every source at identity gain and
+    # forces the affected pair to an unblended monotonic hard-owner seam for C.
+    # It never averages foreground/label details.
     scale_low_gradient_quantile: 0.45
     scale_minimum_response: 0.10
     scale_max_relative_mad: 0.35
@@ -268,5 +271,5 @@ stitch:
     # Only safe, low-gradient RGB overlap may be blended.  The per-pair radius
     # is clamp(floor(0.20 * narrower_owner_width), 2, 8), never a global blur.
     multiband_levels: 3
-    exposure_mode: safe_wall_global_linear_rgb
+    exposure_mode: source_aware_global_linear_rgb_v2_two_stage
     quality_gate: true

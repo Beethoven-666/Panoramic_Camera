@@ -419,7 +419,7 @@ RGB (u, v)
 
 画布 `x` 来自真实相机中心沿扫描方向的单调 SE(3) 位移；毫米到像素的唯一标量来自相邻 RGB 局部运动除以对应真实相机中心位移。这个标量仅决定狭缝布局：它不构造二维相机轨迹、不累计二维变换、不插值位姿，也不是深度/平面代理。没有足够稳定的相邻 RGB 测量时会失败。
 
-主扫描段的全部真实优化 pose nodes 都是源（至少 2、最多 160），不再压缩成 32 张全画布投影。中间源的原始中央带不超过 RGB 宽度的 `20%`；首帧和末帧仅向扫描方向外侧扩展至各自校准 RGB 图像边缘，以保留扫描端点的场景。端点扩展仍是一次标定 inverse remap、独占 hard owner 和独立 valid mask；最终裁剪若丢弃某个完整有效的端点外扩列，交付会失败。镜头畸变校正产生的几何无效边缘列无法成为矩形全景的一部分，会在报告中单独审计。中间 hard-owner 区不能放入窄带时，会要求更密的真实采样或更低输出尺度。条带临时落盘，输出阶段只加载相邻 2 条（配置硬上限 5）；画布和流式 aggregate working set 均不超过 `200 MP`。
+主扫描段的全部真实优化 pose nodes 都保留为源（至少 2、最多 160），不再压缩成 32 张全画布投影。若可靠 RGB 像素/毫米尺度将个别相邻真实位姿换算为 `≤0.25 px`，该近重复节点仍保留真实 pose、轨迹边并完成一次全分辨率 remap，但不获得独立 owner 区间；其临时 owner 像素只能由前后保留真实节点已经 remap 的 RGB 以无混合 hard owner 覆盖。报告逐节点公开真实中心、相邻保留 frame、阈值、替换像素、零未覆盖/零融合/零变形和最终 owner=0；完整时降为 C，任一覆盖或审计失败仍为 F。其它中间源的原始中央带不超过 RGB 宽度的 `20%`；首帧和末帧仅向扫描方向外侧扩展至各自校准 RGB 图像边缘，以保留扫描端点的场景。端点扩展仍是一次标定 inverse remap、独占 hard owner 和独立 valid mask；最终裁剪若丢弃某个完整有效的端点外扩列，交付会失败。镜头畸变校正产生的几何无效边缘列无法成为矩形全景的一部分，会在报告中单独审计。中间 hard-owner 区不能放入窄带时，会要求更密的真实采样或更低输出尺度。条带临时落盘，输出阶段只加载相邻 2 条（配置硬上限 5）；画布和流式 aggregate working set 均不超过 `200 MP`。
 
 每个源输出的唯一像素证据是 RGB 和独立 `valid_mask`。黑色 RGB 像素可以有效；不会产生 `surface_depth_mm`、相机深度、点云、TSDF、参考平面或前景 mask。
 
@@ -431,7 +431,7 @@ RGB (u, v)
 
 `local_apap_flow` 是与上述既有局部逆网格分开的候选，不是全局 residual alignment，也不是 pose 或全景变换。它当前只允许一个相邻 `96–160 px` 走廊内的双向可见同层安全背景、非 protected RGB 像素；前景实例继续是 owner-only，不能借此解除保护。局部带权 DLT/APAP 节点和双向 Farneback 残差仅服务一次 RGB inverse sampling。候选保持默认关闭；启用后也必须同时通过对应数/inlier、held-out、前后向 flow、`16/32 px` 网格、边界零位移、保护域零交集、最大 `8 px` 位移、正 Jacobian 与 `0.80–1.25` 尺度审计；任一失败只允许得到 `hard_cut_degraded` 建议，绝不部分应用 warp。
 
-灭火器把手、软管、近景前景、遮挡区以及透明/反光斜带一律保持单源 RGB。透明斜带若已存在原始帧中，是受保护内容，不是要用 warp 或融合消除的“拼接错位”。所有真实 pose nodes 仍参与轨迹、布局和一次 RGB remap；如果经审计的组件/整走廊 hard-owner 决策完整覆盖一个窄条，报告会明确记录该源不再贡献最终颜色。
+灭火器把手、软管、近景前景、遮挡区以及透明/反光斜带一律保持单源 RGB。透明斜带若已存在原始帧中，是受保护内容，不是要用 warp 或融合消除的“拼接错位”。所有真实 pose nodes 仍参与轨迹、布局和一次 RGB remap；近重复节点可保留零宽独立 owner 区间，并在前后保留真实 RGB owner 完整覆盖且零未覆盖/零融合/零变形的审计下不再贡献最终颜色。其它经审计的组件/整走廊 hard-owner 决策若完整覆盖一个窄条，报告也会明确记录该源不再贡献最终颜色。
 
 为避免长软管或藤蔓只靠 pair-local bbox 关联，正式 owner 预检前会构建 `DepthAnchorToken → ForegroundTrackEdge → ForegroundInstanceTrack → ForegroundOwnerRun` 计划。两-pair token 只提供严格相邻身份候选；多个唯一、双向可见、共享源原始足迹连续的相邻证据才能串成会话内 `track_id`。split、merge、多个候选或身份不唯一时立即截断，不猜测。全轨迹 owner DP 先保证当前 pair 的完整 RGB 覆盖和 owner 拓扑，再按最少实际换源、最大 direct token/双向身份支持、最大覆盖余量、最小轮廓/中心线/方向残差与固定顺序打破平局。每个 run 的 owner 始终仅是当前 pair 的两个相邻 source；交接必须经过前景专用审计，且所有交接像素都属于指定 incoming owner。前景不得进入 MultiBand、flow mesh 或 APAP，也绝不执行形变；非相邻 owner、前景 blend 与前景 deformation 的审计计数必须为零。身份交接失败但当前 RGB 覆盖和 owner 拓扑完整时，可作为 C 级 hard-owner 交付；否则为 F。当前只含 aligned depth 的 legacy 会话一律标为 `IMAGE_REGION` owner-only，不能冒充 `DEPTH_OBSERVED` 或刚体代理；该规划不会增加正式图像、深度图或额外像素生成路径。
 
@@ -439,7 +439,7 @@ RGB (u, v)
 
 正式接缝 backend 固定为 `rgb_monotonic_hard_owner_graphcut`。在相邻条带真实共同有效区，程序从 Lab 残差、对称边缘距离和梯度结构不一致得到 RGB 风险；风险连通域经过填充和自适应保护，整块只能属于一个 RGB owner。只有上节的结构性 raw seed 通过连通拓扑门，或边缘残差/整高 hard cut 指明真实接缝问题时，才加用局部 RGB-D 证据；Lab-only 风险仍完全受保护但不让几何网格追逐曝光差。深度绝不变成全景像素。GraphCut 在与 `2–8 px` 融合带解耦的 `32–64 px` 只读搜索走廊内寻找单调 hard owner 接缝，输出不会再按行重写。`owner_boundary ∩ risk_guard` 必须为空；没有安全通道时先尝试已审计的组件级单一 owner，再仅在完整 RGB 覆盖时使用整走廊 hard owner（不限于已触发的 depth pair）。这类完整、审计齐全的最低代价 hard cut 会发布为 C 级人工复核；没有完整覆盖、有效 mask 或 owner 拓扑则仍是 F。绝不使用 Feather、平均、补洞或透明重影掩盖问题。
 
-光度补偿只从共同有效、低梯度、低饱和、近中性、未过曝/欠曝且不在风险保护带内的白墙候选估计。它在近似线性 RGB 中，对每个颜色通道取 trimmed Huber log-ratio，并一次性解全部帧的三通道全局 log-gain（带二阶平滑），而不是逐相邻对累加标量增益。每张 RGB 条带只施加一次线性三通道补偿后再编码输出；缺少可靠白墙支持或 gain 超出 `0.45–2.20` 均 fail-closed。
+光度补偿优先从共同有效、低梯度、低饱和、近中性、未过曝/欠曝且不在风险保护带内的白墙候选估计；白墙不足时，只允许固定 16×16 tile、80/20 train/held-out 审计通过的同表面 RGB 纹理。在所有相邻关系完整时，它在近似线性 RGB 中一次性解全部帧的三通道全局 log-gain（带二阶平滑），而不是逐相邻对累加标量增益。任一 pair 缺少可靠证据、两种方法冲突或 held-out 失败时，不插值、不传播局部 gain：全部源保持单位 gain，该 pair 使用无 MultiBand、无变形的单调 hard seam，每个有效像素仍恰好由一名相邻 RGB owner 提供；必要时两侧条带各自保留其覆盖区。owner 分区与覆盖完整时作为需人工复核的 C 级发布，无法形成完整安全 owner 分区才 fail-closed。已验证观测非有限、全局求解病态或 gain 超出 `0.45–2.20` 仍为结构失败。
 
 owner 审计后，每对相邻条带独立运行局部 `MultiBandBlender`。两个 blender mask 分别来自互补 hard owner 向安全白墙的膨胀，绝不共用同一 mask；风险、软管、标签和保护带直接复制唯一 owner。总融合带宽采用：
 
@@ -468,7 +468,7 @@ clamp(floor(0.20 × 较窄 owner 宽度), 2, 8) px
 | 总旋转上限 | `10°` |
 | 边平移 / 旋转残差上限 | `30 mm / 2°` |
 | pose node 硬预算 | `160` |
-| 渲染源 | 主扫描段全部真实优化 pose nodes |
+| 渲染源 | 主扫描段全部真实优化 pose nodes；`≤0.25 px` 近重复节点仍 remap 一次但可审计为零独立 owner |
 | 原始条带宽度 | 中间帧最多输入 RGB 宽度的 `20%`；首尾帧仅向外侧扩展至校准图像边缘 |
 | 流式驻留 RGB 条带 | `2`（硬上限 `5`） |
 | 画布 / aggregate working set 上限 | `200 / 200 MP` |
@@ -479,7 +479,7 @@ clamp(floor(0.20 × 较窄 owner 宽度), 2, 8) px
 | 局部几何触发 / 网格 / flow 门禁 | raw 结构风险分量跨 seam 中线，等价 `≥72 px`、`≥18` 行、`≥26 px` 纵向跨度；至少 4 个 4-连通同层单元；应用域含 held-out、拟合域排除 held-out；held-out P95 `≤0.75 px`、最大 `≤2 px`、改善 `≥30%`、观察到的直线弯曲 `≤1 px`；FB P95 `≤0.75 px` |
 | handoff fallback policy | `publish_degraded=true`、`local_apap_flow_enabled=false`、`manual_review_for_grade_c=true`；默认走既有局部逆网格/硬切，显式启用后才可尝试受审计的同层安全背景 APAP/flow |
 | MultiBand 总带宽 / 层数 | `2–8 px` / 最多 `3` |
-| 曝光补偿 | `safe_wall_global_linear_rgb` |
+| 曝光补偿 | `source_aware_global_linear_rgb_v2_two_stage`（背景增益校正后重算风险，并允许同层非白背景窄带融合） |
 
 配置中的 `pose_backend`、`sequence_blend_mode=calibrated_rgb_pushbroom`、`calibrated_rgb_pushbroom.mode`、`scan_seam.backend`、`geometry_assisted_seam`、`handoff_fallback_policy`、标定/对齐要求和 pose graph 开关是正式结构约束，不能改为其它值发布交付。正式模式的曝光、RGB 尺度、odometry、pose、风险、深度一致、网格、GraphCut 和 MultiBand 阈值只能等于或收紧默认安全包络；试图放宽会直接失败。深度一致式中的 `20 mm` 和 `2%` 是固定项；当前严格会话没有可审计的噪声标定 provenance，故 `σ_depth=0`，不能用配置扩大容差。`local_apap_flow_enabled` 默认保持 `false`；若正式启用，候选仍必须完成现场验证和每个 handoff 的完整审计，不能仅靠修改 YAML 宣称已安全使用 APAP/flow。诊断模式可以绕过质量阈值，但 `200 MP` 画布/aggregate、160 pose nodes、5 条流式驻留上限、RGB-only 像素来源以及深度不生成颜色/不改写 pose 等结构硬限仍不可放宽。手工 `render_frame_ids` 只允许诊断；正式命令会拒绝它。
 
@@ -500,8 +500,8 @@ outputs/greenhouse_sequence/
 
 - `transforms.json`：`rgbd-pose-graph/v1`，包含坐标约定、毫米单位、pose nodes 的 4×4 `camera_to_world`、RGB-D 边、信息矩阵、残差、优化和连通状态；
 - `render_transforms.json`：`calibrated-rgb-pushbroom/v7`，包含 RGB-only 像素来源、真实 SE(3) 源、扫描布局、局部 RGB 像素/毫米标量、选源信息，以及不含预览图、flow 场、mask 或稠密 map 的残差、应用/拟合 flow 域与深度辅助局部网格 held-out/拓扑审计摘要；
-- `report.json`：`gemini305-calibrated-rgb-pushbroom/v9`，汇总 RGB-D 会话、输入质量、odometry、pose graph、pose quality、RGB 条带布局、残差/深度辅助证据、风险、hard owner、亮度增益、MultiBand 审计和嵌套 `publication`；顶层同时提供 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary`、`foreground_owner_continuity_summary`、`tsdf_visualization`、逐 pair `handoff_outcomes` 与 `manual_review_required`；
-- `delivery.json`：`gemini305-panorama-delivery/v9`，最后发布；其 `alignment_backend` 与 `alignment_model` 标识最终采用的接缝后端和模型，并以 `geometry_assistance_gate` 声明最小连通网格支持、应用/拟合 flow 规则和实际直线观察规则。它还必须包含 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary`、`foreground_owner_continuity_summary`、`tsdf_visualization` 和 `manual_review_required`；`quality_pass` 仅为 `strict_quality_pass` 的 v8 兼容别名。A/B 的 `delivery_state=published`，结构安全但需人工复核的 C 为 `published_degraded`，不能仅以 `quality_pass` 判断是否已经有效发布。
+- `report.json`：`gemini305-calibrated-rgb-pushbroom/v10`，汇总 RGB-D 会话、输入质量、odometry、pose graph、pose quality、RGB 条带布局、残差/深度辅助证据、风险、hard owner、来源级线性 RGB gain、MultiBand 审计和嵌套 `publication`；顶层同时提供 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary`、`photometric_calibration`、`redundant_pose_node_suppression`、`foreground_owner_continuity_summary`、`tsdf_visualization`、逐 pair `handoff_outcomes` 与 `manual_review_required`。光度审计固定以 16×16 tile、80/20 train/held-out 验证相邻同表面关系；safe-wall 优先，非中性纹理证据会透明标为 B；光度失败以 `identity_hard_owner`、单位 gain、失败原因和对应 C 级 hard-cut 审计公开；近重复 pose-node 抑制另行公开全部真实节点 remap 数、前后保留 owner、替换像素与零未覆盖/零融合/零变形审计；
+- `delivery.json`：`gemini305-panorama-delivery/v10`，最后发布；其 `alignment_backend` 与 `alignment_model` 标识最终采用的接缝后端和模型，并以 `geometry_assistance_gate` 声明最小连通网格支持、应用/拟合 flow 规则和实际直线观察规则。它还必须包含 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary`、`photometric_calibration`、`foreground_owner_continuity_summary`、`tsdf_visualization` 和 `manual_review_required`；`quality_pass` 仅为 `strict_quality_pass` 的 v8 兼容别名。A/B 的 `delivery_state=published`，结构安全但需人工复核的 C 为 `published_degraded`，不能仅以 `quality_pass` 判断是否已经有效发布。
 
 每次任务先删除旧 `delivery.json`，全景、GLB、Viewer、报告、位姿和 `delivery.json` 都先写隐藏 pending 文件，再用 `os.replace` 发布；A/B/C 的 `delivery.json` 始终最后写入。C 级仍是 RGB-only 全景且强制人工复核，但同样必须交付成对的 TSDF 展示文件。TSDF、Viewer 或任意发布步骤失败都会清除正式文件并原子写入 `failure.json`。强制终止可能来不及写失败报告，但没有有效 `delivery.json` 仍表示未发布或失败；存在 `delivery.json` 时还必须读取其 `delivery_state`、等级和人工复核标记。
 

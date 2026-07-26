@@ -544,6 +544,10 @@ def _derive_handoff_outcomes(
             pair.get("hard_cut_row_count"),
             context=f"handoff pair {pair_index} hard_cut_row_count",
         )
+        photometric_hard_owner = _require_audit_bool(
+            pair.get("photometric_hard_owner_fallback", False),
+            context=f"handoff pair {pair_index} photometric hard owner",
+        )
         if hard_cut_rows < 0:
             raise RuntimeError("Handoff audit hard-cut row count cannot be negative")
         foreground_handoff = _validate_foreground_owner_handoff_audit(
@@ -614,7 +618,9 @@ def _derive_handoff_outcomes(
         # the background geometry branch.  It is structurally safe, but it is
         # the documented C-grade fallback for an identity handoff that could
         # not remain an ordinary anchor/owner transition.
-        if foreground_handoff["hard_owner_fallback_count"]:
+        if photometric_hard_owner:
+            method = "hard_cut_degraded"
+        elif foreground_handoff["hard_owner_fallback_count"]:
             method = "hard_cut_degraded"
         elif accepted and graphcut_used and hard_cut_rows == 0:
             if local_method == "apap":
@@ -742,6 +748,414 @@ def _handoff_fallback_summary(
         raise RuntimeError("Handoff audit contains an unknown terminal method") from exc
 
 
+def _validate_photometric_calibration(
+    render_metadata: Mapping[str, object], frame_ids: list[int]
+) -> dict[str, object]:
+    """Validate v10 source-aware gain evidence before formal publication."""
+
+    value = render_metadata.get("photometric_calibration")
+    if not isinstance(value, Mapping):
+        raise RuntimeError("Renderer omitted v10 photometric calibration audit")
+    audit = dict(value)
+    if audit.get("mode") != "source_aware_global_linear_rgb_v2_two_stage":
+        raise RuntimeError("Photometric calibration has an unknown formal mode")
+    if audit.get("model") != "diagonal_linear_rgb_gain_only":
+        raise RuntimeError("Photometric calibration has an unknown formal model")
+    for key, expected in (
+        ("all_adjacent_pairs_complete", True),
+        ("provisional_rgb_panorama_written", False),
+        ("recomposited_from_source_strips", True),
+        ("two_stage_background_gain_then_risk_recompute", True),
+        ("post_gain_risk_recomputed", True),
+    ):
+        if _require_audit_bool(audit.get(key), context=f"photometric {key}") is not expected:
+            raise RuntimeError(f"Photometric calibration violates {key}")
+    if _require_audit_int(
+        audit.get("full_resolution_remap_count_per_source"),
+        context="photometric full-resolution remap count",
+    ) != 1:
+        raise RuntimeError("Photometric calibration must use exactly one source remap")
+    condition = audit.get("solver_condition")
+    if not isinstance(condition, (int, float, np.floating)) or not np.isfinite(condition) or condition > 1e8:
+        raise RuntimeError("Photometric calibration solver condition is invalid")
+    gains = audit.get("gain_min_max")
+    if (
+        not isinstance(gains, (list, tuple))
+        or len(gains) != 2
+        or any(not isinstance(item, (int, float, np.floating)) or not np.isfinite(item) for item in gains)
+        or float(gains[0]) < 0.45
+        or float(gains[1]) > 2.20
+    ):
+        raise RuntimeError("Photometric calibration gain range is invalid")
+    pairs = audit.get("pairs")
+    if not isinstance(pairs, list) or len(pairs) != len(frame_ids) - 1:
+        raise RuntimeError("Photometric calibration omits an adjacent pair audit")
+    render_pairs = render_metadata.get("pairs")
+    if not isinstance(render_pairs, list) or len(render_pairs) != len(frame_ids) - 1:
+        raise RuntimeError("Photometric calibration cannot verify RGB owner handoffs")
+    methods: list[str] = []
+    fallback_pairs: list[int] = []
+    for index, value in enumerate(pairs):
+        if not isinstance(value, Mapping):
+            raise RuntimeError("Photometric pair audit must be a mapping")
+        pair = dict(value)
+        if [pair.get("first_frame_id"), pair.get("second_frame_id")] != [
+            frame_ids[index], frame_ids[index + 1]
+        ]:
+            raise RuntimeError("Photometric pair audit frame order is invalid")
+        detail = pair.get("photometric_audit")
+        if not isinstance(detail, Mapping):
+            raise RuntimeError("Photometric pair audit omits scalar evidence")
+        method = detail.get("method")
+        if method not in {
+            "safe_wall",
+            "rgb_texture_consistent",
+            "identity_hard_owner",
+        }:
+            raise RuntimeError("Photometric pair audit has an unknown evidence method")
+        if method == "identity_hard_owner":
+            failure_reason = detail.get("failure_reason")
+            if not isinstance(failure_reason, str) or not failure_reason.strip():
+                raise RuntimeError(
+                    "Photometric identity fallback omits its failure reason"
+                )
+            if _require_audit_bool(
+                detail.get("unit_gain_fallback"),
+                context="photometric unit_gain_fallback",
+            ) is not True or _require_audit_bool(
+                detail.get("hard_owner_required"),
+                context="photometric hard_owner_required",
+            ) is not True:
+                raise RuntimeError(
+                    "Photometric identity fallback lacks its hard-owner contract"
+                )
+            render_pair_value = render_pairs[index]
+            if not isinstance(render_pair_value, Mapping):
+                raise RuntimeError(
+                    "Photometric identity fallback lacks a handoff audit"
+                )
+            render_pair = dict(render_pair_value)
+            if _require_audit_bool(
+                render_pair.get("photometric_hard_owner_fallback"),
+                context="photometric hard-owner handoff",
+            ) is not True:
+                raise RuntimeError(
+                    "Photometric identity fallback was not committed as hard-owner RGB"
+                )
+            same_layer_rescued = _require_audit_bool(
+                render_pair.get(
+                    "photometric_blend_rescued_by_post_gain_same_layer",
+                    False,
+                ),
+                context="photometric same-layer blend rescue",
+            )
+            rescued = _require_audit_bool(
+                render_pair.get(
+                    "photometric_blend_rescued_by_post_gain_safe_background",
+                    same_layer_rescued,
+                ),
+                context="photometric safe-background blend rescue",
+            )
+            blend_pixels = _require_audit_int(
+                render_pair.get("blend_zone_pixel_count"),
+                context="photometric fallback blend pixels",
+            )
+            blend_levels = _require_audit_int(
+                render_pair.get("multiband_levels"),
+                context="photometric fallback multiband levels",
+            )
+            safe_same_layer_pixels = _require_audit_int(
+                render_pair.get("safe_same_layer_background_pixel_count", 0),
+                context="photometric same-layer background pixels",
+            )
+            safe_background_blend_pixels = _require_audit_int(
+                render_pair.get("safe_background_blend_pixel_count", 0),
+                context="photometric safe-background blend pixels",
+            )
+            if rescued:
+                if (
+                    blend_pixels <= 0
+                    or safe_background_blend_pixels != blend_pixels
+                    or _require_audit_int(
+                        render_pair.get("blend_zone_risk_pixel_count"),
+                        context="photometric rescued blend risk pixels",
+                    )
+                    != 0
+                ):
+                    raise RuntimeError(
+                        "Photometric safe-background blend rescue lacks safe support"
+                    )
+                if same_layer_rescued and (
+                    safe_same_layer_pixels <= 0
+                    or _require_audit_int(
+                        render_pair.get("safe_same_layer_blend_pixel_count", 0),
+                        context="photometric same-layer blend pixels",
+                    )
+                    <= 0
+                ):
+                    raise RuntimeError(
+                        "Photometric same-layer blend rescue lacks same-layer support"
+                    )
+            elif blend_pixels != 0 or blend_levels != 0:
+                raise RuntimeError(
+                    "Photometric identity fallback entered an unaudited MultiBand blend"
+                )
+            fallback_pairs.append(index)
+            methods.append(str(method))
+            continue
+        for key, minimum in (
+            ("spatial_tile_count", 8),
+            ("training_pixel_count", 256),
+            ("held_out_pixel_count", 64),
+        ):
+            if _require_audit_int(detail.get(key), context=f"photometric {key}") < minimum:
+                raise RuntimeError("Photometric pair audit has insufficient verified support")
+        for key, maximum in (
+            ("held_out_log_residual_p95", 0.05),
+            ("held_out_log_residual_max", 0.12),
+        ):
+            metric = detail.get(key)
+            if not isinstance(metric, (int, float, np.floating)) or not np.isfinite(metric) or metric > maximum:
+                raise RuntimeError("Photometric pair held-out validation failed")
+        if _require_audit_bool(
+            detail.get("risk_or_protected_intersection"),
+            context="photometric risk/protected intersection",
+        ):
+            raise RuntimeError("Photometric samples intersected protected evidence")
+        methods.append(str(method))
+    fallback_used = _require_audit_bool(
+        audit.get("identity_hard_owner_fallback_used", False),
+        context="photometric identity fallback used",
+    )
+    fallback_count = _require_audit_int(
+        audit.get("identity_hard_owner_fallback_pair_count", 0),
+        context="photometric identity fallback pair count",
+    )
+    reported_fallback_pairs = audit.get("identity_hard_owner_fallback_pairs", [])
+    if (
+        not isinstance(reported_fallback_pairs, list)
+        or any(type(value) is not int for value in reported_fallback_pairs)
+        or reported_fallback_pairs != fallback_pairs
+        or fallback_count != len(fallback_pairs)
+        or fallback_used != bool(fallback_pairs)
+    ):
+        raise RuntimeError("Photometric identity fallback summary is inconsistent")
+    return {
+        **audit,
+        "pair_methods": methods,
+        "identity_hard_owner_fallback_pairs": fallback_pairs,
+    }
+
+
+def _validate_redundant_pose_node_suppression(
+    render_metadata: Mapping[str, object], frame_ids: list[int]
+) -> dict[str, object]:
+    """Validate audited near-duplicate owner suppression before publication."""
+
+    value = render_metadata.get("redundant_pose_node_suppression")
+    if not isinstance(value, Mapping):
+        raise RuntimeError("Renderer omitted redundant pose-node suppression audit")
+    audit = dict(value)
+    if audit.get("policy") != (
+        "near_duplicate_true_pose_nodes_remapped_once_then_"
+        "covered_by_retained_adjacent_rgb_hard_owners"
+    ):
+        raise RuntimeError("Redundant pose-node suppression has an unknown policy")
+    threshold = audit.get("minimum_independent_owner_step_pixels")
+    if (
+        not isinstance(threshold, (int, float, np.floating))
+        or not np.isfinite(threshold)
+        or float(threshold) != 0.25
+    ):
+        raise RuntimeError("Redundant pose-node suppression threshold is invalid")
+    count = _require_audit_int(
+        audit.get("suppressed_source_count"),
+        context="redundant pose-node suppressed source count",
+    )
+    if count < 0:
+        raise RuntimeError("Redundant pose-node suppression count is negative")
+    if _require_audit_int(
+        audit.get("full_resolution_remap_count"),
+        context="redundant pose-node full-resolution remap count",
+    ) != len(frame_ids):
+        raise RuntimeError(
+            "Redundant pose-node suppression did not remap every real source once"
+        )
+    for key, expected in (
+        ("all_real_pose_nodes_preserved", True),
+        ("audit_complete", True),
+    ):
+        if _require_audit_bool(
+            audit.get(key), context=f"redundant pose-node {key}"
+        ) is not expected:
+            raise RuntimeError(f"Redundant pose-node suppression violates {key}")
+    for key in (
+        "interpolated_pose_count",
+        "generated_colour_pixel_count",
+        "blend_pixel_count",
+        "deformation_pixel_count",
+    ):
+        if _require_audit_int(
+            audit.get(key), context=f"redundant pose-node {key}"
+        ) != 0:
+            raise RuntimeError(
+                "Redundant pose-node suppression generated or transformed output"
+            )
+
+    nodes = audit.get("nodes")
+    if not isinstance(nodes, list) or len(nodes) != count:
+        raise RuntimeError("Redundant pose-node suppression omits a node audit")
+    source_owner_counts = render_metadata.get("source_owner_pixel_counts")
+    if (
+        not isinstance(source_owner_counts, list)
+        or len(source_owner_counts) != len(frame_ids)
+    ):
+        raise RuntimeError("Redundant pose-node suppression lacks owner counts")
+    suppressed_indices: list[int] = []
+    for value in nodes:
+        if not isinstance(value, Mapping):
+            raise RuntimeError("Redundant pose-node audit must be a mapping")
+        node = dict(value)
+        source_index = _require_audit_int(
+            node.get("source_index"), context="redundant pose-node source index"
+        )
+        previous_index = _require_audit_int(
+            node.get("previous_retained_source_index"),
+            context="redundant pose-node previous retained source",
+        )
+        next_index = _require_audit_int(
+            node.get("next_retained_source_index"),
+            context="redundant pose-node next retained source",
+        )
+        if (
+            not 0 < source_index < len(frame_ids) - 1
+            or not 0 <= previous_index < source_index < next_index < len(frame_ids)
+            or node.get("frame_id") != frame_ids[source_index]
+            or node.get("previous_retained_frame_id") != frame_ids[previous_index]
+            or node.get("next_retained_frame_id") != frame_ids[next_index]
+            or source_owner_counts[source_index] != 0
+            or _require_audit_bool(
+                node.get("full_resolution_remap_required"),
+                context="redundant pose-node remap requirement",
+            )
+            is not True
+            or _require_audit_bool(
+                node.get("independent_owner_interval"),
+                context="redundant pose-node independent owner interval",
+            )
+            is not False
+            or node.get("coverage_policy")
+            != "nearest_retained_real_pose_rgb_hard_owner_only"
+        ):
+            raise RuntimeError("Redundant pose-node audit is inconsistent")
+        suppressed_indices.append(source_index)
+    if suppressed_indices != sorted(set(suppressed_indices)):
+        raise RuntimeError("Redundant pose-node audits are duplicated or reordered")
+
+    foreground_value = audit.get("foreground_owner_suppression")
+    if not isinstance(foreground_value, Mapping):
+        raise RuntimeError(
+            "Redundant pose-node suppression omits foreground-owner audit"
+        )
+    foreground = dict(foreground_value)
+    if (
+        foreground.get("policy")
+        != (
+            "redundant_pose_sources_excluded_from_persistent_"
+            "foreground_owner_runs"
+        )
+        or foreground.get("suppressed_source_indices") != suppressed_indices
+        or _require_audit_bool(
+            foreground.get("complete"),
+            context="redundant foreground-owner suppression completeness",
+        )
+        is not True
+    ):
+        raise RuntimeError(
+            "Redundant pose-node foreground-owner suppression is inconsistent"
+        )
+    for key in (
+        "changed_fragment_count",
+        "pair_local_only_fragment_count",
+        "stripped_depth_identity_fragment_count",
+        "full_resolution_owner_validity_clipped_pixel_count",
+    ):
+        if _require_audit_int(
+            foreground.get(key),
+            context=f"redundant foreground-owner {key}",
+        ) < 0:
+            raise RuntimeError(
+                "Redundant pose-node foreground-owner count is negative"
+            )
+
+    retained = audit.get("retained_owner_source_indices")
+    if (
+        not isinstance(retained, list)
+        or any(type(value) is not int for value in retained)
+        or retained != sorted(set(retained))
+        or not retained
+        or retained[0] != 0
+        or retained[-1] != len(frame_ids) - 1
+        or set(retained) & set(suppressed_indices)
+        or set(retained) | set(suppressed_indices) != set(range(len(frame_ids)))
+    ):
+        raise RuntimeError("Redundant pose-node retained source audit is incomplete")
+
+    rewrites = audit.get("owner_rewrite_audits")
+    if not isinstance(rewrites, list):
+        raise RuntimeError("Redundant pose-node suppression omits owner rewrites")
+    rewritten_indices: list[int] = []
+    for value in rewrites:
+        if not isinstance(value, Mapping):
+            raise RuntimeError("Redundant pose-node owner rewrite must be a mapping")
+        rewrite = dict(value)
+        indices = rewrite.get("redundant_source_indices")
+        if (
+            not isinstance(indices, list)
+            or any(type(index) is not int for index in indices)
+            or not indices
+            or _require_audit_int(
+                rewrite.get("uncovered_pixel_count"),
+                context="redundant pose-node uncovered pixels",
+            )
+            != 0
+            or _require_audit_int(
+                rewrite.get("blend_pixel_count"),
+                context="redundant pose-node blend pixels",
+            )
+            != 0
+            or _require_audit_int(
+                rewrite.get("deformation_pixel_count"),
+                context="redundant pose-node deformation pixels",
+            )
+            != 0
+            or _require_audit_bool(
+                rewrite.get("audit_complete"),
+                context="redundant pose-node rewrite completeness",
+            )
+            is not True
+        ):
+            raise RuntimeError("Redundant pose-node owner rewrite is unsafe")
+        after = rewrite.get("source_owner_pixel_counts_after")
+        if not isinstance(after, Mapping) or any(
+            _require_audit_int(
+                after.get(str(index)),
+                context="redundant pose-node final owner pixels",
+            )
+            != 0
+            for index in indices
+        ):
+            raise RuntimeError(
+                "Redundant pose-node owner rewrite retained an output owner"
+            )
+        rewritten_indices.extend(indices)
+    if sorted(rewritten_indices) != suppressed_indices:
+        raise RuntimeError(
+            "Redundant pose-node owner rewrites do not cover every suppressed node"
+        )
+    return {**audit, "suppressed_source_indices": suppressed_indices}
+
+
 def _assess_publication(
     capture_quality: Mapping[str, object],
     pose_quality: Mapping[str, object],
@@ -757,6 +1171,15 @@ def _assess_publication(
     """
 
     outcomes = _derive_handoff_outcomes(render_metadata, frame_ids)
+    photometric_calibration = _validate_photometric_calibration(
+        render_metadata, frame_ids
+    )
+    redundant_pose_suppression = _validate_redundant_pose_node_suppression(
+        render_metadata, frame_ids
+    )
+    render_metadata["redundant_pose_node_suppression"] = dict(
+        redundant_pose_suppression
+    )
     foreground_summary = _validate_foreground_owner_continuity_summary(
         render_metadata, frame_ids=frame_ids
     )
@@ -802,7 +1225,7 @@ def _assess_publication(
         quality_grade = "C"
         delivery_state = "published_degraded"
         manual_review_required = True
-    elif methods & {"apap", "flow_mesh"}:
+    elif methods & {"apap", "flow_mesh"} or "rgb_texture_consistent" in photometric_calibration["pair_methods"]:
         quality_grade = "B"
         delivery_state = "published"
         manual_review_required = False
@@ -3521,10 +3944,10 @@ def _validate_safety_envelope(
         raise ValueError(
             "Formal calibrated RGB pushbroom requires endpoint_outer_half_fov"
         )
-    seam_search_width = int(pushbroom.get("seam_search_width_pixels", 64))
-    if not 32 <= seam_search_width <= 64:
+    seam_search_width = int(pushbroom.get("seam_search_width_pixels", 96))
+    if not 64 <= seam_search_width <= 160:
         raise ValueError(
-            "Formal calibrated RGB seam search width must remain within 32-64 "
+            "Formal calibrated RGB seam search width must remain within 64-160 "
             "pixels"
         )
     if int(pushbroom.get("minimum_valid_scale_pairs", 3)) < 3:
@@ -3561,12 +3984,17 @@ def _validate_safety_envelope(
     levels = int(seam.get("multiband_levels", 3))
     if not 1 <= levels <= 3:
         raise ValueError("Formal MultiBand level count must remain within 1-3")
-    if str(seam.get("exposure_mode", "safe_wall_global_linear_rgb")) != (
-        "safe_wall_global_linear_rgb"
+    if str(
+        seam.get(
+            "exposure_mode",
+            "source_aware_global_linear_rgb_v2_two_stage",
+        )
+    ) != (
+        "source_aware_global_linear_rgb_v2_two_stage"
     ):
         raise ValueError(
             "Formal exposure compensation mode must be "
-            "safe_wall_global_linear_rgb"
+            "source_aware_global_linear_rgb_v2_two_stage"
         )
 
     odometry = RGBDOdometryConfig.from_mapping(
@@ -4531,6 +4959,10 @@ def _run_pipeline(
         str(frame.frame_id): quality.as_dict()
         for frame, quality in zip(render_frames, render_qualities, strict=True)
     }
+    photometric_calibration = render_metadata.get("photometric_calibration")
+    redundant_pose_node_suppression = render_metadata.get(
+        "redundant_pose_node_suppression"
+    )
     publication_assessment: _PublicationAssessment | None = None
     if not diagnostic_force:
         publication_assessment = _assess_publication(
@@ -4538,6 +4970,9 @@ def _run_pipeline(
             pose_quality,
             render_metadata,
             [frame.frame_id for frame in render_frames],
+        )
+        redundant_pose_node_suppression = render_metadata.get(
+            "redundant_pose_node_suppression"
         )
 
     # TSDF is deliberately an output-only 3-D inspection stage.  It executes
@@ -4610,6 +5045,7 @@ def _run_pipeline(
         "selection": render_selection,
         "residual_alignment": compact_residual_alignment,
         "geometry_assisted_seam": compact_geometry_assistance,
+        "redundant_pose_node_suppression": redundant_pose_node_suppression,
         "sources": [
             {
                 "frame_id": frame.frame_id,
@@ -4623,7 +5059,7 @@ def _run_pipeline(
         "schema": (
             "gemini305-calibrated-rgb-pushbroom/v8"
             if diagnostic_force
-            else "gemini305-calibrated-rgb-pushbroom/v9"
+            else "gemini305-calibrated-rgb-pushbroom/v10"
         ),
         "input": str(args.input.expanduser().resolve()),
         "panorama": str(panorama_path),
@@ -4657,6 +5093,8 @@ def _run_pipeline(
         "projection": render_transforms_payload,
         "render_strategy": "calibrated_rgb_pushbroom",
         "render": render_metadata,
+        "photometric_calibration": photometric_calibration,
+        "redundant_pose_node_suppression": redundant_pose_node_suppression,
         "foreground_owner_continuity_summary": (
             render_metadata.get("foreground_owner_continuity_summary")
             if publication_assessment is not None
@@ -4722,7 +5160,7 @@ def _run_pipeline(
     assert pending_mesh_viewer is not None
     assert tsdf_visualization is not None
     delivery = {
-        "schema": "gemini305-panorama-delivery/v9",
+        "schema": "gemini305-panorama-delivery/v10",
         "published_utc": datetime.now(timezone.utc).isoformat(),
         # ``quality_pass`` remains as a v8-compatible alias for the strict
         # result.  Publication validity is now represented by delivery_state.
@@ -4739,6 +5177,8 @@ def _run_pipeline(
         "handoff_outcomes": [
             dict(value) for value in publication_assessment.handoff_outcomes
         ],
+        "photometric_calibration": photometric_calibration,
+        "redundant_pose_node_suppression": redundant_pose_node_suppression,
         "foreground_owner_continuity_summary": render_metadata.get(
             "foreground_owner_continuity_summary"
         ),

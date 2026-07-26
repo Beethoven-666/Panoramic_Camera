@@ -63,7 +63,7 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
         "mode": "calibrated_rgb_pushbroom",
         "maximum_central_band_fraction": 0.20,
         "endpoint_outer_half_fov": True,
-        "seam_search_width_pixels": 64,
+        "seam_search_width_pixels": 96,
         "max_canvas_megapixels": 200,
         "max_aggregate_megapixels": 200,
         "max_pose_count": 160,
@@ -133,7 +133,7 @@ def test_formal_delivery_requires_display_only_tsdf_export() -> None:
         _validate_safety_envelope(stitch, diagnostic_force=False)
     assert stitch["scan_seam"]["multiband_levels"] == 3
     assert stitch["scan_seam"]["exposure_mode"] == (
-        "safe_wall_global_linear_rgb"
+        "source_aware_global_linear_rgb_v2_two_stage"
     )
     legacy_formal_keys = {
         "model",
@@ -271,13 +271,13 @@ def test_explicit_auto_exposure_mode_is_not_overridden(tmp_path: Path) -> None:
         ),
         (
             ("calibrated_rgb_pushbroom", "seam_search_width_pixels"),
-            31,
-            "32-64",
+            63,
+            "64-160",
         ),
         (
             ("calibrated_rgb_pushbroom", "seam_search_width_pixels"),
-            65,
-            "32-64",
+            161,
+            "64-160",
         ),
         (
             ("calibrated_rgb_pushbroom", "max_canvas_megapixels"),
@@ -546,7 +546,7 @@ def test_explicit_auto_exposure_mode_is_not_overridden(tmp_path: Path) -> None:
         (
             ("scan_seam", "exposure_mode"),
             "safe_wall_smooth_gain",
-            "safe_wall_global_linear_rgb",
+            "source_aware_global_linear_rgb_v2_two_stage",
         ),
     ],
 )
