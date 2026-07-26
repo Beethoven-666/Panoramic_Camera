@@ -21,6 +21,7 @@ from .calibrated_remap import (
     undistort_depth_with_validity,
     undistortion_maps,
 )
+from .cuda_backend import remap as accelerated_remap
 from .render import PrewarpedScanSource, render_prewarped_scan_panorama
 from .rgbd_projection import estimate_world_axes, validate_camera_to_world
 from .session import CameraIntrinsics, RGBDFrame, read_aligned_depth_mm
@@ -884,7 +885,7 @@ def prewarp_central_strip_source(
             & (map_y >= 0.0)
             & (map_y <= calibration.height - 1.0)
         )
-        sampled_rgb = cv2.remap(
+        sampled_rgb = accelerated_remap(
             image,
             map_x,
             map_y,
@@ -892,7 +893,7 @@ def prewarp_central_strip_source(
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=0,
         )
-        sampled_depth = cv2.remap(
+        sampled_depth = accelerated_remap(
             np.asarray(depth, dtype=np.float32),
             map_x,
             map_y,

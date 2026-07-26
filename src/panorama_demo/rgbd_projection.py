@@ -20,6 +20,7 @@ from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 import cv2
 import numpy as np
 
+from .cuda_backend import remap as accelerated_remap
 
 _DISTORTION_NAMES = ("k1", "k2", "p1", "p2", "k3", "k4", "k5", "k6")
 _SE3_ATOL = 1e-5
@@ -687,14 +688,14 @@ def _undistort_rgbd(
     if maps is None:
         return rgb, np.asarray(depth, dtype=np.float32), np.ones(depth.shape, dtype=bool)
     map_x, map_y = maps
-    undistorted_rgb = cv2.remap(
+    undistorted_rgb = accelerated_remap(
         rgb,
         map_x,
         map_y,
         cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_REPLICATE,
     )
-    undistorted_depth = cv2.remap(
+    undistorted_depth = accelerated_remap(
         np.asarray(depth, dtype=np.float32),
         map_x,
         map_y,

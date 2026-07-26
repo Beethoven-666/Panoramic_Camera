@@ -28,6 +28,7 @@ from typing import Any, Mapping, Sequence
 import cv2
 import numpy as np
 
+from .cuda_backend import remap as accelerated_remap
 from .session import CameraIntrinsics, RGBDFrame
 
 
@@ -249,14 +250,14 @@ def _stage_rgbd_sequence(
             )
         if maps is not None:
             map_x, map_y = maps
-            color = cv2.remap(
+            color = accelerated_remap(
                 color,
                 map_x,
                 map_y,
                 cv2.INTER_LINEAR,
                 borderMode=cv2.BORDER_CONSTANT,
             )
-            depth = cv2.remap(
+            depth = accelerated_remap(
                 depth,
                 map_x,
                 map_y,

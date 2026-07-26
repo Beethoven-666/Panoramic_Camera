@@ -29,6 +29,11 @@ from typing import Mapping, Protocol, Sequence, runtime_checkable
 import cv2
 import numpy as np
 
+from .cuda_backend import (
+    pinhole_project,
+    pinhole_unproject,
+    transform_points,
+)
 
 _SE3_ATOL = 1e-5
 
@@ -340,8 +345,15 @@ def _unproject_pixels(
         x = normalised[:, 0] * z
         y = normalised[:, 1] * z
     else:
-        x = (pixels[:, 0] - intrinsics.cx) * z / intrinsics.fx
-        y = (pixels[:, 1] - intrinsics.cy) * z / intrinsics.fy
+        return pinhole_unproject(
+            pixels[:, 0],
+            pixels[:, 1],
+            z,
+            fx=intrinsics.fx,
+            fy=intrinsics.fy,
+            cx=intrinsics.cx,
+            cy=intrinsics.cy,
+        )
     return np.column_stack((x, y, z))
 
 
@@ -361,19 +373,23 @@ def _project_camera_points(
         )
         projected = pixels.reshape(-1, 2)
         return projected[:, 0], projected[:, 1]
-    positive_z = np.maximum(points[:, 2], 1e-12)
-    return (
-        intrinsics.fx * points[:, 0] / positive_z + intrinsics.cx,
-        intrinsics.fy * points[:, 1] / positive_z + intrinsics.cy,
+    return pinhole_project(
+        points,
+        fx=intrinsics.fx,
+        fy=intrinsics.fy,
+        cx=intrinsics.cx,
+        cy=intrinsics.cy,
     )
 
 
 def _to_world(points_camera: np.ndarray, pose: np.ndarray) -> np.ndarray:
-    return points_camera @ pose[:3, :3].T + pose[:3, 3]
+    return transform_points(points_camera, pose[:3, :3], pose[:3, 3])
 
 
 def _to_camera(points_world: np.ndarray, pose: np.ndarray) -> np.ndarray:
-    return (points_world - pose[:3, 3]) @ pose[:3, :3]
+    inverse_rotation = pose[:3, :3].T
+    inverse_translation = -inverse_rotation @ pose[:3, 3]
+    return transform_points(points_world, inverse_rotation, inverse_translation)
 
 
 def depth_edge_guard(

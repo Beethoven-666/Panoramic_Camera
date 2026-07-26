@@ -21,6 +21,7 @@ from typing import Mapping
 import cv2
 import numpy as np
 
+from .cuda_backend import remap as accelerated_remap
 _IDENTITY_EPSILON = 1e-5
 
 
@@ -305,7 +306,7 @@ def _flow_pair(
 
 
 def _sample_vector_field(field: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    first = cv2.remap(
+    first = accelerated_remap(
         np.asarray(field[:, :, 0], dtype=np.float32),
         x.astype(np.float32),
         y.astype(np.float32),
@@ -313,7 +314,7 @@ def _sample_vector_field(field: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=float("nan"),
     )
-    second = cv2.remap(
+    second = accelerated_remap(
         np.asarray(field[:, :, 1], dtype=np.float32),
         x.astype(np.float32),
         y.astype(np.float32),
@@ -325,7 +326,7 @@ def _sample_vector_field(field: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.
 
 
 def _nearest_mask(mask: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    sampled = cv2.remap(
+    sampled = accelerated_remap(
         np.asarray(mask, dtype=np.uint8),
         x.astype(np.float32),
         y.astype(np.float32),
@@ -1059,7 +1060,7 @@ def attempt_foreground_deformation(
             },
         )
 
-    remapped = cv2.remap(
+    remapped = accelerated_remap(
         source,
         inverse_x.astype(np.float32),
         inverse_y.astype(np.float32),

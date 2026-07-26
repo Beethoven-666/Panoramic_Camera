@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from .cuda_backend import remap as accelerated_remap
 
 CAMERA_COORDINATE_CONVENTION = (
     "OpenCV/Open3D color camera coordinates: +x right, +y down, +z forward"
@@ -611,14 +612,14 @@ def _prepare_frame(
             (intrinsics.width, intrinsics.height),
             cv2.CV_32FC1,
         )
-        color_rgb = cv2.remap(
+        color_rgb = accelerated_remap(
             color_rgb,
             map_x,
             map_y,
             cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
         )
-        depth_mm = cv2.remap(
+        depth_mm = accelerated_remap(
             depth_mm,
             map_x,
             map_y,
@@ -626,7 +627,7 @@ def _prepare_frame(
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=0,
         )
-        geometry_mask = cv2.remap(
+        geometry_mask = accelerated_remap(
             geometry_mask.astype(np.uint8),
             map_x,
             map_y,

@@ -21,6 +21,7 @@ from typing import Mapping, Sequence
 import cv2
 import numpy as np
 
+from .cuda_backend import remap as accelerated_remap
 
 _FORBIDDEN_BACKENDS = {
     "apap",
@@ -997,10 +998,10 @@ def _flow_pair(first_gray: np.ndarray, second_gray: np.ndarray) -> tuple[np.ndar
         & (target_y >= 0.0)
         & (target_y <= height - 1)
     )
-    sampled_backward_x = cv2.remap(
+    sampled_backward_x = accelerated_remap(
         backward[:, :, 0], target_x, target_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=np.nan
     )
-    sampled_backward_y = cv2.remap(
+    sampled_backward_y = accelerated_remap(
         backward[:, :, 1], target_x, target_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=np.nan
     )
     error = np.hypot(
@@ -1012,7 +1013,7 @@ def _flow_pair(first_gray: np.ndarray, second_gray: np.ndarray) -> tuple[np.ndar
 
 
 def _sample_map(array: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    return cv2.remap(
+    return accelerated_remap(
         np.asarray(array, dtype=np.float32),
         np.asarray(x, dtype=np.float32),
         np.asarray(y, dtype=np.float32),
@@ -1025,7 +1026,7 @@ def _sample_map(array: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
 def _sample_valid_mask(mask: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Sample an already-eroded valid support mask at a flow target."""
 
-    sampled = cv2.remap(
+    sampled = accelerated_remap(
         np.asarray(mask, dtype=np.uint8),
         np.asarray(x, dtype=np.float32),
         np.asarray(y, dtype=np.float32),
@@ -1276,7 +1277,14 @@ def extract_pair_evidence(
     edge_step[edge1] = np.maximum(np.nan_to_num(edge_step[edge1], nan=0.0), distance0[edge1])
     orientation0 = np.degrees(np.arctan2(gy0, gx0))
     orientation1 = np.degrees(np.arctan2(gy1, gx1))
-    sampled_orientation1 = cv2.remap(orientation1.astype(np.float32), target_x, target_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=np.nan)
+    sampled_orientation1 = accelerated_remap(
+        orientation1.astype(np.float32),
+        target_x,
+        target_y,
+        cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=np.nan,
+    )
     orientation_delta = np.abs((orientation0 - sampled_orientation1 + 90.0) % 180.0 - 90.0).astype(np.float32)
     accepted = observable & target_texture & ~flow_uncertain & ~epipolar_rejected
     held_out = build_held_out_partition(

@@ -31,6 +31,7 @@ import cv2
 import numpy as np
 
 from .calibrated_remap import camera_points_to_source_pixels
+from .cuda_backend import cuda_metadata, remap as accelerated_remap
 from .foreground_segments import (
     DepthAnchorToken,
     ForegroundFragment,
@@ -607,6 +608,7 @@ class PushbroomLayout:
     temporal_scan_axis: tuple[float, float, float]
     level_camera_to_world_rotation: np.ndarray
     temporal_to_virtual_x_sign: float
+    scan_frame_audit: dict[str, object]
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -653,6 +655,7 @@ class PushbroomLayout:
             "temporal_scan_axis": list(self.temporal_scan_axis),
             "level_camera_to_world_rotation": self.level_camera_to_world_rotation.tolist(),
             "temporal_to_virtual_x_sign": self.temporal_to_virtual_x_sign,
+            "scan_frame_audit": dict(self.scan_frame_audit),
         }
 
 
@@ -1049,14 +1052,124 @@ def validate_camera_to_world(pose: np.ndarray) -> np.ndarray:
     return value.copy()
 
 
-def _trajectory_axes(poses: Sequence[np.ndarray]) -> tuple[np.ndarray, np.ndarray, float]:
-    """Derive a level virtual-camera orientation from real poses only."""
+def _robust_scan_axis(
+    centres: np.ndarray,
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Fit a robust PCA scan axis while preserving every real trajectory node.
+
+    End-to-end differencing lets one noisy endpoint tilt the complete panorama.
+    Temporal endpoint windows provide a robust initial direction and a short IRLS
+    PCA fit then downweights camera centres with unusually large orthogonal
+    residuals.  The result is only a presentation coordinate axis: it never
+    moves, smooths, interpolates, drops, or creates a camera pose.
+    """
+
+    points = np.asarray(centres, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or points.shape[0] < 2:
+        raise ValueError("Robust scan-axis fit requires at least two 3-D centres")
+    if not np.isfinite(points).all():
+        raise ValueError("Robust scan-axis centres must be finite")
+    count = int(points.shape[0])
+    endpoint_window_count = min(max(1, count // 2), max(3, count // 4))
+    initial_start = np.median(points[:endpoint_window_count], axis=0)
+    initial_end = np.median(points[-endpoint_window_count:], axis=0)
+    robust_span = initial_end - initial_start
+    if float(np.linalg.norm(robust_span)) <= 1e-9:
+        robust_span = points[-1] - points[0]
+    axis = _unit(robust_span, "robust temporal camera-centre span")
+    initial_centre = np.median(points, axis=0)
+    initial_offsets = points - initial_centre
+    initial_orthogonal = initial_offsets - np.outer(
+        initial_offsets @ axis, axis
+    )
+    initial_residuals = np.linalg.norm(initial_orthogonal, axis=1)
+    initial_median = float(np.median(initial_residuals))
+    initial_mad = float(
+        np.median(np.abs(initial_residuals - initial_median))
+    )
+    initial_cutoff = max(1e-6, initial_median + 2.5 * 1.4826 * initial_mad)
+    weights = np.minimum(
+        1.0, initial_cutoff / np.maximum(initial_residuals, 1e-9)
+    )
+    weights = np.maximum(weights, 1e-3)
+    iterations = 0
+    for iterations in range(1, 7):
+        centre = np.average(points, axis=0, weights=weights)
+        offsets = points - centre
+        covariance = (offsets * weights[:, None]).T @ offsets
+        covariance /= max(float(np.sum(weights)), 1e-9)
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+        candidate = _unit(
+            eigenvectors[:, int(np.argmax(eigenvalues))],
+            "robust PCA camera-centre axis",
+        )
+        if float(np.dot(candidate, robust_span)) < 0.0:
+            candidate *= -1.0
+        orthogonal = offsets - np.outer(offsets @ candidate, candidate)
+        residuals = np.linalg.norm(orthogonal, axis=1)
+        median = float(np.median(residuals))
+        mad = float(np.median(np.abs(residuals - median)))
+        robust_sigma = 1.4826 * mad
+        cutoff = max(1e-6, median + 2.5 * robust_sigma)
+        next_weights = np.minimum(1.0, cutoff / np.maximum(residuals, 1e-9))
+        next_weights = np.maximum(next_weights, 1e-3)
+        converged = bool(
+            abs(float(np.dot(axis, candidate))) >= 1.0 - 1e-10
+            and np.max(np.abs(next_weights - weights)) <= 1e-6
+        )
+        axis = candidate
+        weights = next_weights
+        if converged:
+            break
+    if float(np.dot(axis, points[-1] - points[0])) < 0.0:
+        axis *= -1.0
+    centre = np.average(points, axis=0, weights=weights)
+    offsets = points - centre
+    along = offsets @ axis
+    orthogonal = offsets - np.outer(along, axis)
+    orthogonal_residuals = np.linalg.norm(orthogonal, axis=1)
+    weighted_total = float(
+        np.sum(weights * np.einsum("ij,ij->i", offsets, offsets))
+    )
+    weighted_along = float(np.sum(weights * np.square(along)))
+    explained_ratio = (
+        weighted_along / weighted_total if weighted_total > 1e-12 else 0.0
+    )
+    if not np.isfinite(explained_ratio) or explained_ratio <= 0.0:
+        raise RuntimeError("Robust PCA scan-axis fit is degenerate")
+    audit: dict[str, object] = {
+        "method": "robust_irls_pca_camera_centres",
+        "pose_source": "unchanged_real_camera_to_world_nodes",
+        "presentation_axis_only": True,
+        "pose_smoothing_applied": False,
+        "pose_interpolation_applied": False,
+        "pose_count": count,
+        "temporal_endpoint_window_count": endpoint_window_count,
+        "irls_iterations": iterations,
+        "principal_explained_variance_ratio": explained_ratio,
+        "orthogonal_residual_median_mm": float(
+            np.median(orthogonal_residuals)
+        ),
+        "orthogonal_residual_p95_mm": float(
+            np.percentile(orthogonal_residuals, 95.0)
+        ),
+        "orthogonal_residual_max_mm": float(np.max(orthogonal_residuals)),
+        "minimum_irls_weight": float(np.min(weights)),
+        "downweighted_pose_count": int(np.count_nonzero(weights < 0.999)),
+    }
+    return axis, audit
+
+
+def _trajectory_axes_with_audit(
+    poses: Sequence[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, float, dict[str, object]]:
+    """Derive an audited level virtual-camera orientation from real poses only."""
 
     checked = [validate_camera_to_world(pose) for pose in poses]
     if len(checked) < 2:
         raise ValueError("Calibrated RGB pushbroom requires at least two poses")
     centres = np.asarray([pose[:3, 3] for pose in checked], dtype=np.float64)
-    temporal = _unit(centres[-1] - centres[0], "camera-centre scan span")
+    temporal, scan_frame_audit = _robust_scan_axis(centres)
     signed_steps = np.diff(centres, axis=0) @ temporal
     if not np.all(np.isfinite(signed_steps)):
         raise RuntimeError("Calibrated RGB pushbroom camera-centre steps are invalid")
@@ -1081,7 +1194,38 @@ def _trajectory_axes(poses: Sequence[np.ndarray]) -> tuple[np.ndarray, np.ndarra
     level_rotation = np.column_stack((virtual_right, down, virtual_forward))
     if not np.isclose(float(np.linalg.det(level_rotation)), 1.0, atol=1e-6):
         raise RuntimeError("Levelled RGB virtual camera is not right handed")
-    return temporal, level_rotation, float(np.dot(temporal, virtual_right))
+    down_alignment = np.clip(down_candidates @ down, -1.0, 1.0)
+    forward_alignment = np.clip(
+        np.asarray([pose[:3, 2] for pose in checked], dtype=np.float64)
+        @ virtual_forward,
+        -1.0,
+        1.0,
+    )
+    scan_frame_audit.update(
+        {
+            "scan_axis_world": [float(value) for value in temporal],
+            "level_camera_to_world_rotation": level_rotation.tolist(),
+            "camera_down_alignment_p05": float(
+                np.percentile(down_alignment, 5.0)
+            ),
+            "camera_forward_alignment_p05": float(
+                np.percentile(forward_alignment, 5.0)
+            ),
+        }
+    )
+    return (
+        temporal,
+        level_rotation,
+        float(np.dot(temporal, virtual_right)),
+        scan_frame_audit,
+    )
+
+
+def _trajectory_axes(poses: Sequence[np.ndarray]) -> tuple[np.ndarray, np.ndarray, float]:
+    """Compatibility wrapper for the audited robust trajectory frame."""
+
+    temporal, level_rotation, virtual_sign, _ = _trajectory_axes_with_audit(poses)
+    return temporal, level_rotation, virtual_sign
 
 
 def _motion_row_value(value: object, name: str) -> object | None:
@@ -1240,7 +1384,12 @@ def build_calibrated_rgb_pushbroom_layout(
 
     if len(frame_ids) != len(poses) or not 2 <= len(poses) <= config.max_pose_count:
         raise ValueError("Pushbroom layout requires 2-160 aligned real pose nodes")
-    temporal, level_rotation, virtual_sign = _trajectory_axes(poses)
+    (
+        temporal,
+        level_rotation,
+        virtual_sign,
+        scan_frame_audit,
+    ) = _trajectory_axes_with_audit(poses)
     centres_mm = np.asarray(
         [validate_camera_to_world(pose)[:3, 3] for pose in poses], dtype=np.float64
     )
@@ -1514,6 +1663,7 @@ def build_calibrated_rgb_pushbroom_layout(
         temporal_scan_axis=tuple(float(value) for value in temporal),
         level_camera_to_world_rotation=level_rotation,
         temporal_to_virtual_x_sign=float(virtual_sign),
+        scan_frame_audit=scan_frame_audit,
     )
 
 
@@ -1725,7 +1875,7 @@ class CalibratedRGBPushbroomRenderer:
         global_x = np.arange(x0, x1, dtype=np.float64)
         virtual_v = np.arange(height, dtype=np.float64)
         map_x, map_y, valid = self._inverse_map(source_index, global_x, virtual_v)
-        rgb = cv2.remap(
+        rgb = accelerated_remap(
             image,
             map_x,
             map_y,
@@ -1801,7 +1951,7 @@ class CalibratedRGBPushbroomRenderer:
         if int(frame.frame_id) != int(tile.frame_id):
             raise ValueError("Local handoff frame and geometry tile do not match")
         image = _read_bgr(frame.color_path, self.calibration)
-        rgb = cv2.remap(
+        rgb = accelerated_remap(
             image,
             np.asarray(tile.source_map_x, dtype=np.float32),
             np.asarray(tile.source_map_y, dtype=np.float32),
@@ -1846,7 +1996,7 @@ class CalibratedRGBPushbroomRenderer:
         virtual_v = (preview_y + 0.5) / scale - 0.5
         map_x, map_y, valid = self._inverse_map(source_index, global_x, virtual_v)
         image = _read_bgr(frame.color_path, self.calibration)
-        rgb = cv2.remap(
+        rgb = accelerated_remap(
             image,
             map_x,
             map_y,
@@ -8390,19 +8540,21 @@ def _audited_photometric_relation(
     # Reject pixel-level outliers before the fixed split.  This is a surface
     # membership test (a tile-local RGB ratio must be stable), not a search for
     # another displacement or a fit on held-out data.
-    tile_y, tile_x = yy // 16, xx // 16
     stable = np.zeros_like(candidate_mask)
-    for row in range((height + 15) // 16):
-        for column in range((width + 15) // 16):
-            tile = candidate_mask & (tile_y == row) & (tile_x == column)
-            if int(np.count_nonzero(tile)) < 40:
+    for y0 in range(0, height, 16):
+        y1 = min(height, y0 + 16)
+        for x0 in range(0, width, 16):
+            x1 = min(width, x0 + 16)
+            tile_candidates = candidate_mask[y0:y1, x0:x1]
+            if int(np.count_nonzero(tile_candidates)) < 40:
                 continue
-            values = ratios[tile]
+            values = ratios[y0:y1, x0:x1][tile_candidates]
             centre = np.median(values, axis=0)
             tile_mad = np.median(np.abs(values - centre.reshape(1, 3)), axis=0)
             if np.any(tile_mad > 0.035):
                 continue
-            stable[tile] = np.all(
+            stable_tile = stable[y0:y1, x0:x1]
+            stable_tile[tile_candidates] = np.all(
                 np.abs(values - centre.reshape(1, 3)) <= 0.05, axis=1
             )
     candidate_mask = stable
@@ -8412,11 +8564,14 @@ def _audited_photometric_relation(
     held_out_seed = ((xx + 3 * yy) % 5) == 0
     keep = np.zeros_like(candidate_mask)
     spatial_tiles = 0
-    for row in range((height + 15) // 16):
-        for column in range((width + 15) // 16):
-            tile = candidate_mask & (tile_y == row) & (tile_x == column)
-            if int(np.count_nonzero(tile & ~held_out_seed)) >= 32:
-                keep |= tile
+    for y0 in range(0, height, 16):
+        y1 = min(height, y0 + 16)
+        for x0 in range(0, width, 16):
+            x1 = min(width, x0 + 16)
+            tile_candidates = candidate_mask[y0:y1, x0:x1]
+            tile_held_out = held_out_seed[y0:y1, x0:x1]
+            if int(np.count_nonzero(tile_candidates & ~tile_held_out)) >= 32:
+                keep[y0:y1, x0:x1] |= tile_candidates
                 spatial_tiles += 1
     train = keep & ~held_out_seed
     held_out = keep & held_out_seed
@@ -8444,11 +8599,15 @@ def _audited_photometric_relation(
             diagnostic.update(reason="tile_log_ratio_mad", log_relation_mad_bgr=mad.tolist())
         return None
     tile_relations: list[np.ndarray] = []
-    for row in range((height + 15) // 16):
-        for column in range((width + 15) // 16):
-            tile_train = train & (tile_y == row) & (tile_x == column)
+    for y0 in range(0, height, 16):
+        y1 = min(height, y0 + 16)
+        for x0 in range(0, width, 16):
+            x1 = min(width, x0 + 16)
+            tile_train = train[y0:y1, x0:x1]
             if int(np.count_nonzero(tile_train)) >= 32:
-                tile_relations.append(np.median(ratios[tile_train], axis=0))
+                tile_relations.append(
+                    np.median(ratios[y0:y1, x0:x1][tile_train], axis=0)
+                )
     if len(tile_relations) < 8:
         if diagnostic is not None:
             diagnostic.update(reason="insufficient_tile_relations")
@@ -13040,6 +13199,28 @@ def render_calibrated_rgb_pushbroom(
         }
         metadata: dict[str, object] = {
             "backend": "calibrated_rgb_pushbroom",
+            "acceleration": cuda_metadata(),
+            "mosaicing_method": {
+                "name_zh": "基于轨迹约束的深度感知多视点侧扫拼接",
+                "name_en": (
+                    "Trajectory-Constrained Depth-Aware Multi-Viewpoint "
+                    "Side-Scan Mosaicing"
+                ),
+                "implementation_variant": (
+                    "robust_pca_levelled_real_pose_rgb_multiview_strips"
+                ),
+                "trajectory_source": "orbslam3_rgbd_camera_to_world",
+                "scan_frame": "robust_irls_pca_camera_centres",
+                "real_pose_nodes_preserved": True,
+                "pose_smoothing_applied": False,
+                "pose_interpolation_applied": False,
+                "depth_role": (
+                    "adjacent_risk_corridor_visibility_layering_and_local_"
+                    "inverse_sampling_only"
+                ),
+                "foreground_policy": "single_rgb_owner",
+                "safe_background_seam": "monotonic_graphcut_then_local_multiband",
+            },
             "pixel_source": "calibrated_rgb_source_samples",
             "depth_used_for_output_pixels": False,
             "depth_used_for_local_geometry": bool(

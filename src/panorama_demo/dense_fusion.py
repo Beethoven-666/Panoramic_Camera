@@ -30,6 +30,7 @@ from typing import Any, Mapping, Sequence
 import cv2
 import numpy as np
 
+from .cuda_backend import remap as accelerated_remap
 from .rgbd_projection import PinholeIntrinsics, ProjectionCanvas, RGBDProjectionFrame
 from .session import RGBDFrame, read_aligned_depth_mm
 
@@ -401,14 +402,14 @@ def _undistort(
     map_x, map_y = maps
     source_valid = np.full(color.shape[:2], 255, dtype=np.uint8)
     return (
-        cv2.remap(
+        accelerated_remap(
             color,
             map_x,
             map_y,
             cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
         ),
-        cv2.remap(
+        accelerated_remap(
             np.asarray(depth_mm, dtype=np.float32),
             map_x,
             map_y,
@@ -416,7 +417,7 @@ def _undistort(
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=0,
         ),
-        cv2.remap(
+        accelerated_remap(
             source_valid,
             map_x,
             map_y,
@@ -464,6 +465,10 @@ def _integrate_tsdf(
     if len(all_frames) != len(all_poses) or not all_frames:
         raise ValueError("Dense TSDF inputs must contain aligned frames and poses")
     o3d = _require_open3d()
+    if bool(getattr(o3d.core.cuda, "is_available", lambda: False)()):
+        return _integrate_tsdf_tensor_cuda(
+            o3d, all_frames, all_poses, intrinsics, maps, config
+        )
     volume = o3d.pipelines.integration.ScalableTSDFVolume(
         voxel_length=config.voxel_length_mm / 1000.0,
         sdf_trunc=config.sdf_truncation_mm / 1000.0,
@@ -496,6 +501,90 @@ def _integrate_tsdf(
     mesh = volume.extract_triangle_mesh()
     if len(mesh.vertices) < 3 or len(mesh.triangles) < 1:
         raise RuntimeError("Dense TSDF fusion did not reconstruct a mesh")
+    return mesh
+
+
+def _integrate_tsdf_tensor_cuda(
+    o3d: Any,
+    all_frames: Sequence[RGBDFrame],
+    all_poses: Sequence[np.ndarray],
+    intrinsics: PinholeIntrinsics,
+    maps: tuple[np.ndarray, np.ndarray] | None,
+    config: DenseFusionConfig,
+) -> Any:
+    """Integrate display-only TSDF on an Open3D CUDA tensor build.
+
+    This branch is intentionally isolated from panorama rendering.  A CUDA
+    Open3D build is not distributed for every supported host, so the legacy
+    CPU implementation above remains the numerically independent availability
+    fallback.  Both branches consume the same immutable RGB-D frames/poses.
+    """
+
+    device = o3d.core.Device("CUDA:0")
+    volume = o3d.t.geometry.VoxelBlockGrid(
+        attr_names=("tsdf", "weight", "color"),
+        attr_dtypes=(
+            o3d.core.float32,
+            o3d.core.uint16,
+            o3d.core.uint16,
+        ),
+        attr_channels=((1,), (1,), (3,)),
+        voxel_size=config.voxel_length_mm / 1000.0,
+        block_resolution=16,
+        block_count=100_000,
+        device=device,
+    )
+    intrinsic = o3d.core.Tensor(
+        intrinsics.matrix, dtype=o3d.core.float64, device=device
+    )
+    truncation_multiplier = (
+        config.sdf_truncation_mm / config.voxel_length_mm
+    )
+    for frame, pose in zip(all_frames, all_poses, strict=True):
+        color = _decode_color(frame.color_path)
+        depth = read_aligned_depth_mm(frame)
+        color, depth, undistort_valid = _undistort(color, depth, maps)
+        bounded_depth = np.where(
+            undistort_valid
+            & np.isfinite(depth)
+            & (depth > 0.0)
+            & (depth <= config.maximum_depth_mm),
+            depth,
+            0.0,
+        ).astype(np.uint16)
+        if not np.any(bounded_depth):
+            continue
+        rgb = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
+        depth_image = o3d.t.geometry.Image(
+            o3d.core.Tensor(bounded_depth, device=device)
+        )
+        color_image = o3d.t.geometry.Image(o3d.core.Tensor(rgb, device=device))
+        extrinsic = o3d.core.Tensor(
+            np.linalg.inv(_camera_to_world_m(pose)),
+            dtype=o3d.core.float64,
+            device=device,
+        )
+        blocks = volume.compute_unique_block_coordinates(
+            depth_image,
+            intrinsic,
+            extrinsic,
+            depth_scale=1000.0,
+            depth_max=config.maximum_depth_mm / 1000.0,
+            trunc_voxel_multiplier=truncation_multiplier,
+        )
+        volume.integrate(
+            blocks,
+            depth_image,
+            color_image,
+            intrinsic,
+            extrinsic,
+            depth_scale=1000.0,
+            depth_max=config.maximum_depth_mm / 1000.0,
+            trunc_voxel_multiplier=truncation_multiplier,
+        )
+    mesh = volume.extract_triangle_mesh(weight_threshold=1.0).to_legacy()
+    if len(mesh.vertices) < 3 or len(mesh.triangles) < 1:
+        raise RuntimeError("CUDA TSDF fusion did not reconstruct a mesh")
     return mesh
 
 
@@ -664,8 +753,22 @@ def export_tsdf_mesh(
         integration_config,
     )
     glb = _mesh_to_glb(mesh)
+    o3d = _require_open3d()
+    tensor_cuda = bool(
+        getattr(o3d.core.cuda, "is_available", lambda: False)()
+    )
     return glb, {
-        "backend": "open3d_scalable_tsdf_display_only",
+        "backend": (
+            "open3d_tensor_cuda_voxel_block_grid_display_only"
+            if tensor_cuda
+            else "open3d_scalable_tsdf_cpu_display_only"
+        ),
+        "acceleration": {
+            "requested": "auto",
+            "selected": "cuda" if tensor_cuda else "cpu",
+            "device": "CUDA:0" if tensor_cuda else "CPU:0",
+            "reason": None if tensor_cuda else "open3d_cuda_build_unavailable",
+        },
         "frame_count": len(frames),
         "vertex_count": int(len(mesh.vertices)),
         "triangle_count": int(len(mesh.triangles)),
@@ -1469,14 +1572,14 @@ def _dense_plane_background(
                 & (v >= 0.0)
                 & (v < intrinsics.height - 1)
             )
-            warped = cv2.remap(
+            warped = accelerated_remap(
                 source.color,
                 u.astype(np.float32),
                 v.astype(np.float32),
                 cv2.INTER_LINEAR,
                 borderMode=cv2.BORDER_CONSTANT,
             )
-            sampled_source_safe = cv2.remap(
+            sampled_source_safe = accelerated_remap(
                 masks.background_sample_safe.astype(np.uint8),
                 u.astype(np.float32),
                 v.astype(np.float32),
@@ -1484,7 +1587,7 @@ def _dense_plane_background(
                 borderMode=cv2.BORDER_CONSTANT,
                 borderValue=0,
             ) > 0
-            sampled_depth = cv2.remap(
+            sampled_depth = accelerated_remap(
                 source.depth_mm.astype(np.float32),
                 u.astype(np.float32),
                 v.astype(np.float32),
@@ -1492,7 +1595,7 @@ def _dense_plane_background(
                 borderMode=cv2.BORDER_CONSTANT,
                 borderValue=0,
             )
-            sampled_depth_valid = cv2.remap(
+            sampled_depth_valid = accelerated_remap(
                 masks.depth_valid.astype(np.uint8),
                 u.astype(np.float32),
                 v.astype(np.float32),
@@ -1500,7 +1603,7 @@ def _dense_plane_background(
                 borderMode=cv2.BORDER_CONSTANT,
                 borderValue=0,
             ) > 0
-            sampled_verified_foreground = cv2.remap(
+            sampled_verified_foreground = accelerated_remap(
                 masks.foreground_core.astype(np.uint8),
                 u.astype(np.float32),
                 v.astype(np.float32),
@@ -2761,7 +2864,7 @@ def _wall_plane_fov_domain(
                 & (v >= 0.0)
                 & (v < intrinsics.height - 1)
             )
-            source_valid = cv2.remap(
+            source_valid = accelerated_remap(
                 source.undistort_valid.astype(np.uint8),
                 u.astype(np.float32),
                 v.astype(np.float32),

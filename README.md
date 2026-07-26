@@ -1,5 +1,36 @@
 # Gemini 305 RGB-D 移动侧扫全景
 
+正式方法名称为**基于轨迹约束的深度感知多视点侧扫拼接**
+（**Trajectory-Constrained Depth-Aware Multi-Viewpoint Side-Scan
+Mosaicing**）。当前正式实现以 ORB-SLAM3 RGB-D 的真实
+`camera_to_world` 节点为唯一轨迹，使用稳健 IRLS-PCA 建立只读的侧扫展示坐标，
+再由每个真实视点贡献标定 RGB 条带；PCA 只拉直输出坐标，不平滑、插值或改写
+任何真实 pose。深度仅在 RGB 风险触发的相邻接缝走廊中负责可见性、分层、
+遮挡保护和经审计的局部 inverse sampling，最终颜色仍全部来自一个真实 RGB
+owner。
+
+## CUDA 加速
+
+正式流水线提供独立、可审计的 CUDA 后端。CUDA 13 主机安装：
+
+```powershell
+D:\Panoramic_Camera\.conda\python.exe -m pip install -e ".[cuda13]"
+```
+
+`G305_CUDA=auto`（默认）会对相同形状的 remap 做一次 CPU/CUDA
+等价性与耗时校准，只保留更快且满足像素契约的实现；
+`G305_CUDA=off` 强制参考 CPU 路径；现场验收可用
+`G305_CUDA=required` 强制所有已接入的 remap 与批量 pinhole
+几何走 CUDA，任何不支持的采样语义都会 fail closed。报告和交付文件的
+`acceleration` 字段记录设备、调用次数与主机/显存传输量。
+
+当前可加速范围包括正式/诊断 inverse remap、ORB-SLAM3 与 Open3D
+输入预处理、相邻 RGB-D pinhole 投影和批量 SE(3) 点变换。若 Open3D
+本身是 CUDA build，展示用 TSDF 会自动切换到 Tensor
+`VoxelBlockGrid(CUDA:0)`；普通 Open3D wheel 则明确报告 CPU TSDF。
+ORB-SLAM3、legacy Open3D RGB-D odometry、GraphCut/MultiBand owner
+终局和发布审计没有数值等价的 CUDA 实现，因此继续使用 CPU。
+
 本项目在 Windows 上使用奥比中光 Gemini 305 采集同步、标定且对齐到彩色坐标系的 RGB-D 序列，并生成移动侧扫全景图。正式序列流程是：
 
 ```text

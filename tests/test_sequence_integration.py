@@ -139,7 +139,12 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert report["schema"] == "gemini305-calibrated-rgb-pushbroom/v10"
     assert report["layout_selection"]["mode"] == "adaptive_rgbd_pose_nodes"
     assert report["render_strategy"] == "calibrated_rgb_pushbroom"
+    assert report["mosaicing_method"]["name_en"] == (
+        "Trajectory-Constrained Depth-Aware Multi-Viewpoint Side-Scan Mosaicing"
+    )
+    assert report["mosaicing_method"]["pose_smoothing_applied"] is False
     assert report["render"]["backend"] == "calibrated_rgb_pushbroom"
+    assert report["acceleration"] == report["render"]["acceleration"]
     assert report["render"]["pixel_source"] == "calibrated_rgb_source_samples"
     assert report["render"]["depth_used_for_output_pixels"] is False
     assert report["render"]["local_geometry_scope"] == "adjacent_seam_corridors_only"
@@ -185,6 +190,8 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
         (output / "render_transforms.json").read_text(encoding="utf-8")
     )
     assert render_transforms["schema"] == "calibrated-rgb-pushbroom/v7"
+    assert render_transforms["mosaicing_method"] == report["mosaicing_method"]
+    assert render_transforms["acceleration"] == report["acceleration"]
     assert render_transforms["pixel_source"] == "calibrated_rgb_source_samples"
     assert render_transforms["depth_used_for_output_pixels"] is False
     assert [source["frame_id"] for source in render_transforms["sources"]] == list(
@@ -227,6 +234,8 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
         backend.optimized_node_ids
     ) - 1
     assert delivery["pose_backend"] == "open3d_rgbd"
+    assert delivery["mosaicing_method"] == report["mosaicing_method"]
+    assert delivery["acceleration"] == report["acceleration"]
     assert delivery["projection"] == "calibrated_rgb_pushbroom"
     assert delivery["schema"] == "gemini305-panorama-delivery/v10"
     assert delivery["pixel_source"] == "calibrated_rgb_source_samples"

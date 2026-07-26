@@ -15,6 +15,8 @@ from typing import Protocol, Sequence, runtime_checkable
 import cv2
 import numpy as np
 
+from .cuda_backend import pinhole_project, remap as accelerated_remap
+
 
 @runtime_checkable
 class CalibratedIntrinsics(Protocol):
@@ -106,7 +108,7 @@ def undistort_depth_with_validity(
     map_x, map_y = maps
     if map_x.shape != depth.shape or map_y.shape != depth.shape:
         raise ValueError("Undistortion maps must match aligned depth dimensions")
-    result = cv2.remap(
+    result = accelerated_remap(
         np.asarray(depth, dtype=np.float32),
         map_x,
         map_y,
@@ -150,8 +152,13 @@ def camera_points_to_source_pixels(
         usable = flat[finite_positive]
         distortion = distortion_coefficients(intrinsics)
         if distortion is None:
-            source_x = matrix[0, 0] * usable[:, 0] / usable[:, 2] + matrix[0, 2]
-            source_y = matrix[1, 1] * usable[:, 1] / usable[:, 2] + matrix[1, 2]
+            source_x, source_y = pinhole_project(
+                usable,
+                fx=float(matrix[0, 0]),
+                fy=float(matrix[1, 1]),
+                cx=float(matrix[0, 2]),
+                cy=float(matrix[1, 2]),
+            )
             projected = np.stack((source_x, source_y), axis=1)
         else:
             projected, _ = cv2.projectPoints(

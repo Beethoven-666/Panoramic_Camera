@@ -24,6 +24,7 @@ from typing import Mapping
 import cv2
 import numpy as np
 
+from .cuda_backend import remap as accelerated_remap
 
 _MINIMUM_CORRIDOR_WIDTH = 96
 _MAXIMUM_CORRIDOR_WIDTH = 160
@@ -507,7 +508,7 @@ def _coarse_apap_inverse_map(
 
 def _sample_vector_field(field: np.ndarray, map_x: np.ndarray, map_y: np.ndarray) -> np.ndarray:
     values = [
-        cv2.remap(
+        accelerated_remap(
             np.asarray(field[:, :, channel], dtype=np.float32),
             map_x,
             map_y,
@@ -525,7 +526,7 @@ def _sample_boolean_mask(
 ) -> np.ndarray:
     """Nearest-sample an eligibility mask without treating out-of-bounds as safe."""
 
-    sampled = cv2.remap(
+    sampled = accelerated_remap(
         np.asarray(mask, dtype=np.uint8),
         np.asarray(map_x, dtype=np.float32),
         np.asarray(map_y, dtype=np.float32),
@@ -791,7 +792,7 @@ def fit_local_apap_plus_dense_flow(
             apap_inliers=inlier_count,
             held_out_pixel_count=base_held_out_count,
         )
-    base_sample = cv2.remap(
+    base_sample = accelerated_remap(
         source_gray,
         base_x,
         base_y,
@@ -836,7 +837,7 @@ def fit_local_apap_plus_dense_flow(
         "application_policy": "same_layer_visible_nonprotected_instance_or_background_only",
         "boundary_policy": "outer_corridor_border_identity",
     }
-    warped_source = cv2.remap(
+    warped_source = accelerated_remap(
         source_gray,
         base_x,
         base_y,
@@ -878,7 +879,7 @@ def fit_local_apap_plus_dense_flow(
     )
     sampled_forward = _sample_vector_field(forward, residual_x, residual_y)
     fb_error = np.linalg.norm(np.asarray(backward, dtype=np.float32) + sampled_forward, axis=2)
-    composed_x = cv2.remap(
+    composed_x = accelerated_remap(
         base_x,
         residual_x,
         residual_y,
@@ -886,7 +887,7 @@ def fit_local_apap_plus_dense_flow(
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=np.nan,
     )
-    composed_y = cv2.remap(
+    composed_y = accelerated_remap(
         base_y,
         residual_x,
         residual_y,
@@ -1004,7 +1005,7 @@ def fit_local_apap_plus_dense_flow(
             dense_flow_status="insufficient_held_out_flow_support",
             dense_flow_held_out_pixel_count=held_out_count,
         )
-    final_sample = cv2.remap(
+    final_sample = accelerated_remap(
         source_gray,
         map_x,
         map_y,

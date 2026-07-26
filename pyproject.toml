@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 capture = ["pyorbbecsdk2>=2.1.1"]
 test = ["pytest>=8.0"]
+cuda13 = ["cupy-cuda13x>=14.1,<15"]
 unistitch-diagnostic = [
     "kornia>=0.7",
     "torch>=2.1",

@@ -44,6 +44,7 @@ from panorama_demo.calibrated_rgb_pushbroom import (
     _preflight_failure_pair_index,
     _protected_component_anchor_pixel_counts,
     _raw_pixels_to_virtual_coordinates,
+    _robust_scan_axis,
     _restrict_signed_occlusion_components_to_tile_footprint,
     _resolve_pair_level_hard_owners,
     _audit_suppressed_source_frames,
@@ -2380,6 +2381,28 @@ def test_raw_geometry_coordinates_invert_the_calibrated_rgb_map_subpixel(
     np.testing.assert_allclose(recovered, expected, atol=1e-4)
 
 
+def test_robust_scan_axis_downweights_noisy_trajectory_endpoints() -> None:
+    centres = np.column_stack(
+        (
+            np.arange(10, dtype=np.float64) * 10.0,
+            np.zeros(10, dtype=np.float64),
+            np.zeros(10, dtype=np.float64),
+        )
+    )
+    centres[0, 1] = 40.0
+    centres[-1, 1] = -40.0
+
+    axis, audit = _robust_scan_axis(centres)
+
+    assert axis[0] > 0.999
+    assert abs(axis[1]) < 0.02
+    assert abs(axis[2]) < 1e-9
+    assert audit["method"] == "robust_irls_pca_camera_centres"
+    assert audit["pose_smoothing_applied"] is False
+    assert audit["pose_interpolation_applied"] is False
+    assert audit["downweighted_pose_count"] >= 2
+
+
 def test_pushbroom_uses_every_real_frame_once_with_bounded_strip_residency(
     tmp_path: Path,
 ) -> None:
@@ -2400,10 +2423,21 @@ def test_pushbroom_uses_every_real_frame_once_with_bounded_strip_residency(
     assert metadata["frame_ids"] == [frame.frame_id for frame in session.frames]
     assert metadata["single_inverse_remap_per_source"] is True
     assert metadata["interpolated_pose_count"] == 0
+    assert metadata["mosaicing_method"]["name_en"] == (
+        "Trajectory-Constrained Depth-Aware Multi-Viewpoint Side-Scan Mosaicing"
+    )
+    assert metadata["mosaicing_method"]["real_pose_nodes_preserved"] is True
+    assert metadata["mosaicing_method"]["pose_smoothing_applied"] is False
     assert metrics["source_remap_count"] == len(session.frames)
     assert 2 <= metrics["maximum_resident_strips"] <= 5
     assert len(metadata["rgb_motion_scale"]["samples"]) == len(session.frames) - 1
     assert metadata["layout"]["endpoint_policy"] == "outward_half_fov"
+    assert metadata["layout"]["scan_frame_audit"]["method"] == (
+        "robust_irls_pca_camera_centres"
+    )
+    assert metadata["layout"]["scan_frame_audit"]["pose_count"] == len(
+        session.frames
+    )
     assert len(metadata["layout"]["endpoint_outer_owner_intervals_x"]) == 2
     assert metadata["layout"]["maximum_source_strip_width"] > 64
     supports = metadata["layout"]["source_support_intervals_x"]
@@ -2593,6 +2627,190 @@ def test_pushbroom_rejects_unstable_rgb_motion_scale(tmp_path: Path) -> None:
             session.calibration,
             CalibratedRGBPushbroomConfig(),
             rgb_motions=unstable_motions,
+        )
+
+
+def _legacy_photometric_tile_masks(
+    first: np.ndarray,
+    second: np.ndarray,
+    candidates: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+    """Reproduce the former full-frame-per-tile mask semantics as a test oracle."""
+
+    candidate_mask = np.asarray(candidates, dtype=bool)
+    height, width = candidate_mask.shape
+    yy, xx = np.indices((height, width), dtype=np.int32)
+    linear0 = pushbroom_module._srgb_to_linear_bgr(first)
+    linear1 = pushbroom_module._srgb_to_linear_bgr(second)
+    ratios = np.log(np.maximum(linear0, 1e-4)) - np.log(
+        np.maximum(linear1, 1e-4)
+    )
+    tile_y, tile_x = yy // 16, xx // 16
+    stable = np.zeros_like(candidate_mask)
+    for row in range((height + 15) // 16):
+        for column in range((width + 15) // 16):
+            tile = candidate_mask & (tile_y == row) & (tile_x == column)
+            if int(np.count_nonzero(tile)) < 40:
+                continue
+            values = ratios[tile]
+            centre = np.median(values, axis=0)
+            tile_mad = np.median(
+                np.abs(values - centre.reshape(1, 3)), axis=0
+            )
+            if np.any(tile_mad > 0.035):
+                continue
+            stable[tile] = np.all(
+                np.abs(values - centre.reshape(1, 3)) <= 0.05, axis=1
+            )
+    held_out_seed = ((xx + 3 * yy) % 5) == 0
+    keep = np.zeros_like(stable)
+    spatial_tiles = 0
+    for row in range((height + 15) // 16):
+        for column in range((width + 15) // 16):
+            tile = stable & (tile_y == row) & (tile_x == column)
+            if int(np.count_nonzero(tile & ~held_out_seed)) >= 32:
+                keep |= tile
+                spatial_tiles += 1
+    return (
+        stable,
+        keep,
+        keep & ~held_out_seed,
+        keep & held_out_seed,
+        spatial_tiles,
+    )
+
+
+def test_audited_photometric_tile_slices_match_legacy_full_frame_golden() -> None:
+    height, width = 53, 49
+    rng = np.random.default_rng(20260726)
+    first = rng.integers(48, 188, (height, width, 3), dtype=np.uint8)
+    expected_gain = np.asarray((0.94, 1.06, 0.98), dtype=np.float64)
+    second = pushbroom_module._linear_to_srgb_bgr(
+        pushbroom_module._srgb_to_linear_bgr(first)
+        / expected_gain.reshape(1, 1, 3)
+    )
+    candidate_storage = np.ones((height * 2, width * 2), dtype=bool)
+    candidates = candidate_storage[::2, ::2]
+    candidates[:16, :16] = False
+    candidates[:16, :16].flat[:39] = True
+    # One gross colour-ratio outlier must be removed without rejecting the
+    # otherwise stable tile.
+    second[20, 35] = (8, 247, 8)
+    legacy_stable, legacy_keep, legacy_train, legacy_held_out, legacy_tiles = (
+        _legacy_photometric_tile_masks(first, second, candidates)
+    )
+    diagnostic: dict[str, object] = {}
+
+    observation = pushbroom_module._audited_photometric_relation(
+        first,
+        second,
+        candidates,
+        method="rgb_texture_consistent",
+        same_layer_corridor_used=True,
+        diagnostic=diagnostic,
+    )
+
+    assert observation is not None
+    assert diagnostic == {
+        "initial_candidate_pixel_count": int(np.count_nonzero(candidates)),
+        "stable_candidate_pixel_count": int(np.count_nonzero(legacy_stable)),
+    }
+    assert observation.candidate_pixels == int(np.count_nonzero(legacy_stable))
+    assert observation.support_pixels == int(np.count_nonzero(legacy_keep))
+    assert observation.training_pixels == int(np.count_nonzero(legacy_train))
+    assert observation.held_out_pixels == int(np.count_nonzero(legacy_held_out))
+    assert observation.spatial_tile_count == legacy_tiles
+    np.testing.assert_array_equal(observation.safe_mask, legacy_held_out)
+    np.testing.assert_allclose(
+        observation.log_relation_bgr, np.log(expected_gain), atol=0.025
+    )
+    assert observation.method == "rgb_texture_consistent"
+    assert observation.same_layer_corridor_used is True
+
+
+def test_audited_photometric_tile_thresholds_remain_inclusive() -> None:
+    height = width = 64
+    first = np.full((height, width, 3), (96, 128, 160), dtype=np.uint8)
+    second = first.copy()
+    yy, xx = np.indices((height, width), dtype=np.int32)
+    held_out_seed = ((xx + 3 * yy) % 5) == 0
+    candidates = np.ones((height, width), dtype=bool)
+
+    def set_tile_candidates(
+        row: int, column: int, *, training: int, held_out: int
+    ) -> None:
+        y0, x0 = row * 16, column * 16
+        tile_seed = held_out_seed[y0 : y0 + 16, x0 : x0 + 16]
+        local = np.zeros((16, 16), dtype=bool)
+        local.flat[np.flatnonzero(~tile_seed)[:training]] = True
+        local.flat[np.flatnonzero(tile_seed)[:held_out]] = True
+        candidates[y0 : y0 + 16, x0 : x0 + 16] = local
+
+    # Stable membership requires 40 candidates.  The second-stage tile gate
+    # independently requires 32 training pixels, both with inclusive bounds.
+    set_tile_candidates(0, 0, training=31, held_out=8)  # 39: not stable
+    set_tile_candidates(0, 1, training=31, held_out=9)  # stable, not retained
+    set_tile_candidates(0, 2, training=32, held_out=8)  # retained exactly
+    legacy_stable, legacy_keep, legacy_train, legacy_held_out, legacy_tiles = (
+        _legacy_photometric_tile_masks(first, second, candidates)
+    )
+
+    observation = pushbroom_module._audited_photometric_relation(
+        first,
+        second,
+        candidates,
+        method="safe_wall",
+        same_layer_corridor_used=False,
+    )
+
+    assert observation is not None
+    assert not np.any(legacy_stable[:16, :16])
+    assert np.count_nonzero(legacy_stable[:16, 16:32]) == 40
+    assert not np.any(legacy_keep[:16, 16:32])
+    assert np.count_nonzero(legacy_keep[:16, 32:48]) == 40
+    assert observation.spatial_tile_count == legacy_tiles == 14
+    assert observation.candidate_pixels == int(np.count_nonzero(legacy_stable))
+    assert observation.support_pixels == int(np.count_nonzero(legacy_keep))
+    assert observation.training_pixels == int(np.count_nonzero(legacy_train))
+    assert observation.held_out_pixels == int(np.count_nonzero(legacy_held_out))
+    np.testing.assert_array_equal(observation.safe_mask, legacy_held_out)
+
+
+@pytest.mark.parametrize("tile_count,accepted", [(7, False), (8, True)])
+def test_audited_photometric_requires_eight_spatial_tiles(
+    tile_count: int, accepted: bool
+) -> None:
+    first = np.full((64, 64, 3), 128, dtype=np.uint8)
+    candidates = np.zeros((64, 64), dtype=bool)
+    for index in range(tile_count):
+        row, column = divmod(index, 4)
+        candidates[row * 16 : (row + 1) * 16, column * 16 : (column + 1) * 16] = True
+    diagnostic: dict[str, object] = {}
+
+    observation = pushbroom_module._audited_photometric_relation(
+        first,
+        first,
+        candidates,
+        method="safe_wall",
+        same_layer_corridor_used=False,
+        diagnostic=diagnostic,
+    )
+
+    assert (observation is not None) is accepted
+    if accepted:
+        assert observation is not None
+        assert observation.spatial_tile_count == 8
+        assert "reason" not in diagnostic
+    else:
+        assert diagnostic["reason"] == "insufficient_tiles"
+        assert diagnostic["spatial_tile_count"] == 7
+        yy, xx = np.indices(candidates.shape, dtype=np.int32)
+        held_out_seed = ((xx + 3 * yy) % 5) == 0
+        assert diagnostic["training_pixel_count"] == int(
+            np.count_nonzero(candidates & ~held_out_seed)
+        )
+        assert diagnostic["held_out_pixel_count"] == int(
+            np.count_nonzero(candidates & held_out_seed)
         )
 
 

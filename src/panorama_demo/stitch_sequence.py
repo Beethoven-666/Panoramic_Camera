@@ -5035,6 +5035,8 @@ def _run_pipeline(
     render_transforms_payload = {
         "schema": "calibrated-rgb-pushbroom/v7",
         "translation_unit": "mm",
+        "acceleration": render_metadata.get("acceleration"),
+        "mosaicing_method": render_metadata.get("mosaicing_method"),
         "pixel_source": "calibrated_rgb_source_samples",
         "depth_used_for_output_pixels": False,
         "depth_used_for_local_geometry": compact_geometry_assistance[
@@ -5092,6 +5094,8 @@ def _run_pipeline(
         "pose_quality": pose_quality,
         "projection": render_transforms_payload,
         "render_strategy": "calibrated_rgb_pushbroom",
+        "acceleration": render_metadata.get("acceleration"),
+        "mosaicing_method": render_metadata.get("mosaicing_method"),
         "render": render_metadata,
         "photometric_calibration": photometric_calibration,
         "redundant_pose_node_suppression": redundant_pose_node_suppression,
@@ -5188,6 +5192,8 @@ def _run_pipeline(
             if orbslam3_trajectory is not None
             else "open3d_rgbd"
         ),
+        "mosaicing_method": render_metadata.get("mosaicing_method"),
+        "acceleration": render_metadata.get("acceleration"),
         "projection": "calibrated_rgb_pushbroom",
         "alignment_backend": compact_residual_alignment["backend"],
         "alignment_model": compact_residual_alignment["selected_model"],
