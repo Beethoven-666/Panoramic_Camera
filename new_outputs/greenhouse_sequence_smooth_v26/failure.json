@@ -1,0 +1,8 @@
+{
+  "schema": "gemini305-panorama-failure/v2",
+  "failed_utc": "2026-07-26T08:30:56.101994+00:00",
+  "input": "D:\\central_strip_Panoramic_Camera\\data\\captures\\run_20260725_211255_081",
+  "error_type": "RuntimeError",
+  "message": "Adjacent pair owner solve did not retain its foreground anchor (pair=73, required_first_pixels=0, required_second_pixels=76564, lost_first_pixels=0, lost_second_pixels=8, lost_first_selected_rgb_valid_pixels=0, lost_second_selected_rgb_valid_pixels=8, lost_first_handoff_pixels=0, lost_second_handoff_pixels=0, lost_first_current_anchor_pixels=0, lost_second_current_anchor_pixels=8, pair_level_hard_owner=None, graphcut_used=False, hard_rows=800, photometric_hard_owner=True, redundant_sources=[39])",
+  "deliverable_published": false
+}

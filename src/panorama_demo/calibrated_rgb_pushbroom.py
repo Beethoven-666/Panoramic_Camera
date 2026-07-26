@@ -4137,6 +4137,36 @@ def _load_source_anchor_labels(
     return x0, np.ascontiguousarray(labels, dtype=np.int32)
 
 
+def _geometry_pair_source_anchor_mask(
+    plan: _GeometryPairPlan,
+    *,
+    left: int,
+    right: int,
+    height: int,
+) -> np.ndarray:
+    """Load all sparse source-anchor candidates into one pair corridor."""
+
+    result = np.zeros(
+        (int(height), max(0, int(right) - int(left))),
+        dtype=bool,
+    )
+    if (
+        plan.source_anchor_labels_path is None
+        or not plan.source_anchor_labels_path.exists()
+    ):
+        return result
+    stored_x0, labels = _load_source_anchor_labels(plan, height=int(height))
+    stored_x1 = stored_x0 + labels.shape[1]
+    common_left = max(int(left), stored_x0)
+    common_right = min(int(right), stored_x1)
+    if common_right <= common_left:
+        return result
+    destination = slice(common_left - int(left), common_right - int(left))
+    source = slice(common_left - stored_x0, common_right - stored_x0)
+    result[:, destination] = labels[:, source] > 0
+    return result
+
+
 def _save_source_anchor_labels(path: Path, *, x0: int, labels: np.ndarray) -> None:
     """Write one temporary integer identity tile without RGB/depth payloads."""
 
@@ -6852,6 +6882,8 @@ def _component_owner_assignment_is_monotonic(
 
 def _force_monotonic_component_owners(
     fragments: Sequence[ProtectedComponentFragment],
+    *,
+    locked_owners: Mapping[int, int] | None = None,
 ) -> tuple[tuple[ProtectedComponentFragment, ...], dict[int, int]] | None:
     """Resolve a failed geometry neighbourhood at component, not pair, scope.
 
@@ -6871,6 +6903,23 @@ def _force_monotonic_component_owners(
     numeric_labels = tuple(int(label) for label in labels if label is not None)
     if len(set(numeric_labels)) != len(numeric_labels):
         return None
+    locked = {
+        int(label): int(owner)
+        for label, owner in (locked_owners or {}).items()
+    }
+    if (
+        set(locked) - set(numeric_labels)
+        or any(owner not in {0, 1} for owner in locked.values())
+        or any(
+            locked.get(int(fragment.component_label)) not in {
+                None,
+                *fragment.allowed_owners,
+            }
+            for fragment in checked
+            if fragment.component_label is not None
+        )
+    ):
+        return None
 
     candidates: list[dict[int, int]] = []
     preferred = {
@@ -6882,6 +6931,7 @@ def _force_monotonic_component_owners(
         for fragment in checked
         if fragment.component_label is not None
     }
+    preferred.update(locked)
     candidates.append(preferred)
 
     # A left-to-right threshold covers the common case with many components
@@ -6900,7 +6950,7 @@ def _force_monotonic_component_owners(
     for threshold in thresholds:
         assignment: dict[int, int] = {}
         for label, centre, fragment in centres:
-            desired = 0 if centre <= threshold else 1
+            desired = locked.get(label, 0 if centre <= threshold else 1)
             if desired not in fragment.allowed_owners:
                 break
             assignment[label] = desired
@@ -6911,7 +6961,15 @@ def _force_monotonic_component_owners(
     # overlapping components that a simple threshold cannot resolve, search
     # all legal owner choices with a fixed bound instead of widening a seam.
     if len(checked) <= 12:
-        option_rows = [tuple(int(owner) for owner in fragment.allowed_owners) for fragment in checked]
+        option_rows = [
+            (
+                (locked[int(fragment.component_label)],)
+                if fragment.component_label is not None
+                and int(fragment.component_label) in locked
+                else tuple(int(owner) for owner in fragment.allowed_owners)
+            )
+            for fragment in checked
+        ]
         for selected in product(*option_rows):
             candidates.append(
                 {
@@ -6924,7 +6982,8 @@ def _force_monotonic_component_owners(
     accepted = [
         assignment
         for assignment in candidates
-        if _component_owner_assignment_is_monotonic(checked, assignment)
+        if all(assignment.get(label) == owner for label, owner in locked.items())
+        and _component_owner_assignment_is_monotonic(checked, assignment)
     ]
     if not accepted:
         return None
@@ -8004,6 +8063,49 @@ def _rgb_risk_details(
         edge_offset_p95=edge_offset_p95,
         seed_pixel_count=int(np.count_nonzero(seed)),
         component_count=component_count,
+    )
+
+
+def _post_gain_risk_details(
+    image0: np.ndarray,
+    image1: np.ndarray,
+    valid0: np.ndarray,
+    valid1: np.ndarray,
+    *,
+    raw_structural_seed: np.ndarray,
+    raw_structural_edge_offset_p95: float,
+    post_gain_risk: _RGBRiskDetails | None = None,
+) -> _RGBRiskDetails:
+    """Recompute colour risk while retaining only pre-gain RGB structure."""
+
+    retained_structure = np.asarray(raw_structural_seed, dtype=bool)
+    if retained_structure.shape != np.asarray(valid0).shape:
+        raise ValueError("Raw structural risk must match the strip overlap")
+    current = (
+        _rgb_risk_details(image0, image1, valid0, valid1)
+        if post_gain_risk is None
+        else post_gain_risk
+    )
+    combined = _rgb_risk_details(
+        image0,
+        image1,
+        valid0,
+        valid1,
+        supplied_risk_mask=retained_structure,
+    )
+    structural_seed = np.ascontiguousarray(
+        current.structural_seed_mask | retained_structure
+    )
+    return _RGBRiskDetails(
+        mask=combined.mask,
+        seed_mask=combined.seed_mask,
+        structural_seed_mask=structural_seed,
+        edge_offset_p95=max(
+            float(current.edge_offset_p95),
+            float(raw_structural_edge_offset_p95),
+        ),
+        seed_pixel_count=int(np.count_nonzero(combined.seed_mask)),
+        component_count=int(combined.component_count),
     )
 
 
@@ -9179,6 +9281,7 @@ def _graphcut_monotonic_owner(
     owner_prior: np.ndarray | None = None,
     preferred_safe_background: np.ndarray | None = None,
     preferred_blend_width: int = 0,
+    preferred_safe_audit: dict[str, int] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool, int, int, int]:
     """Constrain GraphCut to whole protected components and validate its seam.
 
@@ -9275,6 +9378,8 @@ def _graphcut_monotonic_owner(
     preferred_width = int(preferred_blend_width)
     if preferred_width < 0:
         raise ValueError("Preferred safe-background blend width must be non-negative")
+    preferred_rows = np.zeros(height, dtype=bool)
+    preferred_locked_rows = np.zeros(height, dtype=bool)
     if preferred_width:
         preferred_left = (preferred_width - 1) // 2
         preferred_right = preferred_width - preferred_left - 1
@@ -9290,6 +9395,27 @@ def _graphcut_monotonic_owner(
                 if lower[row] <= nominal_boundary <= upper[row]:
                     lower[row] = nominal_boundary
                     upper[row] = nominal_boundary
+                    preferred_locked_rows[row] = True
+    if preferred_safe_audit is not None:
+        preferred_safe_audit.update(
+            candidate_row_count=int(np.count_nonzero(preferred_rows)),
+            component_admitted_row_count=int(
+                np.count_nonzero(preferred_locked_rows)
+            ),
+            component_blocked_row_count=int(
+                np.count_nonzero(preferred_rows & ~preferred_locked_rows)
+            ),
+            final_aligned_row_count=0,
+        )
+
+    def record_preferred_alignment(cuts: np.ndarray) -> None:
+        if preferred_safe_audit is not None:
+            preferred_safe_audit["final_aligned_row_count"] = int(
+                np.count_nonzero(
+                    preferred_rows
+                    & (np.asarray(cuts, dtype=np.int32) == nominal_boundary)
+                )
+            )
     safe_common = common & ~protected
     for row in range(height):
         safe_columns = np.flatnonzero(safe_common[row])
@@ -9396,6 +9522,7 @@ def _graphcut_monotonic_owner(
             owner0, owner1, cuts, split_count, boundary_guard = owners_from_prefix(
                 graphcut_candidate, enforce_terminals=True
             )
+            record_preferred_alignment(cuts)
             return owner0, owner1, cuts, True, 0, split_count, boundary_guard
         except RuntimeError:
             # Do not repair a non-monotonic GraphCut by taking a row-wise
@@ -9495,6 +9622,7 @@ def _graphcut_monotonic_owner(
         hard_candidate[row] = np.arange(width) <= cut
         hard_rows += 1
     owner0, owner1, cuts, split_count, boundary_guard = owners_from_prefix(hard_candidate)
+    record_preferred_alignment(cuts)
     return owner0, owner1, cuts, False, hard_rows, split_count, boundary_guard
 
 
@@ -10702,8 +10830,13 @@ def render_calibrated_rgb_pushbroom(
                 right=right,
                 height=layout.canvas_height,
             )
+            geometry_source_anchor = _geometry_pair_source_anchor_mask(
+                geometry_plans[index],
+                left=left,
+                right=right,
+                height=layout.canvas_height,
+            )
             with np.load(raw_risk_paths[index], allow_pickle=False) as stored_risk:
-                raw_risk_mask = np.asarray(stored_risk["mask"], dtype=np.uint8)
                 raw_risk_seed = np.asarray(stored_risk["seed_mask"], dtype=bool)
                 raw_risk_structural_seed = np.asarray(
                     stored_risk["structural_seed_mask"], dtype=bool
@@ -10727,26 +10860,13 @@ def render_calibrated_rgb_pushbroom(
                 pose_nominal,
             )
             preflight_pair_nominal_boundaries.append(content_nominal)
-            risk = _rgb_risk_details(
+            risk = _post_gain_risk_details(
                 image0,
                 image1,
                 valid0,
                 valid1,
-                supplied_risk_mask=raw_risk_mask,
-            )
-            risk = _RGBRiskDetails(
-                mask=risk.mask,
-                seed_mask=np.ascontiguousarray(
-                    risk.seed_mask | raw_risk_seed
-                ),
-                structural_seed_mask=np.ascontiguousarray(
-                    risk.structural_seed_mask | raw_risk_structural_seed
-                ),
-                edge_offset_p95=max(raw_edge_offset, risk.edge_offset_p95),
-                seed_pixel_count=int(
-                    np.count_nonzero(risk.seed_mask | raw_risk_seed)
-                ),
-                component_count=risk.component_count,
+                raw_structural_seed=raw_risk_structural_seed,
+                raw_structural_edge_offset_p95=raw_edge_offset,
             )
             owner_width = min(
                 layout.owner_right_x[index] - layout.owner_left_x[index],
@@ -10802,9 +10922,15 @@ def render_calibrated_rgb_pushbroom(
                 low_gradient_quantile=settings.scale_low_gradient_quantile,
             )
             safe_same_layer_candidate &= ~safe_wall
+            safe_same_layer_candidate &= ~geometry_source_anchor
+            if (
+                geometry_plans[index].source_anchor_evidence
+                or np.any(geometry_source_anchor)
+            ):
+                safe_same_layer_candidate[:] = False
             (
                 safe_same_layer_aperture,
-                _same_layer_preferred_nominal,
+                same_layer_owner_nominal,
                 _same_layer_preferred_rows,
             ) = _same_layer_seam_aperture(
                 safe_same_layer_candidate,
@@ -10814,7 +10940,7 @@ def render_calibrated_rgb_pushbroom(
             )
             owner_guard = _same_layer_owner_guard(
                 guard,
-                safe_same_layer_aperture,
+                safe_same_layer_candidate,
                 geometry_blend_protected,
                 valid0 & valid1,
             )
@@ -10847,7 +10973,12 @@ def render_calibrated_rgb_pushbroom(
                     valid1,
                     pair_index=index,
                     global_x0=left,
-                    nominal_boundary_x=left + content_nominal,
+                    # Component preferences must be compiled around the same
+                    # audited safe-background centre that the final owner
+                    # solver will use.  Keeping the old content-only centre
+                    # here could lock a component to the opposite source and
+                    # make the later same-layer aperture unreachable.
+                    nominal_boundary_x=left + same_layer_owner_nominal,
                 )
             )
         # Direct depth tokens are strict identity candidates for the v3
@@ -10994,15 +11125,16 @@ def render_calibrated_rgb_pushbroom(
                 None,
             )
             if component_fallback_pair is not None:
+                existing_constraints = segment_locked_constraints[
+                    component_fallback_pair
+                ]
                 forced_components = _force_monotonic_component_owners(
-                    preflight_fragments_by_pair[component_fallback_pair]
+                    preflight_fragments_by_pair[component_fallback_pair],
+                    locked_owners=existing_constraints,
                 )
                 component_hard_owner_fallback_pairs.add(component_fallback_pair)
                 if forced_components is not None:
                     replacement, owners = forced_components
-                    existing_constraints = segment_locked_constraints[
-                        component_fallback_pair
-                    ]
                     if not any(
                         label in existing_constraints
                         and existing_constraints[label] != owner
@@ -11244,6 +11376,12 @@ def render_calibrated_rgb_pushbroom(
                 right=right,
                 height=layout.canvas_height,
             )
+            geometry_source_anchor = _geometry_pair_source_anchor_mask(
+                geometry_plans[index],
+                left=left,
+                right=right,
+                height=layout.canvas_height,
+            )
             geometry_out_of_scope_first = _geometry_out_of_scope_first_mask(
                 geometry_plans,
                 index,
@@ -11442,7 +11580,6 @@ def render_calibrated_rgb_pushbroom(
             # sparse priors remain separate; a whole-corridor fallback below
             # still fails closed if it cannot preserve every required owner.
             with np.load(raw_risk_paths[index], allow_pickle=False) as stored_risk:
-                raw_risk_mask = np.asarray(stored_risk["mask"], dtype=np.uint8)
                 raw_risk_seed = np.asarray(stored_risk["seed_mask"], dtype=bool)
                 raw_risk_structural_seed = np.asarray(
                     stored_risk["structural_seed_mask"], dtype=bool
@@ -11466,26 +11603,14 @@ def render_calibrated_rgb_pushbroom(
             pre_gain_risk_seed_pixels += raw_risk_seed_pixel_count
             post_gain_risk_pixels += int(np.count_nonzero(post_gain_risk.mask))
             post_gain_risk_seed_pixels += int(post_gain_risk.seed_pixel_count)
-            risk = _rgb_risk_details(
+            risk = _post_gain_risk_details(
                 image0,
                 image1,
                 valid0,
                 valid1,
-                supplied_risk_mask=raw_risk_mask,
-            )
-            risk = _RGBRiskDetails(
-                mask=risk.mask,
-                # Geometry/late-closure topology remains the union of true
-                # pre/post-gain structural seeds, never the dilated guard.
-                seed_mask=np.ascontiguousarray(post_gain_risk.seed_mask | raw_risk_seed),
-                structural_seed_mask=np.ascontiguousarray(
-                    post_gain_risk.structural_seed_mask | raw_risk_structural_seed
-                ),
-                edge_offset_p95=max(raw_edge_offset, risk.edge_offset_p95),
-                seed_pixel_count=int(
-                    np.count_nonzero(post_gain_risk.seed_mask | raw_risk_seed)
-                ),
-                component_count=risk.component_count,
+                raw_structural_seed=raw_risk_structural_seed,
+                raw_structural_edge_offset_p95=raw_edge_offset,
+                post_gain_risk=post_gain_risk,
             )
             owner_width = min(
                 layout.owner_right_x[index] - layout.owner_left_x[index],
@@ -11564,6 +11689,22 @@ def render_calibrated_rgb_pushbroom(
             # This branch exists specifically for chromatic material on the
             # same bilateral RGB-D background layer.
             safe_same_layer_candidate &= ~safe_wall
+            safe_same_layer_candidate &= ~geometry_source_anchor
+            if (
+                geometry_plans[index].source_anchor_evidence
+                or np.any(geometry_source_anchor)
+                or foreground_anchor_required_owners
+            ):
+                safe_same_layer_candidate[:] = False
+            owner_safe_same_layer_candidate = (
+                safe_same_layer_candidate.copy()
+            )
+            foreground_blend_forbidden = np.ascontiguousarray(
+                foreground_anchor_reserved
+                | current_anchor_handoff_guard
+                | (foreground_anchor_owner_prior >= 0)
+            )
+            safe_same_layer_candidate &= ~foreground_blend_forbidden
             (
                 safe_same_layer_aperture,
                 same_layer_preferred_nominal,
@@ -11581,10 +11722,11 @@ def render_calibrated_rgb_pushbroom(
                 (valid0 & valid1)
                 & ~structural_guard
                 & ~geometry_blend_protected
+                & ~foreground_blend_forbidden
             )
             blend_guard = _same_layer_owner_guard(
                 guard,
-                safe_same_layer_aperture,
+                owner_safe_same_layer_candidate,
                 geometry_blend_protected,
                 valid0 & valid1,
             )
@@ -11621,6 +11763,7 @@ def render_calibrated_rgb_pushbroom(
             )
             nominal = int(same_layer_preferred_nominal)
             pair_level_hard_owner = pair_level_hard_owners.get(index)
+            same_layer_owner_audit: dict[str, int] = {}
             if pair_level_hard_owner is None:
                 try:
                     (
@@ -11644,6 +11787,7 @@ def render_calibrated_rgb_pushbroom(
                         owner_prior=foreground_anchor_owner_prior,
                         preferred_safe_background=safe_same_layer_aperture,
                         preferred_blend_width=blend_width,
+                        preferred_safe_audit=same_layer_owner_audit,
                     )
                 except RuntimeError as exc:
                     # Component-level ownership is preferred because it leaves
@@ -11665,7 +11809,12 @@ def render_calibrated_rgb_pushbroom(
                     )
                     if not compatible_options:
                         raise RuntimeError(
-                            "No pair-level fallback preserves a foreground anchor"
+                            "No pair-level fallback preserves a foreground anchor "
+                            f"for pair {index} ({first.frame_id}, "
+                            f"{second.frame_id}); required_owners="
+                            f"{sorted(foreground_anchor_required_owners)}, "
+                            f"fully_covering_options={list(options)}, "
+                            f"graphcut_failure={exc}"
                         ) from exc
                     pair_level_hard_owner = int(compatible_options[0])
                     runtime_pair_level_hard_owners[index] = pair_level_hard_owner
@@ -12052,6 +12201,24 @@ def render_calibrated_rgb_pushbroom(
                     ),
                     "same_layer_preferred_boundary_row_count": int(
                         same_layer_preferred_row_count
+                    ),
+                    "same_layer_owner_candidate_row_count": int(
+                        same_layer_owner_audit.get("candidate_row_count", 0)
+                    ),
+                    "same_layer_owner_component_admitted_row_count": int(
+                        same_layer_owner_audit.get(
+                            "component_admitted_row_count", 0
+                        )
+                    ),
+                    "same_layer_owner_component_blocked_row_count": int(
+                        same_layer_owner_audit.get(
+                            "component_blocked_row_count", 0
+                        )
+                    ),
+                    "same_layer_owner_final_aligned_row_count": int(
+                        same_layer_owner_audit.get(
+                            "final_aligned_row_count", 0
+                        )
                     ),
                     "blend_width_pixels": blend_width,
                     "multiband_levels": pair_levels,

@@ -2305,6 +2305,15 @@ def test_geometry_component_fallback_preserves_safe_pair_coverage() -> None:
     assert owners == {1: 0, 2: 1}
     assert [fragment.allowed_owners for fragment in forced] == [(0,), (1,)]
 
+    locked_result = _force_monotonic_component_owners(
+        (left, right),
+        locked_owners={1: 1},
+    )
+    assert locked_result is not None
+    locked_forced, locked_owners = locked_result
+    assert locked_owners[1] == 1
+    assert [fragment.allowed_owners for fragment in locked_forced][0] == (1,)
+
 
 def test_geometry_pair_hard_owner_and_source_suppression_are_audited() -> None:
     first = np.ones((2, 3), dtype=bool)
@@ -2692,6 +2701,35 @@ def test_safe_same_layer_background_accepts_chromatic_post_gain_support() -> Non
     )
 
 
+def test_post_gain_risk_retains_structure_without_replaying_old_lab_mask() -> None:
+    first = np.full((32, 48, 3), 128, dtype=np.uint8)
+    second = first.copy()
+    valid = np.ones((32, 48), dtype=bool)
+    current = pushbroom_module._rgb_risk_details(
+        first,
+        second,
+        valid,
+        valid,
+    )
+    assert not np.any(current.mask)
+
+    raw_structure = np.zeros_like(valid)
+    raw_structure[12:20, 23] = True
+    retained = pushbroom_module._post_gain_risk_details(
+        first,
+        second,
+        valid,
+        valid,
+        raw_structural_seed=raw_structure,
+        raw_structural_edge_offset_p95=3.5,
+        post_gain_risk=current,
+    )
+
+    assert np.all(retained.structural_seed_mask[raw_structure])
+    assert np.any(retained.mask)
+    assert retained.edge_offset_p95 == 3.5
+
+
 def test_same_layer_owner_guard_does_not_reintroduce_single_source_geometry() -> None:
     common = np.zeros((8, 16), dtype=bool)
     common[:, 3:13] = True
@@ -2978,6 +3016,7 @@ def test_graphcut_locks_only_complete_same_layer_safe_rows() -> None:
     protected = np.zeros_like(valid)
     safe = np.zeros_like(valid)
     safe[5:19, 30:34] = True
+    preferred_audit: dict[str, int] = {}
 
     _, _, cuts, _, _, split_count, boundary_guard_count = (
         _graphcut_monotonic_owner(
@@ -2989,12 +3028,19 @@ def test_graphcut_locks_only_complete_same_layer_safe_rows() -> None:
             nominal_boundary=31,
             preferred_safe_background=safe,
             preferred_blend_width=4,
+            preferred_safe_audit=preferred_audit,
         )
     )
 
     assert np.all(cuts[5:19] == 31)
     assert split_count == 0
     assert boundary_guard_count == 0
+    assert preferred_audit == {
+        "candidate_row_count": 14,
+        "component_admitted_row_count": 14,
+        "component_blocked_row_count": 0,
+        "final_aligned_row_count": 14,
+    }
 
 
 def test_local_multiband_uses_distinct_owner_masks_and_adaptive_levels(
