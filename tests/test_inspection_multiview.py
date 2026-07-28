@@ -544,7 +544,7 @@ def test_resource_estimator_rejects_corridor_local_plan_over_budget() -> None:
         )
 
 
-def test_continuous_photometric_curve_applies_same_gain_to_owner_guard() -> None:
+def test_continuous_photometric_curve_does_not_recolour_owner_guard() -> None:
     height, width = 48, 160
     image = np.empty((height, width, 3), dtype=np.uint8)
     image[:, : width // 2] = (92, 100, 108)
@@ -553,30 +553,20 @@ def test_continuous_photometric_curve_applies_same_gain_to_owner_guard() -> None
     safe_background[12:36, 72:88] = False
     valid = np.ones((height, width), dtype=bool)
     before_guard = image[~safe_background].copy()
-    before_lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
-    before_delta = float(np.mean(np.linalg.norm(
-        before_lab[:, width // 2 - 1] - before_lab[:, width // 2],
-        axis=1,
-    )))
 
     corrected, audit = _apply_continuous_canvas_exposure_curve(
         image, safe_background, valid
     )
 
-    after_lab = cv2.cvtColor(corrected, cv2.COLOR_BGR2LAB).astype(np.float32)
-    after_delta = float(np.mean(np.linalg.norm(
-        after_lab[:, width // 2 - 1] - after_lab[:, width // 2],
-        axis=1,
-    )))
-    assert audit["applied"] is True
-    assert audit["method"].startswith("neutral_safe_background_estimated")
-    assert not np.array_equal(corrected[~safe_background], before_guard)
+    assert audit["applied"] is False
+    assert audit["method"] == "disabled_post_composition_gain_v4_source_domain_only"
+    assert np.array_equal(corrected[~safe_background], before_guard)
+    assert np.array_equal(corrected, image)
     assert audit["corrected_pixel_count"] == int(np.count_nonzero(valid))
     assert audit["reference_rgb_used"] is False
     assert audit["column_varying_gain_used"] is False
     assert audit["maximum_adjacent_column_gain_delta"] == 0.0
     assert audit["minimum_gain"] == pytest.approx(audit["maximum_gain"])
-    assert after_delta >= before_delta
 
 
 def test_owner_boundary_audit_excludes_owner_only_guard() -> None:

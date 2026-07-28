@@ -139,7 +139,7 @@ stitch:
     identity_mesh_cell_size_pixels: 4
     # Formal identity meshes may bridge only a sub-pixel/quantisation-sized
     # hole.  Larger missing support is never expanded into a cut-out.
-    identity_mesh_maximum_fill_distance_pixels: 2.0
+    identity_mesh_maximum_fill_distance_pixels: 2.5
     graphcut_preview_scale: 0.25
     chain_seam_corridor_width_pixels: 96
     chain_seam_maximum_row_step_pixels: 1

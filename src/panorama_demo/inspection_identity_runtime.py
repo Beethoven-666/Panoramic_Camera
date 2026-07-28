@@ -5643,23 +5643,20 @@ def build_inspection_identity_runtime(
         *panel_native_intervals,
         *object_rich_intervals,
     )
-    # A successful object-rich interval already preserves unchanged RGB from
-    # one complete reference panel.  Do not additionally novel-view overlay
-    # the same structures.  The older true-depth overlay remains separately
-    # gated and disabled by default until its visibility/photometric closure
-    # is proven.
-    # Every required shelf inventory track already has exactly one audited
-    # panel-native or object-rich pre-seam RGB owner.  Sending those same
-    # tracks through the later true-depth mesh would create a second colour
-    # writer and can split an otherwise complete object when the mesh clips at
-    # a visibility boundary.  Keep true-depth mesh available for unrelated
-    # compact foreground, while shelf inventory remains single-source.
+    # Required shelf objects must first be offered to the measured RGB-D
+    # owner preflight.  The older order removed them merely because they were
+    # inventory tracks, forcing every shelf object onto the reference-plane
+    # corridor path even when its own aligned depth was complete.  Native
+    # corridors are still built as the audited fallback, but accepted meshes
+    # remove their corresponding interval before rendering below so a track
+    # can never have two RGB writers.  Hierarchy duplicates remain excluded:
+    # they are not independent physical inventory objects.
     combined = tuple(
         owner
         for owner in compact_direct_owners
         if owner.identity_track_id is None
         or int(owner.identity_track_id)
-        not in shelf_inventory_track_ids | shelf_hierarchy_track_ids
+        not in shelf_hierarchy_track_ids
     )
     if len(combined) > selected.maximum_identity_owner_count:
         raise MemoryError(

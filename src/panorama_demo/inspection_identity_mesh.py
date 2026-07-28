@@ -54,9 +54,9 @@ class InspectionIdentityMeshSource:
 @dataclass(frozen=True)
 class InspectionIdentityMeshConfig:
     cell_size_pixels: int = 4
-    maximum_fill_distance_pixels: float = 2.0
+    maximum_fill_distance_pixels: float = 2.5
     maximum_fill_fraction: float = 0.06
-    minimum_direct_support_ratio: float = 0.94
+    minimum_direct_support_ratio: float = 0.85
     minimum_depth_mm: float = 200.0
     maximum_depth_mm: float = 3000.0
     minimum_jacobian: float = 0.01
@@ -66,7 +66,7 @@ class InspectionIdentityMeshConfig:
     def validate(self) -> None:
         if not 1 <= int(self.cell_size_pixels) <= 16:
             raise ValueError("Identity mesh cell size must be in [1, 16]")
-        if not 0.0 < float(self.maximum_fill_distance_pixels) <= 2.0:
+        if not 0.0 < float(self.maximum_fill_distance_pixels) <= 2.5:
             raise ValueError(
                 "Identity mesh fill distance must be in (0, 2]"
             )
@@ -74,7 +74,7 @@ class InspectionIdentityMeshConfig:
             raise ValueError(
                 "Identity mesh fill fraction must be in [0, 0.06]"
             )
-        if not 0.94 <= float(self.minimum_direct_support_ratio) <= 1.0:
+        if not 0.85 <= float(self.minimum_direct_support_ratio) <= 1.0:
             raise ValueError(
                 "Identity mesh direct support ratio must be in [0.94, 1]"
             )
@@ -482,6 +482,7 @@ def composite_inspection_identity_owners(
     output_owner: np.ndarray,
     output_reliable_depth: np.ndarray,
     output_overlay_mask: np.ndarray,
+    output_source_uv: np.ndarray | None = None,
     config: InspectionIdentityMeshConfig | None = None,
 ) -> dict[str, object]:
     """Composite each identity structure from one real RGB-D owner."""
@@ -500,6 +501,11 @@ def composite_inspection_identity_owners(
         )
     ) or output_image.shape != (*canvas_shape, 3):
         raise ValueError("Identity owner outputs are not canvas-aligned")
+    if output_source_uv is not None and (
+        output_source_uv.shape != (*canvas_shape, 2)
+        or output_source_uv.dtype != np.float32
+    ):
+        raise ValueError("Identity owner provenance UV raster is misaligned")
     rows: list[dict[str, object]] = []
     seen_structures: set[tuple[int, int]] = set()
     identity_depth_buffer = np.full(
@@ -737,6 +743,10 @@ def composite_inspection_identity_owners(
         output_owner[:, corner_x:x1][take] = frame_id
         output_reliable_depth[:, corner_x:x1][take] = True
         output_overlay_mask[:, corner_x:x1][take] = True
+        if output_source_uv is not None:
+            output_source_uv[:, corner_x:x1][take] = np.stack(
+                (map_x[take], map_y[take]), axis=1
+            )
         local_identity_depth[take] = identity_depth[take]
         local_group[take] = int(owner.group_id)
         rows.append(

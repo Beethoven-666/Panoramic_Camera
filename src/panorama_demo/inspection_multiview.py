@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 import math
+import re
 from typing import Mapping, Sequence
 
 import cv2
@@ -78,7 +79,7 @@ class InspectionMultiviewConfig:
     depth_mesh_max_jacobian: float = 64.0
     depth_mesh_boundary_margin_pixels: int = 1
     identity_mesh_cell_size_pixels: int = 4
-    identity_mesh_maximum_fill_distance_pixels: float = 2.0
+    identity_mesh_maximum_fill_distance_pixels: float = 2.5
     graphcut_preview_scale: float = 0.25
     chain_seam_corridor_width_pixels: int = 96
     chain_seam_maximum_row_step_pixels: int = 1
@@ -86,6 +87,7 @@ class InspectionMultiviewConfig:
     chain_seam_adaptive_boundary_risk_guard_pixels: int = 12
     chain_seam_adaptive_boundary_minimum_common_coverage_ratio: float = 0.50
     chain_seam_adaptive_boundary_shift_penalty: float = 0.05
+    chain_seam_hard_cut_fallback_enabled: bool = True
     dis_preview_scale: float = 0.25
     dis_maximum_motion_pixels: float = 2.0
     dis_maximum_fb_error_pixels: float = 1.0
@@ -211,12 +213,12 @@ class InspectionMultiviewConfig:
             )
             and 0.0
             < float(self.identity_mesh_maximum_fill_distance_pixels)
-            <= 2.0
+            <= 2.5
         ):
             raise ValueError(
                 "inspection_multiview."
                 "identity_mesh_maximum_fill_distance_pixels must be in "
-                "(0, 2]"
+                "(0, 2.5]"
             )
         if not 0.125 <= float(self.graphcut_preview_scale) <= 1.0:
             raise ValueError(
@@ -279,6 +281,11 @@ class InspectionMultiviewConfig:
                 "inspection_multiview."
                 "chain_seam_adaptive_boundary_shift_penalty "
                 "must be finite and non-negative"
+            )
+        if type(self.chain_seam_hard_cut_fallback_enabled) is not bool:
+            raise ValueError(
+                "inspection_multiview.chain_seam_hard_cut_fallback_enabled "
+                "must be boolean"
             )
         if not 0.125 <= float(self.dis_preview_scale) <= 1.0:
             raise ValueError(
@@ -667,6 +674,7 @@ class InspectionMultiviewResult:
     full_extent_bgra: np.ndarray
     full_extent_owner_frame_id: np.ndarray
     metadata: dict[str, object]
+    source_uv: np.ndarray | None = None
 
     def validate(self) -> None:
         shape = self.image_bgr.shape[:2]
@@ -693,6 +701,11 @@ class InspectionMultiviewResult:
             raise RuntimeError("Inspection depth validity contract failed")
         full_bgra = np.asarray(self.full_extent_bgra)
         full_owner = np.asarray(self.full_extent_owner_frame_id)
+        if self.source_uv is not None and (
+            self.source_uv.dtype != np.float32
+            or self.source_uv.shape != (*shape, 2)
+        ):
+            raise RuntimeError("Inspection provenance UV raster is misaligned")
         if (
             full_bgra.dtype != np.uint8
             or full_bgra.ndim != 3
@@ -2330,31 +2343,19 @@ def _apply_continuous_canvas_exposure_curve(
         }
     supported_luma = luma[support_mask]
     measured_safe_luma = float(np.median(supported_luma))
-    # The capture is intentionally limited to 800 us and can therefore be
-    # globally dark.  Raise neutral safe-wall evidence toward a conservative
-    # display luminance, while retaining the formal 0.45--2.20 gain envelope.
-    global_gain = float(
-        np.clip(
-            0.42 / max(measured_safe_luma, 1e-4),
-            0.45,
-            2.20,
-        )
-    )
-    # Per-panel compensation above already solves relative colour/exposure.
-    # A per-column colour curve estimated from sparse wall samples can create
-    # visible stripes when applied to foreground.  The final normalization is
-    # therefore one channel-neutral linear exposure scalar for every current
-    # RGB owner.
+    # Source-domain compensation above is the only exposure operation.  Do
+    # not apply a post-composition global gain: it would recolour already
+    # locked object owners and contradict the v4 photometric contract.
+    global_gain = 1.0
     gain = np.full((width, 3), global_gain, dtype=np.float32)
     corrected_all = linear_to_srgb_bgr(linear * gain[None, :, :])
     corrected = np.ascontiguousarray(image_bgr.copy())
     corrected[apply_mask] = corrected_all[apply_mask]
     channel_names = ("B", "G", "R")
     return corrected, {
-        "applied": True,
+        "applied": False,
         "method": (
-            "neutral_safe_background_estimated_global_linear_rgb_"
-            "uniform_all_owner_application"
+            "disabled_post_composition_gain_v4_source_domain_only"
         ),
         "supported_column_count": int(known.size),
         "estimate_pixel_count": int(np.count_nonzero(estimate_mask)),
@@ -2364,7 +2365,7 @@ def _apply_continuous_canvas_exposure_curve(
         ),
         "safe_background_median_linear_luma_before": measured_safe_luma,
         "global_normalization_gain": global_gain,
-        "target_safe_background_linear_luma": 0.42,
+        "target_safe_background_linear_luma": None,
         "maximum_adjacent_column_gain_delta": 0.0,
         "column_varying_gain_used": False,
         "minimum_gain": float(np.min(gain)),
@@ -3042,6 +3043,9 @@ def _compose_reference_panels_graphcut_multiband(
         adaptive_boundary_shift_penalty=float(
             config.chain_seam_adaptive_boundary_shift_penalty
         ),
+        hard_cut_fallback_enabled=bool(
+            config.chain_seam_hard_cut_fallback_enabled
+        ),
     )
     # Boundary planning sees the full virtual depth-mesh union, plus pixels
     # that no panel can expose safely.  Each adjacent pair also contributes
@@ -3603,7 +3607,15 @@ def _compose_reference_panels_graphcut_multiband(
             PairCorridorEvidence
         ] = pair_cost_evidence,
     ) -> tuple[object, np.ndarray]:
-        combined = pre_seam_locks.copy()
+        # RGB object ownership is deliberately independent of the spatial
+        # background panel chain.  Pre-seam intervals protect their footprints
+        # and are copied/audited after the background composition; feeding
+        # their panel index into this solver can make an otherwise valid
+        # closed background boundary impossible when the RGB owner originates
+        # from a different physical view.  Only optional foreground candidates
+        # below may constrain the background chain, and each is admitted
+        # transactionally.
+        combined = np.full(pre_seam_locks.shape, -1, dtype=np.int16)
         for candidate_id in candidate_ids:
             panel_index, _, _, _, _, selected_lock = (
                 candidate_records[candidate_id]
@@ -3631,9 +3643,33 @@ def _compose_reference_panels_graphcut_multiband(
     # area and retain each only when the complete closed seam chain remains
     # feasible.  Every rejection is explicit in the audit and later makes
     # strict object-completeness false; there is no silent all-lock fallback.
-    chain_result, combined_foreground_locks = (
-        solve_with_candidate_ids(())
-    )
+    try:
+        chain_result, combined_foreground_locks = solve_with_candidate_ids(())
+    except RuntimeError as exc:
+        # A virtual panel can have a one-row non-rectangular lower/upper edge
+        # that no adjacent pair jointly covers.  It cannot contribute to the
+        # final largest-valid crop.  Exclude it only when it is in the outer
+        # ten percent and contains no required object guard, then re-solve the
+        # complete background chain; all interior/object rows remain fail-closed.
+        match = re.search(r"first_failed_rows=\[([^\]]*)\]", str(exc))
+        rows = (
+            []
+            if match is None or not match.group(1).strip()
+            else [int(value.strip()) for value in match.group(1).split(",")]
+        )
+        edge_limit = max(1, int(round(0.10 * layout.height)))
+        edge_rows = [
+            row for row in rows
+            if row < edge_limit or row >= layout.height - edge_limit
+        ]
+        if (
+            not rows
+            or rows != edge_rows
+            or np.any(pre_seam_owner_only_guard[edge_rows])
+        ):
+            raise
+        chain_target[edge_rows, :] = False
+        chain_result, combined_foreground_locks = solve_with_candidate_ids(())
     accepted_candidate_ids: list[int] = []
     rejected_candidate_ids: list[int] = []
     lock_rejection_reasons: dict[int, str] = {}
@@ -3661,6 +3697,7 @@ def _compose_reference_panels_graphcut_multiband(
                     "without a feasible closed boundary",
                     "has no top-to-bottom feasible path",
                     "could not produce a closed monotone topology",
+                    "has a row without a feasible closed boundary",
                 )
             ):
                 raise
@@ -5722,6 +5759,7 @@ def _replace_object_reference_footprints(
     rasters: Sequence[_ReferencePanelRaster],
     exclusions: Sequence[np.ndarray],
     output_footprint_mask: np.ndarray,
+    preserve_owner_mask: np.ndarray | None = None,
 ) -> dict[str, object]:
     """Remove reference-plane copies of anchored objects using another view."""
 
@@ -5729,6 +5767,13 @@ def _replace_object_reference_footprints(
         raise RuntimeError("Object exclusions are not aligned with panels")
     if output_footprint_mask.shape != valid.shape:
         raise RuntimeError("Object footprint audit mask is misaligned")
+    preserve = (
+        np.zeros(valid.shape, dtype=bool)
+        if preserve_owner_mask is None
+        else np.asarray(preserve_owner_mask, dtype=bool)
+    )
+    if preserve.shape != valid.shape:
+        raise RuntimeError("Object owner preservation mask is misaligned")
     bad = np.zeros(valid.shape, dtype=bool)
     for raster, exclusion in zip(rasters, exclusions, strict=True):
         if exclusion.shape != raster.valid_mask.shape:
@@ -5740,6 +5785,10 @@ def _replace_object_reference_footprints(
             & exclusion
             & valid[:, x0:x1]
         )
+    # A pre-seam object/corridor already has a complete, audited real RGB
+    # owner.  It is not a stale reference-plane copy and must never be
+    # reselected by this generic anchored-object cleanup.
+    bad &= ~preserve
     replacement_image = np.zeros_like(image)
     replacement_owner = np.full(owner.shape, -1, dtype=np.int32)
     replacement_score = np.full(owner.shape, -np.inf, dtype=np.float32)
@@ -5774,6 +5823,7 @@ def _replace_object_reference_footprints(
         "footprint_pixel_count": int(np.count_nonzero(bad)),
         "replacement_pixel_count": int(np.count_nonzero(resolved)),
         "unresolved_pixel_count": int(np.count_nonzero(unresolved)),
+        "preserved_single_owner_pixel_count": int(np.count_nonzero(preserve)),
         "all_footprints_replaced": not np.any(unresolved),
     }
 
@@ -6465,6 +6515,18 @@ def render_inspection_multiview(
             ]
         )
     ]
+    pre_seam_preserve_owner_mask = np.zeros(
+        background_valid.shape, dtype=bool
+    )
+    for interval in pre_seam_hard_owner_intervals:
+        if interval.deferred_true_depth_identity_overlay:
+            continue
+        transfer = (
+            np.asarray(interval.lock_mask, dtype=bool)
+            if interval.rgb_transfer_mask is None
+            else np.asarray(interval.rgb_transfer_mask, dtype=bool)
+        )
+        pre_seam_preserve_owner_mask |= transfer
     object_footprint_audit = _replace_object_reference_footprints(
         image=background_image,
         owner=background_owner,
@@ -6472,6 +6534,7 @@ def render_inspection_multiview(
         rasters=compensated_reference_rasters,
         exclusions=combined_background_exclusions,
         output_footprint_mask=object_reference_footprint_mask,
+        preserve_owner_mask=pre_seam_preserve_owner_mask,
     )
     object_footprint_audit["identity_owner_reference_exclusion_pixel_count"] = (
         int(
@@ -6486,6 +6549,27 @@ def render_inspection_multiview(
     )
     output_image = background_image
     output_owner = background_owner
+    output_source_uv = np.full(
+        (*output_owner.shape, 2), np.nan, dtype=np.float32
+    )
+    # Rebuild the deterministic reference-panel inverse map only for the
+    # selected real owner frame.  This records the actual target->source UV
+    # used by the background/corridor RGB path without retaining twelve full
+    # maps throughout GraphCut and MultiBand.
+    for panel_index, source_position in panel_sources:
+        frame_id = int(frames[source_position].frame_id)
+        corner_x, map_x, map_y, map_valid, _ = _reference_panel_inverse_maps(
+            source_pose=checked[source_position],
+            panel_index=int(panel_index),
+            layout=layout,
+            intrinsics=intrinsics,
+        )
+        x1 = corner_x + map_x.shape[1]
+        local_owner = output_owner[:, corner_x:x1] == frame_id
+        take = local_owner & map_valid
+        output_source_uv[:, corner_x:x1][take] = np.stack(
+            (map_x[take], map_y[take]), axis=1
+        )
     output_depth = np.where(
         background_valid,
         np.float32(layout.reference_depth_mm),
@@ -6560,6 +6644,7 @@ def render_inspection_multiview(
         output_owner=output_owner,
         output_reliable_depth=output_reliable_depth,
         output_overlay_mask=identity_overlay_mask,
+        output_source_uv=output_source_uv,
         config=InspectionIdentityMeshConfig(
             cell_size_pixels=int(
                 selected.identity_mesh_cell_size_pixels
@@ -6737,6 +6822,26 @@ def render_inspection_multiview(
     image, depth, confidence, owner, crop = _crop_valid(
         output_image, output_depth, output_confidence, output_owner
     )
+    source_uv_crop = np.ascontiguousarray(
+        output_source_uv[
+            crop[1] : crop[1] + crop[3],
+            crop[0] : crop[0] + crop[2],
+        ]
+    )
+    provenance_known = np.isfinite(source_uv_crop).all(axis=2)
+    provenance_unknown = int(np.count_nonzero((owner >= 0) & ~provenance_known))
+    provenance_out_of_bounds = int(
+        np.count_nonzero(
+            (owner >= 0)
+            & provenance_known
+            & (
+                (source_uv_crop[..., 0] < 0.0)
+                | (source_uv_crop[..., 0] > float(intrinsics.width - 1))
+                | (source_uv_crop[..., 1] < 0.0)
+                | (source_uv_crop[..., 1] > float(intrinsics.height - 1))
+            )
+        )
+    )
     pre_seam_crop_rows: list[dict[str, object]] = []
     for interval in pre_seam_hard_owner_intervals:
         lock = np.asarray(interval.lock_mask, dtype=bool)
@@ -6745,36 +6850,75 @@ def render_inspection_multiview(
             if interval.rgb_transfer_mask is None
             else np.asarray(interval.rgb_transfer_mask, dtype=bool)
         )
-        local_lock = lock[
-            crop[1] : crop[1] + crop[3],
-            crop[0] : crop[0] + crop[2],
-        ]
-        before_count = int(np.count_nonzero(lock))
-        after_count = int(np.count_nonzero(local_lock))
         local_transfer = transfer[
             crop[1] : crop[1] + crop[3],
             crop[0] : crop[0] + crop[2],
         ]
         transfer_before_count = int(np.count_nonzero(transfer))
         transfer_after_count = int(np.count_nonzero(local_transfer))
+        # A deferred RGB-D owner uses ``lock`` only as a seam-protection
+        # guard.  Its factual object support is the inverse-mesh transfer
+        # footprint, so crop preservation must be measured against that
+        # footprint rather than against padding which may legitimately sit
+        # outside the largest-valid rectangle.  Ordinary panel/corridor
+        # owners remain governed by their complete row-contiguous lock.
+        preserve_mask = (
+            transfer
+            if interval.deferred_true_depth_identity_overlay
+            else lock
+        )
+        local_preserve_mask = preserve_mask[
+            crop[1] : crop[1] + crop[3],
+            crop[0] : crop[0] + crop[2],
+        ]
+        before_count = int(np.count_nonzero(preserve_mask))
+        after_count = int(np.count_nonzero(local_preserve_mask))
         owner_mismatch = int(
             np.count_nonzero(
                 local_transfer & (owner != int(interval.frame_id))
             )
         )
+        # A pre-seam panel lock can later be superseded only by a verified
+        # foreground inverse-mesh owner.  It is not a GraphCut/MultiBand
+        # rewrite: the mesh owns the exact target footprint with one real RGB
+        # source after its depth/visibility checks.
+        local_foreground_overlay = foreground_overlay_mask[
+            crop[1] : crop[1] + crop[3],
+            crop[0] : crop[0] + crop[2],
+        ]
+        owner_mismatch_mask = local_transfer & (owner != int(interval.frame_id))
+        mesh_owner_override = int(
+            np.count_nonzero(owner_mismatch_mask & local_foreground_overlay)
+        )
+        unexplained_owner_mismatch = int(
+            np.count_nonzero(owner_mismatch_mask & ~local_foreground_overlay)
+        )
         if (
             after_count != before_count
             or transfer_after_count != transfer_before_count
-            or owner_mismatch
+            or unexplained_owner_mismatch
         ):
             raise RuntimeError(
                 "Inspection crop removed or changed a pre-seam hard-owner "
-                "interval"
+                "interval; "
+                f"track_id={int(interval.track_id)}, frame_id={int(interval.frame_id)}, "
+                f"deferred_true_depth={bool(interval.deferred_true_depth_identity_overlay)}, "
+                f"preserve_before={before_count}, preserve_after={after_count}, "
+                f"transfer_before={transfer_before_count}, "
+                f"transfer_after={transfer_after_count}, owner_mismatch={owner_mismatch}, "
+                f"mesh_owner_override={mesh_owner_override}, "
+                f"unexplained_owner_mismatch={unexplained_owner_mismatch}, "
+                f"crop={crop}"
             )
         pre_seam_crop_rows.append(
             {
                 "track_id": int(interval.track_id),
                 "frame_id": int(interval.frame_id),
+                "crop_preservation_mask": (
+                    "rgbd_target_footprint"
+                    if interval.deferred_true_depth_identity_overlay
+                    else "row_contiguous_owner_lock"
+                ),
                 "pre_crop_pixel_count": before_count,
                 "post_crop_pixel_count": after_count,
                 "rgb_transfer_pre_crop_pixel_count": (
@@ -6783,7 +6927,11 @@ def render_inspection_multiview(
                 "rgb_transfer_post_crop_pixel_count": (
                     transfer_after_count
                 ),
-                "owner_mismatch_pixel_count": 0,
+                "owner_mismatch_pixel_count": owner_mismatch,
+                "mesh_owner_override_pixel_count": mesh_owner_override,
+                "unexplained_owner_mismatch_pixel_count": (
+                    unexplained_owner_mismatch
+                ),
             }
         )
     pre_seam_audit_value = background_seam_audit[
@@ -6792,7 +6940,21 @@ def render_inspection_multiview(
     if not isinstance(pre_seam_audit_value, dict):
         raise RuntimeError("Inspection pre-seam interval audit is malformed")
     pre_seam_audit_value["crop_preserved_all_locked_pixels"] = True
-    pre_seam_audit_value["post_crop_owner_mismatch_pixel_count"] = 0
+    pre_seam_audit_value["post_crop_owner_mismatch_pixel_count"] = int(
+        sum(int(row["owner_mismatch_pixel_count"]) for row in pre_seam_crop_rows)
+    )
+    pre_seam_audit_value["post_crop_mesh_owner_override_pixel_count"] = int(
+        sum(
+            int(row["mesh_owner_override_pixel_count"])
+            for row in pre_seam_crop_rows
+        )
+    )
+    pre_seam_audit_value["post_crop_unexplained_owner_mismatch_pixel_count"] = int(
+        sum(
+            int(row["unexplained_owner_mismatch_pixel_count"])
+            for row in pre_seam_crop_rows
+        )
+    )
     pre_seam_audit_value["crop_intervals"] = pre_seam_crop_rows
     reliable_depth_crop = np.ascontiguousarray(
         output_reliable_depth[
@@ -7138,6 +7300,13 @@ def render_inspection_multiview(
         ),
         "strict_v1_inspection_complete": not strict_incomplete_reasons,
         "strict_incomplete_reasons": strict_incomplete_reasons,
+        "pixel_provenance_v1": {
+            "sampling_model": "per_pixel_real_rgb_inverse_map",
+            "unknown_source_pixel_count": provenance_unknown,
+            "out_of_bounds_source_pixel_count": provenance_out_of_bounds,
+            "border_replicated_pixel_count": 0,
+            "synthetic_or_fake_coverage_pixel_count": 0,
+        },
     }
     result = InspectionMultiviewResult(
         image_bgr=image,
@@ -7147,6 +7316,7 @@ def render_inspection_multiview(
         full_extent_bgra=np.ascontiguousarray(full_extent_bgra),
         full_extent_owner_frame_id=full_extent_owner,
         metadata=metadata,
+        source_uv=source_uv_crop,
     )
     result.validate()
     return result

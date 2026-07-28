@@ -28,6 +28,7 @@ class ChainSeamConfig:
     adaptive_boundary_risk_guard_pixels: int = 12
     adaptive_boundary_minimum_common_coverage_ratio: float = 0.50
     adaptive_boundary_shift_penalty: float = 0.05
+    hard_cut_fallback_enabled: bool = False
 
     def validate(self) -> None:
         if not 96 <= int(self.corridor_width_pixels) <= 160:
@@ -143,6 +144,7 @@ class AdjacentPanelSeam:
     terminal_cost: float
     feasible_candidate_count: int
     relaxed_transition_by_row: np.ndarray | None = None
+    method: str = "graphcut"
 
     def as_dict(self) -> dict[str, object]:
         path = np.asarray(self.seam_x_by_row, dtype=np.int32)
@@ -179,6 +181,7 @@ class AdjacentPanelSeam:
             ),
             "terminal_cost": float(self.terminal_cost),
             "feasible_candidate_count": int(self.feasible_candidate_count),
+            "method": str(self.method),
         }
 
 
@@ -1048,8 +1051,11 @@ def _solve_path(
     height, width = energy.shape
     cost = np.where(allowed, energy, np.inf).astype(np.float64)
     if np.any(~np.any(np.isfinite(cost), axis=1)):
+        failed_rows = np.flatnonzero(~np.any(np.isfinite(cost), axis=1))
         raise RuntimeError(
-            "inspection chain seam has a row without a feasible closed boundary"
+            "inspection chain seam has a row without a feasible closed boundary; "
+            f"failed_row_count={int(failed_rows.size)}, "
+            f"first_failed_rows={failed_rows[:12].astype(int).tolist()}"
         )
     previous = cost[0].copy()
     relaxed = (
@@ -1110,6 +1116,31 @@ def _solve_path(
             )
         path[row - 1] = source
     return path, terminal_cost
+
+
+def _solve_rowwise_hard_cut_path(
+    energy: np.ndarray,
+    allowed: np.ndarray,
+) -> tuple[np.ndarray, float]:
+    """Choose one fully-covered real-RGB boundary per row without blending.
+
+    This is the last safe fallback for a corridor whose candidate sets are
+    individually valid but cannot meet the graph-cut row-step constraint.  It
+    never manufactures coverage or crosses a forbidden/locked pixel: every
+    selected column is still drawn from ``allowed``.  Callers must record it
+    as a degraded hard cut rather than a smooth seam.
+    """
+
+    masked = np.where(allowed, energy, np.inf)
+    if np.any(~np.any(np.isfinite(masked), axis=1)):
+        raise RuntimeError(
+            "inspection chain seam hard-cut fallback lacks a fully covered row"
+        )
+    path = np.argmin(masked, axis=1).astype(np.int32, copy=False)
+    terminal_cost = float(np.sum(masked[np.arange(masked.shape[0]), path]))
+    if not math.isfinite(terminal_cost):
+        raise RuntimeError("inspection chain seam hard-cut cost is non-finite")
+    return np.ascontiguousarray(path), terminal_cost
 
 
 def _expected_owner_from_seams(
@@ -1504,27 +1535,38 @@ def solve_adjacent_panel_chain(
             * np.abs(local_x[None, :] - float(nominal_x))
             / max(1.0, float(x1 - x0))
         )
+        seam_method = "graphcut"
+        relaxed_rows = ~np.any(
+            left_valid & right_valid & local_target,
+            axis=1,
+        )
         try:
             local_path, terminal_cost = _solve_path(
                 energy,
                 allowed,
                 maximum_step=int(selected.maximum_row_step_pixels),
                 smoothness_penalty=float(selected.smoothness_penalty),
-                relaxed_rows=~np.any(
-                    left_valid & right_valid & local_target,
-                    axis=1,
-                ),
+                relaxed_rows=relaxed_rows,
             )
         except RuntimeError as exc:
-            raise RuntimeError(
-                "inspection chain seam pair "
-                f"{pair_index} ({pair_index}->{pair_index + 1}) failed: "
-                f"{exc}"
-            ) from exc
-        relaxed_rows = ~np.any(
-            left_valid & right_valid & local_target,
-            axis=1,
-        )
+            if (
+                selected.hard_cut_fallback_enabled
+                and "no top-to-bottom feasible path" in str(exc)
+            ):
+                local_path, terminal_cost = _solve_rowwise_hard_cut_path(
+                    energy, allowed
+                )
+                # Rowwise hard cuts intentionally do not claim the GraphCut
+                # slope bound; the method is explicit in the audit and is
+                # graded degraded by the renderer/publication layer.
+                relaxed_rows = np.ones(height, dtype=bool)
+                seam_method = "hard_cut_degraded"
+            else:
+                raise RuntimeError(
+                    "inspection chain seam pair "
+                    f"{pair_index} ({pair_index}->{pair_index + 1}) failed: "
+                    f"{exc}"
+                ) from exc
         seams.append(
             AdjacentPanelSeam(
                 pair_index=pair_index,
@@ -1541,6 +1583,7 @@ def solve_adjacent_panel_chain(
                 relaxed_transition_by_row=np.ascontiguousarray(
                     relaxed_rows, dtype=bool
                 ),
+                method=seam_method,
             )
         )
 

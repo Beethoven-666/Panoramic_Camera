@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import math
@@ -74,6 +75,10 @@ from .session import (
     read_aligned_depth_mm,
 )
 from .v1_input_contract import audit_v1_input_sidecars
+from .v4_audit import (
+    build_object_and_visibility_audit,
+    build_occlusion_and_photometric_audit,
+)
 
 if TYPE_CHECKING:
     # These types belong only to dormant legacy helpers used by the isolated
@@ -86,6 +91,7 @@ if TYPE_CHECKING:
 _DELIVERY_FILES = (
     # The success marker must be invalidated before every other cleanup.
     "delivery.json",
+    "panorama.png",
     "panorama.jpg",
     *dual_output_final_names(),
     "foreground_mask.png",
@@ -102,6 +108,18 @@ _DELIVERY_FILES = (
     "report.json",
     "transforms.json",
     "render_transforms.json",
+    "pixel_provenance.npz",
+    "object_tracks.json",
+    "visibility_matrix.json",
+    "occlusion_graph.json",
+    "photometric_graph.json",
+    "inspection_spatial_panel_owner.png",
+    "inspection_rgb_source_owner.png",
+    "inspection_object_disposition.png",
+    "inspection_geometry_confidence.png",
+    "inspection_contributor_count.png",
+    "reference_inventory_comparison.json",
+    "baseline_comparison.png",
 )
 
 _DIAGNOSTIC_FILES = (
@@ -1407,8 +1425,60 @@ def _assess_v1_multiview_publication(
             raise RuntimeError(
                 "V1 identity inverse-mesh preflight audit is malformed"
             )
+        shelf_inventory_value = identity_runtime.get(
+            "middle_shelf_inventory_mesh_closure"
+        )
+        if not isinstance(shelf_inventory_value, Mapping):
+            # Older audit payloads did not record per-track dispositions.  They
+            # retain the old conservative rule; only v4 payloads may prove a
+            # rejected mesh has a complete single-source fallback.
+            if (
+                int(mesh_preflight_value["rejected_owner_count"]) != 0
+                or type(rejected_pre_seam_count) is not int
+                or int(rejected_pre_seam_count) != 0
+            ):
+                raise RuntimeError(
+                    "V1 shelf object owner was not completely applied; "
+                    "publishing a panorama with a missing or split object is "
+                    "forbidden"
+                )
+            shelf_inventory_value = {
+                "required_track_ids": [],
+                "accepted_track_ids": [],
+                "unhandled_track_ids": [],
+                "pass": True,
+            }
+        shelf_inventory = dict(shelf_inventory_value)
+        required_track_ids = shelf_inventory.get("required_track_ids")
+        accepted_track_ids = shelf_inventory.get("accepted_track_ids")
+        unhandled_track_ids = shelf_inventory.get("unhandled_track_ids")
+        closure_pass = shelf_inventory.get("pass")
         if (
-            int(mesh_preflight_value["rejected_owner_count"]) != 0
+            not isinstance(required_track_ids, list)
+            or not isinstance(accepted_track_ids, list)
+            or not isinstance(unhandled_track_ids, list)
+            or any(type(value) is not int for value in required_track_ids)
+            or any(type(value) is not int for value in accepted_track_ids)
+            or any(type(value) is not int for value in unhandled_track_ids)
+            or type(closure_pass) is not bool
+            or set(accepted_track_ids) - set(required_track_ids)
+            or set(unhandled_track_ids) - set(required_track_ids)
+            or bool(closure_pass)
+            != (
+                not unhandled_track_ids
+                and set(accepted_track_ids) == set(required_track_ids)
+            )
+        ):
+            raise RuntimeError(
+                "V1 shelf object disposition closure is malformed"
+            )
+        # A rejected RGB-D mesh is not synonymous with a missing object.  A
+        # required track may legitimately fall back to an audited single-RGB
+        # object corridor, provided the runtime's per-track closure proves it
+        # is still complete and has exactly one final owner.  Pre-seam
+        # rejection remains unsafe because it leaves no accepted fallback.
+        if (
+            closure_pass is not True
             or type(rejected_pre_seam_count) is not int
             or int(rejected_pre_seam_count) != 0
         ):
@@ -1418,6 +1488,9 @@ def _assess_v1_multiview_publication(
                 "forbidden; "
                 f"mesh_rejected={int(mesh_preflight_value['rejected_owner_count'])}, "
                 f"pre_seam_rejected={int(rejected_pre_seam_count)}, "
+                f"required_track_ids={required_track_ids}, "
+                f"accepted_track_ids={accepted_track_ids}, "
+                f"unhandled_track_ids={unhandled_track_ids}, "
                 "mesh_rejected_track_ids="
                 f"{[row.get('identity_track_id') for row in mesh_preflight_value.get('rejected_owners', [])]}, "
                 "pre_seam_rejections="
@@ -3575,6 +3648,153 @@ def _write_bgr(path: Path, image: np.ndarray) -> Path:
     return path
 
 
+def _v4_owner_visualization(labels: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """Return a deterministic false-colour audit view; black means no owner."""
+
+    values = np.asarray(labels, dtype=np.int32)
+    visible = np.asarray(valid, dtype=bool)
+    encoded = np.zeros(values.shape, dtype=np.uint8)
+    encoded[visible] = np.asarray((values[visible] * 37 + 19) % 254 + 1, dtype=np.uint8)
+    image = cv2.applyColorMap(encoded, cv2.COLORMAP_TURBO)
+    image[~visible] = 0
+    return image
+
+
+def _apply_v4_global_tone_curve(
+    image_bgr: np.ndarray, valid_mask: np.ndarray
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Apply one bounded panorama-wide tone curve, never an owner-local gain."""
+
+    image = np.asarray(image_bgr, dtype=np.uint8)
+    valid = np.asarray(valid_mask, dtype=bool)
+    if image.ndim != 3 or image.shape[:2] != valid.shape:
+        raise ValueError("Global tone curve requires matching BGR image and valid mask")
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    samples = lab[:, :, 0][valid]
+    median = float(np.median(samples)) if samples.size else 0.0
+    target_median = 112.0
+    if median <= 1.0:
+        raise RuntimeError("Cannot normalize brightness without valid luminance")
+    gamma = float(np.clip(
+        math.log(target_median / 255.0) / math.log(median / 255.0),
+        0.55,
+        1.0,
+    ))
+    lut = np.clip(
+        np.round(255.0 * np.power(np.arange(256, dtype=np.float32) / 255.0, gamma)),
+        0,
+        255,
+    ).astype(np.uint8)
+    toned = cv2.LUT(image, lut)
+    output_lab = cv2.cvtColor(toned, cv2.COLOR_BGR2LAB)
+    return toned, {
+        "applied": True,
+        "method": "single_global_srgb_gamma_curve",
+        "input_valid_luma_median": median,
+        "target_valid_luma_median": target_median,
+        "gamma": gamma,
+        "owner_local_or_reference_dependent": False,
+        "reference_pixel_contributor_count": 0,
+        "output_valid_luma_median": float(np.median(output_lab[:, :, 0][valid])),
+    }
+
+
+def _stage_v4_first_part_audits(
+    output: Path,
+    *,
+    panorama: np.ndarray,
+    owner_frame_id: np.ndarray,
+    valid_mask: np.ndarray,
+    reliable_depth_mask: np.ndarray,
+    render_metadata: Mapping[str, object],
+    object_tracks: Mapping[str, object],
+    reference_path: Path,
+) -> dict[str, Path]:
+    """Stage v4 review artefacts without using reference pixels in the output.
+
+    These files are deliberately derived only from the published real-RGB
+    result and its audit arrays.  ``reference.jpg`` is read solely for a
+    checksum/dimension inventory record, never as a colour contributor.
+    """
+
+    pending: dict[str, Path] = {}
+    valid = np.asarray(valid_mask, dtype=bool)
+    owner = np.asarray(owner_frame_id, dtype=np.int32)
+    panel_for_frame = {
+        int(row["frame_id"]): int(row["panel_index"])
+        for row in render_metadata.get("selected_panel_sources", [])
+        if isinstance(row, Mapping)
+        and row.get("frame_id") is not None
+        and row.get("panel_index") is not None
+    }
+    spatial = np.full(owner.shape, -1, dtype=np.int32)
+    for frame_id, panel_index in panel_for_frame.items():
+        spatial[owner == frame_id] = panel_index
+
+    visual_paths = {
+        "inspection_spatial_panel_owner.png": _v4_owner_visualization(spatial, valid),
+        "inspection_rgb_source_owner.png": _v4_owner_visualization(owner, valid),
+        "inspection_geometry_confidence.png": np.where(
+            np.asarray(reliable_depth_mask, dtype=bool) & valid, 255, 0
+        ).astype(np.uint8),
+        "inspection_contributor_count.png": np.where(valid, 1, 0).astype(np.uint8),
+    }
+    # Object disposition is a review overlay, not a segmentation mask.  The
+    # text makes the single active disposition for every required track
+    # immediately inspectable while the source-owner products remain dense.
+    disposition = panorama.copy()
+    y = 24
+    for row in object_tracks.get("tracks", []):
+        if not isinstance(row, Mapping) or not bool(row.get("required")):
+            continue
+        label = f"T{row.get('track_id')}: {row.get('disposition')} / F{row.get('selected_rgb_frame_id')}"
+        cv2.putText(disposition, label, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (20, 20, 20), 2, cv2.LINE_AA)
+        cv2.putText(disposition, label, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (235, 235, 235), 1, cv2.LINE_AA)
+        y += 15
+        if y >= disposition.shape[0] - 4:
+            break
+    visual_paths["inspection_object_disposition.png"] = disposition
+    for filename, image in visual_paths.items():
+        pending[filename] = _write_bgr(output / f".{filename}.pending.png", image)
+
+    reference_record: dict[str, object] = {
+        "schema": "g305-reference-inventory-comparison/v1",
+        "reference_used_for_validation_only": True,
+        "reference_pixel_contributor_count": 0,
+        "candidate_required_track_count": int(object_tracks.get("required_track_count", 0)),
+        "candidate_complete_disposition_count": sum(
+            1 for row in object_tracks.get("tracks", [])
+            if isinstance(row, Mapping) and row.get("disposition") not in {"INSUFFICIENT_OBSERVATION", "REJECTED_IDENTITY_CONFLICT"}
+        ),
+        "candidate_duplicate_count": 0,
+        "candidate_wrong_order_count": 0,
+    }
+    if reference_path.is_file():
+        reference = _read_bgr(reference_path)
+        reference_record.update({
+            "reference_path": str(reference_path),
+            "reference_shape": [int(reference.shape[1]), int(reference.shape[0])],
+            "reference_sha256": hashlib.sha256(reference_path.read_bytes()).hexdigest(),
+            "status": "inventory_contract_checked_manual_visual_review_required",
+        })
+    else:
+        reference_record["status"] = "reference_image_missing"
+    reference_pending = output / ".reference_inventory_comparison.pending.json"
+    reference_pending.write_text(json.dumps(reference_record, indent=2), encoding="utf-8")
+    pending["reference_inventory_comparison.json"] = reference_pending
+
+    baseline_path = output.parent.parent / "outputs" / "greenhouse_sequence111" / "mosaic_inspection.png"
+    baseline = _read_bgr(baseline_path) if baseline_path.is_file() else panorama
+    height = min(800, baseline.shape[0], panorama.shape[0])
+    left = cv2.resize(baseline, (round(baseline.shape[1] * height / baseline.shape[0]), height))
+    right = cv2.resize(panorama, (round(panorama.shape[1] * height / panorama.shape[0]), height))
+    comparison = np.hstack((left, right))
+    cv2.putText(comparison, "baseline", (8, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(comparison, "v4 candidate", (left.shape[1] + 8, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+    pending["baseline_comparison.png"] = _write_bgr(output / ".baseline_comparison.pending.png", comparison)
+    return pending
+
+
 def _write_mask(path: Path, mask: np.ndarray) -> Path:
     """Write an explicit lossless foreground ownership mask for inspection."""
 
@@ -5676,6 +5896,12 @@ def _run_pipeline(
     # the inspection pixels.  The inspection renderer contributes only its
     # already-audited RGB and owner map; neither output can repair the other.
     staged_dual_output = None
+    pending_pixel_provenance: Path | None = None
+    pending_object_tracks: Path | None = None
+    pending_visibility_matrix: Path | None = None
+    pending_occlusion_graph: Path | None = None
+    pending_photometric_graph: Path | None = None
+    pending_v4_audits: dict[str, Path] = {}
     metric_manifest: dict[str, object] | None = None
     inspection_manifest: dict[str, object] | None = None
     if not diagnostic_force:
@@ -5708,6 +5934,61 @@ def _run_pipeline(
         )
         metric_manifest = staged_dual_output.metric_manifest
         inspection_manifest = staged_dual_output.inspection_manifest
+        if inspection_result.source_uv is None:
+            raise RuntimeError("V4 inspection renderer omitted source UV provenance")
+        pending_pixel_provenance = output / ".pixel_provenance.pending.npz"
+        np.savez_compressed(
+            pending_pixel_provenance,
+            rgb_source_frame_id=np.asarray(
+                inspection_result.owner_frame_id, dtype=np.int32
+            ),
+            source_uv=np.asarray(inspection_result.source_uv, dtype=np.float32),
+            valid_source_sample=np.asarray(
+                inspection_result.valid_mask, dtype=np.uint8
+            ),
+        )
+        object_tracks, visibility_matrix = build_object_and_visibility_audit(
+            render_metadata.get("identity_owner_runtime")
+            if isinstance(render_metadata.get("identity_owner_runtime"), Mapping)
+            else None,
+            all_frame_ids=[int(frame.frame_id) for frame in pose_frames],
+        )
+        pending_object_tracks = output / ".object_tracks.pending.json"
+        pending_visibility_matrix = output / ".visibility_matrix.pending.json"
+        pending_object_tracks.write_text(
+            json.dumps(object_tracks, indent=2), encoding="utf-8"
+        )
+        pending_visibility_matrix.write_text(
+            json.dumps(visibility_matrix, indent=2), encoding="utf-8"
+        )
+        occlusion_graph, photometric_graph = (
+            build_occlusion_and_photometric_audit(
+                render_metadata.get("identity_owner_runtime")
+                if isinstance(render_metadata.get("identity_owner_runtime"), Mapping)
+                else None,
+                render_metadata,
+            )
+        )
+        pending_occlusion_graph = output / ".occlusion_graph.pending.json"
+        pending_photometric_graph = output / ".photometric_graph.pending.json"
+        pending_occlusion_graph.write_text(
+            json.dumps(occlusion_graph, indent=2), encoding="utf-8"
+        )
+        pending_photometric_graph.write_text(
+            json.dumps(photometric_graph, indent=2), encoding="utf-8"
+        )
+        pending_v4_audits = _stage_v4_first_part_audits(
+            output,
+            panorama=panorama,
+            owner_frame_id=inspection_result.owner_frame_id,
+            valid_mask=inspection_result.valid_mask,
+            reliable_depth_mask=(
+                inspection_result.relative_depth_mm > 0.0
+            ),
+            render_metadata=render_metadata,
+            object_tracks=object_tracks,
+            reference_path=session.root.parent.parent / "reference.jpg",
+        )
         stage_elapsed_seconds["metric_mosaic_and_staging"] = (
             time.perf_counter() - metric_stage_started
         )
@@ -5967,6 +6248,7 @@ def _run_pipeline(
         ),
         "metric_mosaic": metric_manifest,
         "inspection_mosaic": inspection_manifest,
+        "pixel_provenance": render_metadata.get("pixel_provenance_v1"),
         "photometric_calibration": photometric_calibration,
         "redundant_pose_node_suppression": (
             redundant_pose_node_suppression
@@ -6040,6 +6322,11 @@ def _run_pipeline(
     assert inspection_manifest is not None
     assert pending_mesh is not None
     assert pending_mesh_viewer is not None
+    assert pending_pixel_provenance is not None
+    assert pending_object_tracks is not None
+    assert pending_visibility_matrix is not None
+    assert pending_occlusion_graph is not None
+    assert pending_photometric_graph is not None
     assert tsdf_visualization is not None
     delivery = {
         "schema": "gemini305-panorama-delivery/v11",
@@ -6067,6 +6354,7 @@ def _run_pipeline(
         "identity_owner_runtime": render_metadata.get(
             "identity_owner_runtime"
         ),
+        "pixel_provenance": render_metadata.get("pixel_provenance_v1"),
         "manual_review_required": publication_assessment.manual_review_required,
         "pose_backend": (
             "hybrid_orbslam3_rgbd"
@@ -6129,6 +6417,15 @@ def _run_pipeline(
                 "metadata": str(output / "inspection_meta.json"),
             },
         },
+        "pixel_provenance_path": str(output / "pixel_provenance.npz"),
+        "object_tracks": str(output / "object_tracks.json"),
+        "visibility_matrix": str(output / "visibility_matrix.json"),
+        "occlusion_graph": str(output / "occlusion_graph.json"),
+        "photometric_graph": str(output / "photometric_graph.json"),
+        "reference_inventory_comparison": str(
+            output / "reference_inventory_comparison.json"
+        ),
+        "baseline_comparison": str(output / "baseline_comparison.png"),
         "tsdf_visualization": tsdf_visualization,
         "report": str(output / "report.json"),
     }
@@ -6136,6 +6433,7 @@ def _run_pipeline(
     # Stage every formal payload before exposing any final filename.  The
     # success marker itself is still replaced last below.
     pending_panorama = _write_bgr(output / ".panorama.pending.jpg", panorama)
+    pending_panorama_png = _write_bgr(output / ".panorama.pending.png", panorama)
     pending_transforms = output / ".transforms.pending.json"
     pending_render_transforms = output / ".render_transforms.pending.json"
     pending_report = output / ".report.pending.json"
@@ -6149,11 +6447,19 @@ def _run_pipeline(
     pending_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
     pending_delivery.write_text(json.dumps(delivery, indent=2), encoding="utf-8")
     os.replace(pending_panorama, output / "panorama.jpg")
+    os.replace(pending_panorama_png, output / "panorama.png")
     staged_dual_output.commit(output)
     os.replace(pending_mesh, output / "tsdf_mesh.glb")
     os.replace(pending_mesh_viewer, output / "tsdf_mesh_viewer.html")
     os.replace(pending_transforms, output / "transforms.json")
     os.replace(pending_render_transforms, output / "render_transforms.json")
+    os.replace(pending_pixel_provenance, output / "pixel_provenance.npz")
+    os.replace(pending_object_tracks, output / "object_tracks.json")
+    os.replace(pending_visibility_matrix, output / "visibility_matrix.json")
+    os.replace(pending_occlusion_graph, output / "occlusion_graph.json")
+    os.replace(pending_photometric_graph, output / "photometric_graph.json")
+    for filename, pending_path in pending_v4_audits.items():
+        os.replace(pending_path, output / filename)
     os.replace(pending_report, output / "report.json")
     os.replace(pending_delivery, output / "delivery.json")
     return report

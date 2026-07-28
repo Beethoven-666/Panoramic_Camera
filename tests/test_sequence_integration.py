@@ -399,6 +399,7 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert panorama.shape[:2] == (crop["height"], crop["width"])
     assert report["render"]["invalid_pixel_count"] == 0
     assert {path.name for path in output.iterdir()} == {
+        "panorama.png",
         "panorama.jpg",
         "tsdf_mesh.glb",
         "tsdf_mesh_viewer.html",
@@ -416,6 +417,18 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
         "mosaic_inspection_full_extent.png",
         "inspection_full_extent_owner.png",
         "inspection_meta.json",
+        "pixel_provenance.npz",
+        "object_tracks.json",
+        "visibility_matrix.json",
+        "occlusion_graph.json",
+        "photometric_graph.json",
+        "inspection_spatial_panel_owner.png",
+        "inspection_rgb_source_owner.png",
+        "inspection_object_disposition.png",
+        "inspection_geometry_confidence.png",
+        "inspection_contributor_count.png",
+        "reference_inventory_comparison.json",
+        "baseline_comparison.png",
     }
 
 
