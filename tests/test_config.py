@@ -43,11 +43,46 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
     )
     assert "dense_fusion_backend" not in config["stitch"]
     assert "rgbd_projection" not in config["stitch"]
+    assert config["stitch"]["metric_mosaic"] == {
+        "enabled": True,
+        "millimetres_per_pixel": 2.0,
+        "minimum_depth_mm": 200.0,
+        "maximum_depth_mm": 3000.0,
+        "preview_width": 320,
+        "chunk_rows": 128,
+        "maximum_canvas_megapixels": 200.0,
+        "maximum_working_bytes": 4_000_000_000,
+        "temporal_absolute_tolerance_mm": 20.0,
+        "temporal_relative_tolerance": 0.02,
+        "minimum_consistent_views": 2,
+        "depth_edge_confidence_cap": 0.25,
+    }
+    assert config["stitch"]["inspection_multiview"][
+        "foreground_world_anchor_enabled"
+    ] is False
+    assert config["stitch"]["inspection_multiview"][
+        "maximum_working_bytes"
+    ] == 4_000_000_000
+    assert config["stitch"]["identity_owner_runtime"]["enabled"] is False
+    assert (
+        config["stitch"]["identity_owner_runtime"]["fastsam_model_path"]
+        is None
+    )
+    assert (
+        config["stitch"]["identity_owner_runtime"]["rapidocr_enabled"]
+        is True
+    )
     assert config["stitch"]["tsdf_visualization"] == {
         "enabled": True,
         "voxel_length_mm": 5.0,
         "sdf_truncation_mm": 20.0,
         "maximum_depth_mm": 10000.0,
+        "cuda_gpu_byte_budget": 2_500_000_000,
+        "cuda_block_resolution": 16,
+        "cuda_unique_block_depth_stride": 8,
+        "cuda_unique_block_safety_factor": 1.85,
+        "cuda_max_block_capacity": 30_000,
+        "cuda_max_voxel_length_mm": 8.0,
     }
     assert config["stitch"]["central_strip_diagnostic"] == {
         "enabled": False,

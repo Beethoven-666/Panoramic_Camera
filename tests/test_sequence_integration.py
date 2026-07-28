@@ -88,6 +88,23 @@ class _KnownTrajectoryRGBDBackend:
         return tuple(np.asarray(pose).copy() for pose in initial_camera_to_world)
 
 
+def test_odometry_acceleration_audit_reports_measured_cuda_edges() -> None:
+    audit = sequence._odometry_acceleration_audit(
+        [
+            SimpleNamespace(backend="open3d_tensor_cuda_rgbd"),
+            SimpleNamespace(backend="open3d_tensor_cuda_rgbd"),
+        ]
+    )
+    assert audit == {
+        "selected": "cuda",
+        "backend": "open3d_tensor_cuda_rgbd",
+        "backends": ["open3d_tensor_cuda_rgbd"],
+        "edge_count": 2,
+        "cuda_edge_count": 2,
+        "reason": "measured_edge_backend_provenance",
+    }
+
+
 def _make_session(tmp_path: Path, *, seed: int) -> Path:
     return generate_sequence(
         tmp_path / "session",
@@ -136,45 +153,83 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert panorama.shape[0] >= 180
     assert (output / "delivery.json").is_file()
     assert not (output / "failure.json").exists()
-    assert report["schema"] == "gemini305-calibrated-rgb-pushbroom/v10"
+    assert report["schema"] == "gemini305-dual-mosaic-report/v11"
     assert report["layout_selection"]["mode"] == "adaptive_rgbd_pose_nodes"
-    assert report["render_strategy"] == "calibrated_rgb_pushbroom"
-    assert report["mosaicing_method"]["name_en"] == (
-        "Trajectory-Constrained Depth-Aware Multi-Viewpoint Side-Scan Mosaicing"
+    assert report["render_strategy"] == (
+        "trajectory_constrained_depth_aware_multiview_side_scan"
     )
-    assert report["mosaicing_method"]["pose_smoothing_applied"] is False
-    assert report["render"]["backend"] == "calibrated_rgb_pushbroom"
-    assert report["acceleration"] == report["render"]["acceleration"]
-    assert report["render"]["pixel_source"] == "calibrated_rgb_source_samples"
-    assert report["render"]["depth_used_for_output_pixels"] is False
-    assert report["render"]["local_geometry_scope"] == "adjacent_seam_corridors_only"
-    geometry = report["render"]["geometry_assisted_seam"]
-    assert geometry["depth_used_for_output_pixels"] is False
-    assert geometry["scope"] == "adjacent_seam_corridors_only"
-    assert len(geometry["pairs"]) == len(backend.optimized_node_ids) - 1
-    assert report["render"]["point_cloud_constructed"] is False
-    assert report["render"]["tsdf_constructed"] is False
-    assert report["render"]["reference_plane_fitted"] is False
-    assert report["render"]["quality_metrics"]["quality_pass"] is True
+    assert report["mosaicing_method"] == (
+        "trajectory_constrained_depth_aware_multi_viewpoint_"
+        "side_scan_mosaicing"
+    )
+    assert report["render"]["backend"] == (
+        "overlapping_virtual_perspective_panels_rgbd"
+    )
+    assert report["render"]["fixed_strip_pushbroom"] is False
+    assert report["render"]["ordinary_2d_panorama"] is False
+    assert report["render"]["metric_raster_used_for_rgb"] is False
+    assert report["render"]["tsdf_used_for_rgb"] is False
+    assert report["acceleration"]["cuda_priority"] is True
+    assert report["acceleration"]["stages"]["rgb_render_and_geometry"] == (
+        report["projection"]["acceleration"]
+    )
+    assert report["acceleration"]["stages"]["rgbd_odometry"] == {
+        "selected": "cpu",
+        "backend": "synthetic_known_rgbd",
+        "backends": ["synthetic_known_rgbd"],
+        "edge_count": 6,
+        "cuda_edge_count": 0,
+        "reason": "measured_edge_backend_provenance",
+    }
+    assert report["render"]["pose_interpolation_count"] == 0
+    assert report["render"]["real_pose_count"] == len(
+        backend.optimized_node_ids
+    )
+    assert report["render"]["strict_v1_inspection_complete"] is True
+    assert report["render"]["strict_incomplete_reasons"] == []
+    assert report["metric_mosaic"]["strict_v1_metric_complete"] is True
+    assert report["metric_mosaic"]["strict_incomplete_reasons"] == []
+    footprint = report["metric_mosaic"]["surface_footprint_audit"]
+    assert footprint["point_centres_preserved"] is True
+    assert footprint["world_normal_zbuffer_preserved"] is True
+    assert footprint["morphological_hole_fill_used"] is False
+    assert footprint["invalid_depth_crossing_allowed"] is False
+    assert footprint["depth_edge_crossing_allowed"] is False
+    assert footprint["fold_crossing_allowed"] is False
+    assert footprint["accepted_continuous_surface_support_ratio"] >= (
+        footprint["minimum_strict_continuous_surface_support_ratio"]
+    )
     assert report["strict_failure_reasons"] == []
     assert report["pose_quality"]["quality_pass"] is True
     assert report["pose_graph"]["connected"] is True
-    assert report["render"]["selection"]["interpolated_pose_count"] == 0
     assert len(backend.optimized_node_ids) >= 2
     assert backend.estimated_pairs
-    assert report["render"]["selection"]["mode"] == (
-        "calibrated_rgb_pushbroom_all_real_pose_nodes"
+    assert report["render"]["selection"]["policy"] == (
+        "all_real_orbslam3_pose_nodes_then_full_fov_panels"
+    )
+    assert report["render"]["selection"]["pose_frame_count"] == len(
+        backend.optimized_node_ids
     )
     assert report["render"]["frame_ids"] == list(backend.optimized_node_ids)
-    assert report["render"]["source_count"] == len(backend.optimized_node_ids)
-    metrics = report["render"]["quality_metrics"]
-    assert metrics["source_remap_count"] == len(backend.optimized_node_ids)
-    assert 2 <= metrics["maximum_resident_strips"] <= 5
+    assert report["render"]["selected_full_fov_source_count"] >= 2
     assert all(
-        pair["blend_zone_risk_pixel_count"] == 0
-        and pair["geometry_blend_zone_pixel_count"] == 0
-        and 2 <= pair["blend_width_pixels"] <= 8
-        for pair in report["render"]["pairs"]
+        audit["full_width_source_sampling"] is True
+        and audit["central_twenty_percent_only"] is False
+        for audit in report["render"]["source_audits"]
+    )
+    seam = report["render"]["background_seam_audit"]
+    topology = seam["panel_chain_topology"]
+    assert seam["graphcut_used"] is True
+    assert seam["multiband_used"] is True
+    assert seam["exposure_compensation_used"] is True
+    assert seam["dis_optical_flow_used"] is True
+    assert seam["protected_blend_intersection_pixel_count"] == 0
+    assert topology["pass"] is True
+    assert topology["coverage_closed"] is True
+    assert topology["owner_order_monotone"] is True
+    assert topology["adjacent_pair_only"] is True
+    assert topology["actual_pair_count"] == (
+        report["render"]["selected_full_fov_source_count"] - 1
     )
 
     transforms = json.loads(
@@ -189,9 +244,11 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     render_transforms = json.loads(
         (output / "render_transforms.json").read_text(encoding="utf-8")
     )
-    assert render_transforms["schema"] == "calibrated-rgb-pushbroom/v7"
+    assert render_transforms["schema"] == (
+        "trajectory-constrained-rgbd-multiview/v1"
+    )
     assert render_transforms["mosaicing_method"] == report["mosaicing_method"]
-    assert render_transforms["acceleration"] == report["acceleration"]
+    assert render_transforms["acceleration"] == report["projection"]["acceleration"]
     assert render_transforms["pixel_source"] == "calibrated_rgb_source_samples"
     assert render_transforms["depth_used_for_output_pixels"] is False
     assert [source["frame_id"] for source in render_transforms["sources"]] == list(
@@ -199,45 +256,34 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     )
     assert all("aligned_depth_path" not in source for source in render_transforms["sources"])
     compact_alignment = render_transforms["residual_alignment"]
-    full_alignment = report["render"]["residual_alignment"]
-    assert compact_alignment["backend"] == full_alignment["backend"]
-    assert compact_alignment["selected_model"] == full_alignment["selected_model"]
-    assert compact_alignment["configuration"]["held_out_fraction"] == 0.20
-    assert compact_alignment["topology_audit"]["accepted"] is True
-    assert compact_alignment["preview_remap_count"] == len(backend.optimized_node_ids)
-    assert compact_alignment["full_resolution_output_remap_count"] == len(
-        backend.optimized_node_ids
-    )
-    assert [
-        parameter["frame_id"]
-        for parameter in compact_alignment["per_source_parameters"]
-    ] == list(backend.optimized_node_ids)
-    assert "evidence" not in compact_alignment
+    assert compact_alignment == {
+        "backend": "none",
+        "selected_model": "real_se3_virtual_perspective_panels",
+        "reason": "V1 inspection does not alter or interpolate real poses",
+    }
     compact_geometry = render_transforms["geometry_assisted_seam"]
-    assert compact_geometry["backend"] == "rgbd_bidirectional_visibility_local_inverse_mesh"
-    assert compact_geometry["scope"] == "adjacent_seam_corridors_only"
-    assert compact_geometry["depth_used_for_output_pixels"] is False
-    assert len(compact_geometry["pairs"]) == len(backend.optimized_node_ids) - 1
-    assert all(
-        "aligned_depth_path" not in pair
-        and "depth_mm" not in pair
-        and "source_map_x" not in pair
-        for pair in compact_geometry["pairs"]
+    assert compact_geometry["backend"] == (
+        "depth_confidence_visibility_and_single_owner"
     )
+    assert compact_geometry["depth_used_for_output_pixels"] is False
+    assert compact_geometry["depth_used_for_local_geometry"] is True
+    assert compact_geometry["background_seam_audit"] == seam
     delivery = json.loads((output / "delivery.json").read_text(encoding="utf-8"))
     assert delivery["quality_pass"] is True
     assert delivery["strict_quality_pass"] is True
     assert delivery["delivery_state"] == "published"
-    assert delivery["quality_grade"] in {"A", "B"}
+    assert delivery["quality_grade"] == "A"
     assert delivery["manual_review_required"] is False
     assert sum(delivery["handoff_fallback_summary"].values()) == len(
-        backend.optimized_node_ids
+        report["render"]["selected_panel_sources"]
     ) - 1
     assert delivery["pose_backend"] == "open3d_rgbd"
     assert delivery["mosaicing_method"] == report["mosaicing_method"]
     assert delivery["acceleration"] == report["acceleration"]
-    assert delivery["projection"] == "calibrated_rgb_pushbroom"
-    assert delivery["schema"] == "gemini305-panorama-delivery/v10"
+    assert delivery["projection"] == (
+        "trajectory_constrained_rgbd_virtual_panels"
+    )
+    assert delivery["schema"] == "gemini305-panorama-delivery/v11"
     assert delivery["pixel_source"] == "calibrated_rgb_source_samples"
     assert delivery["depth_used_for_output_pixels"] is False
     assert delivery["geometry_assistance_backend"] == compact_geometry["backend"]
@@ -267,8 +313,64 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert geometry_gate["local_apap_flow"]["enabled"] is False
     assert delivery["alignment_backend"] == compact_alignment["backend"]
     assert delivery["alignment_model"] == compact_alignment["selected_model"]
-    assert delivery["seam_backend"] == "rgb_monotonic_hard_owner_graphcut"
-    assert delivery["blend_backend"] == "safe_wall_local_multiband_narrow_owner_boundary"
+    assert delivery["seam_backend"] == (
+        "opencv_graphcut_guided_monotone_adjacent_chain"
+    )
+    assert delivery["blend_backend"] == (
+        "safe_background_local_multiband_owner_boundary"
+    )
+    for product_name in (
+        "mosaic_metric.png",
+        "mosaic_depth.exr",
+        "mosaic_confidence.png",
+        "mosaic_owner.png",
+        "mosaic_meta.json",
+        "mosaic_inspection.png",
+        "inspection_owner.png",
+        "mosaic_inspection_full_extent.png",
+        "inspection_full_extent_owner.png",
+        "inspection_meta.json",
+    ):
+        assert (output / product_name).is_file()
+    metric_meta = json.loads(
+        (output / "mosaic_meta.json").read_text(encoding="utf-8")
+    )
+    assert metric_meta["schema"] == "gemini305-metric-mosaic/v1"
+    assert metric_meta["coordinate_system"]["pixel_size_mm"] == 2.0
+    metric_rgb = cv2.imread(
+        str(output / "mosaic_metric.png"), cv2.IMREAD_UNCHANGED
+    )
+    metric_confidence = cv2.imread(
+        str(output / "mosaic_confidence.png"), cv2.IMREAD_UNCHANGED
+    )
+    metric_owner = cv2.imread(
+        str(output / "mosaic_owner.png"), cv2.IMREAD_UNCHANGED
+    )
+    assert metric_rgb is not None
+    assert metric_confidence.dtype == np.uint16
+    assert metric_owner.dtype == np.uint16
+    assert metric_rgb.shape[:2] == metric_confidence.shape == metric_owner.shape
+    inspection_rgb = cv2.imread(
+        str(output / "mosaic_inspection.png"), cv2.IMREAD_UNCHANGED
+    )
+    inspection_owner = cv2.imread(
+        str(output / "inspection_owner.png"), cv2.IMREAD_UNCHANGED
+    )
+    inspection_full_extent = cv2.imread(
+        str(output / "mosaic_inspection_full_extent.png"),
+        cv2.IMREAD_UNCHANGED,
+    )
+    inspection_full_extent_owner = cv2.imread(
+        str(output / "inspection_full_extent_owner.png"),
+        cv2.IMREAD_UNCHANGED,
+    )
+    assert inspection_rgb.shape[:2] == inspection_owner.shape
+    assert inspection_full_extent.shape[2] == 4
+    assert (
+        inspection_full_extent.shape[:2]
+        == inspection_full_extent_owner.shape
+    )
+    assert delivery["products"]["metric"]["pixel_size_mm"] == 2.0
     visualization = report["tsdf_visualization"]
     assert visualization["status"] == "published"
     assert visualization["required_for_delivery"] is True
@@ -285,16 +387,8 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert delivery["tsdf_visualization"] == visualization
     foreground_summary = report["foreground_owner_continuity_summary"]
     assert delivery["foreground_owner_continuity_summary"] == foreground_summary
-    assert foreground_summary["backend"] == "foreground_segment_owner_plan_v3"
-    assert all(
-        foreground_summary[key] == 0
-        for key in (
-            "avoidable_owner_switch_count",
-            "current_valid_nonadjacent_owner_pixel_count",
-            "foreground_blend_pixel_count",
-            "foreground_deformation_pixel_count",
-        )
-    )
+    assert foreground_summary["all_components_single_owner"] is True
+    assert foreground_summary["foreground_blend_pixel_count"] == 0
     for legacy_artifact in (
         "foreground_mask.png",
         "background_exclusion_mask.png",
@@ -303,8 +397,7 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
         assert not (output / legacy_artifact).exists()
     crop = report["render"]["crop"]
     assert panorama.shape[:2] == (crop["height"], crop["width"])
-    assert metrics["crop_height_ratio"] >= 0.85
-    assert metrics["crop_width_ratio"] >= 0.95
+    assert report["render"]["invalid_pixel_count"] == 0
     assert {path.name for path in output.iterdir()} == {
         "panorama.jpg",
         "tsdf_mesh.glb",
@@ -313,6 +406,16 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
         "transforms.json",
         "render_transforms.json",
         "delivery.json",
+        "mosaic_metric.png",
+        "mosaic_depth.exr",
+        "mosaic_confidence.png",
+        "mosaic_owner.png",
+        "mosaic_meta.json",
+        "mosaic_inspection.png",
+        "inspection_owner.png",
+        "mosaic_inspection_full_extent.png",
+        "inspection_full_extent_owner.png",
+        "inspection_meta.json",
     }
 
 
@@ -527,7 +630,10 @@ def test_public_handoff_policy_enables_local_apap_without_a_duplicate_renderer_s
 
     delivery = json.loads((output / "delivery.json").read_text(encoding="utf-8"))
     assert (output / "panorama.jpg").is_file()
-    assert report["render"]["geometry_assisted_seam"]["local_apap_flow"]["enabled"] is True
+    assert report["render_strategy"] == (
+        "trajectory_constrained_depth_aware_multiview_side_scan"
+    )
+    assert "geometry_assisted_seam" not in report["render"]
     assert delivery["geometry_assistance_gate"]["local_apap_flow"]["enabled"] is True
 
 
@@ -545,8 +651,7 @@ def test_importing_formal_sequence_does_not_load_legacy_model_stack() -> None:
                 "'panorama_demo.unistitch_adapter', "
                 "'panorama_demo.stitch_common', "
                 "'panorama_demo.central_strip', "
-                "'panorama_demo.dense_fusion', "
-                "'panorama_demo.rgbd_projection'); "
+                "'panorama_demo.dense_fusion'); "
                 "loaded=[name for name in sys.modules "
                 "if any(name == item or name.startswith(item + '.') "
                 "for item in blocked)]; "

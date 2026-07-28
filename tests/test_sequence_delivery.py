@@ -1198,3 +1198,367 @@ def test_rgb_residual_stage_failure_is_atomic_and_leaves_no_analysis_artifacts(
     assert [path.name for path in output.iterdir()] == ["failure.json"]
     failure = json.loads((output / "failure.json").read_text(encoding="utf-8"))
     assert message in failure["message"]
+
+
+def _valid_v1_inspection_publication_metadata() -> dict[str, object]:
+    return {
+        "fixed_strip_pushbroom": False,
+        "ordinary_2d_panorama": False,
+        "metric_raster_used_for_rgb": False,
+        "tsdf_used_for_rgb": False,
+        "pose_interpolation_count": 0,
+        "background_seam_audit": {
+            "panel_chain_topology": {
+                "pass": True,
+                "actual_pair_count": 1,
+            },
+            "owner_boundary_visual_audit": {"pass": True},
+            "graphcut_used": True,
+            "multiband_used": True,
+            "exposure_compensation_used": True,
+            "dis_optical_flow_used": True,
+            "protected_blend_intersection_pixel_count": 0,
+        },
+        "foreground_owner_continuity_summary": {
+            "all_components_single_owner": True,
+            "foreground_blend_pixel_count": 0,
+        },
+        "identity_owner_runtime": {
+            "schema": "inspection-identity-runtime/v1",
+            "enabled": False,
+            "executed": False,
+            "applied": False,
+            "foreground_identity_owner_count": 0,
+            "pre_seam_hard_owner_interval_count": 0,
+            "object_owner_application_count": 0,
+        },
+        "world_surface_coverage_audit": {
+            "schema": "gemini305-inspection-world-coverage/v1",
+            "colour_or_geometry_mutation": False,
+            "pose_interpolation_or_modification": False,
+            "tsdf_or_metric_feedback": False,
+            "observed_world_voxel_count": 100,
+            "multiview_observed_world_voxel_count": 80,
+            "represented_world_voxel_count": 100,
+            "matched_observed_world_voxel_count": 100,
+            "matched_multiview_world_voxel_count": 80,
+            "multiview_world_coverage_ratio": 1.0,
+            "minimum_multiview_world_coverage_ratio": 0.80,
+            "pass": True,
+        },
+        "strict_v1_inspection_complete": True,
+        "strict_incomplete_reasons": [],
+    }
+
+
+def _valid_v1_metric_publication_metadata() -> dict[str, object]:
+    count_fields = (
+        "measured_center_candidate_count",
+        "continuous_surface_sample_count",
+        "footprint_candidate_count",
+        "point_center_selected_zbuffer_pixel_count",
+        "footprint_rasterized_pixel_count",
+        "rejected_invalid_neighbourhood_sample_count",
+        "rejected_depth_edge_sample_count",
+        "rejected_fold_sample_count",
+        "rejected_degenerate_sample_count",
+        "rejected_overscale_sample_count",
+        "unobserved_output_pixel_count",
+    )
+    footprint = {key: 0 for key in count_fields}
+    footprint.update(
+        {
+            "policy": (
+                "complete_3x3_measured_same_depth_layer_positive_jacobian_"
+                "bounded_sensor_pixel_footprint"
+            ),
+            "rgb_sampling": "nearest_real_source_pixel_copy_no_interpolation",
+            "depth_sampling": (
+                "nearest_real_source_camera_and_world_normal_depth_copy"
+            ),
+            "point_centres_preserved": True,
+            "world_normal_zbuffer_preserved": True,
+            "morphological_hole_fill_used": False,
+            "invalid_depth_crossing_allowed": False,
+            "depth_edge_crossing_allowed": False,
+            "fold_crossing_allowed": False,
+            "accepted_continuous_surface_support_ratio": 0.8,
+            "minimum_strict_continuous_surface_support_ratio": 0.01,
+        }
+    )
+    return {
+        "schema": "gemini305-metric-mosaic/v1",
+        "rgb_policy": "single_real_rgb_owner_no_tsdf_colour",
+        "geometry_policy": (
+            "depth_continuity_gated_measured_pixel_footprint_"
+            "world_normal_zbuffer_no_cross_edge_fill"
+        ),
+        "tsdf_used_for_rgb": False,
+        "tsdf_used_for_depth": False,
+        "coordinate_system": {
+            "world_unit": "mm",
+            "depth_unit": "mm",
+            "pixel_size_mm": 2.0,
+            "canvas_x": "dot(world_point_mm, scan_axis_world)",
+            "canvas_y": "dot(world_point_mm, -up_axis_world)",
+            "depth": "dot(world_point_mm, normal_axis_world)",
+            "scan_axis_world": [1.0, 0.0, 0.0],
+            "up_axis_world": [0.0, 1.0, 0.0],
+            "normal_axis_world": [0.0, 0.0, 1.0],
+        },
+        "valid_pixel_count": 10,
+        "single_owner_valid_pixel_count": 10,
+        "unowned_valid_pixel_count": 0,
+        "surface_footprint_audit": footprint,
+        "strict_v1_metric_complete": True,
+        "strict_incomplete_reasons": [],
+    }
+
+
+def test_v1_publication_requires_both_inspection_and_metric_quality() -> None:
+    assessment = sequence._assess_v1_multiview_publication(
+        {"quality_pass": True},
+        {"quality_pass": True},
+        _valid_v1_inspection_publication_metadata(),
+        _valid_v1_metric_publication_metadata(),
+    )
+
+    assert assessment.strict_quality_pass is True
+    assert assessment.quality_grade == "A"
+    assert assessment.manual_review_required is False
+
+
+def test_v1_applied_cuda_identity_owner_is_degraded_c() -> None:
+    inspection = _valid_v1_inspection_publication_metadata()
+    inspection["identity_owner_runtime"] = {
+        "schema": "inspection-identity-runtime/v1",
+        "enabled": True,
+        "executed": True,
+        "applied": True,
+        "foreground_identity_owner_count": 2,
+        "pre_seam_hard_owner_interval_count": 0,
+        "object_owner_application_count": 2,
+        "configuration": {"rapidocr_enabled": False},
+        "cuda_execution": {
+            "fastsam": {"pass": True},
+            "rapidocr": None,
+            "actual_provider_profile_required": True,
+            "silent_cpu_fallback_allowed": False,
+        },
+        "mesh_preflight": {
+            "pass": True,
+            "candidate_owner_count": 2,
+            "accepted_owner_count": 2,
+            "rejected_owner_count": 0,
+        },
+    }
+    inspection["strict_v1_inspection_complete"] = False
+    inspection["strict_incomplete_reasons"] = [
+        "foreground_identity_single_owner_inverse_mesh_used"
+    ]
+
+    assessment = sequence._assess_v1_multiview_publication(
+        {"quality_pass": True},
+        {"quality_pass": True},
+        inspection,
+        _valid_v1_metric_publication_metadata(),
+    )
+
+    assert assessment.strict_quality_pass is False
+    assert assessment.quality_grade == "C"
+    assert assessment.delivery_state == "published_degraded"
+    assert assessment.manual_review_required is True
+
+
+def test_v1_applied_preseam_identity_owner_is_degraded_c() -> None:
+    inspection = _valid_v1_inspection_publication_metadata()
+    inspection["identity_owner_runtime"] = {
+        "schema": "inspection-identity-runtime/v1",
+        "enabled": True,
+        "executed": True,
+        "applied": True,
+        "foreground_identity_owner_count": 0,
+        "pre_seam_hard_owner_interval_count": 1,
+        "object_owner_application_count": 1,
+        "configuration": {"rapidocr_enabled": False},
+        "cuda_execution": {
+            "fastsam": {"pass": True},
+            "rapidocr": None,
+            "actual_provider_profile_required": True,
+            "silent_cpu_fallback_allowed": False,
+        },
+        "mesh_preflight": {
+            "pass": True,
+            "candidate_owner_count": 0,
+            "accepted_owner_count": 0,
+            "rejected_owner_count": 0,
+        },
+    }
+    inspection["strict_v1_inspection_complete"] = False
+    inspection["strict_incomplete_reasons"] = [
+        "pre_seam_single_panel_hard_owner_interval_used"
+    ]
+
+    assessment = sequence._assess_v1_multiview_publication(
+        {"quality_pass": True},
+        {"quality_pass": True},
+        inspection,
+        _valid_v1_metric_publication_metadata(),
+    )
+
+    assert assessment.strict_quality_pass is False
+    assert assessment.quality_grade == "C"
+    assert assessment.delivery_state == "published_degraded"
+    assert assessment.manual_review_required is True
+
+
+@pytest.mark.parametrize(
+    ("mesh_rejected", "interval_rejected"),
+    [(1, 0), (0, 1)],
+)
+def test_v1_unapplied_shelf_object_owner_is_structural_f(
+    mesh_rejected: int,
+    interval_rejected: int,
+) -> None:
+    inspection = _valid_v1_inspection_publication_metadata()
+    inspection["identity_owner_runtime"] = {
+        "schema": "inspection-identity-runtime/v1",
+        "enabled": True,
+        "executed": True,
+        "applied": False,
+        "foreground_identity_owner_count": 0,
+        "pre_seam_hard_owner_interval_count": 0,
+        "pre_seam_hard_owner_interval_rejected_count": interval_rejected,
+        "object_owner_application_count": 0,
+        "configuration": {"rapidocr_enabled": False},
+        "cuda_execution": {
+            "fastsam": {"pass": True},
+            "rapidocr": None,
+            "actual_provider_profile_required": True,
+            "silent_cpu_fallback_allowed": False,
+        },
+        "mesh_preflight": {
+            "pass": mesh_rejected == 0,
+            "candidate_owner_count": mesh_rejected,
+            "accepted_owner_count": 0,
+            "rejected_owner_count": mesh_rejected,
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="missing or split object"):
+        sequence._assess_v1_multiview_publication(
+            {"quality_pass": True},
+            {"quality_pass": True},
+            inspection,
+            _valid_v1_metric_publication_metadata(),
+        )
+
+
+def test_v1_metric_quality_failure_is_degraded_c_not_structural_f() -> None:
+    metric = _valid_v1_metric_publication_metadata()
+    metric["strict_v1_metric_complete"] = False
+    metric["strict_incomplete_reasons"] = [
+        "accepted continuous surface support is too low"
+    ]
+
+    assessment = sequence._assess_v1_multiview_publication(
+        {"quality_pass": True},
+        {"quality_pass": True},
+        _valid_v1_inspection_publication_metadata(),
+        metric,
+    )
+
+    assert assessment.strict_quality_pass is False
+    assert assessment.quality_grade == "C"
+    assert assessment.delivery_state == "published_degraded"
+    assert assessment.manual_review_required is True
+    assert any(
+        reason.startswith("V1 metric:")
+        for reason in assessment.strict_failure_reasons
+    )
+
+
+def test_v1_world_coverage_failure_is_degraded_c() -> None:
+    inspection = _valid_v1_inspection_publication_metadata()
+    coverage = dict(inspection["world_surface_coverage_audit"])
+    coverage.update(
+        {
+            "matched_observed_world_voxel_count": 43,
+            "matched_multiview_world_voxel_count": 34,
+            "multiview_world_coverage_ratio": 0.425,
+            "pass": False,
+        }
+    )
+    inspection["world_surface_coverage_audit"] = coverage
+    inspection["strict_v1_inspection_complete"] = False
+    inspection["strict_incomplete_reasons"] = [
+        "multiview_observed_near_world_surface_missing_from_final_rgb_owner"
+    ]
+
+    assessment = sequence._assess_v1_multiview_publication(
+        {"quality_pass": True},
+        {"quality_pass": True},
+        inspection,
+        _valid_v1_metric_publication_metadata(),
+    )
+
+    assert assessment.strict_quality_pass is False
+    assert assessment.quality_grade == "C"
+    assert assessment.delivery_state == "published_degraded"
+    assert assessment.manual_review_required is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("world_surface_coverage_audit", None),
+        (
+            "world_surface_coverage_audit",
+            {
+                **dict(
+                    _valid_v1_inspection_publication_metadata()[
+                        "world_surface_coverage_audit"
+                    ]
+                ),
+                "pass": False,
+            },
+        ),
+    ],
+)
+def test_v1_world_coverage_structural_audit_failure_is_f(
+    field: str,
+    value: object,
+) -> None:
+    inspection = _valid_v1_inspection_publication_metadata()
+    inspection[field] = value
+
+    with pytest.raises(RuntimeError, match="world-surface coverage"):
+        sequence._assess_v1_multiview_publication(
+            {"quality_pass": True},
+            {"quality_pass": True},
+            inspection,
+            _valid_v1_metric_publication_metadata(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("surface_footprint_audit", None),
+        ("single_owner_valid_pixel_count", 9),
+    ],
+)
+def test_v1_metric_structural_audit_failure_is_f(
+    field: str,
+    value: object,
+) -> None:
+    metric = _valid_v1_metric_publication_metadata()
+    metric[field] = value
+
+    with pytest.raises(RuntimeError, match="V1 metric"):
+        sequence._assess_v1_multiview_publication(
+            {"quality_pass": True},
+            {"quality_pass": True},
+            _valid_v1_inspection_publication_metadata(),
+            metric,
+        )

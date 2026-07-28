@@ -50,6 +50,7 @@ from panorama_demo.calibrated_rgb_pushbroom import (
     _audit_suppressed_source_frames,
     _select_pair_level_hard_owner,
     _clip_foreground_owner_handoffs_to_incoming_valid,
+    _component_constraint_label_raster,
     _suppress_redundant_pose_sources_in_foreground_plan,
     _PhotometricEdge,
     _adaptive_multiband_levels,
@@ -2423,6 +2424,11 @@ def test_pushbroom_uses_every_real_frame_once_with_bounded_strip_residency(
     assert metadata["frame_ids"] == [frame.frame_id for frame in session.frames]
     assert metadata["single_inverse_remap_per_source"] is True
     assert metadata["interpolated_pose_count"] == 0
+    assert result.owner_frame_id is not None
+    assert result.owner_frame_id.shape == result.panorama.shape[:2]
+    assert set(np.unique(result.owner_frame_id)) <= {
+        frame.frame_id for frame in session.frames
+    }
     assert metadata["mosaicing_method"]["name_en"] == (
         "Trajectory-Constrained Depth-Aware Multi-Viewpoint Side-Scan Mosaicing"
     )
@@ -3259,6 +3265,59 @@ def test_graphcut_locks_only_complete_same_layer_safe_rows() -> None:
         "component_blocked_row_count": 0,
         "final_aligned_row_count": 14,
     }
+
+
+def test_graphcut_relabels_preflight_constraints_after_guards_merge() -> None:
+    height, width = 24, 64
+    image = np.full((height, width, 3), 120, dtype=np.uint8)
+    valid = np.ones((height, width), dtype=bool)
+    protected = np.zeros_like(valid)
+    protected[8:12, 10:20] = True
+    protected[8:12, 30:40] = True
+    protected[9:11, 20:30] = True
+    first = ProtectedComponentFragment(
+        pair_index=0,
+        global_bbox=(10, 8, 10, 4),
+        local_mask=np.ones((4, 10), dtype=bool),
+        component_label=1,
+    )
+    second = ProtectedComponentFragment(
+        pair_index=0,
+        global_bbox=(30, 8, 10, 4),
+        local_mask=np.ones((4, 10), dtype=bool),
+        component_label=2,
+    )
+    source_labels = _component_constraint_label_raster(
+        (first, second), left=0, right=width, height=height
+    )
+
+    owner0, owner1, *_ = _graphcut_monotonic_owner(
+        image,
+        image,
+        valid,
+        valid,
+        protected,
+        nominal_boundary=32,
+        component_owner_constraints={1: 0, 2: 0},
+        component_constraint_labels=source_labels,
+    )
+
+    assert np.all(owner0[protected])
+    assert not np.any(owner1[protected])
+    with pytest.raises(
+        RuntimeError,
+        match="merges conflicting owner constraints",
+    ):
+        _graphcut_monotonic_owner(
+            image,
+            image,
+            valid,
+            valid,
+            protected,
+            nominal_boundary=32,
+            component_owner_constraints={1: 0, 2: 1},
+            component_constraint_labels=source_labels,
+        )
 
 
 def test_local_multiband_uses_distinct_owner_masks_and_adaptive_levels(

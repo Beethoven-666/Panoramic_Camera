@@ -10,7 +10,11 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from .cuda_backend import remap as accelerated_remap
+from .cuda_backend import (
+    cuda_status,
+    record_open3d_cuda_call,
+    remap as accelerated_remap,
+)
 
 CAMERA_COORDINATE_CONVENTION = (
     "OpenCV/Open3D color camera coordinates: +x right, +y down, +z forward"
@@ -802,6 +806,24 @@ class _Open3DBackend:
 
     def __init__(self) -> None:
         self.o3d = _import_open3d()
+        status = cuda_status()
+        build_config = dict(getattr(self.o3d, "_build_config", {}))
+        tensor_api = getattr(getattr(self.o3d, "t", None), "pipelines", None)
+        try:
+            runtime_available = bool(self.o3d.core.cuda.is_available())
+        except (AttributeError, RuntimeError):
+            runtime_available = False
+        self.tensor_cuda = bool(
+            status.mode != "off"
+            and build_config.get("BUILD_CUDA_MODULE", False)
+            and runtime_available
+            and getattr(tensor_api, "odometry", None) is not None
+        )
+        if status.mode == "required" and not self.tensor_cuda:
+            raise Open3DUnavailableError(
+                "G305_CUDA=required but the active Open3D build cannot run "
+                "Tensor RGB-D odometry on CUDA:0"
+            )
 
     def _intrinsic(self, intrinsics: _Intrinsics) -> Any:
         return self.o3d.camera.PinholeCameraIntrinsic(
@@ -824,6 +846,141 @@ class _Open3DBackend:
             convert_rgb_to_intensity=True,
         )
 
+    def _tensor_rgbd(
+        self,
+        frame: PreparedRGBDFrame,
+        device: Any,
+    ) -> Any:
+        color = self.o3d.t.geometry.Image(
+            self.o3d.core.Tensor(frame.color_rgb, device=device)
+        )
+        depth = self.o3d.t.geometry.Image(
+            self.o3d.core.Tensor(
+                frame.depth_mm.astype(np.float32, copy=False),
+                device=device,
+            )
+        )
+        return self.o3d.t.geometry.RGBDImage(color, depth)
+
+    def _estimate_pair_tensor_cuda(
+        self,
+        *,
+        reference: PreparedRGBDFrame,
+        source: PreparedRGBDFrame,
+        intrinsics: _Intrinsics,
+        config: RGBDOdometryConfig,
+        initial_source_to_reference: np.ndarray | None,
+    ) -> Mapping[str, Any]:
+        device = self.o3d.core.Device("CUDA:0")
+        source_rgbd = self._tensor_rgbd(source, device)
+        reference_rgbd = self._tensor_rgbd(reference, device)
+        intrinsic_values = np.asarray(
+            [
+                [intrinsics.fx, 0.0, intrinsics.cx],
+                [0.0, intrinsics.fy, intrinsics.cy],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        intrinsic = self.o3d.core.Tensor(
+            intrinsic_values,
+            dtype=self.o3d.core.float64,
+            device=device,
+        )
+        initial_m = (
+            np.eye(4, dtype=np.float64)
+            if initial_source_to_reference is None
+            else _pose_mm_to_m(initial_source_to_reference)
+        )
+        initial = self.o3d.core.Tensor(
+            initial_m,
+            dtype=self.o3d.core.float64,
+            device=device,
+        )
+        criteria = [
+            self.o3d.t.pipelines.odometry.OdometryConvergenceCriteria(
+                int(iterations)
+            )
+            for iterations in config.iteration_number_per_pyramid_level
+        ]
+        depth_outlier_trunc_m = config.maximum_depth_difference_mm / 1000.0
+        loss = self.o3d.t.pipelines.odometry.OdometryLossParams(
+            depth_outlier_trunc_m,
+            min(0.05, depth_outlier_trunc_m * 0.5),
+            0.1,
+        )
+        result = self.o3d.t.pipelines.odometry.rgbd_odometry_multi_scale(
+            source_rgbd,
+            reference_rgbd,
+            intrinsic,
+            initial,
+            1000.0,
+            config.maximum_depth_mm / 1000.0,
+            criteria,
+            self.o3d.t.pipelines.odometry.Method.Hybrid,
+            loss,
+        )
+        synchronize = getattr(self.o3d.core.cuda, "synchronize", None)
+        if callable(synchronize):
+            synchronize()
+        transformation_m = np.asarray(result.transformation.numpy(), dtype=np.float64)
+
+        # Open3D 0.19's information-matrix kernel is CPU-only even in a CUDA
+        # build.  It is a single 6x6 reduction; the iterative multiscale
+        # odometry above remains on CUDA.
+        cpu = self.o3d.core.Device("CPU:0")
+        source_depth_cpu = self.o3d.t.geometry.Image(
+            self.o3d.core.Tensor(source.depth_mm, device=cpu)
+        )
+        reference_depth_cpu = self.o3d.t.geometry.Image(
+            self.o3d.core.Tensor(reference.depth_mm, device=cpu)
+        )
+        intrinsic_cpu = self.o3d.core.Tensor(
+            intrinsic_values,
+            dtype=self.o3d.core.float64,
+            device=cpu,
+        )
+        transformation_cpu = self.o3d.core.Tensor(
+            transformation_m,
+            dtype=self.o3d.core.float64,
+            device=cpu,
+        )
+        information = (
+            self.o3d.t.pipelines.odometry.compute_odometry_information_matrix(
+                source_depth_cpu,
+                reference_depth_cpu,
+                intrinsic_cpu,
+                transformation_cpu,
+                config.evaluation_distance_mm / 1000.0,
+                1000.0,
+                config.maximum_depth_mm / 1000.0,
+            ).numpy()
+        )
+        input_bytes = (
+            source.color_rgb.nbytes
+            + source.depth_mm.nbytes
+            + reference.color_rgb.nbytes
+            + reference.depth_mm.nbytes
+            + intrinsic_values.nbytes
+            + initial_m.nbytes
+        )
+        record_open3d_cuda_call(
+            host_to_device_bytes=input_bytes,
+            device_to_host_bytes=transformation_m.nbytes,
+        )
+        return {
+            "converged": bool(
+                np.isfinite(transformation_m).all()
+                and math.isfinite(float(result.fitness))
+                and math.isfinite(float(result.inlier_rmse))
+            ),
+            "source_to_reference": _pose_m_to_mm(transformation_m),
+            "information": np.asarray(information, dtype=np.float64),
+            "fitness": float(result.fitness),
+            "rmse_mm": float(result.inlier_rmse) * 1000.0,
+            "backend": "open3d_tensor_cuda_rgbd",
+        }
+
     def estimate_pair(
         self,
         *,
@@ -833,6 +990,14 @@ class _Open3DBackend:
         config: RGBDOdometryConfig,
         initial_source_to_reference: np.ndarray | None = None,
     ) -> Mapping[str, Any]:
+        if self.tensor_cuda:
+            return self._estimate_pair_tensor_cuda(
+                reference=reference,
+                source=source,
+                intrinsics=intrinsics,
+                config=config,
+                initial_source_to_reference=initial_source_to_reference,
+            )
         reference_rgbd = self._rgbd(reference, config)
         source_rgbd = self._rgbd(source, config)
         intrinsic = self._intrinsic(intrinsics)

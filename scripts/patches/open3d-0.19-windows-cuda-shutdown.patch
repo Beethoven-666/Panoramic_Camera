@@ -1,0 +1,16 @@
+diff --git a/cpp/open3d/core/MemoryManagerCUDA.cpp b/cpp/open3d/core/MemoryManagerCUDA.cpp
+--- a/cpp/open3d/core/MemoryManagerCUDA.cpp
++++ b/cpp/open3d/core/MemoryManagerCUDA.cpp
+@@ -37,6 +37,12 @@ void* MemoryManagerCUDA::Malloc(size_t byte_size, const Device& device) {
+ }
+ 
+ void MemoryManagerCUDA::Free(void* ptr, const Device& device) {
++    int runtime_device = 0;
++    const cudaError_t runtime_state = cudaGetDevice(&runtime_device);
++    if (runtime_state == cudaErrorCudartUnloading) {
++        return;
++    }
++    OPEN3D_CUDA_CHECK(runtime_state);
+     CUDAScopedDevice scoped_device(device);
+ 
+     if (device.IsCUDA()) {

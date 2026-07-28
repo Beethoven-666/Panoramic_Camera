@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import cv2
 import numpy as np
@@ -28,9 +28,20 @@ from .calibrated_rgb_pushbroom import (
     render_calibrated_rgb_pushbroom,
 )
 from .config import load_config
+from .cuda_backend import cuda_metadata, reset_cuda_audit
+from .dual_output import dual_output_final_names, stage_dual_output
 from .foreground_deformation import ForegroundDeformationExperimentConfig
 from .handoff_continuity import summarize_handoff_methods
+from .inspection_identity_runtime import (
+    InspectionIdentityRuntimeConfig,
+    build_inspection_identity_runtime,
+)
+from .inspection_multiview import (
+    InspectionMultiviewConfig,
+    render_inspection_multiview,
+)
 from .local_apap_flow import LocalAPAPFlowConfig
+from .metric_mosaic import MetricMosaicConfig, render_metric_mosaic
 from .rgb_residual_alignment import ResidualAlignmentConfig
 from .orbslam3_bridge import (
     ORBSLAM3PoseGraphOptimizer,
@@ -62,6 +73,7 @@ from .session import (
     load_rgbd_session,
     read_aligned_depth_mm,
 )
+from .v1_input_contract import audit_v1_input_sidecars
 
 if TYPE_CHECKING:
     # These types belong only to dormant legacy helpers used by the isolated
@@ -75,6 +87,7 @@ _DELIVERY_FILES = (
     # The success marker must be invalidated before every other cleanup.
     "delivery.json",
     "panorama.jpg",
+    *dual_output_final_names(),
     "foreground_mask.png",
     "background_exclusion_mask.png",
     "tsdf_foreground_mask.png",
@@ -1241,6 +1254,439 @@ def _assess_publication(
         handoff_outcomes=outcomes,
         handoff_fallback_summary=summary,
         manual_review_required=manual_review_required,
+    )
+
+
+def _assess_v1_multiview_publication(
+    capture_quality: Mapping[str, object],
+    pose_quality: Mapping[str, object],
+    render_metadata: Mapping[str, object],
+    metric_metadata: Mapping[str, object],
+) -> _PublicationAssessment:
+    """Classify the isolated V1 inspection and metric products together."""
+
+    required_false = (
+        "fixed_strip_pushbroom",
+        "ordinary_2d_panorama",
+        "metric_raster_used_for_rgb",
+        "tsdf_used_for_rgb",
+    )
+    if any(render_metadata.get(key) is not False for key in required_false):
+        raise RuntimeError(
+            "V1 inspection renderer violated product-isolation semantics"
+        )
+    if render_metadata.get("pose_interpolation_count") != 0:
+        raise RuntimeError("V1 inspection renderer interpolated real poses")
+    seam_value = render_metadata.get("background_seam_audit")
+    foreground_value = render_metadata.get(
+        "foreground_owner_continuity_summary"
+    )
+    if not isinstance(seam_value, Mapping) or not isinstance(
+        foreground_value, Mapping
+    ):
+        raise RuntimeError(
+            "V1 inspection renderer omitted seam or foreground audit"
+        )
+    seam = dict(seam_value)
+    topology = seam.get("panel_chain_topology")
+    visual = seam.get("owner_boundary_visual_audit")
+    if (
+        not isinstance(topology, Mapping)
+        or topology.get("pass") is not True
+        or not isinstance(visual, Mapping)
+        or seam.get("graphcut_used") is not True
+        or seam.get("multiband_used") is not True
+        or seam.get("exposure_compensation_used") is not True
+        or seam.get("dis_optical_flow_used") is not True
+        or seam.get("protected_blend_intersection_pixel_count") != 0
+    ):
+        raise RuntimeError(
+            "V1 inspection seam topology or protected blending is unsafe"
+        )
+    if (
+        foreground_value.get("all_components_single_owner") is not True
+        or foreground_value.get("foreground_blend_pixel_count") != 0
+    ):
+        raise RuntimeError(
+            "V1 inspection foreground is not one-owner complete"
+        )
+    render_strict = render_metadata.get(
+        "strict_v1_inspection_complete"
+    )
+    if type(render_strict) is not bool:
+        raise RuntimeError(
+            "V1 inspection renderer omitted strict completion status"
+        )
+    reasons = render_metadata.get("strict_incomplete_reasons")
+    if not isinstance(reasons, list) or any(
+        not isinstance(value, str) or not value for value in reasons
+    ):
+        raise RuntimeError(
+            "V1 inspection renderer has malformed strict failure reasons"
+        )
+    if render_strict != (not reasons):
+        raise RuntimeError(
+            "V1 inspection strict status contradicts its reasons"
+        )
+    identity_value = render_metadata.get("identity_owner_runtime")
+    if not isinstance(identity_value, Mapping):
+        raise RuntimeError(
+            "V1 inspection renderer omitted identity-runtime audit"
+        )
+    identity_runtime = dict(identity_value)
+    foreground_identity_owner_count = identity_runtime.get(
+        "foreground_identity_owner_count"
+    )
+    pre_seam_interval_count = identity_runtime.get(
+        "pre_seam_hard_owner_interval_count", 0
+    )
+    object_owner_application_count = identity_runtime.get(
+        "object_owner_application_count"
+    )
+    if (
+        identity_runtime.get("schema")
+        != "inspection-identity-runtime/v1"
+        or type(identity_runtime.get("enabled")) is not bool
+        or type(identity_runtime.get("executed")) is not bool
+        or type(identity_runtime.get("applied")) is not bool
+        or type(foreground_identity_owner_count) is not int
+        or int(foreground_identity_owner_count) < 0
+        or type(pre_seam_interval_count) is not int
+        or int(pre_seam_interval_count) < 0
+        or (
+            object_owner_application_count is not None
+            and (
+                type(object_owner_application_count) is not int
+                or int(object_owner_application_count)
+                != int(foreground_identity_owner_count)
+                + int(pre_seam_interval_count)
+            )
+        )
+        or identity_runtime["applied"]
+        != (
+            int(foreground_identity_owner_count)
+            + int(pre_seam_interval_count)
+            > 0
+        )
+    ):
+        raise RuntimeError(
+            "V1 inspection identity-runtime audit is malformed"
+        )
+    if identity_runtime["enabled"]:
+        cuda_value = identity_runtime.get("cuda_execution")
+        mesh_preflight_value = identity_runtime.get("mesh_preflight")
+        rejected_pre_seam_count = identity_runtime.get(
+            "pre_seam_hard_owner_interval_rejected_count", 0
+        )
+        if (
+            identity_runtime["executed"] is not True
+            or not isinstance(cuda_value, Mapping)
+            or not isinstance(cuda_value.get("fastsam"), Mapping)
+            or cuda_value["fastsam"].get("pass") is not True
+            or cuda_value.get("actual_provider_profile_required") is not True
+            or cuda_value.get("silent_cpu_fallback_allowed") is not False
+        ):
+            raise RuntimeError(
+                "V1 identity runtime lacks verified FastSAM CUDA execution"
+            )
+        if (
+            not isinstance(mesh_preflight_value, Mapping)
+            or type(mesh_preflight_value.get("pass")) is not bool
+            or type(mesh_preflight_value.get("candidate_owner_count"))
+            is not int
+            or type(mesh_preflight_value.get("accepted_owner_count"))
+            is not int
+            or type(mesh_preflight_value.get("rejected_owner_count"))
+            is not int
+            or int(mesh_preflight_value["candidate_owner_count"])
+            != int(mesh_preflight_value["accepted_owner_count"])
+            + int(mesh_preflight_value["rejected_owner_count"])
+            or bool(mesh_preflight_value["pass"])
+            != (int(mesh_preflight_value["rejected_owner_count"]) == 0)
+        ):
+            raise RuntimeError(
+                "V1 identity inverse-mesh preflight audit is malformed"
+            )
+        if (
+            int(mesh_preflight_value["rejected_owner_count"]) != 0
+            or type(rejected_pre_seam_count) is not int
+            or int(rejected_pre_seam_count) != 0
+        ):
+            raise RuntimeError(
+                "V1 shelf object owner was not completely applied; "
+                "publishing a panorama with a missing or split object is "
+                "forbidden; "
+                f"mesh_rejected={int(mesh_preflight_value['rejected_owner_count'])}, "
+                f"pre_seam_rejected={int(rejected_pre_seam_count)}, "
+                "mesh_rejected_track_ids="
+                f"{[row.get('identity_track_id') for row in mesh_preflight_value.get('rejected_owners', [])]}, "
+                "pre_seam_rejections="
+                f"{identity_runtime.get('pre_seam_hard_owner_interval_rejections', [])}"
+            )
+        identity_configuration = identity_runtime.get("configuration")
+        rapid_value = cuda_value.get("rapidocr")
+        if (
+            isinstance(identity_configuration, Mapping)
+            and identity_configuration.get("rapidocr_enabled") is True
+            and (
+                not isinstance(rapid_value, Mapping)
+                or rapid_value.get("execution_verified") is not True
+                or not isinstance(rapid_value.get("execution"), Mapping)
+                or rapid_value["execution"].get("pass") is not True
+            )
+        ):
+            raise RuntimeError(
+                "V1 identity runtime lacks verified RapidOCR CUDA execution"
+            )
+    elif identity_runtime["executed"] or identity_runtime["applied"]:
+        raise RuntimeError(
+            "Disabled V1 identity runtime claims execution or owners"
+        )
+    identity_reason = (
+        "foreground_identity_single_owner_inverse_mesh_used"
+    )
+    pre_seam_reason = (
+        "pre_seam_single_panel_hard_owner_interval_used"
+    )
+    if (int(foreground_identity_owner_count) > 0) != (
+        identity_reason in reasons
+    ) or (int(pre_seam_interval_count) > 0) != (
+        pre_seam_reason in reasons
+    ):
+        raise RuntimeError(
+            "V1 identity owner use contradicts strict completion reasons"
+        )
+    coverage_value = render_metadata.get("world_surface_coverage_audit")
+    if not isinstance(coverage_value, Mapping):
+        raise RuntimeError(
+            "V1 inspection renderer omitted world-surface coverage audit"
+        )
+    coverage = dict(coverage_value)
+    coverage_ratio = coverage.get("multiview_world_coverage_ratio")
+    coverage_minimum = coverage.get(
+        "minimum_multiview_world_coverage_ratio"
+    )
+    coverage_pass = coverage.get("pass")
+    if (
+        coverage.get("schema")
+        != "gemini305-inspection-world-coverage/v1"
+        or coverage.get("colour_or_geometry_mutation") is not False
+        or coverage.get("pose_interpolation_or_modification") is not False
+        or coverage.get("tsdf_or_metric_feedback") is not False
+        or type(coverage_ratio) not in (int, float)
+        or not np.isfinite(float(coverage_ratio))
+        or not 0.0 <= float(coverage_ratio) <= 1.0
+        or type(coverage_minimum) not in (int, float)
+        or not np.isfinite(float(coverage_minimum))
+        or float(coverage_minimum) != 0.80
+        or type(coverage_pass) is not bool
+        or coverage_pass
+        != (float(coverage_ratio) >= float(coverage_minimum))
+    ):
+        raise RuntimeError(
+            "V1 inspection world-surface coverage audit is malformed"
+        )
+    coverage_count_fields = (
+        "observed_world_voxel_count",
+        "multiview_observed_world_voxel_count",
+        "represented_world_voxel_count",
+        "matched_observed_world_voxel_count",
+        "matched_multiview_world_voxel_count",
+    )
+    if any(
+        type(coverage.get(key)) is not int or int(coverage[key]) < 0
+        for key in coverage_count_fields
+    ):
+        raise RuntimeError(
+            "V1 inspection world-surface coverage counts are malformed"
+        )
+    if (
+        int(coverage["matched_observed_world_voxel_count"])
+        > int(coverage["observed_world_voxel_count"])
+        or int(coverage["matched_multiview_world_voxel_count"])
+        > int(coverage["multiview_observed_world_voxel_count"])
+    ):
+        raise RuntimeError(
+            "V1 inspection world-surface coverage counts contradict"
+        )
+    coverage_reason = (
+        "multiview_observed_near_world_surface_missing_from_final_rgb_owner"
+    )
+    if (not coverage_pass) != (coverage_reason in reasons):
+        raise RuntimeError(
+            "V1 inspection world-surface coverage status contradicts "
+            "strict reasons"
+        )
+
+    if metric_metadata.get("schema") != "gemini305-metric-mosaic/v1":
+        raise RuntimeError("V1 metric renderer omitted its formal schema")
+    if metric_metadata.get("rgb_policy") != (
+        "single_real_rgb_owner_no_tsdf_colour"
+    ):
+        raise RuntimeError("V1 metric renderer did not preserve real RGB owners")
+    if metric_metadata.get("geometry_policy") != (
+        "depth_continuity_gated_measured_pixel_footprint_"
+        "world_normal_zbuffer_no_cross_edge_fill"
+    ):
+        raise RuntimeError("V1 metric renderer used an unapproved geometry policy")
+    if (
+        metric_metadata.get("tsdf_used_for_rgb") is not False
+        or metric_metadata.get("tsdf_used_for_depth") is not False
+    ):
+        raise RuntimeError("V1 metric renderer allowed TSDF feedback")
+    coordinate_value = metric_metadata.get("coordinate_system")
+    if not isinstance(coordinate_value, Mapping):
+        raise RuntimeError("V1 metric renderer omitted world coordinates")
+    coordinate = dict(coordinate_value)
+    if (
+        coordinate.get("world_unit") != "mm"
+        or coordinate.get("depth_unit") != "mm"
+        or coordinate.get("pixel_size_mm") != 2.0
+        or coordinate.get("canvas_x")
+        != "dot(world_point_mm, scan_axis_world)"
+        or coordinate.get("canvas_y")
+        != "dot(world_point_mm, -up_axis_world)"
+        or coordinate.get("depth")
+        != "dot(world_point_mm, normal_axis_world)"
+    ):
+        raise RuntimeError("V1 metric coordinate contract is not 2 mm world-fixed")
+    axes: list[np.ndarray] = []
+    for key in ("scan_axis_world", "up_axis_world", "normal_axis_world"):
+        value = np.asarray(coordinate.get(key), dtype=np.float64)
+        if value.shape != (3,) or not np.isfinite(value).all():
+            raise RuntimeError("V1 metric coordinate axes are malformed")
+        norm = float(np.linalg.norm(value))
+        if not np.isclose(norm, 1.0, atol=1e-5):
+            raise RuntimeError("V1 metric coordinate axes are not unit length")
+        axes.append(value)
+    if any(
+        not np.isclose(float(np.dot(axes[left], axes[right])), 0.0, atol=1e-5)
+        for left, right in ((0, 1), (0, 2), (1, 2))
+    ):
+        raise RuntimeError("V1 metric coordinate axes are not orthogonal")
+
+    valid_pixel_count = metric_metadata.get("valid_pixel_count")
+    single_owner_count = metric_metadata.get("single_owner_valid_pixel_count")
+    unowned_valid_count = metric_metadata.get("unowned_valid_pixel_count")
+    if (
+        type(valid_pixel_count) is not int
+        or valid_pixel_count <= 0
+        or single_owner_count != valid_pixel_count
+        or unowned_valid_count != 0
+    ):
+        raise RuntimeError("V1 metric owner topology is incomplete")
+    footprint_value = metric_metadata.get("surface_footprint_audit")
+    if not isinstance(footprint_value, Mapping):
+        raise RuntimeError("V1 metric renderer omitted surface-footprint audit")
+    footprint = dict(footprint_value)
+    if (
+        footprint.get("policy")
+        != (
+            "complete_3x3_measured_same_depth_layer_positive_jacobian_"
+            "bounded_sensor_pixel_footprint"
+        )
+        or footprint.get("rgb_sampling")
+        != "nearest_real_source_pixel_copy_no_interpolation"
+        or footprint.get("depth_sampling")
+        != "nearest_real_source_camera_and_world_normal_depth_copy"
+        or footprint.get("point_centres_preserved") is not True
+        or footprint.get("world_normal_zbuffer_preserved") is not True
+        or footprint.get("morphological_hole_fill_used") is not False
+        or footprint.get("invalid_depth_crossing_allowed") is not False
+        or footprint.get("depth_edge_crossing_allowed") is not False
+        or footprint.get("fold_crossing_allowed") is not False
+    ):
+        raise RuntimeError("V1 metric surface-footprint provenance is unsafe")
+    footprint_count_fields = (
+        "measured_center_candidate_count",
+        "continuous_surface_sample_count",
+        "footprint_candidate_count",
+        "point_center_selected_zbuffer_pixel_count",
+        "footprint_rasterized_pixel_count",
+        "rejected_invalid_neighbourhood_sample_count",
+        "rejected_depth_edge_sample_count",
+        "rejected_fold_sample_count",
+        "rejected_degenerate_sample_count",
+        "rejected_overscale_sample_count",
+        "unobserved_output_pixel_count",
+    )
+    if any(
+        type(footprint.get(key)) is not int or footprint[key] < 0
+        for key in footprint_count_fields
+    ):
+        raise RuntimeError("V1 metric surface-footprint counts are malformed")
+    support_ratio = footprint.get(
+        "accepted_continuous_surface_support_ratio"
+    )
+    minimum_support_ratio = footprint.get(
+        "minimum_strict_continuous_surface_support_ratio"
+    )
+    if (
+        type(support_ratio) not in (int, float)
+        or not np.isfinite(float(support_ratio))
+        or not 0.0 <= float(support_ratio) <= 1.0
+        or type(minimum_support_ratio) not in (int, float)
+        or not np.isfinite(float(minimum_support_ratio))
+        or not 0.0 < float(minimum_support_ratio) <= 1.0
+    ):
+        raise RuntimeError("V1 metric surface-support quality audit is malformed")
+    metric_strict = metric_metadata.get("strict_v1_metric_complete")
+    metric_reasons = metric_metadata.get("strict_incomplete_reasons")
+    if type(metric_strict) is not bool:
+        raise RuntimeError("V1 metric renderer omitted strict completion status")
+    if not isinstance(metric_reasons, list) or any(
+        not isinstance(value, str) or not value for value in metric_reasons
+    ):
+        raise RuntimeError("V1 metric renderer has malformed strict failure reasons")
+    if metric_strict != (not metric_reasons):
+        raise RuntimeError("V1 metric strict status contradicts its reasons")
+
+    strict_failures: list[str] = []
+    if capture_quality.get("quality_pass") is not True:
+        strict_failures.append("input capture quality did not pass")
+    if pose_quality.get("quality_pass") is not True:
+        strict_failures.append("RGB-D pose trajectory quality did not pass")
+    if visual.get("pass") is not True:
+        strict_failures.append(
+            "V1 inspection owner boundary visual quality did not pass"
+        )
+    if not render_strict:
+        strict_failures.append("V1 inspection render quality did not pass")
+        strict_failures.extend(
+            f"V1 inspection: {value}" for value in reasons
+        )
+    if not metric_strict:
+        strict_failures.append("V1 metric render quality did not pass")
+        strict_failures.extend(
+            f"V1 metric: {value}" for value in metric_reasons
+        )
+    pair_count = int(topology.get("actual_pair_count", 0))
+    if pair_count < 1:
+        raise RuntimeError("V1 inspection topology has no adjacent handoff")
+    outcomes = tuple(
+        {
+            "pair_index": index,
+            "method": "anchor",
+            "audit_complete": True,
+            "backend": "opencv_graphcut_guided_monotone_adjacent_chain",
+        }
+        for index in range(pair_count)
+    )
+    summary = {
+        "anchor": pair_count,
+        "apap": 0,
+        "flow_mesh": 0,
+        "hard_cut": 0,
+    }
+    strict_pass = not strict_failures
+    return _PublicationAssessment(
+        strict_quality_pass=strict_pass,
+        strict_failure_reasons=tuple(strict_failures),
+        quality_grade="A" if strict_pass else "C",
+        delivery_state="published" if strict_pass else "published_degraded",
+        handoff_outcomes=outcomes,
+        handoff_fallback_summary=summary,
+        manual_review_required=not strict_pass,
     )
 
 
@@ -3672,6 +4118,39 @@ def _validate_backend_config(stitch_config: dict[str, Any]) -> None:
     visualization = stitch_config.get("tsdf_visualization", {})
     if not isinstance(visualization, dict):
         raise ValueError("tsdf_visualization must be a mapping")
+    metric_value = stitch_config.get("metric_mosaic")
+    if not isinstance(metric_value, Mapping):
+        raise ValueError("Formal metric_mosaic configuration must be a mapping")
+    try:
+        MetricMosaicConfig.from_mapping(metric_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid formal metric_mosaic configuration") from exc
+    inspection_value = stitch_config.get("inspection_multiview")
+    if not isinstance(inspection_value, Mapping):
+        raise ValueError(
+            "Formal inspection_multiview configuration must be a mapping"
+        )
+    try:
+        InspectionMultiviewConfig.from_mapping(inspection_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Invalid formal inspection_multiview configuration"
+        ) from exc
+    identity_runtime_value = stitch_config.get(
+        "identity_owner_runtime", {}
+    )
+    if not isinstance(identity_runtime_value, Mapping):
+        raise ValueError(
+            "Formal identity_owner_runtime configuration must be a mapping"
+        )
+    try:
+        InspectionIdentityRuntimeConfig.from_mapping(
+            identity_runtime_value
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Invalid formal identity_owner_runtime configuration"
+        ) from exc
     pushbroom = dict(stitch_config.get("calibrated_rgb_pushbroom", {}))
     if str(pushbroom.get("mode", "calibrated_rgb_pushbroom")) != (
         "calibrated_rgb_pushbroom"
@@ -3686,6 +4165,48 @@ def _validate_backend_config(stitch_config: dict[str, Any]) -> None:
         raise ValueError(
             "Formal scan seam backend must be rgb_monotonic_hard_owner_graphcut"
         )
+
+
+def _odometry_acceleration_audit(
+    edges: Sequence[object],
+) -> dict[str, object]:
+    """Describe the backend that actually produced the formal RGB-D edges."""
+
+    backends = sorted(
+        {
+            str(getattr(edge, "backend", "unknown"))
+            for edge in edges
+        }
+    )
+    if not backends:
+        return {
+            "selected": "none",
+            "backends": [],
+            "reason": "no_rgbd_odometry_edges",
+        }
+    cuda_backends = [
+        name for name in backends if "cuda" in name.lower()
+    ]
+    selected = (
+        "cuda"
+        if len(cuda_backends) == len(backends)
+        else ("mixed" if cuda_backends else "cpu")
+    )
+    return {
+        "selected": selected,
+        "backend": backends[0] if len(backends) == 1 else "mixed",
+        "backends": backends,
+        "edge_count": len(edges),
+        "cuda_edge_count": sum(
+            "cuda" in str(getattr(edge, "backend", "")).lower()
+            for edge in edges
+        ),
+        "reason": (
+            "measured_edge_backend_provenance"
+            if selected != "mixed"
+            else "formal_edges_used_mixed_odometry_backends"
+        ),
+    }
 
 
 def _validate_formal_handoff_fallback_policy(
@@ -3784,6 +4305,43 @@ def _validate_safety_envelope(
             "calibrated_rgb_pushbroom.max_resident_frames must remain within "
             "the 2-5 streaming budget"
         )
+    try:
+        metric_mosaic = MetricMosaicConfig.from_mapping(
+            stitch_config.get("metric_mosaic")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid formal metric_mosaic configuration") from exc
+    if (
+        metric_mosaic.maximum_canvas_megapixels
+        > _HARD_MAX_CANVAS_MEGAPIXELS
+    ):
+        raise ValueError(
+            "metric_mosaic.maximum_canvas_megapixels cannot exceed 200 MP"
+        )
+    try:
+        inspection_multiview = InspectionMultiviewConfig.from_mapping(
+            stitch_config.get("inspection_multiview")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Invalid formal inspection_multiview configuration"
+        ) from exc
+    if (
+        inspection_multiview.maximum_canvas_megapixels
+        > _HARD_MAX_CANVAS_MEGAPIXELS
+    ):
+        raise ValueError(
+            "inspection_multiview.maximum_canvas_megapixels cannot exceed "
+            "200 MP"
+        )
+    try:
+        InspectionIdentityRuntimeConfig.from_mapping(
+            stitch_config.get("identity_owner_runtime")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Invalid formal identity_owner_runtime configuration"
+        ) from exc
     try:
         residual_alignment = ResidualAlignmentConfig.from_mapping(
             pushbroom.get("residual_alignment")
@@ -4430,6 +4988,10 @@ def _run_pipeline(
         analysis_shape[1],
         stitch_config,
     )
+    input_sidecar_audit = audit_v1_input_sidecars(
+        session,
+        used_frame_ids=[frame.frame_id for frame in pose_frames],
+    )
     segment_row = layout_metadata["segment"]
     segment_start = int(segment_row["start_index"])
     segment_stop = int(segment_row["end_index"]) + 1
@@ -4461,6 +5023,8 @@ def _run_pipeline(
         stitch_config.get("pose_quality")
     )
     started = time.perf_counter()
+    stage_elapsed_seconds: dict[str, float] = {}
+    stage_started = started
     short_baseline_audit: list[dict[str, object]] = []
     edges, optional_edge_failures = _estimate_pose_edges(
         pose_frames,
@@ -4474,6 +5038,10 @@ def _run_pipeline(
             stitch_config.get("short_baseline_initialization", True)
         ),
     )
+    stage_elapsed_seconds["open3d_rgbd_odometry"] = (
+        time.perf_counter() - stage_started
+    )
+    stage_started = time.perf_counter()
     pose_backend = str(stitch_config.get("pose_backend", "hybrid_orbslam3_rgbd"))
     if (
         geometry_pair_diagnostic_renderer is not None
@@ -4536,6 +5104,9 @@ def _run_pipeline(
         _validate_publishable_pose_motion_structure(pose_quality_result)
     pose_quality = pose_quality_result.as_dict()
     pose_values = [pose_graph.pose_for(frame.frame_id) for frame in pose_frames]
+    stage_elapsed_seconds["global_trajectory_and_pose_audit"] = (
+        time.perf_counter() - stage_started
+    )
 
     if (
         geometry_pair_diagnostic_renderer is not None
@@ -4712,6 +5283,7 @@ def _run_pipeline(
             "deliverable_published": False,
             "geometry_claim": "reference_plane_only",
             "input_capture": capture_summary,
+            "v1_input_sidecars": input_sidecar_audit.as_dict(),
             "rgbd_session": {
                 "root": str(session.root),
                 "frame_count": len(session.frames),
@@ -4796,6 +5368,7 @@ def _run_pipeline(
             "deliverable_published": False,
             "trajectory_provenance": "current_orbslam3_rgbd_full_scan",
             "input_capture": capture_summary,
+            "v1_input_sidecars": input_sidecar_audit.as_dict(),
             "rgbd_session": {
                 "frame_count": len(session.frames),
                 "depth_alignment": session.depth_alignment,
@@ -4875,6 +5448,7 @@ def _run_pipeline(
             "deliverable_published": False,
             "trajectory_provenance": "current_orbslam3_rgbd_full_scan",
             "input_capture": capture_summary,
+            "v1_input_sidecars": input_sidecar_audit.as_dict(),
             "rgbd_session": {
                 "frame_count": len(session.frames),
                 "depth_alignment": session.depth_alignment,
@@ -4935,44 +5509,213 @@ def _run_pipeline(
             )
     local_apap_flow_config["enabled"] = local_apap_flow_enabled
     pushbroom_config["local_apap_flow"] = local_apap_flow_config
-    pushbroom_result = render_calibrated_rgb_pushbroom(
-        render_frames,
-        render_poses,
-        session.calibration,
-        config=pushbroom_config,
-        rgb_motions=render_motions,
-        motion_pixels_to_full_resolution=(
-            session.calibration.width / float(analysis_shape[1])
-        ),
-        multiband_levels=int(seam_config.get("multiband_levels", 3)),
-        # The renderer always computes its strict metrics.  Collect them for
-        # the A/B/C publication decision instead of raising before an audited
-        # C hard-cut can be published.  Its topology/remap/resource checks are
-        # deliberately unconditional and remain fail-closed.
-        quality_gate=False,
-    )
-    panorama = pushbroom_result.panorama
-    render_metadata = dict(pushbroom_result.metadata)
-    render_metadata["frame_ids"] = [frame.frame_id for frame in render_frames]
-    render_metadata["selection"] = render_selection
-    render_metadata["source_quality"] = {
-        str(frame.frame_id): quality.as_dict()
-        for frame, quality in zip(render_frames, render_qualities, strict=True)
-    }
-    photometric_calibration = render_metadata.get("photometric_calibration")
-    redundant_pose_node_suppression = render_metadata.get(
-        "redundant_pose_node_suppression"
-    )
-    publication_assessment: _PublicationAssessment | None = None
-    if not diagnostic_force:
-        publication_assessment = _assess_publication(
-            capture_quality,
-            pose_quality,
-            render_metadata,
-            [frame.frame_id for frame in render_frames],
+    inspection_result = None
+    render_stage_started = time.perf_counter()
+    if diagnostic_force:
+        pushbroom_result = render_calibrated_rgb_pushbroom(
+            render_frames,
+            render_poses,
+            session.calibration,
+            config=pushbroom_config,
+            rgb_motions=render_motions,
+            motion_pixels_to_full_resolution=(
+                session.calibration.width / float(analysis_shape[1])
+            ),
+            multiband_levels=int(seam_config.get("multiband_levels", 3)),
+            quality_gate=False,
+        )
+        panorama = pushbroom_result.panorama
+        render_metadata = dict(pushbroom_result.metadata)
+        render_metadata["frame_ids"] = [
+            frame.frame_id for frame in render_frames
+        ]
+        render_metadata["selection"] = render_selection
+        render_metadata["source_quality"] = {
+            str(frame.frame_id): quality.as_dict()
+            for frame, quality in zip(
+                render_frames, render_qualities, strict=True
+            )
+        }
+        photometric_calibration = render_metadata.get(
+            "photometric_calibration"
         )
         redundant_pose_node_suppression = render_metadata.get(
             "redundant_pose_node_suppression"
+        )
+    else:
+        inspection_config = InspectionMultiviewConfig.from_mapping(
+            stitch_config.get("inspection_multiview")
+        )
+        identity_runtime_started = time.perf_counter()
+        identity_runtime_result = build_inspection_identity_runtime(
+            pose_frames,
+            pose_values,
+            session.calibration,
+            inspection_config=inspection_config,
+            runtime_config=stitch_config.get("identity_owner_runtime"),
+        )
+        stage_elapsed_seconds["inspection_identity_runtime"] = (
+            time.perf_counter() - identity_runtime_started
+        )
+        inspection_result = render_inspection_multiview(
+            pose_frames,
+            pose_values,
+            session.calibration,
+            pre_seam_hard_owner_intervals=(
+                identity_runtime_result.pre_seam_hard_owner_intervals
+            ),
+            foreground_identity_owners=(
+                identity_runtime_result.foreground_owners
+            ),
+            config=inspection_config,
+        )
+        panorama = inspection_result.image_bgr
+        render_metadata = dict(inspection_result.metadata)
+        identity_runtime_audit = dict(identity_runtime_result.audit)
+        seam_runtime_value = render_metadata.get(
+            "background_seam_audit"
+        )
+        if not isinstance(seam_runtime_value, Mapping):
+            raise RuntimeError(
+                "Inspection renderer omitted the terminal seam audit"
+            )
+        pre_seam_value = seam_runtime_value.get(
+            "pre_seam_hard_owner_intervals"
+        )
+        if not isinstance(pre_seam_value, Mapping):
+            raise RuntimeError(
+                "Inspection renderer omitted the terminal object-lock audit"
+            )
+        planned_pre_seam_count = int(
+            identity_runtime_audit.get(
+                "pre_seam_hard_owner_interval_count", 0
+            )
+        )
+        applied_pre_seam_count = int(
+            pre_seam_value.get("interval_count", 0)
+        )
+        if (
+            applied_pre_seam_count < 0
+            or applied_pre_seam_count > planned_pre_seam_count
+        ):
+            raise RuntimeError(
+                "Inspection renderer object-lock result exceeds its plan"
+            )
+        foreground_identity_count = int(
+            identity_runtime_audit.get(
+                "foreground_identity_owner_count", 0
+            )
+        )
+        identity_runtime_audit.update(
+            {
+                "pre_seam_hard_owner_interval_candidate_count": (
+                    planned_pre_seam_count
+                ),
+                "pre_seam_hard_owner_interval_count": (
+                    applied_pre_seam_count
+                ),
+                "pre_seam_hard_owner_interval_rejected_count": int(
+                    pre_seam_value.get("rejected_interval_count", 0)
+                ),
+                "pre_seam_hard_owner_interval_rejections": list(
+                    pre_seam_value.get("rejected_intervals", [])
+                ),
+                "object_owner_application_count": (
+                    foreground_identity_count + applied_pre_seam_count
+                ),
+                "applied": bool(
+                    foreground_identity_count + applied_pre_seam_count
+                ),
+            }
+        )
+        seam_integration = dict(
+            identity_runtime_audit.get("seam_integration", {})
+        )
+        seam_integration.update(
+            {
+                "planner_interval_candidate_count": (
+                    planned_pre_seam_count
+                ),
+                "accepted_pre_seam_interval_count": (
+                    applied_pre_seam_count
+                ),
+                "rejected_pre_seam_interval_count": int(
+                    pre_seam_value.get("rejected_interval_count", 0)
+                ),
+                "locked_owner_panel_index_applied_to_background_chain": bool(
+                    applied_pre_seam_count
+                ),
+            }
+        )
+        identity_runtime_audit["seam_integration"] = seam_integration
+        render_metadata["identity_owner_runtime"] = identity_runtime_audit
+        render_metadata["frame_ids"] = [
+            int(frame.frame_id) for frame in pose_frames
+        ]
+        render_metadata["selection"] = {
+            "policy": "all_real_orbslam3_pose_nodes_then_full_fov_panels",
+            "pose_frame_count": len(pose_frames),
+            "selected_panel_sources": render_metadata.get(
+                "selected_panel_sources"
+            ),
+        }
+        photometric_calibration = render_metadata.get(
+            "background_seam_audit", {}
+        )
+        redundant_pose_node_suppression = None
+    stage_elapsed_seconds[
+        "diagnostic_pushbroom_render"
+        if diagnostic_force
+        else "inspection_multiview_render"
+    ] = time.perf_counter() - render_stage_started
+    publication_assessment: _PublicationAssessment | None = None
+
+    # V1.0 publishes two isolated image products from the same immutable
+    # calibration and real ORB-SLAM3 trajectory.  The metric renderer performs
+    # full-scene RGB-D world reprojection on a fixed 2 mm grid and cannot read
+    # the inspection pixels.  The inspection renderer contributes only its
+    # already-audited RGB and owner map; neither output can repair the other.
+    staged_dual_output = None
+    metric_manifest: dict[str, object] | None = None
+    inspection_manifest: dict[str, object] | None = None
+    if not diagnostic_force:
+        metric_stage_started = time.perf_counter()
+        metric_result = render_metric_mosaic(
+            pose_frames,
+            pose_values,
+            session.calibration,
+            config=MetricMosaicConfig.from_mapping(
+                stitch_config.get("metric_mosaic")
+            ),
+        )
+        assert inspection_result is not None
+        staged_dual_output = stage_dual_output(
+            output,
+            metric_result,
+            inspection_bgr=panorama,
+            inspection_owner_frame_id=inspection_result.owner_frame_id,
+            inspection_full_extent_bgra=(
+                inspection_result.full_extent_bgra
+            ),
+            inspection_full_extent_owner_frame_id=(
+                inspection_result.full_extent_owner_frame_id
+            ),
+            inspection_metadata={
+                **render_metadata,
+                "depth_used_for_output_pixels": False,
+                "metric_product_isolation": True,
+            },
+        )
+        metric_manifest = staged_dual_output.metric_manifest
+        inspection_manifest = staged_dual_output.inspection_manifest
+        stage_elapsed_seconds["metric_mosaic_and_staging"] = (
+            time.perf_counter() - metric_stage_started
+        )
+        publication_assessment = _assess_v1_multiview_publication(
+            capture_quality,
+            pose_quality,
+            render_metadata,
+            metric_result.metadata,
         )
 
     # TSDF is deliberately an output-only 3-D inspection stage.  It executes
@@ -4985,6 +5728,7 @@ def _run_pipeline(
     pending_mesh: Path | None = None
     pending_mesh_viewer: Path | None = None
     if not diagnostic_force:
+        tsdf_stage_started = time.perf_counter()
         assert publication_assessment is not None
         visualization_config = dict(stitch_config.get("tsdf_visualization", {}))
         (
@@ -4997,6 +5741,9 @@ def _run_pipeline(
             pose_values,
             session.calibration,
             visualization_config,
+        )
+        stage_elapsed_seconds["tsdf_visualization_and_staging"] = (
+            time.perf_counter() - tsdf_stage_started
         )
 
     panorama_path = output / (
@@ -5012,42 +5759,148 @@ def _run_pipeline(
     transforms_payload["global_trajectory"] = _sanitized_diagnostic_trajectory(
         orbslam3_trajectory, input_frame_count=len(scan_frames)
     )
-    residual_settings = ResidualAlignmentConfig.from_mapping(
-        pushbroom_config.get("residual_alignment")
-    )
-    compact_residual_alignment = _compact_residual_alignment_for_transforms(
-        render_metadata,
-        residual_settings,
-        [frame.frame_id for frame in render_frames],
-    )
     geometry_settings = GeometryAssistedSeamConfig.from_mapping(
         pushbroom_config.get("geometry_assisted_seam")
     )
     local_apap_flow_settings = LocalAPAPFlowConfig.from_mapping(
         pushbroom_config.get("local_apap_flow")
     )
-    compact_geometry_assistance = _compact_geometry_assistance_for_transforms(
-        render_metadata,
-        geometry_settings,
-        [frame.frame_id for frame in render_frames],
-        local_apap_flow_settings,
+    if diagnostic_force:
+        residual_settings = ResidualAlignmentConfig.from_mapping(
+            pushbroom_config.get("residual_alignment")
+        )
+        compact_residual_alignment = (
+            _compact_residual_alignment_for_transforms(
+                render_metadata,
+                residual_settings,
+                [frame.frame_id for frame in render_frames],
+            )
+        )
+        compact_geometry_assistance = (
+            _compact_geometry_assistance_for_transforms(
+                render_metadata,
+                geometry_settings,
+                [frame.frame_id for frame in render_frames],
+                local_apap_flow_settings,
+            )
+        )
+        render_acceleration = dict(
+            render_metadata.get("acceleration") or {}
+        )
+    else:
+        compact_residual_alignment = {
+            "backend": "none",
+            "selected_model": "real_se3_virtual_perspective_panels",
+            "reason": "V1 inspection does not alter or interpolate real poses",
+        }
+        compact_geometry_assistance = {
+            "backend": "depth_confidence_visibility_and_single_owner",
+            "depth_used_for_local_geometry": True,
+            "depth_used_for_output_pixels": False,
+            "background_seam_audit": render_metadata.get(
+                "background_seam_audit"
+            ),
+        }
+        render_acceleration = cuda_metadata()
+    tsdf_acceleration = dict(
+        (tsdf_visualization or {}).get("acceleration") or {}
     )
+    acceleration_audit = {
+        "policy": render_acceleration.get("mode", "prefer"),
+        "cuda_priority": True,
+        "stages": {
+            "rgbd_preprocessing": render_acceleration,
+            "rgbd_odometry": _odometry_acceleration_audit(edges),
+            "global_trajectory": {
+                "selected": "cpu",
+                "backend": (
+                    "orbslam3_rgbd_wsl"
+                    if orbslam3_trajectory is not None
+                    else "open3d_pose_graph"
+                ),
+                "reason": "no_validated_cuda_equivalent",
+            },
+            "rgb_render_and_geometry": render_acceleration,
+            "photometric_transfer": {
+                "selected": (
+                    "cuda"
+                    if render_acceleration.get("cupy_available") is True
+                    else "cpu"
+                ),
+                "backend": (
+                    "cupy_srgb_linear_transfer"
+                    if render_acceleration.get("cupy_available") is True
+                    else "numpy_srgb_linear_transfer"
+                ),
+                "pixel_transfer": {
+                    "selected": (
+                        "cuda"
+                        if render_acceleration.get("cupy_available") is True
+                        else "cpu"
+                    ),
+                    "backend": (
+                        "cupy_srgb_linear_transfer"
+                        if render_acceleration.get("cupy_available") is True
+                        else "numpy_srgb_linear_transfer"
+                    ),
+                    "scope": (
+                        "batched_srgb_decode_encode_and_linear_rgb_gain_"
+                        "application"
+                    ),
+                },
+                "estimators": {
+                    "selected": "cpu",
+                    "backends": [
+                        "opencv_channels_exposure_compensator",
+                        "safe_background_gain_statistics",
+                    ],
+                },
+                "reason": (
+                    "pixel_transfer_uses_the_selected_render_backend_"
+                    "while_thresholded_gain_estimation_remains_cpu"
+                ),
+            },
+            "owner_graphcut_multiband": {
+                "selected": "cpu",
+                "reason": "owner_topology_requires_validated_cpu_implementation",
+            },
+            "tsdf_visualization": tsdf_acceleration,
+            "publication_audit": {
+                "selected": "cpu",
+                "reason": "scalar_fail_closed_audit",
+            },
+        },
+    }
     render_transforms_payload = {
-        "schema": "calibrated-rgb-pushbroom/v7",
+        "schema": (
+            "calibrated-rgb-pushbroom/v7"
+            if diagnostic_force
+            else "trajectory-constrained-rgbd-multiview/v1"
+        ),
         "translation_unit": "mm",
-        "acceleration": render_metadata.get("acceleration"),
-        "mosaicing_method": render_metadata.get("mosaicing_method"),
+        "acceleration": render_acceleration,
+        "mosaicing_method": render_metadata.get(
+            "mosaicing_method", render_metadata.get("method")
+        ),
         "pixel_source": "calibrated_rgb_source_samples",
         "depth_used_for_output_pixels": False,
         "depth_used_for_local_geometry": compact_geometry_assistance[
             "depth_used_for_local_geometry"
         ],
         "layout": render_metadata.get("layout"),
-        "rgb_motion_scale": render_metadata.get("rgb_motion_scale"),
+        "rgb_motion_scale": (
+            render_metadata.get("rgb_motion_scale")
+            if diagnostic_force
+            else None
+        ),
         "selection": render_selection,
         "residual_alignment": compact_residual_alignment,
         "geometry_assisted_seam": compact_geometry_assistance,
-        "redundant_pose_node_suppression": redundant_pose_node_suppression,
+        "redundant_pose_node_suppression": (
+            redundant_pose_node_suppression
+            if diagnostic_force
+            else None
+        ),
         "sources": [
             {
                 "frame_id": frame.frame_id,
@@ -5057,11 +5910,16 @@ def _run_pipeline(
             for frame, pose in zip(render_frames, render_poses, strict=True)
         ],
     }
+    elapsed_at_report = time.perf_counter() - started
+    stage_elapsed_seconds["other_pre_report_orchestration"] = max(
+        0.0,
+        elapsed_at_report - sum(stage_elapsed_seconds.values()),
+    )
     report: dict[str, Any] = {
         "schema": (
             "gemini305-calibrated-rgb-pushbroom/v8"
             if diagnostic_force
-            else "gemini305-calibrated-rgb-pushbroom/v10"
+            else "gemini305-dual-mosaic-report/v11"
         ),
         "input": str(args.input.expanduser().resolve()),
         "panorama": str(panorama_path),
@@ -5069,6 +5927,7 @@ def _run_pipeline(
         "diagnostic_only": diagnostic_force,
         "deliverable_published": not diagnostic_force,
         "input_capture": capture_summary,
+        "v1_input_sidecars": input_sidecar_audit.as_dict(),
         "rgbd_session": {
             "root": str(session.root),
             "frame_count": len(session.frames),
@@ -5093,12 +5952,27 @@ def _run_pipeline(
         "pose_graph": transforms_payload,
         "pose_quality": pose_quality,
         "projection": render_transforms_payload,
-        "render_strategy": "calibrated_rgb_pushbroom",
-        "acceleration": render_metadata.get("acceleration"),
-        "mosaicing_method": render_metadata.get("mosaicing_method"),
+        "render_strategy": (
+            "calibrated_rgb_pushbroom"
+            if diagnostic_force
+            else "trajectory_constrained_depth_aware_multiview_side_scan"
+        ),
+        "acceleration": acceleration_audit,
+        "mosaicing_method": render_metadata.get(
+            "mosaicing_method", render_metadata.get("method")
+        ),
         "render": render_metadata,
+        "identity_owner_runtime": render_metadata.get(
+            "identity_owner_runtime"
+        ),
+        "metric_mosaic": metric_manifest,
+        "inspection_mosaic": inspection_manifest,
         "photometric_calibration": photometric_calibration,
-        "redundant_pose_node_suppression": redundant_pose_node_suppression,
+        "redundant_pose_node_suppression": (
+            redundant_pose_node_suppression
+            if diagnostic_force
+            else None
+        ),
         "foreground_owner_continuity_summary": (
             render_metadata.get("foreground_owner_continuity_summary")
             if publication_assessment is not None
@@ -5122,7 +5996,8 @@ def _run_pipeline(
             if diagnostic_force
             else None
         ),
-        "elapsed_seconds": time.perf_counter() - started,
+        "elapsed_seconds": elapsed_at_report,
+        "stage_elapsed_seconds": dict(stage_elapsed_seconds),
     }
 
     if publication_assessment is not None:
@@ -5160,11 +6035,14 @@ def _run_pipeline(
         return report
 
     assert publication_assessment is not None
+    assert staged_dual_output is not None
+    assert metric_manifest is not None
+    assert inspection_manifest is not None
     assert pending_mesh is not None
     assert pending_mesh_viewer is not None
     assert tsdf_visualization is not None
     delivery = {
-        "schema": "gemini305-panorama-delivery/v10",
+        "schema": "gemini305-panorama-delivery/v11",
         "published_utc": datetime.now(timezone.utc).isoformat(),
         # ``quality_pass`` remains as a v8-compatible alias for the strict
         # result.  Publication validity is now represented by delivery_state.
@@ -5186,19 +6064,24 @@ def _run_pipeline(
         "foreground_owner_continuity_summary": render_metadata.get(
             "foreground_owner_continuity_summary"
         ),
+        "identity_owner_runtime": render_metadata.get(
+            "identity_owner_runtime"
+        ),
         "manual_review_required": publication_assessment.manual_review_required,
         "pose_backend": (
             "hybrid_orbslam3_rgbd"
             if orbslam3_trajectory is not None
             else "open3d_rgbd"
         ),
-        "mosaicing_method": render_metadata.get("mosaicing_method"),
-        "acceleration": render_metadata.get("acceleration"),
-        "projection": "calibrated_rgb_pushbroom",
+        "mosaicing_method": render_metadata.get(
+            "mosaicing_method", render_metadata.get("method")
+        ),
+        "acceleration": acceleration_audit,
+        "projection": "trajectory_constrained_rgbd_virtual_panels",
         "alignment_backend": compact_residual_alignment["backend"],
         "alignment_model": compact_residual_alignment["selected_model"],
-        "seam_backend": "rgb_monotonic_hard_owner_graphcut",
-        "blend_backend": "safe_wall_local_multiband_narrow_owner_boundary",
+        "seam_backend": "opencv_graphcut_guided_monotone_adjacent_chain",
+        "blend_backend": "safe_background_local_multiband_owner_boundary",
         "pixel_source": "calibrated_rgb_source_samples",
         "depth_used_for_output_pixels": False,
         "depth_used_for_local_geometry": compact_geometry_assistance[
@@ -5225,6 +6108,27 @@ def _run_pipeline(
             "local_apap_flow": local_apap_flow_settings.as_dict(),
         },
         "panorama": str(output / "panorama.jpg"),
+        "products": {
+            "metric": {
+                "image": str(output / "mosaic_metric.png"),
+                "depth": str(output / "mosaic_depth.exr"),
+                "confidence": str(output / "mosaic_confidence.png"),
+                "owner": str(output / "mosaic_owner.png"),
+                "metadata": str(output / "mosaic_meta.json"),
+                "pixel_size_mm": 2.0,
+            },
+            "inspection": {
+                "image": str(output / "mosaic_inspection.png"),
+                "owner": str(output / "inspection_owner.png"),
+                "full_extent_rgba": str(
+                    output / "mosaic_inspection_full_extent.png"
+                ),
+                "full_extent_owner": str(
+                    output / "inspection_full_extent_owner.png"
+                ),
+                "metadata": str(output / "inspection_meta.json"),
+            },
+        },
         "tsdf_visualization": tsdf_visualization,
         "report": str(output / "report.json"),
     }
@@ -5245,6 +6149,7 @@ def _run_pipeline(
     pending_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
     pending_delivery.write_text(json.dumps(delivery, indent=2), encoding="utf-8")
     os.replace(pending_panorama, output / "panorama.jpg")
+    staged_dual_output.commit(output)
     os.replace(pending_mesh, output / "tsdf_mesh.glb")
     os.replace(pending_mesh_viewer, output / "tsdf_mesh_viewer.html")
     os.replace(pending_transforms, output / "transforms.json")
@@ -5271,6 +6176,7 @@ def run(
     delivery.
     """
 
+    reset_cuda_audit()
     output = args.output.expanduser().resolve()
     try:
         if (

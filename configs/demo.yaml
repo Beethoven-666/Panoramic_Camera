@@ -88,6 +88,106 @@ stitch:
     minimum_fast_threshold: 5
   max_canvas_megapixels: 200
   sequence_blend_mode: calibrated_rgb_pushbroom
+  # V1.0 geometry-analysis output.  This renderer is isolated from the
+  # inspection panorama and uses the real ORB-SLAM3 camera_to_world chain.
+  metric_mosaic:
+    enabled: true
+    millimetres_per_pixel: 2.0
+    minimum_depth_mm: 200.0
+    maximum_depth_mm: 3000.0
+    preview_width: 320
+    chunk_rows: 128
+    maximum_canvas_megapixels: 200.0
+    maximum_working_bytes: 4000000000
+    temporal_absolute_tolerance_mm: 20.0
+    temporal_relative_tolerance: 0.02
+    minimum_consistent_views: 2
+    depth_edge_confidence_cap: 0.25
+  # V1.0 human-inspection product. It is reconstructed independently from
+  # original RGB-D and the immutable trajectory; it never samples metric/TSDF
+  # pixels and never reduces sources to fixed central strips.
+  inspection_multiview:
+    enabled: true
+    minimum_depth_mm: 200.0
+    maximum_depth_mm: 3000.0
+    reference_depth_quantile: 0.85
+    # Denser short-baseline panels keep compact foreground objects inside a
+    # complete real owner interval instead of losing them between two views.
+    background_panel_overlap: 0.95
+    minimum_depth_panel_overlap: 0.30
+    preview_stride: 8
+    chunk_rows: 128
+    maximum_canvas_megapixels: 200.0
+    maximum_working_bytes: 4000000000
+    temporal_absolute_tolerance_mm: 20.0
+    temporal_relative_tolerance: 0.02
+    foreground_reference_depth_ratio: 0.70
+    foreground_depth_margin_mm: 60.0
+    foreground_depth_margin_ratio: 0.08
+    foreground_guard_radius_pixels: 12
+    minimum_foreground_component_pixels: 16
+    # Experimental object-level RGB replacement remains fail-closed until it
+    # is validated across scenes. Formal completeness uses RGB-D owner guards.
+    foreground_world_anchor_enabled: false
+    depth_mesh_cell_size_pixels: 8
+    depth_mesh_min_jacobian: 0.01
+    depth_mesh_max_jacobian: 64.0
+    depth_mesh_boundary_margin_pixels: 1
+    # Stable instance masks may bridge aligned-depth holes only inside the
+    # same single-RGB-owner object.  The map is still fitted from true RGB-D
+    # cells and fails closed beyond eight 4 px cells.
+    identity_mesh_cell_size_pixels: 4
+    # Formal identity meshes may bridge only a sub-pixel/quantisation-sized
+    # hole.  Larger missing support is never expanded into a cut-out.
+    identity_mesh_maximum_fill_distance_pixels: 2.0
+    graphcut_preview_scale: 0.25
+    chain_seam_corridor_width_pixels: 96
+    chain_seam_maximum_row_step_pixels: 1
+    dis_preview_scale: 0.25
+    dis_maximum_motion_pixels: 2.0
+    dis_maximum_fb_error_pixels: 1.0
+    dis_maximum_rgb_residual: 12.0
+    dis_maximum_gradient: 24.0
+    maximum_background_owner_boundary_lab_p95: 30.0
+  # Optional formal, in-memory instance-identity planning. Setting
+  # G305_FASTSAM_ONNX also enables it for a deployment without changing YAML.
+  # It verifies actual CUDA
+  # execution profiles for FastSAM/RapidOCR, and passes only true RGB-D owner
+  # masks into the renderer. No labels or post-render overlay are written.
+  identity_owner_runtime:
+    enabled: false
+    fastsam_model_path: null
+    rapidocr_model_directory: null
+    rapidocr_enabled: true
+    # Direct true-depth RGB replacement is admitted only after exact-mask,
+    # <=2 px fill, target-scene z-buffer, full-chain spatial lock and unified
+    # photometric-domain preflight have all passed.
+    direct_rgbd_owner_application_enabled: true
+    # A same source/target panel preserves the unchanged, fully covered object
+    # in that panel's existing reference raster before GraphCut.  This is the
+    # only formally enabled object lock: it never copies RGB across panels,
+    # never invents geometry, and remains subject to the closed monotone owner
+    # and zero-MultiBand-intersection audits.
+    panel_native_preseam_lock_enabled: true
+    panel_native_minimum_source_coverage_ratio: 0.90
+    panel_native_minimum_component_ratio: 0.98
+    panel_native_lock_guard_pixels: 8
+    # Adjacent stable object parts may be preserved as one complete real-frame
+    # corridor. Spatial panel order and the true RGB source frame are audited
+    # separately so parallax cannot create a backward owner island.
+    object_rich_preseam_lock_enabled: true
+    object_rich_minimum_horizontal_overlap_ratio: 0.70
+    object_rich_maximum_vertical_gap_pixels: 16
+    object_rich_minimum_depth_coverage_ratio: 0.95
+    object_rich_lock_guard_pixels: 8
+    cuda_device_id: 0
+    maximum_frame_count: 160
+    maximum_proposals_per_frame: 80
+    minimum_proposal_area_ratio: 0.001
+    maximum_proposal_area_ratio: 0.30
+    minimum_ocr_score: 0.50
+    maximum_identity_owner_count: 64
+    maximum_runtime_bytes: 1500000000
   # A coloured TSDF mesh is a required A/B/C 3-D inspection artifact.  It is
   # built only after the RGB-only panorama decision and never contributes
   # pixels, geometry, seams, crop, or quality decisions to panorama.jpg.
@@ -96,6 +196,12 @@ stitch:
     voxel_length_mm: 5.0
     sdf_truncation_mm: 20.0
     maximum_depth_mm: 10000.0
+    cuda_gpu_byte_budget: 2500000000
+    cuda_block_resolution: 16
+    cuda_unique_block_depth_stride: 8
+    cuda_unique_block_safety_factor: 1.85
+    cuda_max_block_capacity: 30000
+    cuda_max_voxel_length_mm: 8.0
   input_quality_gate: true
   # Diagnostic profiles may set this to true; formal defaults must remain false.
   diagnostic_force: false

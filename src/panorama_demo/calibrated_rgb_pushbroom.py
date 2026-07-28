@@ -1024,6 +1024,7 @@ class _ForegroundAnchorHandoff:
 class CalibratedRGBPushbroomResult:
     panorama: np.ndarray
     metadata: dict[str, object]
+    owner_frame_id: np.ndarray | None = None
 
 
 def _unit(vector: np.ndarray, label: str) -> np.ndarray:
@@ -7995,6 +7996,8 @@ def _gradient_magnitude(image: np.ndarray) -> np.ndarray:
 def _srgb_to_linear_bgr(image: np.ndarray) -> np.ndarray:
     """Decode a uint8 BGR image into the linear-light domain exactly once."""
 
+    # Keep this safety-critical photometric reference bit-stable.  Tiny
+    # platform-specific pow() differences can change thresholded owner masks.
     encoded = np.asarray(image, dtype=np.float32) / 255.0
     return np.where(
         encoded <= 0.04045,
@@ -9428,6 +9431,47 @@ def _solve_global_linear_rgb_gains(
     }
 
 
+def _component_constraint_label_raster(
+    fragments: Sequence[ProtectedComponentFragment],
+    *,
+    left: int,
+    right: int,
+    height: int,
+) -> np.ndarray:
+    """Rasterize immutable preflight labels into the final pair corridor."""
+
+    width = int(right) - int(left)
+    if width <= 0 or int(height) <= 0:
+        raise ValueError("Component constraint corridor must be non-empty")
+    raster = np.zeros((int(height), width), dtype=np.int32)
+    for fragment in fragments:
+        label = fragment.component_label
+        if label is None:
+            raise ValueError("Component constraint fragment has no label")
+        x0, y0, fragment_width, fragment_height = (
+            int(value) for value in fragment.global_bbox
+        )
+        local_x0 = x0 - int(left)
+        local_x1 = local_x0 + fragment_width
+        y1 = y0 + fragment_height
+        mask = np.asarray(fragment.local_mask, dtype=bool)
+        if (
+            mask.shape != (fragment_height, fragment_width)
+            or local_x0 < 0
+            or local_x1 > width
+            or y0 < 0
+            or y1 > int(height)
+        ):
+            raise RuntimeError(
+                "Preflight component is outside the final RGB seam corridor"
+            )
+        destination = raster[y0:y1, local_x0:local_x1]
+        if np.any(mask & (destination != 0) & (destination != int(label))):
+            raise RuntimeError("Preflight component labels overlap")
+        destination[mask] = int(label)
+    return raster
+
+
 def _graphcut_monotonic_owner(
     first: np.ndarray,
     second: np.ndarray,
@@ -9437,6 +9481,7 @@ def _graphcut_monotonic_owner(
     nominal_boundary: int,
     *,
     component_owner_constraints: Mapping[int, int] | None = None,
+    component_constraint_labels: np.ndarray | None = None,
     owner_prior: np.ndarray | None = None,
     preferred_safe_background: np.ndarray | None = None,
     preferred_blend_width: int = 0,
@@ -9460,12 +9505,56 @@ def _graphcut_monotonic_owner(
     labels_count, labels, stats, _ = cv2.connectedComponentsWithStats(
         protected.astype(np.uint8), connectivity=8
     )
-    constraints = {} if component_owner_constraints is None else dict(component_owner_constraints)
-    for label, owner in constraints.items():
-        if not isinstance(label, (int, np.integer)) or not 1 <= int(label) < labels_count:
+    requested_constraints = (
+        {}
+        if component_owner_constraints is None
+        else dict(component_owner_constraints)
+    )
+    for label, owner in requested_constraints.items():
+        if not isinstance(label, (int, np.integer)) or int(label) < 1:
             raise ValueError("Component owner constraint references an unknown label")
         if int(owner) not in {0, 1}:
             raise ValueError("Component owner constraints must select owner 0 or 1")
+    if component_constraint_labels is None:
+        constraints = requested_constraints
+        if any(int(label) >= labels_count for label in constraints):
+            raise ValueError("Component owner constraint references an unknown label")
+    else:
+        source_labels = np.asarray(component_constraint_labels)
+        if source_labels.shape != common.shape or not np.issubdtype(
+            source_labels.dtype, np.integer
+        ):
+            raise ValueError(
+                "Component constraint labels must be an integer corridor raster"
+            )
+        known_source_labels = {
+            int(value) for value in np.unique(source_labels) if int(value) > 0
+        }
+        if set(int(label) for label in requested_constraints) - known_source_labels:
+            raise ValueError("Component owner constraint references an unknown label")
+        constraints: dict[int, int] = {}
+        for source_label, owner in requested_constraints.items():
+            source_component = source_labels == int(source_label)
+            if np.any(source_component & ~protected):
+                raise RuntimeError(
+                    "A preflight component constraint lost protected pixels"
+                )
+            final_labels = {
+                int(value)
+                for value in np.unique(labels[source_component])
+                if int(value) > 0
+            }
+            if not final_labels:
+                raise RuntimeError(
+                    "A preflight component constraint has no final protected component"
+                )
+            for final_label in final_labels:
+                existing = constraints.get(final_label)
+                if existing is not None and existing != int(owner):
+                    raise RuntimeError(
+                        "Final protected component merges conflicting owner constraints"
+                    )
+                constraints[final_label] = int(owner)
     lower = np.full(height, -1, dtype=np.int32)
     upper = np.full(height, width - 1, dtype=np.int32)
     force0 = np.zeros_like(common)
@@ -11943,6 +12032,14 @@ def render_calibrated_rgb_pushbroom(
                         component_owner_constraints=(
                             sequence_owner_preflight.component_owner_constraints[index]
                         ),
+                        component_constraint_labels=(
+                            _component_constraint_label_raster(
+                                preflight_fragments_for_solver[index],
+                                left=left,
+                                right=right,
+                                height=layout.canvas_height,
+                            )
+                        ),
                         owner_prior=foreground_anchor_owner_prior,
                         preferred_safe_background=safe_same_layer_aperture,
                         preferred_blend_width=blend_width,
@@ -12669,6 +12766,14 @@ def render_calibrated_rgb_pushbroom(
         cropped_owner = owner_canvas[
             crop.y : crop.y + crop.height, crop.x : crop.x + crop.width
         ]
+        cropped_owner_frame_id = np.full(
+            cropped_owner.shape, -1, dtype=np.int32
+        )
+        frame_id_lookup = np.asarray(
+            [int(frame.frame_id) for frame in frames], dtype=np.int32
+        )
+        owned = cropped_owner >= 0
+        cropped_owner_frame_id[owned] = frame_id_lookup[cropped_owner[owned]]
         source_owner_pixel_counts = [
             int(np.count_nonzero(cropped_owner == source_index))
             for source_index in range(len(frames))
@@ -13369,7 +13474,11 @@ def render_calibrated_rgb_pushbroom(
             "pairs": pair_metadata,
             "quality_metrics": quality_metrics,
         }
-        return CalibratedRGBPushbroomResult(panorama=panorama, metadata=metadata)
+        return CalibratedRGBPushbroomResult(
+            panorama=panorama,
+            metadata=metadata,
+            owner_frame_id=np.ascontiguousarray(cropped_owner_frame_id),
+        )
 
 
 def _compact_geometry_diagnostic_scalar(value: object, *, context: str) -> object:

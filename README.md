@@ -3,48 +3,127 @@
 正式方法名称为**基于轨迹约束的深度感知多视点侧扫拼接**
 （**Trajectory-Constrained Depth-Aware Multi-Viewpoint Side-Scan
 Mosaicing**）。当前正式实现以 ORB-SLAM3 RGB-D 的真实
-`camera_to_world` 节点为唯一轨迹，使用稳健 IRLS-PCA 建立只读的侧扫展示坐标，
-再由每个真实视点贡献标定 RGB 条带；PCA 只拉直输出坐标，不平滑、插值或改写
-任何真实 pose。深度仅在 RGB 风险触发的相邻接缝走廊中负责可见性、分层、
-遮挡保护和经审计的局部 inverse sampling，最终颜色仍全部来自一个真实 RGB
-owner。
+`camera_to_world` 节点为唯一全局轨迹，并从同一组原始 RGB-D 独立生成两个产品：
+
+- 固定 `2 mm/pixel` 的 2.5D metric mosaic，通过逐像素 RGB-D 反投影、世界坐标
+  变换、正交栅格 z-buffer、时间一致性和深度置信度生成；
+- 面向人工巡检的 full-FOV multi-view inspection mosaic，通过沿真实轨迹布置的
+  重叠虚拟透视 panel、前景单源 owner、曝光补偿、DIS 安全背景恢复、
+  GraphCut 引导的单调相邻 panel 链和受保护 MultiBand 生成。
+
+两个产品都直接读取原始 RGB-D 和同一条不可变轨迹，互不采样、互不补洞。正式
+V1 不是固定中央条带 pushbroom，也不是普通二维全景或 TSDF 主图。TSDF 只生成
+独立的三维浏览附件，不向任何主图回传结果。
+
+物体的可测位置以 metric 产品中的毫米世界坐标、depth、confidence 和
+`owner_frame_id` 为准；inspection 是分段透视浏览图，不能把其二维横坐标解释为
+所有深度层共享的毫米位置。正式 inspection 使用 RGB-D 深度保护、相邻 panel 的
+单一 RGB owner 和安全背景融合来避免物体缺失或半透明重影。实验性的
+`foreground_world_anchor_enabled` 默认保持 `false`：它只有在跨场景物体身份、
+至少两个独立 RGB 观察、边界与裁剪审计均完成后才可显式启用，不能以未验证的
+局部 RGB 替换冒充真实世界定位。
 
 ## CUDA 加速
 
-正式流水线提供独立、可审计的 CUDA 后端。CUDA 13 主机安装：
+正式流水线提供独立、可审计的 CUDA 后端。CUDA 13 主机安装 CuPy：
 
 ```powershell
 D:\Panoramic_Camera\.conda\python.exe -m pip install -e ".[cuda13]"
 ```
 
-`G305_CUDA=auto`（默认）会对相同形状的 remap 做一次 CPU/CUDA
-等价性与耗时校准，只保留更快且满足像素契约的实现；
+`G305_CUDA=prefer`（默认）优先执行已实现并通过等价审计的 CUDA
+remap 和批量几何算子；`G305_CUDA=auto` 会对相同形状的
+remap 做一次 CPU/CUDA 等价性与耗时校准，只保留更快的实现；
 `G305_CUDA=off` 强制参考 CPU 路径；现场验收可用
 `G305_CUDA=required` 强制所有已接入的 remap 与批量 pinhole
 几何走 CUDA，任何不支持的采样语义都会 fail closed。报告和交付文件的
-`acceleration` 字段记录设备、调用次数与主机/显存传输量。
+`acceleration` 字段记录各阶段设备、调用次数与主机/显存传输量。
 
 当前可加速范围包括正式/诊断 inverse remap、ORB-SLAM3 与 Open3D
-输入预处理、相邻 RGB-D pinhole 投影和批量 SE(3) 点变换。若 Open3D
-本身是 CUDA build，展示用 TSDF 会自动切换到 Tensor
-`VoxelBlockGrid(CUDA:0)`；普通 Open3D wheel 则明确报告 CPU TSDF。
-ORB-SLAM3、legacy Open3D RGB-D odometry、GraphCut/MultiBand owner
-终局和发布审计没有数值等价的 CUDA 实现，因此继续使用 CPU。
+输入预处理、metric/inspection 的批量 pinhole 反投影与投影、批量 SE(3)
+点变换、inspection 的大批量 sRGB/linear 转换，以及 Open3D Tensor
+多尺度 RGB-D odometry。CUDA build 会在 `CUDA:0` 上执行迭代
+odometry，并将边明确记录为 `open3d_tensor_cuda_rgbd`；Open3D 0.19
+仍仅在 CPU 上提供其 6×6 information-matrix reduction。展示用 TSDF
+自动切换到 Tensor `VoxelBlockGrid(CUDA:0)`。ORB-SLAM3、
+GraphCut、MultiBand、DIS optical flow、单调 panel-chain 求解和发布审计
+没有正式 CUDA 实现，因此继续使用 CPU。`G305_CUDA=required` 只强制已经
+接入 CUDA 边界的算子，不会把这些 CPU 算法或 ORB-SLAM3 伪装成 GPU 算法。
+官方 CPU-only OpenCV wheel 不是 CUDA remap 的阻塞项：正式 CUDA 边界可由
+CuPy 实现；只有实际安装了 CUDA-enabled OpenCV 时才优先使用 `cv2.cuda`。
+
+Windows 的官方 Open3D wheel 不含 CUDA。RTX 50 系主机使用并行安装的
+CUDA Toolkit 12.8 构建 Open3D 0.19 Release wheel；CUDA 13.3 可继续供
+CuPy 使用。仓库内脚本固定 `sm_120` 和动态 CUDA runtime，并带有 Open3D
+0.19 第三方依赖兼容补丁。正式 TSDF 在分配 VoxelBlockGrid 前先以真实
+aligned depth、真实 `camera_to_world` 和三层 SDF 支持估计唯一 block；
+默认以 `1.85` 安全系数、`2.5 GB` 目标显存、最多 `30,000` blocks 规划
+capacity，必要时只允许在展示附件内从 `5 mm` 自适应到最多 `8 mm`：
+
+```powershell
+conda create -p D:\open3d_cuda_build\cuda128-toolkit `
+  -c nvidia/label/cuda-12.8.1 -c conda-forge cuda-toolkit=12.8.1
+.\scripts\build_open3d_cuda_windows.ps1
+D:\Panoramic_Camera\.conda\python.exe .\scripts\verify_open3d_cuda.py
+```
+
+脚本只生成 wheel，不会自动覆盖现有 Open3D。先在隔离环境验证
+`open3d.core.cuda.is_available()`、CUDA Tensor 和 VoxelBlockGrid，
+再安装进正式环境。正式 TSDF 在 `prefer` 模式下仅允许在处理真实帧前
+因 capability/preflight 不通过而选择 CPU；一旦开始 CUDA 集成，运行期
+异常会 fail closed，不会通过降低分辨率、跳帧或静默 CPU 回退来发布。
+
+主环境已经安装 CUDA wheel 和本工作区 editable 包时，日常运行不必设置
+环境变量，默认就是 CUDA 优先：
+
+```powershell
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-panorama.exe' `
+  'D:\central_strip_Panoramic_Camera\data\captures\run_20260725_211255_081' `
+  --output 'D:\central_strip_Panoramic_Camera\outputs\greenhouse_sequence'
+```
+
+正式物体身份候选层只接受纯 ONNX FastSAM 模型。设置
+`G305_FASTSAM_ONNX` 会启用该层；它使用 ONNX Runtime CUDA，并对实际
+provider 节点分配做 fail-closed 审计。Conv、ConvTranspose、Gemm、MatMul
+等主要计算不得落到 CPU；Shape、Reshape、Gather 等控制节点可在 CPU
+执行并写入 `identity_owner_runtime.cuda_execution`。该路径不导入 Torch
+或 Ultralytics，也不允许静默整图 CPU 回退。现场强制 CUDA 运行示例：
+
+```powershell
+$env:G305_CUDA='required'
+$env:G305_FASTSAM_ONNX='D:\models\FastSAM-s.onnx'
+
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-panorama.exe' `
+  'D:\central_strip_Panoramic_Camera\data\captures\run_20260727_110952_326' `
+  --output 'D:\central_strip_Panoramic_Camera\new_outputs\run_20260727_110952_326_combined_cuda'
+```
+
+物体候选依次接受 FastSAM mask、DIS 前后向身份、RGB/Lab、aligned depth
+世界位置与多视图一致性审计。只有闭合结构、真实 RGB-D 覆盖和物体边界
+光度安全均通过时才允许单一真实 RGB owner；否则明确记录为拒绝或 C 级
+hard-cut 建议，不将候选贴入全景、不生成颜色，也不修改真实 pose。
+
+若现场验收要求“已接入 CUDA 的算子、Open3D Tensor odometry 或 TSDF
+不能回退”，先设置 `$env:G305_CUDA='required'`；这不会把 ORB-SLAM3、
+GraphCut、MultiBand、DIS 或标量拓扑审计伪装成 GPU 算法。
 
 本项目在 Windows 上使用奥比中光 Gemini 305 采集同步、标定且对齐到彩色坐标系的 RGB-D 序列，并生成移动侧扫全景图。正式序列流程是：
 
 ```text
-短基线 Open3D RGB-D Odometry（局部质量验证）
-  → ORB-SLAM3 RGB-D（完整序列的真实全局相机轨迹）
-  → 真实 SE(3) 校平的 RGB 流式中央窄条（每源一次标定 inverse remap）
-  → RGB 风险触发的相邻 RGB-D 双向可见性、分层和局部逆网格
-  → ForegroundSegment / span / handoff 规划（只编译已验证的单源 hard owner）
-  → 单调 hard owner / GraphCut（前景、软管、透明或不可靠深度只取一个 RGB owner）
-  → 仅安全白墙区域的窄带 MultiBand
-  → valid mask 最大内接矩形、严格质量分级（A/B/C）和原子交付
+严格 RGB-D 会话与可选 sidecar 审计
+  → Open3D 相邻 RGB-D odometry（局部几何质量）
+  → ORB-SLAM3 RGB-D 完整真实全局轨迹
+  → 有限、连续、毫米 camera_to_world SE(3)
+  ├─→ 固定 2 mm/pixel 的全场景 2.5D metric 重投影
+  │     → RGB / world-normal depth / confidence / hard owner
+  └─→ 原始 RGB-D 独立 full-FOV 虚拟透视 panels
+        → 深度置信度、局部 depth mesh 和前景单源 owner
+        → 安全背景曝光补偿、DIS、GraphCut 单调相邻链、MultiBand
+  → 双产品完整性与严格质量审计
+  → 输出隔离的 TSDF 浏览附件
+  → 原子发布 delivery.json
 ```
 
-正式全景像素只来自 RGB。深度除用于会话契约和 Open3D/ORB-SLAM3 真实轨迹验证外，只能在结构性 RGB 风险触发的相邻 `96–160 px` 接缝走廊中做双向重投影、z-buffer 可见性、深度分层、遮挡/透明保护、局部逆网格和 owner 决策；Lab-only 风险仍只约束 RGB owner 与融合，不能单独启动局部变形。深度不生成颜色、不补洞、不拟合参考平面、不改写真实 pose，也不产生全景深度。局部网格只修正一次 RGB inverse sampling，不是新的相机轨迹。正式流程不使用 UniStitch、LightGlue、MAGSAC、Torch、任何全局/pose/全景级 `3×3` 单应矩阵、二维累计或二维位姿插值。`local_apap_flow` 是一个受限候选：默认关闭；只有显式启用后，才可能在单个相邻 `96–160 px`、双向可见同层安全背景走廊内为一个 RGB owner 做局部 inverse sampling，前景实例仍保持 owner-only。它不能改 pose、生成颜色、写入全景级变换或保存稠密证据，且必须逐项通过保护域、held-out、flow 前后向、Jacobian、尺度、位移与边界审计。关闭时继续走既有局部逆网格/hard-owner 路径。A/B/C 级 RGB 全景必须成对交付仅供浏览的 `tsdf_mesh.glb` 与 `tsdf_mesh_viewer.html`；TSDF/Open3D、GLB 或 Viewer 的生成与 staging 任一失败都会使正式交付成为 F，且不写 `delivery.json`。TSDF 使用同一严格 RGB-D 会话和真实轨迹，但不向条带、接缝、融合、裁剪或任何全景质量判定回传结果。ORB-SLAM3 仅负责输出真实 RGB-D 相机轨迹；未跟踪帧、非有限/非刚体 pose、图不连通、物理不连续/逆向、步长/扫描跨度、漂移、旋转或 RGB-D 边残差越界，或条带接缝结构不完整时流程会失败，不会伪造位姿或回退到二维拼接。低 fitness/RMSE、输入画质或最终图像等严格质量门限未过而上述结构审计完整时，才发布明确标记的 C 级结果。若 WSL 原生进程唯一以 `139`（SIGSEGV）退出，bridge 只会用全新完整 RGB-D 暂存再试一次，并在报告中记录两次的标量审计；其它退出、超时、缺帧或轨迹解析失败均不会重试。没有 `delivery.json` 就不是有效交付。
 
 默认工况是相机连续单向水平侧移、场景基本静止、最近物体约 `0.5 m`、最高速度约 `1.5 m/s`。用户只需提供采集目录和输出目录，不需要调整曝光、步长、帧号、位姿、接缝或裁剪参数。
 
@@ -52,12 +131,26 @@ ORB-SLAM3、legacy Open3D RGB-D odometry、GraphCut/MultiBand owner
 
 正式配置的 `stitch.handoff_fallback_policy` 固定为 `publish_degraded=true`、`local_apap_flow_enabled=false`、`manual_review_for_grade_c=true`。这不会放宽 RGB-D 会话、真实轨迹、像素来源或接缝拓扑，只会把结构安全的交付与严格质量结果分开报告：
 
-- **A**：所有严格质量门通过，所有相邻 handoff 都是安全 anchor/owner。
-- **B**：所有严格质量门通过，至少一个相邻 handoff 使用已审计的既有局部逆网格（`flow_mesh`）；显式启用且审计完整的 `local_apap_flow` 也只能归入这一类。默认关闭时，现有 renderer 继续以既有局部逆网格/owner 路径工作；只有实际 audit 标明 APAP/flow 方法时才可声称使用了该候选。
-- **C**：会话、物理连续的真实轨迹、一次 RGB inverse remap、valid mask、owner 拓扑和每对 handoff 审计完整，但低 fitness/RMSE、输入/最终图像等严格质量未过，或完整有效走廊采用已审计的最低代价 hard cut。它发布 RGB 全景以及必需的 `tsdf_mesh.glb` / `tsdf_mesh_viewer.html`，`delivery_state=published_degraded` 且 `manual_review_required=true`。
-- **F**：标定、aligned depth/单位/元数据、真实 SE(3)、必需 RGB-D 边/图连通、有效 remap、owner/GraphCut/MultiBand 拓扑、资源硬限或原子交付失败；物理不连续/逆向、步长/扫描跨度、垂直或前后漂移、旋转和 RGB-D 边残差越界同样是 F。F 不发布全景和 `delivery.json`，只写 `failure.json`。
+- **A**：会话、真实轨迹、metric 与 inspection 产品隔离、panel 链、前景单源
+  owner、安全背景接缝和全部严格质量门均通过。
+- **B**：保留给未来经过正式审计的非 anchor 方法；当前 V1 multiview
+  classifier 不产生 B。
+- **C**：上述结构审计完整，但输入、轨迹或 inspection 的严格质量未通过。
+  它仍发布完整双产品以及必需的 `tsdf_mesh.glb` /
+  `tsdf_mesh_viewer.html`，并设置 `delivery_state=published_degraded`、
+  `manual_review_required=true`。
+- **F**：标定、aligned depth/单位/元数据、真实 SE(3)、必需 RGB-D 边/图连通、
+  metric/inspection 产品隔离、panel 链、protected blending、前景 owner、资源
+  硬限、TSDF 浏览附件或原子交付任一结构项失败。F 不发布 `delivery.json`，
+  只写 `failure.json`。
 
-正式 `report.json` 与 `delivery.json` 均为 v9，并公开 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary`、`foreground_owner_continuity_summary`、`tsdf_visualization` 和 `manual_review_required`；其中 summary 固定计数 `anchor`、`apap`、`flow_mesh`、`hard_cut`。`quality_pass` 保留为 v8 兼容的严格质量别名，不是已发布状态的唯一依据；请同时检查最后原子写入的 `delivery.json` 与其 `delivery_state`。
+正式 `report.json` 为 `gemini305-dual-mosaic-report/v11`，
+`delivery.json` 为 `gemini305-panorama-delivery/v11`，并公开
+`delivery_state`、`strict_quality_pass`、`quality_grade`、
+`handoff_fallback_summary`、`foreground_owner_continuity_summary`、
+`metric_mosaic`、`inspection_mosaic`、`tsdf_visualization` 和
+`manual_review_required`。`quality_pass` 只是严格质量的兼容别名；是否已发布
+必须以最后原子写入的 `delivery.json` 及其 `delivery_state` 为准。
 
 ## 命令概览
 
@@ -65,7 +158,7 @@ ORB-SLAM3、legacy Open3D RGB-D odometry、GraphCut/MultiBand owner
 |---|---|
 | `g305-capture` | 采集连续流或照片模式驱动的低帧率同步 RGB-D 会话 |
 | `g305-panorama` | 正式 RGB-D 序列全景入口 |
-| `g305-central-strip-diagnostic` | 独立的参考平面中央条带诊断入口；绝不替代正式 RGB pushbroom 路径 |
+| `g305-central-strip-diagnostic` | 独立的参考平面中央条带诊断入口；绝不替代正式 V1 双输出 multiview 路径 |
 | `g305-geometry-pair-diagnostic` | 独立的完整序列相邻接缝 RGB A/B 诊断；不读取历史位姿或发布交付 |
 | `g305-foreground-deformation-diagnostic` | 默认关闭的前景局部 inverse mesh 实验诊断；可发布相邻 pair A/B 或显式全景诊断图及标量审计 |
 | `unistitch-sequence` | 一个版本内保留的弃用别名；运行同一 RGB-D 流程，不含 UniStitch 回退 |
@@ -75,7 +168,8 @@ ORB-SLAM3、legacy Open3D RGB-D odometry、GraphCut/MultiBand owner
 ### 让 `g305-panorama` 指向当前工作区（首次或切换工作区后执行一次）
 
 本项目的正式入口必须来自当前工作区的源码。不要使用系统 Python 目录中旧的
-`g305-panorama.exe`，否则它可能仍会走旧的 TSDF/深度渲染路径。以下命令把当前
+`g305-panorama.exe`，否则它可能仍会把 TSDF/正交深度投影错误地用作主图，
+或走旧 fixed-strip 路径。以下命令把当前
 工作区以 editable 方式写入正式 Conda 环境，并将该环境的命令目录放在用户级
 `PATH` 的最前面：
 
@@ -157,7 +251,7 @@ g305-foreground-deformation-diagnostic `
 
 `g305-geometry-pair-diagnostic` 是检查某一条真实相邻接缝的独立 A/B 工具，而不是 `g305-panorama` 的算法开关。它始终先运行完整扫描的 Open3D 相邻边与本次 ORB-SLAM3 RGB-D 轨迹，随后用完整真实 pose-node 链各渲染一次：左栏为关闭局部 geometry 的 baseline，右栏为正常 geometry candidate，最后只裁出该 pair 的共同标定 RGB 走廊。它拒绝 `--render-frame-ids`、`--diagnostic-force`、Open3D-only 轨迹、历史 `render_transforms.json` 和历史 gain；因此不能把两帧当作端点，也不能借旧 pose 发布新的结果。`diagnostic_report.json` 记录左右栏坐标、两套 source/remap/gain 标量和 pair audit；若网格未获准，右栏必须是 hard-owner 回退，而不是强行变形。该命令只写 `diagnostic_panorama.jpg` 与 `diagnostic_report.json`，永不写 `delivery.json`。
 
-`g305-foreground-deformation-diagnostic` 是一个独立、默认关闭的实验分支；必须通过 `configs/foreground_deformation_experiment.yaml` 显式开启。默认模式只检查完整当前 Open3D/ORB-SLAM3 链中的一个相邻 `96–160 px` pair corridor；`--whole-panorama` 则在同一完整链中逐一审计全部相邻 pair，并只把通过门禁且不与其它已接受候选重叠的前景 RGB 采样替换进完成后的 baseline 全景。它只在高置信度、无 split/merge、双源完整覆盖的前景 track 上尝试 16/32 px 的边界固定 inverse mesh；真实接头、端点、遮挡、透明/保护域、非原始分辨率证据、尺度/Jacobian/held-out 门禁任一失败都会保持单源 hard owner。默认 A/B 图的左栏是变形前、右栏是候选后；全景模式仍不做 alpha、MultiBand、APAP、全局 flow、pose 改写或颜色生成。成功也仅写 `diagnostic_panorama.jpg` 与 `diagnostic_report.json`（含 `foreground_deformation_audits`），绝不写 `delivery.json`，更不会改变 v9 A/B/C/F 语义。
+`g305-foreground-deformation-diagnostic` 是一个独立、默认关闭的实验分支；必须通过 `configs/foreground_deformation_experiment.yaml` 显式开启。默认模式只检查完整当前 Open3D/ORB-SLAM3 链中的一个相邻 `96–160 px` pair corridor；`--whole-panorama` 则在同一完整链中逐一审计全部相邻 pair，并只把通过门禁且不与其它已接受候选重叠的前景 RGB 采样替换进完成后的 baseline 全景。它只在高置信度、无 split/merge、双源完整覆盖的前景 track 上尝试 16/32 px 的边界固定 inverse mesh；真实接头、端点、遮挡、透明/保护域、非原始分辨率证据、尺度/Jacobian/held-out 门禁任一失败都会保持单源 hard owner。默认 A/B 图的左栏是变形前、右栏是候选后；全景模式仍不做 alpha、MultiBand、APAP、全局 flow、pose 改写或颜色生成。成功也仅写 `diagnostic_panorama.jpg` 与 `diagnostic_report.json`（含 `foreground_deformation_audits`），绝不写 `delivery.json`，更不会改变 v11 A/C/F 语义。
 
 该诊断路线的参考平面也采用 fail-closed 门禁：它必须是唯一主导、跨扫描有足够标定图像面积支持的实测平面；竞争平面、面积不足或结构残差过大只会写 `failure.json`。较严格的平面质量阈值只会令 `strip_quality_pass=false`，仍可留下两个诊断文件供 A/B 检查，绝不变成正式交付。
 
@@ -170,23 +264,24 @@ Gemini 305 同步 RGB-D 会话
   ↓
 曝光、清晰度、纹理、主扫描段与相邻视觉运动分析
   ↓
-自适应选择 RGB-D pose nodes
+主扫描段全部真实 RGB-D pose nodes（最多 160）
   ↓
-相邻 RGB-D odometry；真实重叠的非相邻节点可增加弱 RGB-D 边
+Open3D 相邻 RGB-D odometry 局部质量验证
   ↓
-仅由 RGB-D 边构建并优化 pose graph
+ORB-SLAM3 RGB-D 完整短基线序列的真实全局轨迹
   ↓
 有限、连通、连续单向的 camera_to_world 4×4 SE(3)
   ↓
-主扫描段的全部真实优化 pose nodes（最多 160 帧）
+metric：原始 RGB-D 全场景世界重投影到固定 2 mm/pixel 2.5D 栅格
+  ├─ RGB、毫米 world-normal depth、confidence、hard owner
   ↓
-每帧原始全分辨率 RGB 在主点窄带的一次标定 inverse remap 与姿态校平
+inspection：原始 RGB-D 独立重建 full-FOV 虚拟透视 panels
+  ├─ 深度 mesh、可见性与前景单源 owner
+  └─ 安全背景曝光补偿、DIS、GraphCut 引导单调链、受保护 MultiBand
   ↓
-相邻 RGB 条带的白墙安全亮度增益、RGB 风险保护、单调 hard owner / GraphCut
+双产品完整性、质量、资源和产品隔离门禁
   ↓
-风险区直接 owner 复制；仅安全接缝做局部窄带 MultiBand
-  ↓
-基于 valid mask 的最大内接矩形、最终门禁和原子发布
+输出隔离的 TSDF 浏览附件和原子发布
 ```
 
 缩略图视觉运动只用于主扫描段和 pose-node 布局，不产生正式几何变换。渲染源必须具有 pose graph 中真实优化出的位姿；程序不会按时间戳或二维运动伪造中间位姿。
@@ -200,7 +295,7 @@ Gemini 305 同步 RGB-D 会话
 - Git；
 - Gemini 305 通过 USB 3 直接连接，采集建议使用 SSD/NVMe；
 - 实机采集需要 `pyorbbecsdk2`；
-- 正式序列依赖 Open3D 0.19 和可从 Windows 调用的 WSL ORB-SLAM3 RGB-D 示例；不依赖 Torch 或 CUDA。Gemini 305 的 `0.1 mm/unit` 深度必须自动写成 ORB-SLAM3 `DepthMapFactor=10000`，不得使用 TUM 示例的 `5000` 默认值。Open3D 0.19 的官方预编译包支持到 Python 3.12，详见 [Open3D 安装说明](https://www.open3d.org/docs/release/getting_started.html)。
+- 正式序列依赖 Open3D 0.19 和可从 Windows 调用的 WSL ORB-SLAM3 RGB-D 示例；不依赖 Torch。CUDA 是默认优先、CPU 可审计回退的加速后端；Open3D Tensor TSDF 要求项目构建的 CUDA wheel。Gemini 305 的 `0.1 mm/unit` 深度必须自动写成 ORB-SLAM3 `DepthMapFactor=10000`，不得使用 TUM 示例的 `5000` 默认值。Open3D 0.19 的官方预编译包支持到 Python 3.12，详见 [Open3D 安装说明](https://www.open3d.org/docs/release/getting_started.html)。
 
 Open3D 在首次执行 RGB-D odometry 时才延迟导入。采集、会话检查和不需要默认 Open3D backend 的单元测试不会因模型库或 CUDA 不可用而提前失败。
 
@@ -414,9 +509,19 @@ data/captures/run_YYYYMMDD_HHMMSS/
 
 RGB 使用线性插值去畸变，对齐深度使用最近邻。无效边缘由独立几何 `valid_mask` 表示；RGB 像素为黑色不代表无效。深度进入项目代码时先明确换算为毫米，只有 Open3D 适配层临时转换为米，适配层返回时再换回毫米。
 
+会话可选提供 `camera.yaml` 与 `transforms.json` 作为 V1 输入审计 sidecar。
+存在 `camera.yaml` 时，它必须严格声明 `1280×800`、OpenCV 内参/畸变、
+RGB 对齐和 depth scale，并与 `calibration.json` 及每一行 `frames.csv`
+一致。存在 `transforms.json` 时，它必须提供毫米、有限刚性的
+`camera_to_world`、ORB-SLAM3 provenance、edge residuals 和被用帧的完整
+tracked coverage。Sidecar 只参与审计，绝不静默替代本次 ORB-SLAM3；两者
+缺失时继续使用原有严格会话路径。
+
 ## RGB-D odometry 与 Pose Graph
 
-正式 backend 固定为 `open3d_rgbd`，参考 [Open3D RGB-D odometry](https://www.open3d.org/docs/latest/tutorial/pipelines/rgbd_odometry.html) 和 [Open3D multiway registration](https://www.open3d.org/docs/latest/tutorial/Advanced/multiway_registration.html)。
+局部相邻边 backend 固定为 `open3d_rgbd`，全局正式轨迹固定来自
+ORB-SLAM3 RGB-D；Open3D pose graph 不能替代缺失的 ORB-SLAM3 全局轨迹。
+局部边参考 [Open3D RGB-D odometry](https://www.open3d.org/docs/latest/tutorial/pipelines/rgbd_odometry.html)。
 
 相邻 pose node 必须有可靠 RGB-D 边；预计仍有真实重叠的非相邻节点最多跨两个节点增加弱边。这些边仍由 RGB-D odometry 得到，不能用特征匹配补边。每条边审计：
 
@@ -434,53 +539,64 @@ RGB 使用线性插值去畸变，对齐深度使用最近邻。无效边缘由�
 - 所有项目侧平移和 RMSE 使用毫米；
 - `transforms.json` 中不会出现任何全局/pose/全景级 `3×3` homography，也不会有插值位姿；即使启用 `local_apap_flow`，其局部候选也绝不写入该文件或参与轨迹。
 
-正式流程拒绝必需相邻边失败、图不连通、非有限/非刚体 SE(3)、可靠节点不足两帧、不可审计残差、无效 RGB remap 或不完整 owner 拓扑等结构失败。物理不连续/逆向、步长或扫描跨度异常、上下/前后漂移、旋转及 RGB-D 边残差越界同样使真实轨迹无效，必须为 F。只有在这些结构门均通过后，低 fitness/RMSE、输入清晰度与最终渲染覆盖等严格质量门限未过，才会在 v9 中形成透明的 C 级人工复核，而不是伪造轨迹或静默放宽门限。
+正式流程拒绝必需相邻边失败、图不连通、非有限/非刚体 SE(3)、可靠节点不足两帧、不可审计残差、无效 RGB remap 或不完整 owner 拓扑等结构失败。物理不连续/逆向、步长或扫描跨度异常、上下/前后漂移、旋转及 RGB-D 边残差越界同样使真实轨迹无效，必须为 F。只有在这些结构门均通过后，低 fitness/RMSE、输入清晰度与最终渲染覆盖等严格质量门限未过，才会在 v11 中形成透明的 C 级人工复核，而不是伪造轨迹或静默放宽门限。
 
-## 校准 RGB 流式狭缝扫描
+## 固定尺度 2.5D metric mosaic
 
-优化后的位姿绝不会伪装为二维单应矩阵。每个原始全分辨率 RGB 源仅在主点附近的窄条上执行一次标定 inverse remap，并用该帧的真实 `camera_to_world` 旋转校平；最终颜色从这一次 RGB 采样取得。
+Metric 产品使用主扫描段的全部真实 ORB-SLAM3 pose nodes。每个有效 RGB-D
+样本先按彩色内参反投影到相机三维，再使用该帧不可变的
+`camera_to_world` 变换到世界坐标，最后写入固定 `2 mm/pixel` 的侧扫正交
+栅格。z-buffer、局部深度支持、时间同层支持、遮挡冲突和深度边共同决定
+winner 与 confidence。
 
-```text
-RGB (u, v)
-  → 标定畸变模型的 inverse remap
-  → 真实 SE(3) 的姿态校平
-  → 主点附近 RGB 窄条
-  → 连续扫描画布 x 坐标
-```
+每个有效 metric 像素严格包含一个真实 RGB owner、毫米
+world-normal depth 和 uint16 confidence。无效 depth 在 EXR 中写为 NaN；
+不会用外观、inspection 或 TSDF 补洞，也不会平均多个 RGB owner。正式产物为
+`mosaic_metric.png`、`mosaic_depth.exr`、`mosaic_confidence.png`、
+`mosaic_owner.png` 和 `mosaic_meta.json`。
 
-画布 `x` 来自真实相机中心沿扫描方向的单调 SE(3) 位移；毫米到像素的唯一标量来自相邻 RGB 局部运动除以对应真实相机中心位移。这个标量仅决定狭缝布局：它不构造二维相机轨迹、不累计二维变换、不插值位姿，也不是深度/平面代理。没有足够稳定的相邻 RGB 测量时会失败。
+## Full-FOV multi-view inspection mosaic
 
-主扫描段的全部真实优化 pose nodes 都保留为源（至少 2、最多 160），不再压缩成 32 张全画布投影。若可靠 RGB 像素/毫米尺度将个别相邻真实位姿换算为 `≤0.25 px`，该近重复节点仍保留真实 pose、轨迹边并完成一次全分辨率 remap，但不获得独立 owner 区间；其临时 owner 像素只能由前后保留真实节点已经 remap 的 RGB 以无混合 hard owner 覆盖。报告逐节点公开真实中心、相邻保留 frame、阈值、替换像素、零未覆盖/零融合/零变形和最终 owner=0；完整时降为 C，任一覆盖或审计失败仍为 F。其它中间源的原始中央带不超过 RGB 宽度的 `20%`；首帧和末帧仅向扫描方向外侧扩展至各自校准 RGB 图像边缘，以保留扫描端点的场景。端点扩展仍是一次标定 inverse remap、独占 hard owner 和独立 valid mask；最终裁剪若丢弃某个完整有效的端点外扩列，交付会失败。镜头畸变校正产生的几何无效边缘列无法成为矩形全景的一部分，会在报告中单独审计。中间 hard-owner 区不能放入窄带时，会要求更密的真实采样或更低输出尺度。条带临时落盘，输出阶段只加载相邻 2 条（配置硬上限 5）；画布和流式 aggregate working set 均不超过 `200 MP`。
+Inspection 产品从原始全分辨率 RGB-D 和同一条真实轨迹独立重建，不读取 metric
+raster 或 TSDF。renderer 沿稳健侧扫轴布置重叠的虚拟透视 panels，并为每个
+panel 选择真实 full-FOV RGB-D 源。参考背景在相邻 panel 间映射到一致的展示
+位置；近景保留真实视差，再由深度置信度、可见性和局部 depth mesh 决定安全
+采样。任何 pose 都不会被插值或二维累计，正式路径也不会退化为固定中央条带。
 
-每个源输出的唯一像素证据是 RGB 和独立 `valid_mask`。黑色 RGB 像素可以有效；不会产生 `surface_depth_mm`、相机深度、点云、TSDF、参考平面或前景 mask。
+前景、软管、叶片、遮挡边界、透明/反光内容和不可靠深度保护域必须由单个真实
+frame/panel hard owner 提供；前景 blend 像素必须为零。只有共同有效且不在
+protected mask 内的安全背景才可进入曝光补偿和 MultiBand。DIS optical flow
+只允许恢复平坦、RGB 一致、前后向误差通过的无效深度背景，不能移动前景或
+改写 pose。
 
-### 深度辅助的接缝局部校正
+“单一 owner”不等于“物体完整”。正式 renderer 还会从全部真实 RGB-D pose
+建立独立的近景世界体素集合，再检查最终 inspection 的 RGB owner 是否仍能
+回溯到这些实测表面。多视图可见近景的覆盖率固定要求至少 `80%`；低于该值时
+必须记录
+`multiview_observed_near_world_surface_missing_from_final_rgb_owner` 并降为
+C 级人工复核，不能仅凭接缝闭合和每像素唯一 owner 发布 A 级。该审计只读，
+不提供颜色、不补洞、不改 pose，也不向 metric 或 TSDF 回传结果。
 
-若 RGB 预览在实际 owner 边界出现结构性风险、整高 hard cut 或边缘残差超门限，renderer 才在相邻帧的 `96–160 px` 走廊读取对齐深度。“结构性风险”必须是膨胀前的边缘位移/梯度方向 raw seed：经 `3×3` close 的 8 连通分量覆盖名义 seam 中线，并按预览尺度等价满足至少 `72` 个全分辨率 seed 像素、`18` 行、`26 px` 纵向跨度。Lab-only 亮度/色差仍是 hard-owner/MultiBand 保护，绝不单独触发局部几何变形。它按真实 `camera_to_world` 做“反投影 → 世界坐标 → 邻帧重投影”，以 target z-buffer 和双向深度一致 `max(20 mm, 2% × depth, 3σ_depth)` 分类同一表面、前景遮挡、disocclusion、深度边界与深度无效/透明区域。后四类向外保护 `8–12 px`，不做融合。局部深度层只在本走廊的原始像素足迹内判定：至少占该安全支持 `10%` 的层才可定义远背景深度，最终只保留一个占比至少 `50%`、跨名义 owner 边界的 4 连通背景分量；其余层一律 hard-owner。
+不要手工给每件物体指定二维全景坐标。可测位置始终来自 RGB-D 世界坐标；若要
+在 inspection 中锁定整件近景物体，还必须先得到跨视图稳定的实例身份和完整
+轮廓，再选择一个完整、清晰的真实 RGB owner，以 direct SE(3) 投影一次。
+纯深度连通块可能把相接的物体与货架合并，也可能把同一设备按深度层拆开；
+逐像素“最佳视图”则会把一件物体分给多个 owner。这两种结果都不能作为正式
+物体锁定依据。
 
-只有同一深度层、双向深度一致且 RGB flow 前后向验证一致的连通区域可拟合 `16/32 px` 局部逆网格。flow 的安全应用域包含已接受的 held-out 像素；网格节点拟合只取排除 held-out 的训练子集，因此安全的留出像素可验证和应用已通过的场，而不能反向参与拟合。任何强 RGB 结构（即使 flow 已接受）都会先成为 owner-only guard，不能作为透明/反光层跨越网格的连通桥。网格不跨层，走廊边界回零、保护样本逐点恒等、最大位移不超过 `8 px` 且 Jacobian 为正；实际非恒等采样足迹必须与 protected/non-same-layer 的交集严格为零。每条触发网格必须有至少 30 个匹配，且至少一个 4-连通同层网格组件覆盖 `4` 个单元；raw 同层中心线、内部网格边与每格对角线的新增弯曲均须 `≤1 px`。若 Hough/forward-inverse 实际观察到基线直线，它同样必须满足 `≤1 px` 弯曲；没有 solver-valid 直线时只记录 `not_observed_no_solver_valid_line`，不能跳过固有网格直线审计。held-out 强边缘、flow FB 和网格误差均换算为全分辨率像素，且必须满足 P95 `≤0.75 px`、最大 `≤2 px`、相对改善 `≥30%`；否则退到单一 RGB owner，若没有完整覆盖的 owner 则拒绝交付。
+OpenCV GraphCut 提供颜色/梯度接缝提示，但正式 owner 会被投影到一个从左到右、
+只连接相邻 panel 的单调全高链；非相邻 owner、回跳、未覆盖像素或 protected
+blend 都是结构失败。随后只在安全背景 owner 边界运行最多三层 MultiBand，
+保护域和其它区域直接复制唯一 owner。最终裁剪使用独立 valid mask 的
+`largest_valid_rectangle()`，不会因 RGB 为黑色而误删有效内容。正式产物为
+`mosaic_inspection.png`、`inspection_owner.png` 和
+`inspection_meta.json`；`panorama.jpg` 只是同一 inspection 视觉结果的兼容
+JPEG。
 
-`local_apap_flow` 是与上述既有局部逆网格分开的候选，不是全局 residual alignment，也不是 pose 或全景变换。它当前只允许一个相邻 `96–160 px` 走廊内的双向可见同层安全背景、非 protected RGB 像素；前景实例继续是 owner-only，不能借此解除保护。局部带权 DLT/APAP 节点和双向 Farneback 残差仅服务一次 RGB inverse sampling。候选保持默认关闭；启用后也必须同时通过对应数/inlier、held-out、前后向 flow、`16/32 px` 网格、边界零位移、保护域零交集、最大 `8 px` 位移、正 Jacobian 与 `0.80–1.25` 尺度审计；任一失败只允许得到 `hard_cut_degraded` 建议，绝不部分应用 warp。
-
-灭火器把手、软管、近景前景、遮挡区以及透明/反光斜带一律保持单源 RGB。透明斜带若已存在原始帧中，是受保护内容，不是要用 warp 或融合消除的“拼接错位”。所有真实 pose nodes 仍参与轨迹、布局和一次 RGB remap；近重复节点可保留零宽独立 owner 区间，并在前后保留真实 RGB owner 完整覆盖且零未覆盖/零融合/零变形的审计下不再贡献最终颜色。其它经审计的组件/整走廊 hard-owner 决策若完整覆盖一个窄条，报告也会明确记录该源不再贡献最终颜色。
-
-为避免长软管或藤蔓只靠 pair-local bbox 关联，正式 owner 预检前会构建 `DepthAnchorToken → ForegroundTrackEdge → ForegroundInstanceTrack → ForegroundOwnerRun` 计划。两-pair token 只提供严格相邻身份候选；多个唯一、双向可见、共享源原始足迹连续的相邻证据才能串成会话内 `track_id`。split、merge、多个候选或身份不唯一时立即截断，不猜测。全轨迹 owner DP 先保证当前 pair 的完整 RGB 覆盖和 owner 拓扑，再按最少实际换源、最大 direct token/双向身份支持、最大覆盖余量、最小轮廓/中心线/方向残差与固定顺序打破平局。每个 run 的 owner 始终仅是当前 pair 的两个相邻 source；交接必须经过前景专用审计，且所有交接像素都属于指定 incoming owner。前景不得进入 MultiBand、flow mesh 或 APAP，也绝不执行形变；非相邻 owner、前景 blend 与前景 deformation 的审计计数必须为零。身份交接失败但当前 RGB 覆盖和 owner 拓扑完整时，可作为 C 级 hard-owner 交付；否则为 F。当前只含 aligned depth 的 legacy 会话一律标为 `IMAGE_REGION` owner-only，不能冒充 `DEPTH_OBSERVED` 或刚体代理；该规划不会增加正式图像、深度图或额外像素生成路径。
-
-## RGB 风险、hard owner 与窄带 MultiBand
-
-正式接缝 backend 固定为 `rgb_monotonic_hard_owner_graphcut`。在相邻条带真实共同有效区，程序从 Lab 残差、对称边缘距离和梯度结构不一致得到 RGB 风险；风险连通域经过填充和自适应保护，整块只能属于一个 RGB owner。只有上节的结构性 raw seed 通过连通拓扑门，或边缘残差/整高 hard cut 指明真实接缝问题时，才加用局部 RGB-D 证据；Lab-only 风险仍完全受保护但不让几何网格追逐曝光差。深度绝不变成全景像素。GraphCut 在与 `2–8 px` 融合带解耦的 `32–64 px` 只读搜索走廊内寻找单调 hard owner 接缝，输出不会再按行重写。`owner_boundary ∩ risk_guard` 必须为空；没有安全通道时先尝试已审计的组件级单一 owner，再仅在完整 RGB 覆盖时使用整走廊 hard owner（不限于已触发的 depth pair）。这类完整、审计齐全的最低代价 hard cut 会发布为 C 级人工复核；没有完整覆盖、有效 mask 或 owner 拓扑则仍是 F。绝不使用 Feather、平均、补洞或透明重影掩盖问题。
-
-光度补偿优先从共同有效、低梯度、低饱和、近中性、未过曝/欠曝且不在风险保护带内的白墙候选估计；白墙不足时，只允许固定 16×16 tile、80/20 train/held-out 审计通过的同表面 RGB 纹理。在所有相邻关系完整时，它在近似线性 RGB 中一次性解全部帧的三通道全局 log-gain（带二阶平滑），而不是逐相邻对累加标量增益。任一 pair 缺少可靠证据、两种方法冲突或 held-out 失败时，不插值、不传播局部 gain：全部源保持单位 gain，该 pair 使用无 MultiBand、无变形的单调 hard seam，每个有效像素仍恰好由一名相邻 RGB owner 提供；必要时两侧条带各自保留其覆盖区。owner 分区与覆盖完整时作为需人工复核的 C 级发布，无法形成完整安全 owner 分区才 fail-closed。已验证观测非有限、全局求解病态或 gain 超出 `0.45–2.20` 仍为结构失败。
-
-owner 审计后，每对相邻条带独立运行局部 `MultiBandBlender`。两个 blender mask 分别来自互补 hard owner 向安全白墙的膨胀，绝不共用同一 mask；风险、软管、标签和保护带直接复制唯一 owner。总融合带宽采用：
-
-```text
-clamp(floor(0.20 × 较窄 owner 宽度), 2, 8) px
-```
-
-层数最多 3。融合带必须完整、有正权重、位于共同有效的安全白墙，并且与 RGB 风险交集严格为 0；全图融合区不得超过有效像素的 `20%`。区外和风险保护带直接复制唯一 owner。
-
-最终裁剪使用独立 valid mask 的 `largest_valid_rectangle()`，不是 `cv2.boundingRect()` 或 RGB 非黑检测，因此不会误删黑色软管等有效内容。正式门禁要求：严格 owner 分区、融合风险为 `0`、融合面积不超过 `20%`、曝光增益在 `0.45–2.20`、裁剪高度至少 `85%`、宽度至少 `95%`。这些组成 `strict_quality_pass`；在会话、真实轨迹、remap、owner 拓扑和 handoff 审计完整时，未过的严格质量透明降为 C，不能被静默放宽，更不能生成虚构像素。
+Metric、inspection 与 TSDF 三条输出路径相互隔离。Depth 可以决定 metric
+几何、inspection 可见性和 owner，但不生成 inspection RGB 颜色；TSDF 只在
+两个主产品完成自身审计后生成浏览附件，绝不参与主图的几何、接缝、融合、裁剪
+或质量判定。
 
 ## 配置安全默认值
 
@@ -488,7 +604,7 @@ clamp(floor(0.20 × 较窄 owner 宽度), 2, 8) px
 
 | 项目 | 默认值 |
 |---|---:|
-| pose backend | `open3d_rgbd` |
+| pose backend | `hybrid_orbslam3_rgbd`（Open3D 局部边 + ORB-SLAM3 全局轨迹） |
 | odometry working width | `640` |
 | 有效深度比例下限 | `0.10` |
 | RGB-D fitness 下限 | `0.15` |
@@ -499,20 +615,25 @@ clamp(floor(0.20 × 较窄 owner 宽度), 2, 8) px
 | 总旋转上限 | `10°` |
 | 边平移 / 旋转残差上限 | `30 mm / 2°` |
 | pose node 硬预算 | `160` |
-| 渲染源 | 主扫描段全部真实优化 pose nodes；`≤0.25 px` 近重复节点仍 remap 一次但可审计为零独立 owner |
-| 原始条带宽度 | 中间帧最多输入 RGB 宽度的 `20%`；首尾帧仅向外侧扩展至校准图像边缘 |
-| 流式驻留 RGB 条带 | `2`（硬上限 `5`） |
-| 画布 / aggregate working set 上限 | `200 / 200 MP` |
-| seam backend | `rgb_monotonic_hard_owner_graphcut` |
-| GraphCut 搜索走廊 | `64 px`（正式允许 `32–64 px`） |
-| 深度辅助走廊 / 网格 | `128 px` / `16 px`（正式允许 `96–160 px` / `16 或 32 px`） |
-| 深度一致 / 可见性 | `max(20 mm, 2%×depth, 3σ)` / 双向 z-buffer |
-| 局部几何触发 / 网格 / flow 门禁 | raw 结构风险分量跨 seam 中线，等价 `≥72 px`、`≥18` 行、`≥26 px` 纵向跨度；至少 4 个 4-连通同层单元；应用域含 held-out、拟合域排除 held-out；held-out P95 `≤0.75 px`、最大 `≤2 px`、改善 `≥30%`、观察到的直线弯曲 `≤1 px`；FB P95 `≤0.75 px` |
-| handoff fallback policy | `publish_degraded=true`、`local_apap_flow_enabled=false`、`manual_review_for_grade_c=true`；默认走既有局部逆网格/硬切，显式启用后才可尝试受审计的同层安全背景 APAP/flow |
-| MultiBand 总带宽 / 层数 | `2–8 px` / 最多 `3` |
-| 曝光补偿 | `source_aware_global_linear_rgb_v2_two_stage`（背景增益校正后重算风险，并允许同层非白背景窄带融合） |
+| metric 尺度 / 深度范围 | `2.0 mm/pixel` / `200–3000 mm` |
+| metric confidence 满支持视图数 | `2` |
+| metric depth-edge confidence cap | `0.25` |
+| inspection 渲染源 | 沿真实轨迹自动选择重叠 full-FOV panels |
+| inspection 前景保护 | reference ratio `0.70`；margin `max(60 mm, 8%)`；guard `12 px` |
+| inspection depth mesh | cell `8 px`；Jacobian `0.01–64`；边界 margin `1 px` |
+| GraphCut / 相邻链 | preview `0.25`；corridor `128 px`；每行最大步长 `1 px` |
+| DIS 安全背景门 | preview `0.25`；motion `≤2 px`；FB error `≤1 px`；RGB residual `≤12` |
+| MultiBand | 仅安全背景，最多 `3` 层；protected intersection 必须为 `0` |
+| metric / inspection 画布上限 | 各 `200 MP` |
 
-配置中的 `pose_backend`、`sequence_blend_mode=calibrated_rgb_pushbroom`、`calibrated_rgb_pushbroom.mode`、`scan_seam.backend`、`geometry_assisted_seam`、`handoff_fallback_policy`、标定/对齐要求和 pose graph 开关是正式结构约束，不能改为其它值发布交付。正式模式的曝光、RGB 尺度、odometry、pose、风险、深度一致、网格、GraphCut 和 MultiBand 阈值只能等于或收紧默认安全包络；试图放宽会直接失败。深度一致式中的 `20 mm` 和 `2%` 是固定项；当前严格会话没有可审计的噪声标定 provenance，故 `σ_depth=0`，不能用配置扩大容差。`local_apap_flow_enabled` 默认保持 `false`；若正式启用，候选仍必须完成现场验证和每个 handoff 的完整审计，不能仅靠修改 YAML 宣称已安全使用 APAP/flow。诊断模式可以绕过质量阈值，但 `200 MP` 画布/aggregate、160 pose nodes、5 条流式驻留上限、RGB-only 像素来源以及深度不生成颜色/不改写 pose 等结构硬限仍不可放宽。手工 `render_frame_ids` 只允许诊断；正式命令会拒绝它。
+`metric_mosaic` 与 `inspection_multiview` 都不能在正式交付中关闭。配置中的
+`sequence_blend_mode=calibrated_rgb_pushbroom`、`calibrated_rgb_pushbroom`
+和旧 `scan_seam` 键仍由兼容校验器保留，并供 `--diagnostic-force` 及独立诊断
+callback 使用；它们不是非诊断 V1 的正式主图 renderer。正式 V1 固定调用
+metric renderer 与 full-FOV inspection renderer。`200 MP`、160 pose nodes、
+有限真实 SE(3)、双产品隔离、单一前景 owner、protected blend 为零以及原子
+发布仍是不可放宽的结构门。手工 `render_frame_ids` 只允许诊断；正式命令会
+拒绝它。
 
 ## 产物、报告和原子交付
 
@@ -521,6 +642,14 @@ clamp(floor(0.20 × 较窄 owner 宽度), 2, 8) px
 ```text
 outputs/greenhouse_sequence/
 ├─ panorama.jpg
+├─ mosaic_metric.png
+├─ mosaic_depth.exr
+├─ mosaic_confidence.png
+├─ mosaic_owner.png
+├─ mosaic_meta.json
+├─ mosaic_inspection.png
+├─ inspection_owner.png
+├─ inspection_meta.json
 ├─ tsdf_mesh.glb
 ├─ tsdf_mesh_viewer.html
 ├─ transforms.json
@@ -529,12 +658,30 @@ outputs/greenhouse_sequence/
 └─ delivery.json
 ```
 
+- `panorama.jpg`：`mosaic_inspection.png` 的兼容 JPEG；不是 metric、TSDF 或第三套 renderer；
+- `mosaic_metric.png` / `mosaic_depth.exr` / `mosaic_confidence.png` /
+  `mosaic_owner.png`：固定 `2 mm/pixel` 的 RGB、毫米 depth、uint16 confidence
+  和 frame-id owner；`mosaic_meta.json` schema 为
+  `gemini305-metric-mosaic/v1`；
+- `mosaic_inspection.png` / `inspection_owner.png`：full-FOV multiview
+  inspection 与其 frame-id owner；`inspection_meta.json` schema 为
+  `gemini305-inspection-mosaic/v1`；
 - `transforms.json`：`rgbd-pose-graph/v1`，包含坐标约定、毫米单位、pose nodes 的 4×4 `camera_to_world`、RGB-D 边、信息矩阵、残差、优化和连通状态；
-- `render_transforms.json`：`calibrated-rgb-pushbroom/v7`，包含 RGB-only 像素来源、真实 SE(3) 源、扫描布局、局部 RGB 像素/毫米标量、选源信息，以及不含预览图、flow 场、mask 或稠密 map 的残差、应用/拟合 flow 域与深度辅助局部网格 held-out/拓扑审计摘要；
-- `report.json`：`gemini305-calibrated-rgb-pushbroom/v10`，汇总 RGB-D 会话、输入质量、odometry、pose graph、pose quality、RGB 条带布局、残差/深度辅助证据、风险、hard owner、来源级线性 RGB gain、MultiBand 审计和嵌套 `publication`；顶层同时提供 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary`、`photometric_calibration`、`redundant_pose_node_suppression`、`foreground_owner_continuity_summary`、`tsdf_visualization`、逐 pair `handoff_outcomes` 与 `manual_review_required`。光度审计固定以 16×16 tile、80/20 train/held-out 验证相邻同表面关系；safe-wall 优先，非中性纹理证据会透明标为 B；光度失败以 `identity_hard_owner`、单位 gain、失败原因和对应 C 级 hard-cut 审计公开；近重复 pose-node 抑制另行公开全部真实节点 remap 数、前后保留 owner、替换像素与零未覆盖/零融合/零变形审计；
-- `delivery.json`：`gemini305-panorama-delivery/v10`，最后发布；其 `alignment_backend` 与 `alignment_model` 标识最终采用的接缝后端和模型，并以 `geometry_assistance_gate` 声明最小连通网格支持、应用/拟合 flow 规则和实际直线观察规则。它还必须包含 `delivery_state`、`strict_quality_pass`、`quality_grade`、`handoff_fallback_summary`、`photometric_calibration`、`foreground_owner_continuity_summary`、`tsdf_visualization` 和 `manual_review_required`；`quality_pass` 仅为 `strict_quality_pass` 的 v8 兼容别名。A/B 的 `delivery_state=published`，结构安全但需人工复核的 C 为 `published_degraded`，不能仅以 `quality_pass` 判断是否已经有效发布。
+- `render_transforms.json`：`trajectory-constrained-rgbd-multiview/v1`，声明
+  真实 SE(3) 源、full-FOV panel 选择、无 pose 插值、metric/TSDF 不参与
+  inspection RGB，以及深度置信度和背景接缝审计；
+- `report.json`：`gemini305-dual-mosaic-report/v11`，汇总严格会话、
+  `v1_input_sidecars`、Open3D odometry、ORB-SLAM3 轨迹、metric/inspection
+  manifest、前景 owner、背景 seam、CUDA provenance、TSDF 和 publication；
+- `delivery.json`：`gemini305-panorama-delivery/v11`，最后发布并列出
+  `products.metric`、`products.inspection`、`projection`、`seam_backend`、
+  `blend_backend`、`acceleration`、`tsdf_visualization` 以及 A/C/F 状态。
 
-每次任务先删除旧 `delivery.json`，全景、GLB、Viewer、报告、位姿和 `delivery.json` 都先写隐藏 pending 文件，再用 `os.replace` 发布；A/B/C 的 `delivery.json` 始终最后写入。C 级仍是 RGB-only 全景且强制人工复核，但同样必须交付成对的 TSDF 展示文件。TSDF、Viewer 或任意发布步骤失败都会清除正式文件并原子写入 `failure.json`。强制终止可能来不及写失败报告，但没有有效 `delivery.json` 仍表示未发布或失败；存在 `delivery.json` 时还必须读取其 `delivery_state`、等级和人工复核标记。
+每次任务先使旧 `delivery.json` 失效；双产品、GLB、Viewer、报告、位姿和
+`delivery.json` 都先写隐藏 pending 文件，再用 `os.replace` 发布，
+`delivery.json` 始终最后写入。C 级仍强制人工复核，并同样交付成对的 TSDF
+展示文件。TSDF 不是主图，但其生成、Viewer 或任意发布步骤失败仍会清除正式
+文件并原子写入 `failure.json`。没有有效 `delivery.json` 就不是有效交付。
 
 旧诊断文件会在新的正式或失败任务开始时清除。历史 `pairs/` 不是交付目录，不能用于判断本次任务是否成功。
 
@@ -580,7 +727,7 @@ g305-panorama `
 
 `run_20260713_184519` 的 `color_exposure=301`，约 `30.1 ms`，远高于 `1200 µs` 正式移动安全门限，因此只能按上面的诊断命令测试。旧温室会话 `run_20260711_213054` 同样只适合作为输入门禁应拒绝的回归样本。源帧已经丢失的纹理不能靠融合恢复。
 
-2026-07-13 使用 Open3D 0.19 和上述 `--diagnostic-force` 命令复测 `run_20260713_184519`：12 条必需相邻 RGB-D 边均收敛，fitness 为 `0.613–0.856`、RMSE 为 `17.4–26.2 mm`；旧深度 renderer 随后因高风险带横断完整相邻 pair corridor 而正确失败。该历史结果不能作为 RGB pushbroom 成功样本，也不是算法回退点；应通过补光、降低速度并重新采集解决。
+2026-07-13 使用 Open3D 0.19 和上述 `--diagnostic-force` 命令复测 `run_20260713_184519`：12 条必需相邻 RGB-D 边均收敛，fitness 为 `0.613–0.856`、RMSE 为 `17.4–26.2 mm`；旧深度 renderer 随后因高风险带横断完整相邻 pair corridor 而正确失败。该历史结果不能作为当前 V1 dual multiview 成功样本，也不是算法回退点；应通过补光、降低速度并重新采集解决。
 
 ## 无相机合成 RGB-D 数据
 
@@ -602,7 +749,7 @@ generate-panorama-demo `
 - `depth_hole`：对齐深度空洞；
 - `dynamic_object`：动态物体失败/风险回归。
 
-合成会话包含 `calibration.json`、`color/`、`depth_aligned/`、带 `aligned_depth_path` 与 `depth_scale_mm_per_unit` 的 `frames.csv`，以及 manifest 中已知的毫米 `camera_to_world` 轨迹。它适合验证严格会话、单位、真实 SE(3) 交接、RGB-only 条带、风险 hard owner、黑色有效内容和原子交付语义，但不能代替 Gemini 305、Open3D 实机 odometry、现场照明或速度验收。
+合成会话包含 `calibration.json`、`color/`、`depth_aligned/`、带 `aligned_depth_path` 与 `depth_scale_mm_per_unit` 的 `frames.csv`，以及 manifest 中已知的毫米 `camera_to_world` 轨迹。它适合验证严格会话、单位、真实 SE(3) 交接、固定尺度 metric、metric/inspection 产品隔离、前景 hard owner、黑色有效内容和原子交付语义，但不能代替 Gemini 305、Open3D 实机 odometry、现场照明或速度验收。
 
 ## 现场验收
 
@@ -613,20 +760,56 @@ generate-panorama-demo `
 - 彩色曝光 metadata 保持在正式上限内；
 - 对齐深度有效率、尺寸和单位正确；
 - pose graph 连通、真实 SE(3)、连续单向侧移、步长/跨度、漂移、旋转与必需边残差均在物理安全范围内；低 fitness/RMSE 等严格质量不足才可作为 C 级原因；
-- 最近约 `0.5 m` 物体没有半透明重影；轻微狭缝横向拉伸/压缩应按纯 RGB 的物理限制单独评估；
-- RGB 风险 hard owner、GraphCut/hard cut、白墙亮度带、上下抖动和最终四边通过人工复核；
-- 输出目录存在最后发布的 v9 `delivery.json`，并人工核对 `delivery_state`、`quality_grade`、`strict_quality_pass` 和 `manual_review_required`。
+- metric 的 `2 mm/pixel` 坐标、world-normal depth、confidence 和 owner 对齐；
+- inspection 中最近约 `0.5 m` 物体没有半透明重影或 panel 重复，前景组件保持单一 owner；
+- inspection 的曝光连续性、GraphCut 单调相邻链、safe-background MultiBand、上下抖动和最终四边通过人工复核，且 protected blend intersection 为 `0`；
+- 输出目录存在最后发布的 v11 `delivery.json`，并人工核对 `products`、`delivery_state`、`quality_grade`、`strict_quality_pass` 和 `manual_review_required`。
 
 合成测试通过不等于实机验收完成。动态物体、镜面反射、完全无纹理、严重欠光、深度大面积空洞或源帧已拖影的场景可能形成 C 级人工复核或 F；结构失败仍 fail-closed，不应通过放宽门限、回退平均或未通过审计的 APAP/flow 来掩盖。
 
 `outputs/greenhouse_sequence_optimized/` 是 `2026-07-16` 留存的历史 CLI 输出：101 个真实源、
 `2978×782`、裁剪高度 `97.75%`、融合区 `1.264%`。它的 JSON sidecar 早于当前局部网格审计契约
 （`/v2`，不含 geometry-assist 和 A/B/C handoff 字段），因此只能作为旧路径与真实轨迹的历史证据，不能当作本版本
-`/v7`、`/v9`、`/v9` 交付的验收结果。当前 Windows 主机恢复 WSL/ORB-SLAM3 后必须重新执行正式 CLI
-才能发布当前 schema 的 `delivery.json`；出现 `orthographic_side_scan`、TSDF mesh 或深度前景 mask
-则说明调用到了旧全局入口。
+`trajectory-constrained-rgbd-multiview/v1`、
+`gemini305-dual-mosaic-report/v11` 与
+`gemini305-panorama-delivery/v11` 交付的验收结果。当前 Windows 主机恢复
+WSL/ORB-SLAM3 后必须重新执行正式 CLI
+才能发布当前 v11 schema 的 `delivery.json`。仅存在 `tsdf_mesh.glb` 和 Viewer
+是当前正式交付的正常现象；只有 `panorama.jpg`、`mosaic_inspection.png` 或
+其 metadata 声称颜色来自 TSDF、orthographic metric raster 或 fixed-strip
+renderer，才说明仍调用了错误主图路径。
 
-同日的 [`outputs/greenhouse_geometry_assisted_direct_20260716_v2/diagnostic_panorama.jpg`](outputs/greenhouse_geometry_assisted_direct_20260716_v2/diagnostic_panorama.jpg) 是早于 raw-structural-trigger、实际 RGB 直线门和通用组件 owner 回退的历史直接诊断，不能代表当前门禁。2026-07-17 对同一已验证 101-node 轨迹的当前代码只读内存回放（不写文件、复用历史 gain、关闭最终画质门）仍得到 `2978×782`：24 对结构性风险触发对均按当前层/视觉保护回退为 hard owner，未接受任何局部网格。48–49 对的双向深度残差 P95 约为 `0.46/0.47` 个深度容差，但深度边保护与层连通性不足，正确回退而不拉扯灭火器/软管区域。该回放不是 CLI 交付：它复用历史 gain。随后在本机可用的 WSL ORB-SLAM3 bridge 上，以当前代码和当前 gain/门禁对 `data/run_20260714_132427_262` 完成正式交付：101/101 个真实节点被跟踪与渲染，输出 `2973×781`，裁剪高度 `97.625%`、融合区 `1.126%`、融合风险为 `0`、峰值驻留条带为 `2`；25 个结构性风险 pair 均严格 hard-owner 回退，未接受局部网格。该单一样本是当前 renderer 的实机验收，不代表其它场景或速度已验收。
+同日的 [`outputs/greenhouse_geometry_assisted_direct_20260716_v2/diagnostic_panorama.jpg`](outputs/greenhouse_geometry_assisted_direct_20260716_v2/diagnostic_panorama.jpg)
+以及 2026-07-17 的 101-node pushbroom 回放/交付都属于正式 V1 dual
+multiview 之前的历史证据。它们可以证明当时的会话和真实轨迹，但不能验收当前
+metric、full-FOV inspection、产品隔离或 v11 原子交付。当前 V1 实机验收必须
+重新运行 CLI，并同时检查八个双输出文件、TSDF 浏览附件、v11
+`report.json` 和最后写入的 `delivery.json`。
+
+2026-07-27 使用
+`data/captures/run_20260725_211255_081` 完成当前 V1 的完整实拍正式回归。
+145 个真实 RGB-D pose nodes 全部由 ORB-SLAM3 跟踪，144 条相邻 Open3D
+RGB-D 边全部使用 CUDA；最新巡检图为 `2598×717`，15 个 full-FOV 透视
+panel，所有 14 条相邻 owner 边界通过，owner-only 保护像素与融合区交集为
+`0`。metric 产品保持 `2 mm/pixel`、
+单一 RGB owner、毫米 depth/confidence/坐标 sidecar；展示 TSDF 使用
+Open3D Tensor CUDA，`5 mm`、`20,567` block capacity、`14,074` active
+blocks。此前仅依据 owner 拓扑和接缝审计得到的
+`delivery_state=published`、`quality_grade=A` 已被新增的独立世界覆盖审计
+否证，不能继续作为当前正式验收结论：最新正式回归耗时 `205.28 s`，全部近景
+世界体素覆盖率为 `32.829%`，至少两视图观测体素覆盖率为 `43.128%`，明显低于
+正式 `80%` 门限。当前代码会
+将同类结果发布为 `published_degraded`、`quality_grade=C` 并要求人工复核；
+在自动跨视图实例身份与完整轮廓问题解决前，不得宣称“所有物体完整”或 A 级。
+
+同日另以该真实 145-node 轨迹只缩放累计纵向位移执行了明确标记为
+`renderer_performance_only` 的 20 m 规模压力回放：inspection 为
+`78.29 s`，metric 为 `56.00 s`。它证明当前 renderer 的规模与耗时余量，
+但 RGB-D 像素仍来自约 `1.69 m` 的真实会话，不能冒充真实 20 m 的跟踪、
+几何或物体完整性验收。最终 20 m / 5 min 现场门仍必须用一套真实 20 m
+同步 RGB-D 会话重新运行正式 CLI，并以当次真实 `report.json` 中的
+`pose_quality.metrics.scan_span_mm`、`elapsed_seconds` 和最终
+`delivery.json` 为准。
 
 ## 常见问题
 

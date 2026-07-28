@@ -30,7 +30,7 @@ from typing import Any, Mapping, Sequence
 import cv2
 import numpy as np
 
-from .cuda_backend import remap as accelerated_remap
+from .cuda_backend import cuda_status, remap as accelerated_remap
 from .rgbd_projection import PinholeIntrinsics, ProjectionCanvas, RGBDProjectionFrame
 from .session import RGBDFrame, read_aligned_depth_mm
 
@@ -231,6 +231,12 @@ class TSDFMeshVisualizationConfig:
     voxel_length_mm: float = 5.0
     sdf_truncation_mm: float = 20.0
     maximum_depth_mm: float = 10000.0
+    cuda_gpu_byte_budget: int = 2_500_000_000
+    cuda_block_resolution: int = 16
+    cuda_unique_block_depth_stride: int = 8
+    cuda_unique_block_safety_factor: float = 1.85
+    cuda_max_block_capacity: int = 30_000
+    cuda_max_voxel_length_mm: float = 8.0
 
     @classmethod
     def from_mapping(
@@ -249,6 +255,11 @@ class TSDFMeshVisualizationConfig:
             ("voxel_length_mm", config.voxel_length_mm),
             ("sdf_truncation_mm", config.sdf_truncation_mm),
             ("maximum_depth_mm", config.maximum_depth_mm),
+            (
+                "cuda_unique_block_safety_factor",
+                config.cuda_unique_block_safety_factor,
+            ),
+            ("cuda_max_voxel_length_mm", config.cuda_max_voxel_length_mm),
         ):
             if not math.isfinite(number) or number <= 0.0:
                 raise ValueError(f"tsdf_visualization.{name} must be finite and positive")
@@ -256,7 +267,389 @@ class TSDFMeshVisualizationConfig:
             raise ValueError(
                 "tsdf_visualization.sdf_truncation_mm must cover one voxel"
             )
+        for name, number in (
+            ("cuda_gpu_byte_budget", config.cuda_gpu_byte_budget),
+            ("cuda_block_resolution", config.cuda_block_resolution),
+            (
+                "cuda_unique_block_depth_stride",
+                config.cuda_unique_block_depth_stride,
+            ),
+            ("cuda_max_block_capacity", config.cuda_max_block_capacity),
+        ):
+            if (
+                isinstance(number, bool)
+                or not isinstance(number, (int, np.integer))
+                or int(number) <= 0
+            ):
+                raise ValueError(
+                    f"tsdf_visualization.{name} must be a positive integer"
+                )
+        if config.cuda_unique_block_safety_factor < 1.0:
+            raise ValueError(
+                "tsdf_visualization.cuda_unique_block_safety_factor "
+                "must be at least 1"
+            )
+        if config.cuda_max_voxel_length_mm < config.voxel_length_mm:
+            raise ValueError(
+                "tsdf_visualization.cuda_max_voxel_length_mm cannot be below "
+                "voxel_length_mm"
+            )
+        if config.sdf_truncation_mm < config.cuda_max_voxel_length_mm:
+            raise ValueError(
+                "tsdf_visualization.sdf_truncation_mm must cover the maximum "
+                "adaptive voxel"
+            )
         return config
+
+
+@dataclass(frozen=True)
+class DisplayOnlyTSDFCudaCapacityPlan:
+    """Pure GPU-capacity preflight for the inspection-only TSDF volume."""
+
+    requested_voxel_length_mm: float
+    planned_voxel_length_mm: float
+    block_resolution: int
+    estimated_unique_blocks_at_requested_voxel: int
+    planned_estimated_unique_blocks: int
+    block_capacity: int
+    bytes_per_voxel: int
+    raw_estimated_active_bytes: int
+    raw_capacity_bytes: int
+    target_gpu_byte_budget: int
+    capacity_utilization: float
+    maximum_capacity_utilization: float
+    utilization_gate_pass: bool
+    byte_budget_gate_pass: bool
+    preflight_pass: bool
+    adaptive_voxel_used: bool
+    block_scaling_model: str = "display_surface_area_inverse_voxel_squared"
+    display_only: bool = True
+    participates_in_panorama: bool = False
+    rgb_owner_feedback_permitted: bool = False
+    cpu_fallback_permitted: bool = False
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+def plan_display_only_tsdf_cuda_capacity(
+    *,
+    target_gpu_byte_budget: int,
+    requested_voxel_length_mm: float,
+    block_resolution: int,
+    estimated_unique_blocks: int,
+    bytes_per_voxel: int = 20,
+    maximum_capacity_utilization: float = 0.80,
+    maximum_block_capacity: int = 30_000,
+    maximum_adaptive_voxel_length_mm: float = 8.0,
+    estimated_unique_blocks_at_maximum_voxel: int | None = None,
+) -> DisplayOnlyTSDFCudaCapacityPlan:
+    """Plan a bounded CUDA VoxelBlockGrid without inspecting external state.
+
+    ``estimated_unique_blocks`` is the caller's estimate at the requested
+    voxel length.  Display TSDF blocks primarily cover observed surfaces, so
+    the estimate is scaled by inverse voxel area when a long scan needs a
+    coarser display-only grid.  No result from this function may alter RGB,
+    owner, seam, crop, trajectory, or delivery quality decisions.
+    """
+
+    integer_values = (
+        ("target_gpu_byte_budget", target_gpu_byte_budget),
+        ("block_resolution", block_resolution),
+        ("estimated_unique_blocks", estimated_unique_blocks),
+        ("bytes_per_voxel", bytes_per_voxel),
+        ("maximum_block_capacity", maximum_block_capacity),
+    )
+    if estimated_unique_blocks_at_maximum_voxel is not None:
+        integer_values += (
+            (
+                "estimated_unique_blocks_at_maximum_voxel",
+                estimated_unique_blocks_at_maximum_voxel,
+            ),
+        )
+    for name, value in integer_values:
+        if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+            raise ValueError(f"{name} must be a positive integer")
+        if int(value) <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+    finite_positive = (
+        ("requested_voxel_length_mm", requested_voxel_length_mm),
+        ("maximum_adaptive_voxel_length_mm", maximum_adaptive_voxel_length_mm),
+    )
+    for name, value in finite_positive:
+        if not math.isfinite(float(value)) or float(value) <= 0.0:
+            raise ValueError(f"{name} must be finite and positive")
+    if (
+        not math.isfinite(float(maximum_capacity_utilization))
+        or not 0.0 < float(maximum_capacity_utilization) < 1.0
+    ):
+        raise ValueError("maximum_capacity_utilization must be in (0, 1)")
+    if maximum_adaptive_voxel_length_mm < requested_voxel_length_mm:
+        raise ValueError(
+            "maximum_adaptive_voxel_length_mm cannot be below the requested voxel"
+        )
+
+    bytes_per_block = (
+        int(block_resolution) ** 3 * int(bytes_per_voxel)
+    )
+    byte_limited_capacity = int(target_gpu_byte_budget) // bytes_per_block
+    if byte_limited_capacity < 1:
+        raise ValueError(
+            "target_gpu_byte_budget cannot hold one requested TSDF block"
+        )
+    available_capacity = min(
+        int(maximum_block_capacity),
+        byte_limited_capacity,
+    )
+    requested_voxel = float(requested_voxel_length_mm)
+    maximum_voxel = float(maximum_adaptive_voxel_length_mm)
+    candidate_voxels = [requested_voxel]
+    if maximum_voxel > requested_voxel:
+        candidate_voxels.append(maximum_voxel)
+
+    selected: tuple[float, int, int, float, bool] | None = None
+    fallback: tuple[float, int, int, float, bool] | None = None
+    for voxel_length in candidate_voxels:
+        if (
+            voxel_length == maximum_voxel
+            and estimated_unique_blocks_at_maximum_voxel is not None
+        ):
+            planned_unique_blocks = int(
+                estimated_unique_blocks_at_maximum_voxel
+            )
+        else:
+            scale = (requested_voxel / voxel_length) ** 2
+            planned_unique_blocks = max(
+                1,
+                int(math.ceil(int(estimated_unique_blocks) * scale)),
+            )
+        required_capacity = int(
+            math.ceil(
+                planned_unique_blocks / float(maximum_capacity_utilization)
+            )
+        )
+        block_capacity = min(required_capacity, available_capacity)
+        utilization = planned_unique_blocks / float(block_capacity)
+        utilization_pass = (
+            planned_unique_blocks <= block_capacity
+            and utilization <= float(maximum_capacity_utilization) + 1e-12
+        )
+        candidate = (
+            voxel_length,
+            planned_unique_blocks,
+            block_capacity,
+            utilization,
+            utilization_pass,
+        )
+        fallback = candidate
+        if utilization_pass:
+            selected = candidate
+            break
+    if selected is None:
+        if fallback is None:  # pragma: no cover - validation guarantees candidates.
+            raise RuntimeError("TSDF CUDA capacity planner produced no candidate")
+        selected = fallback
+
+    (
+        planned_voxel,
+        planned_unique_blocks,
+        block_capacity,
+        utilization,
+        utilization_pass,
+    ) = selected
+    raw_active_bytes = planned_unique_blocks * bytes_per_block
+    raw_capacity_bytes = block_capacity * bytes_per_block
+    budget_pass = raw_capacity_bytes <= int(target_gpu_byte_budget)
+    return DisplayOnlyTSDFCudaCapacityPlan(
+        requested_voxel_length_mm=requested_voxel,
+        planned_voxel_length_mm=planned_voxel,
+        block_resolution=int(block_resolution),
+        estimated_unique_blocks_at_requested_voxel=int(
+            estimated_unique_blocks
+        ),
+        planned_estimated_unique_blocks=planned_unique_blocks,
+        block_capacity=block_capacity,
+        bytes_per_voxel=int(bytes_per_voxel),
+        raw_estimated_active_bytes=raw_active_bytes,
+        raw_capacity_bytes=raw_capacity_bytes,
+        target_gpu_byte_budget=int(target_gpu_byte_budget),
+        capacity_utilization=utilization,
+        maximum_capacity_utilization=float(maximum_capacity_utilization),
+        utilization_gate_pass=utilization_pass,
+        byte_budget_gate_pass=budget_pass,
+        preflight_pass=utilization_pass and budget_pass,
+        adaptive_voxel_used=planned_voxel > requested_voxel + 1e-12,
+    )
+
+
+@dataclass(frozen=True)
+class DisplayOnlyTSDFUniqueBlockEstimate:
+    """Read-only sampled estimate of CUDA TSDF world-block occupancy."""
+
+    voxel_length_mm: float
+    block_resolution: int
+    block_side_length_mm: float
+    depth_stride: int
+    sdf_truncation_mm: float
+    layer_offsets_mm: tuple[float, float, float]
+    frame_count: int
+    frames_with_valid_depth: int
+    sampled_valid_depth_pixel_count: int
+    sampled_layer_coordinate_count: int
+    per_frame_unique_block_sum: int
+    raw_unique_block_count: int
+    safety_factor: float
+    safety_estimated_unique_blocks: int
+    estimator: str = (
+        "aligned_depth_stride_world_blocks_surface_plus_minus_sdf_truncation"
+    )
+    read_only: bool = True
+    display_only: bool = True
+    participates_in_panorama: bool = False
+    rgb_owner_feedback_permitted: bool = False
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+def estimate_display_only_tsdf_unique_blocks(
+    frames: Sequence[RGBDFrame],
+    camera_to_world: Sequence[np.ndarray],
+    intrinsics: PinholeIntrinsics,
+    maps: tuple[np.ndarray, np.ndarray] | None,
+    *,
+    voxel_length_mm: float,
+    block_resolution: int,
+    sdf_truncation_mm: float,
+    maximum_depth_mm: float,
+    depth_stride: int = 8,
+    safety_factor: float = 1.85,
+) -> DisplayOnlyTSDFUniqueBlockEstimate:
+    """Estimate unique world blocks without allocating a VoxelBlockGrid."""
+
+    if len(frames) != len(camera_to_world) or not frames:
+        raise ValueError(
+            "TSDF unique-block estimate requires aligned frames and poses"
+        )
+    if (
+        isinstance(block_resolution, bool)
+        or not isinstance(block_resolution, (int, np.integer))
+        or int(block_resolution) <= 0
+    ):
+        raise ValueError("block_resolution must be a positive integer")
+    if (
+        isinstance(depth_stride, bool)
+        or not isinstance(depth_stride, (int, np.integer))
+        or int(depth_stride) <= 0
+    ):
+        raise ValueError("depth_stride must be a positive integer")
+    for name, value in (
+        ("voxel_length_mm", voxel_length_mm),
+        ("sdf_truncation_mm", sdf_truncation_mm),
+        ("maximum_depth_mm", maximum_depth_mm),
+        ("safety_factor", safety_factor),
+    ):
+        if not math.isfinite(float(value)) or float(value) <= 0.0:
+            raise ValueError(f"{name} must be finite and positive")
+    if safety_factor < 1.0:
+        raise ValueError("safety_factor must be at least 1")
+
+    block_side_mm = float(voxel_length_mm) * int(block_resolution)
+    offsets = (
+        -float(sdf_truncation_mm),
+        0.0,
+        float(sdf_truncation_mm),
+    )
+    global_blocks: set[tuple[int, int, int]] = set()
+    frames_with_depth = 0
+    sampled_depth_count = 0
+    sampled_layer_count = 0
+    per_frame_unique_sum = 0
+    stride = int(depth_stride)
+    sample_rows = np.arange(0, intrinsics.height, stride, dtype=np.int64)
+    sample_columns = np.arange(0, intrinsics.width, stride, dtype=np.int64)
+    grid_columns, grid_rows = np.meshgrid(
+        sample_columns,
+        sample_rows,
+        indexing="xy",
+    )
+    flat_u = grid_columns.reshape(-1)
+    flat_v = grid_rows.reshape(-1)
+
+    for frame, pose_value in zip(frames, camera_to_world, strict=True):
+        depth, geometric_valid = _undistort_depth_for_estimator(
+            read_aligned_depth_mm(frame),
+            maps,
+        )
+        sampled_depth = depth[flat_v, flat_u].astype(np.float64)
+        sampled_valid = (
+            geometric_valid[flat_v, flat_u]
+            & np.isfinite(sampled_depth)
+            & (sampled_depth > 0.0)
+            & (sampled_depth <= float(maximum_depth_mm))
+        )
+        if not np.any(sampled_valid):
+            continue
+        frames_with_depth += 1
+        u = flat_u[sampled_valid].astype(np.float64)
+        v = flat_v[sampled_valid].astype(np.float64)
+        surface_depth = sampled_depth[sampled_valid]
+        sampled_depth_count += int(surface_depth.size)
+        pose_m = _camera_to_world_m(np.asarray(pose_value, dtype=np.float64))
+        frame_blocks: list[np.ndarray] = []
+        for offset_mm in offsets:
+            layer_depth = surface_depth + offset_mm
+            positive = layer_depth > 0.0
+            if not np.any(positive):
+                continue
+            z_m = layer_depth[positive] / 1000.0
+            camera_points = np.empty((z_m.size, 3), dtype=np.float64)
+            camera_points[:, 0] = (
+                (u[positive] - intrinsics.cx) * z_m / intrinsics.fx
+            )
+            camera_points[:, 1] = (
+                (v[positive] - intrinsics.cy) * z_m / intrinsics.fy
+            )
+            camera_points[:, 2] = z_m
+            world_points = (
+                camera_points @ pose_m[:3, :3].T + pose_m[:3, 3]
+            )
+            coordinates = np.floor(
+                world_points / (block_side_mm / 1000.0)
+            ).astype(np.int64)
+            sampled_layer_count += int(coordinates.shape[0])
+            frame_blocks.append(coordinates)
+        if not frame_blocks:
+            continue
+        frame_unique = np.unique(np.concatenate(frame_blocks, axis=0), axis=0)
+        per_frame_unique_sum += int(frame_unique.shape[0])
+        global_blocks.update(
+            (int(item[0]), int(item[1]), int(item[2]))
+            for item in frame_unique
+        )
+
+    raw_unique = len(global_blocks)
+    if raw_unique < 1:
+        raise RuntimeError(
+            "TSDF unique-block estimator found no valid sampled depth"
+        )
+    safety_estimate = int(math.ceil(raw_unique * float(safety_factor)))
+    return DisplayOnlyTSDFUniqueBlockEstimate(
+        voxel_length_mm=float(voxel_length_mm),
+        block_resolution=int(block_resolution),
+        block_side_length_mm=block_side_mm,
+        depth_stride=stride,
+        sdf_truncation_mm=float(sdf_truncation_mm),
+        layer_offsets_mm=offsets,
+        frame_count=len(frames),
+        frames_with_valid_depth=frames_with_depth,
+        sampled_valid_depth_pixel_count=sampled_depth_count,
+        sampled_layer_coordinate_count=sampled_layer_count,
+        per_frame_unique_block_sum=per_frame_unique_sum,
+        raw_unique_block_count=raw_unique,
+        safety_factor=float(safety_factor),
+        safety_estimated_unique_blocks=safety_estimate,
+    )
 
 
 @dataclass(frozen=True)
@@ -386,6 +779,37 @@ def _undistortion_maps(
     )
 
 
+def _undistort_depth_for_estimator(
+    depth_mm: np.ndarray,
+    maps: tuple[np.ndarray, np.ndarray] | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Undistort only depth for the read-only block-capacity preflight."""
+
+    depth = np.asarray(depth_mm, dtype=np.float32)
+    if maps is None:
+        return depth, np.ones(depth.shape, dtype=bool)
+    map_x, map_y = maps
+    geometric_valid = (
+        np.isfinite(map_x)
+        & np.isfinite(map_y)
+        & (map_x >= 0.0)
+        & (map_x <= depth.shape[1] - 1)
+        & (map_y >= 0.0)
+        & (map_y <= depth.shape[0] - 1)
+    )
+    return (
+        accelerated_remap(
+            depth,
+            map_x,
+            map_y,
+            cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        ),
+        geometric_valid,
+    )
+
+
 def _undistort(
     color: np.ndarray,
     depth_mm: np.ndarray,
@@ -462,13 +886,121 @@ def _integrate_tsdf(
     maps: tuple[np.ndarray, np.ndarray] | None,
     config: DenseFusionConfig,
 ) -> Any:
+    mesh, _ = _integrate_tsdf_with_audit(
+        all_frames, all_poses, intrinsics, maps, config
+    )
+    return mesh
+
+
+def _integrate_tsdf_with_audit(
+    all_frames: Sequence[RGBDFrame],
+    all_poses: Sequence[np.ndarray],
+    intrinsics: PinholeIntrinsics,
+    maps: tuple[np.ndarray, np.ndarray] | None,
+    config: DenseFusionConfig,
+    *,
+    cuda_capacity_plan: DisplayOnlyTSDFCudaCapacityPlan | None = None,
+    cuda_unique_block_estimate: Mapping[str, object] | None = None,
+) -> tuple[Any, dict[str, object]]:
     if len(all_frames) != len(all_poses) or not all_frames:
         raise ValueError("Dense TSDF inputs must contain aligned frames and poses")
-    o3d = _require_open3d()
-    if bool(getattr(o3d.core.cuda, "is_available", lambda: False)()):
-        return _integrate_tsdf_tensor_cuda(
-            o3d, all_frames, all_poses, intrinsics, maps, config
+    if cuda_capacity_plan is not None and not cuda_capacity_plan.preflight_pass:
+        raise MemoryError(
+            "Display-only TSDF CUDA capacity preflight failed before "
+            "VoxelBlockGrid allocation"
         )
+    o3d = _require_open3d()
+    policy = cuda_status().mode
+    build_cuda = bool(
+        getattr(o3d, "_build_config", {}).get("BUILD_CUDA_MODULE", False)
+    )
+    capability = bool(
+        getattr(o3d.core.cuda, "is_available", lambda: False)()
+    )
+    preflight_pass = False
+    if policy != "off" and capability:
+        try:
+            probe = o3d.core.Tensor(
+                [1.0], dtype=o3d.core.float32, device=o3d.core.Device("CUDA:0")
+            )
+            if float(probe.cpu().numpy()[0]) != 1.0:
+                raise RuntimeError("Open3D CUDA tensor preflight value mismatch")
+            synchronize = getattr(o3d.core.cuda, "synchronize", None)
+            if callable(synchronize):
+                synchronize()
+            preflight_pass = True
+        except Exception as exc:
+            reason = (
+                "open3d_cuda_preflight_failed_no_cpu_fallback: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            raise RuntimeError(reason) from exc
+    elif policy != "off":
+        raise RuntimeError(
+            "Display-only TSDF requested CUDA but this Open3D build has no "
+            "working CUDA device; implicit CPU fallback is forbidden"
+        )
+    if preflight_pass:
+        mesh, cuda_details = _integrate_tsdf_tensor_cuda(
+            o3d,
+            all_frames,
+            all_poses,
+            intrinsics,
+            maps,
+            config,
+            capacity_plan=cuda_capacity_plan,
+        )
+        return mesh, {
+            "backend": "open3d_tensor_cuda_voxel_block_grid_display_only",
+            "requested": policy,
+            "selected": "cuda",
+            "device": "CUDA:0",
+            "build_cuda": build_cuda,
+            "capability_probe_pass": capability,
+            "preflight_pass": True,
+            "fallback_used": False,
+            "fallback_stage": None,
+            "fallback_reason": None,
+            "runtime_fallback_permitted": False,
+            "unique_block_estimate": (
+                None
+                if cuda_unique_block_estimate is None
+                else dict(cuda_unique_block_estimate)
+            ),
+            "capacity_preflight": (
+                None
+                if cuda_capacity_plan is None
+                else cuda_capacity_plan.as_dict()
+            ),
+            **cuda_details,
+        }
+    mesh = _integrate_tsdf_legacy_cpu(
+        o3d, all_frames, all_poses, intrinsics, maps, config
+    )
+    return mesh, {
+        "backend": "open3d_scalable_tsdf_cpu_display_only",
+        "requested": policy,
+        "selected": "cpu",
+        "device": "CPU:0",
+        "build_cuda": build_cuda,
+        "capability_probe_pass": capability,
+        "preflight_pass": False,
+        "fallback_used": False,
+        "fallback_stage": None,
+        "fallback_reason": None,
+        "cpu_selected_explicitly": True,
+        "runtime_fallback_permitted": False,
+    }
+
+
+def _integrate_tsdf_legacy_cpu(
+    o3d: Any,
+    all_frames: Sequence[RGBDFrame],
+    all_poses: Sequence[np.ndarray],
+    intrinsics: PinholeIntrinsics,
+    maps: tuple[np.ndarray, np.ndarray] | None,
+    config: DenseFusionConfig,
+) -> Any:
     volume = o3d.pipelines.integration.ScalableTSDFVolume(
         voxel_length=config.voxel_length_mm / 1000.0,
         sdf_trunc=config.sdf_truncation_mm / 1000.0,
@@ -511,34 +1043,58 @@ def _integrate_tsdf_tensor_cuda(
     intrinsics: PinholeIntrinsics,
     maps: tuple[np.ndarray, np.ndarray] | None,
     config: DenseFusionConfig,
-) -> Any:
+    *,
+    capacity_plan: DisplayOnlyTSDFCudaCapacityPlan | None = None,
+) -> tuple[Any, dict[str, object]]:
     """Integrate display-only TSDF on an Open3D CUDA tensor build.
 
-    This branch is intentionally isolated from panorama rendering.  A CUDA
-    Open3D build is not distributed for every supported host, so the legacy
-    CPU implementation above remains the numerically independent availability
-    fallback.  Both branches consume the same immutable RGB-D frames/poses.
+    This branch is intentionally isolated from panorama rendering.  Its
+    capacity plan cannot change panorama RGB, owners, seams, crop, or quality.
     """
 
+    if capacity_plan is not None and not capacity_plan.preflight_pass:
+        raise MemoryError(
+            "Display-only TSDF CUDA capacity preflight failed before allocation"
+        )
+    voxel_length_mm = (
+        config.voxel_length_mm
+        if capacity_plan is None
+        else capacity_plan.planned_voxel_length_mm
+    )
+    block_resolution = (
+        16 if capacity_plan is None else capacity_plan.block_resolution
+    )
+    block_capacity = (
+        20_000 if capacity_plan is None else capacity_plan.block_capacity
+    )
+    if not math.isclose(
+        float(config.voxel_length_mm),
+        float(voxel_length_mm),
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        raise ValueError(
+            "CUDA integration config voxel does not match its capacity plan"
+        )
     device = o3d.core.Device("CUDA:0")
     volume = o3d.t.geometry.VoxelBlockGrid(
         attr_names=("tsdf", "weight", "color"),
         attr_dtypes=(
             o3d.core.float32,
-            o3d.core.uint16,
-            o3d.core.uint16,
+            o3d.core.float32,
+            o3d.core.float32,
         ),
         attr_channels=((1,), (1,), (3,)),
-        voxel_size=config.voxel_length_mm / 1000.0,
-        block_resolution=16,
-        block_count=100_000,
+        voxel_size=voxel_length_mm / 1000.0,
+        block_resolution=block_resolution,
+        block_count=block_capacity,
         device=device,
     )
     intrinsic = o3d.core.Tensor(
-        intrinsics.matrix, dtype=o3d.core.float64, device=device
+        intrinsics.matrix, dtype=o3d.core.float64
     )
     truncation_multiplier = (
-        config.sdf_truncation_mm / config.voxel_length_mm
+        config.sdf_truncation_mm / voxel_length_mm
     )
     for frame, pose in zip(all_frames, all_poses, strict=True):
         color = _decode_color(frame.color_path)
@@ -562,7 +1118,6 @@ def _integrate_tsdf_tensor_cuda(
         extrinsic = o3d.core.Tensor(
             np.linalg.inv(_camera_to_world_m(pose)),
             dtype=o3d.core.float64,
-            device=device,
         )
         blocks = volume.compute_unique_block_coordinates(
             depth_image,
@@ -582,10 +1137,34 @@ def _integrate_tsdf_tensor_cuda(
             depth_max=config.maximum_depth_mm / 1000.0,
             trunc_voxel_multiplier=truncation_multiplier,
         )
+    active_blocks = int(volume.hashmap().size())
     mesh = volume.extract_triangle_mesh(weight_threshold=1.0).to_legacy()
     if len(mesh.vertices) < 3 or len(mesh.triangles) < 1:
         raise RuntimeError("CUDA TSDF fusion did not reconstruct a mesh")
-    return mesh
+    details = {
+        "planned_voxel_length_mm": voxel_length_mm,
+        "block_resolution": block_resolution,
+        "block_capacity": block_capacity,
+        "active_block_count": active_blocks,
+        "capacity_fraction": active_blocks / float(block_capacity),
+        "raw_capacity_bytes_estimate": (
+            block_capacity * (block_resolution**3) * 20
+        ),
+        "attribute_dtypes": {
+            "tsdf": "float32",
+            "weight": "float32",
+            "color": "float32x3",
+        },
+        "mesh_weight_threshold": 1.0,
+    }
+    del volume
+    synchronize = getattr(o3d.core.cuda, "synchronize", None)
+    if callable(synchronize):
+        synchronize()
+    release_cache = getattr(o3d.core.cuda, "release_cache", None)
+    if callable(release_cache):
+        release_cache()
+    return mesh, details
 
 
 def _mesh_to_glb(mesh: Any) -> bytes:
@@ -740,44 +1319,133 @@ def export_tsdf_mesh(
     )
     if not selected.enabled:
         raise ValueError("Cannot export a TSDF mesh when tsdf_visualization is disabled")
+    maps = _undistortion_maps(intrinsics)
+    capacity_plan: DisplayOnlyTSDFCudaCapacityPlan | None = None
+    requested_estimate: DisplayOnlyTSDFUniqueBlockEstimate | None = None
+    adaptive_estimate: DisplayOnlyTSDFUniqueBlockEstimate | None = None
+    unique_block_estimate_audit: dict[str, object]
+    if cuda_status().mode == "off":
+        unique_block_estimate_audit = {
+            "skipped": True,
+            "reason": "cuda_disabled_explicitly",
+            "read_only": True,
+            "display_only": True,
+            "participates_in_panorama": False,
+            "rgb_owner_feedback_permitted": False,
+        }
+        planned_voxel_length_mm = selected.voxel_length_mm
+    else:
+        estimator_arguments = {
+            "block_resolution": selected.cuda_block_resolution,
+            "sdf_truncation_mm": selected.sdf_truncation_mm,
+            "maximum_depth_mm": selected.maximum_depth_mm,
+            "depth_stride": selected.cuda_unique_block_depth_stride,
+            "safety_factor": selected.cuda_unique_block_safety_factor,
+        }
+        requested_estimate = estimate_display_only_tsdf_unique_blocks(
+            frames,
+            camera_to_world,
+            intrinsics,
+            maps,
+            voxel_length_mm=selected.voxel_length_mm,
+            **estimator_arguments,
+        )
+        capacity_arguments = {
+            "target_gpu_byte_budget": selected.cuda_gpu_byte_budget,
+            "requested_voxel_length_mm": selected.voxel_length_mm,
+            "block_resolution": selected.cuda_block_resolution,
+            "estimated_unique_blocks": (
+                requested_estimate.safety_estimated_unique_blocks
+            ),
+            "maximum_block_capacity": selected.cuda_max_block_capacity,
+            "maximum_adaptive_voxel_length_mm": (
+                selected.cuda_max_voxel_length_mm
+            ),
+        }
+        capacity_plan = plan_display_only_tsdf_cuda_capacity(
+            **capacity_arguments
+        )
+        if capacity_plan.adaptive_voxel_used:
+            adaptive_estimate = estimate_display_only_tsdf_unique_blocks(
+                frames,
+                camera_to_world,
+                intrinsics,
+                maps,
+                voxel_length_mm=selected.cuda_max_voxel_length_mm,
+                **estimator_arguments,
+            )
+            capacity_plan = plan_display_only_tsdf_cuda_capacity(
+                **capacity_arguments,
+                estimated_unique_blocks_at_maximum_voxel=(
+                    adaptive_estimate.safety_estimated_unique_blocks
+                ),
+            )
+        unique_block_estimate_audit = {
+            "requested_voxel": requested_estimate.as_dict(),
+            "adaptive_max_voxel": (
+                None
+                if adaptive_estimate is None
+                else adaptive_estimate.as_dict()
+            ),
+            "selected_estimate": (
+                requested_estimate.as_dict()
+                if not capacity_plan.adaptive_voxel_used
+                else adaptive_estimate.as_dict()
+            ),
+            "read_only": True,
+            "display_only": True,
+            "participates_in_panorama": False,
+            "rgb_owner_feedback_permitted": False,
+        }
+        if not capacity_plan.preflight_pass:
+            raise MemoryError(
+                "Display-only TSDF CUDA capacity preflight failed before "
+                "VoxelBlockGrid allocation"
+            )
+        planned_voxel_length_mm = capacity_plan.planned_voxel_length_mm
     integration_config = DenseFusionConfig(
-        voxel_length_mm=selected.voxel_length_mm,
+        voxel_length_mm=planned_voxel_length_mm,
         sdf_truncation_mm=selected.sdf_truncation_mm,
         maximum_depth_mm=selected.maximum_depth_mm,
     )
-    mesh = _integrate_tsdf(
+    mesh, backend_audit = _integrate_tsdf_with_audit(
         frames,
         camera_to_world,
         intrinsics,
-        _undistortion_maps(intrinsics),
+        maps,
         integration_config,
+        cuda_capacity_plan=capacity_plan,
+        cuda_unique_block_estimate=unique_block_estimate_audit,
     )
     glb = _mesh_to_glb(mesh)
-    o3d = _require_open3d()
-    tensor_cuda = bool(
-        getattr(o3d.core.cuda, "is_available", lambda: False)()
-    )
     return glb, {
-        "backend": (
-            "open3d_tensor_cuda_voxel_block_grid_display_only"
-            if tensor_cuda
-            else "open3d_scalable_tsdf_cpu_display_only"
-        ),
-        "acceleration": {
-            "requested": "auto",
-            "selected": "cuda" if tensor_cuda else "cpu",
-            "device": "CUDA:0" if tensor_cuda else "CPU:0",
-            "reason": None if tensor_cuda else "open3d_cuda_build_unavailable",
-        },
+        "backend": backend_audit["backend"],
+        "acceleration": backend_audit,
         "frame_count": len(frames),
         "vertex_count": int(len(mesh.vertices)),
         "triangle_count": int(len(mesh.triangles)),
         "glb_byte_count": len(glb),
         "translation_unit": "mm",
+        "unique_block_estimate": unique_block_estimate_audit,
+        "capacity_preflight": (
+            None if capacity_plan is None else capacity_plan.as_dict()
+        ),
         "configuration": {
-            "voxel_length_mm": selected.voxel_length_mm,
+            "voxel_length_mm": planned_voxel_length_mm,
+            "requested_voxel_length_mm": selected.voxel_length_mm,
+            "planned_voxel_length_mm": planned_voxel_length_mm,
             "sdf_truncation_mm": selected.sdf_truncation_mm,
             "maximum_depth_mm": selected.maximum_depth_mm,
+            "cuda_gpu_byte_budget": selected.cuda_gpu_byte_budget,
+            "cuda_block_resolution": selected.cuda_block_resolution,
+            "cuda_unique_block_depth_stride": (
+                selected.cuda_unique_block_depth_stride
+            ),
+            "cuda_unique_block_safety_factor": (
+                selected.cuda_unique_block_safety_factor
+            ),
+            "cuda_max_block_capacity": selected.cuda_max_block_capacity,
+            "cuda_max_voxel_length_mm": selected.cuda_max_voxel_length_mm,
         },
         "display_only": True,
         "participates_in_panorama": False,

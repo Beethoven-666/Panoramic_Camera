@@ -1,0 +1,40 @@
+diff --git a/3rdparty/stdgpu/stdgpu.cmake b/3rdparty/stdgpu/stdgpu.cmake
+--- a/3rdparty/stdgpu/stdgpu.cmake
++++ b/3rdparty/stdgpu/stdgpu.cmake
+@@ -3,6 +3,18 @@
+ 
+ include(ExternalProject)
+ 
++# CUDA 13 moved Thrust/CUB/libcu++ below include/cccl. CMake exposes that
++# directory as the final toolkit include entry; older toolkits expose only
++# their legacy root, so selecting the final entry is cross-version.
++list(GET CUDAToolkit_INCLUDE_DIRS -1 OPEN3D_THRUST_INCLUDE_DIR)
++
++set(STDGPU_PATCH_COMMAND "")
++if(OPEN3D_CUDA13_STDGPU_PATCH)
++    set(STDGPU_PATCH_COMMAND
++        ${GIT_EXECUTABLE} apply --whitespace=nowarn
++        ${OPEN3D_CUDA13_STDGPU_PATCH})
++endif()
++
+ ExternalProject_Add(
+     ext_stdgpu
+     PREFIX stdgpu
+@@ -10,6 +22,7 @@ ExternalProject_Add(
+     URL_HASH SHA256=86e50789bbe21c57f64358c6acbd4481d56c1e45ce9ba1fb5c5c8482c3973215
+     DOWNLOAD_DIR "${OPEN3D_THIRD_PARTY_DOWNLOAD_DIR}/stdgpu"
+     UPDATE_COMMAND ""
++    PATCH_COMMAND ${STDGPU_PATCH_COMMAND}
+     CMAKE_ARGS
+         -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+         -DCUDAToolkit_ROOT=${CUDAToolkit_LIBRARY_ROOT}
+@@ -19,7 +32,8 @@ ExternalProject_Add(
+         -DSTDGPU_BUILD_TESTS=OFF
+         -DSTDGPU_BUILD_BENCHMARKS=OFF
+         -DSTDGPU_ENABLE_CONTRACT_CHECKS=OFF
+-        -DTHRUST_INCLUDE_DIR=${CUDAToolkit_INCLUDE_DIRS}
++        -DTHRUST_INCLUDE_DIR=${OPEN3D_THRUST_INCLUDE_DIR}
++        -DCMAKE_CXX_FLAGS=/Zc:preprocessor
+         ${ExternalProject_CMAKE_ARGS_hidden}
+     CMAKE_CACHE_ARGS    # Lists must be passed via CMAKE_CACHE_ARGS
+         -DCMAKE_CUDA_ARCHITECTURES:STRING=${CMAKE_CUDA_ARCHITECTURES}

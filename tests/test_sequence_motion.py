@@ -103,7 +103,7 @@ def test_pose_edge_estimation_connects_only_real_rgbd_pose_nodes(
     )
 
 
-def test_formal_pushbroom_receives_exact_optimized_se3_without_depth_projection(
+def test_formal_multiview_receives_exact_optimized_se3_without_legacy_projection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session, poses = _synthetic_session(tmp_path)
@@ -112,7 +112,24 @@ def test_formal_pushbroom_receives_exact_optimized_se3_without_depth_projection(
 
     def legacy_projection_must_not_run(*args: object, **kwargs: object) -> None:
         del args, kwargs
-        raise AssertionError("formal RGB pushbroom reached legacy depth projection")
+        raise AssertionError("formal multiview reached legacy depth projection")
+
+    original_inspection = sequence.render_inspection_multiview
+
+    def traced_inspection(frames, optimized_poses, calibration, **kwargs):
+        received["frame_ids"] = [frame.frame_id for frame in frames]
+        received["poses"] = [
+            np.asarray(pose).copy() for pose in optimized_poses
+        ]
+        received["calibration"] = calibration
+        received["kwargs"] = dict(kwargs)
+        return original_inspection(
+            frames, optimized_poses, calibration, **kwargs
+        )
+
+    def formal_pushbroom_must_not_run(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("formal delivery reached diagnostic pushbroom")
 
     def fake_pushbroom(frames, optimized_poses, calibration, **kwargs):
         received["frame_ids"] = [frame.frame_id for frame in frames]
@@ -121,6 +138,9 @@ def test_formal_pushbroom_receives_exact_optimized_se3_without_depth_projection(
         received["kwargs"] = dict(kwargs)
         return SimpleNamespace(
             panorama=np.full((100, 300, 3), 127, dtype=np.uint8),
+            owner_frame_id=np.full(
+                (100, 300), int(frames[0].frame_id), dtype=np.int32
+            ),
             metadata={
                 "backend": "calibrated_rgb_pushbroom",
                 "pixel_source": "calibrated_rgb_source_samples",
@@ -292,7 +312,14 @@ def test_formal_pushbroom_receives_exact_optimized_se3_without_depth_projection(
         )
 
     monkeypatch.setattr(sequence, "_full_projection_frames", legacy_projection_must_not_run)
-    monkeypatch.setattr(sequence, "render_calibrated_rgb_pushbroom", fake_pushbroom)
+    monkeypatch.setattr(
+        sequence, "render_inspection_multiview", traced_inspection
+    )
+    monkeypatch.setattr(
+        sequence,
+        "render_calibrated_rgb_pushbroom",
+        formal_pushbroom_must_not_run,
+    )
     args = sequence._parser().parse_args(
         [str(session.root), "--output", str(tmp_path / "output")]
     )
@@ -306,21 +333,28 @@ def test_formal_pushbroom_receives_exact_optimized_se3_without_depth_projection(
     ):
         np.testing.assert_allclose(optimized, poses[frame_id])
     kwargs = received["kwargs"]
-    assert kwargs["quality_gate"] is False
-    assert kwargs["multiband_levels"] == 3
-    assert len(kwargs["rgb_motions"]) == len(backend.optimized_node_ids) - 1
-    assert report["render_strategy"] == "calibrated_rgb_pushbroom"
-    assert report["render"]["depth_used_for_output_pixels"] is False
+    assert kwargs["config"].enabled is True
+    assert report["render_strategy"] == (
+        "trajectory_constrained_depth_aware_multiview_side_scan"
+    )
+    assert report["render"]["pose_interpolation_count"] == 0
+    assert report["render"]["real_pose_count"] == len(
+        backend.optimized_node_ids
+    )
     render_transforms = json.loads(
         (tmp_path / "output" / "render_transforms.json").read_text(encoding="utf-8")
     )
     alignment = render_transforms["residual_alignment"]
-    assert alignment["selected_model"] == "identity"
-    assert alignment["per_source_parameters"][1]["translation_x_pixels"] == 0.0
+    assert alignment["backend"] == "none"
+    assert alignment["selected_model"] == (
+        "real_se3_virtual_perspective_panels"
+    )
     delivery = json.loads(
         (tmp_path / "output" / "delivery.json").read_text(encoding="utf-8")
     )
-    assert delivery["alignment_model"] == "identity"
+    assert delivery["alignment_model"] == (
+        "real_se3_virtual_perspective_panels"
+    )
 
 
 def test_geometry_compaction_rejects_dense_nested_audits_and_invalid_accepted_meshes() -> None:
@@ -862,6 +896,8 @@ def test_formal_backend_configuration_rejects_non_pushbroom_paths(
         "calibrated_rgb_pushbroom": {
             "mode": "calibrated_rgb_pushbroom",
         },
+        "metric_mosaic": {"enabled": True},
+        "inspection_multiview": {"enabled": True},
         "scan_seam": {"backend": "rgb_monotonic_hard_owner_graphcut"},
     }
     config.update(override)

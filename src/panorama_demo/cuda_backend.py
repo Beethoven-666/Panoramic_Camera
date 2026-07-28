@@ -2,7 +2,9 @@
 
 The project deliberately keeps CUDA behind a small boundary:
 
-* ``G305_CUDA=auto`` (default) uses CUDA when a supported device/runtime exists.
+* ``G305_CUDA=prefer`` (default) uses CUDA whenever a supported implementation
+  exists and falls back to the identical CPU operation only when necessary.
+* ``G305_CUDA=auto`` benchmarks equivalent CPU/CUDA remaps per shape.
 * ``G305_CUDA=off`` forces the reference CPU implementation.
 * ``G305_CUDA=required`` fails closed if CUDA cannot be initialized.
 
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import os
+import sys
 from threading import Lock
 import time
 from typing import Any
@@ -25,20 +28,115 @@ import cv2
 import numpy as np
 
 
-_VALID_MODES = {"auto", "off", "required"}
+_VALID_MODES = {"prefer", "auto", "off", "required"}
 _MINIMUM_AUTO_BYTES = 64 * 1024
 _STATUS_LOCK = Lock()
 _STATUS: "CudaStatus | None" = None
 _CUPY: Any | None = None
 _REMAP_KERNELS: dict[str, Any] = {}
 _AUTO_DECISIONS: dict[tuple[object, ...], str] = {}
+_FALLBACKS: list[dict[str, str]] = []
+_CUDA_DLL_HANDLES: list[Any] = []
+_CUDA_DLL_DIRECTORY: str | None = None
+_CUDNN_DLL_DIRECTORY: str | None = None
 _COUNTERS = {
+    "open3d_cuda_calls": 0,
     "opencv_cuda_calls": 0,
     "cupy_calls": 0,
     "cpu_calls": 0,
     "host_to_device_bytes": 0,
     "device_to_host_bytes": 0,
 }
+
+
+def record_open3d_cuda_call(
+    *,
+    host_to_device_bytes: int = 0,
+    device_to_host_bytes: int = 0,
+) -> None:
+    """Record an audited Open3D Tensor CUDA operation.
+
+    Open3D owns its device buffers, so it cannot use the CuPy/OpenCV wrappers
+    below.  Keeping its calls in the same audit makes the final report reflect
+    the complete CUDA path instead of only custom kernels.
+    """
+
+    _COUNTERS["open3d_cuda_calls"] += 1
+    _COUNTERS["host_to_device_bytes"] += max(0, int(host_to_device_bytes))
+    _COUNTERS["device_to_host_bytes"] += max(0, int(device_to_host_bytes))
+
+
+def configure_cuda_dll_search_path() -> str | None:
+    """Make the validated CUDA 12 runtime visible to Windows Python DLLs."""
+
+    global _CUDA_DLL_DIRECTORY
+    if os.name != "nt":
+        return None
+    configured = os.environ.get("G305_CUDA_TOOLKIT")
+    candidates = [
+        configured,
+        r"D:\open3d_cuda_build\cuda128-toolkit\Library",
+        os.environ.get("CUDA_PATH_V12_8"),
+        os.environ.get("CUDA_PATH"),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        root = os.path.abspath(os.path.expandvars(candidate))
+        bin_dir = root if os.path.basename(root).lower() == "bin" else os.path.join(
+            root, "bin"
+        )
+        if not os.path.isfile(os.path.join(bin_dir, "cudart64_12.dll")):
+            continue
+        current_path = os.environ.get("PATH", "")
+        entries = current_path.split(os.pathsep) if current_path else []
+        if os.path.normcase(bin_dir) not in {
+            os.path.normcase(item) for item in entries
+        }:
+            os.environ["PATH"] = bin_dir + os.pathsep + current_path
+        add_directory = getattr(os, "add_dll_directory", None)
+        if callable(add_directory):
+            _CUDA_DLL_HANDLES.append(add_directory(bin_dir))
+        _CUDA_DLL_DIRECTORY = bin_dir
+        return bin_dir
+    return None
+
+
+def configure_cudnn_dll_search_path() -> str | None:
+    """Expose the CUDA-DNN runtime required by ONNX Runtime on Windows."""
+
+    global _CUDNN_DLL_DIRECTORY
+    if os.name != "nt":
+        return None
+    configured = os.environ.get("G305_CUDNN_DIR")
+    candidates = [
+        configured,
+        os.path.join(
+            sys.prefix, "Lib", "site-packages", "torch", "lib"
+        ),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        directory = os.path.abspath(os.path.expandvars(candidate))
+        if not os.path.isfile(os.path.join(directory, "cudnn64_9.dll")):
+            continue
+        current_path = os.environ.get("PATH", "")
+        entries = current_path.split(os.pathsep) if current_path else []
+        if os.path.normcase(directory) not in {
+            os.path.normcase(item) for item in entries
+        }:
+            os.environ["PATH"] = directory + os.pathsep + current_path
+        add_directory = getattr(os, "add_dll_directory", None)
+        if callable(add_directory):
+            _CUDA_DLL_HANDLES.append(add_directory(directory))
+        _CUDNN_DLL_DIRECTORY = directory
+        return directory
+    return None
+
+
+configure_cuda_dll_search_path()
+configure_cudnn_dll_search_path()
 
 
 @dataclass(frozen=True)
@@ -58,11 +156,14 @@ class CudaStatus:
         result["auto_decisions"] = {
             repr(key): value for key, value in _AUTO_DECISIONS.items()
         }
+        result["fallbacks"] = list(_FALLBACKS)
+        result["cuda_dll_directory"] = _CUDA_DLL_DIRECTORY
+        result["cudnn_dll_directory"] = _CUDNN_DLL_DIRECTORY
         return result
 
 
 def _mode() -> str:
-    value = os.environ.get("G305_CUDA", "auto").strip().lower()
+    value = os.environ.get("G305_CUDA", "prefer").strip().lower()
     if value not in _VALID_MODES:
         raise RuntimeError(
             f"G305_CUDA must be one of {sorted(_VALID_MODES)}, got {value!r}"
@@ -145,11 +246,22 @@ def cuda_metadata() -> dict[str, object]:
     return cuda_status().as_dict()
 
 
+def reset_cuda_audit() -> None:
+    """Reset per-run counters without destroying the initialized CUDA context."""
+
+    for key in _COUNTERS:
+        _COUNTERS[key] = 0
+    _AUTO_DECISIONS.clear()
+    _FALLBACKS.clear()
+
+
 def _use_cuda(nbytes: int) -> bool:
     status = cuda_status()
     if not status.available:
         return False
-    return status.mode == "required" or int(nbytes) >= _MINIMUM_AUTO_BYTES
+    if status.mode in {"prefer", "required"}:
+        return True
+    return int(nbytes) >= _MINIMUM_AUTO_BYTES
 
 
 def _opencv_cuda_remap(
@@ -195,6 +307,15 @@ def _cupy_remap_kernel(dtype: np.dtype[Any]) -> Any:
         )
     elif np.dtype(dtype) == np.dtype(np.float32):
         scalar, output, convert = "float", "float", "out[out_i] = value;"
+    elif np.dtype(dtype) == np.dtype(np.uint16):
+        scalar, output, convert = (
+            "unsigned short",
+            "unsigned short",
+            (
+                "out[out_i] = (unsigned short)min(65535.0f, "
+                "max(0.0f, nearbyintf(value)));"
+            ),
+        )
     else:
         raise TypeError(f"CuPy remap does not support {dtype}")
     source = f"""
@@ -202,7 +323,7 @@ def _cupy_remap_kernel(dtype: np.dtype[Any]) -> Any:
     void remap(const {scalar}* src, const int src_h, const int src_w,
                const int channels, const float* mx, const float* my,
                const int out_h, const int out_w, const int linear,
-               const float border, {output}* out) {{
+               const int replicate, const float border, {output}* out) {{
         int pixel = blockDim.x * blockIdx.x + threadIdx.x;
         int count = out_h * out_w;
         if (pixel >= count) return;
@@ -215,6 +336,10 @@ def _cupy_remap_kernel(dtype: np.dtype[Any]) -> Any:
                 if (!linear) {{
                     int ix = (int)nearbyintf(x);
                     int iy = (int)nearbyintf(y);
+                    if (replicate) {{
+                        ix = min(src_w - 1, max(0, ix));
+                        iy = min(src_h - 1, max(0, iy));
+                    }}
                     if (ix >= 0 && ix < src_w && iy >= 0 && iy < src_h)
                         value = (float)src[(iy * src_w + ix) * channels + c];
                 }} else {{
@@ -230,6 +355,10 @@ def _cupy_remap_kernel(dtype: np.dtype[Any]) -> Any:
                             int sx = x0 + dx;
                             float wx = dx ? ax : 1.0f - ax;
                             float sample = border;
+                            if (replicate) {{
+                                sx = min(src_w - 1, max(0, sx));
+                                sy = min(src_h - 1, max(0, sy));
+                            }}
                             if (sx >= 0 && sx < src_w && sy >= 0 && sy < src_h)
                                 sample = (float)src[(sy * src_w + sx) * channels + c];
                             value += sample * wx * wy;
@@ -251,6 +380,7 @@ def _cupy_remap(
     map_x: np.ndarray,
     map_y: np.ndarray,
     interpolation: int,
+    border_mode: int,
     border_value: object,
 ) -> np.ndarray:
     cp = _CUPY
@@ -289,6 +419,7 @@ def _cupy_remap(
             np.int32(mx.shape[0]),
             np.int32(mx.shape[1]),
             np.int32(interpolation == cv2.INTER_LINEAR),
+            np.int32(border_mode == cv2.BORDER_REPLICATE),
             np.float32(border),
             out_gpu,
         ),
@@ -315,12 +446,13 @@ def remap(
     mx = np.asarray(map_x, dtype=np.float32)
     my = np.asarray(map_y, dtype=np.float32)
     supported = (
-        src.dtype in {np.dtype(np.uint8), np.dtype(np.float32)}
+        src.dtype
+        in {np.dtype(np.uint8), np.dtype(np.uint16), np.dtype(np.float32)}
         and src.ndim in {2, 3}
         and mx.ndim == 2
         and mx.shape == my.shape
         and interpolation in {cv2.INTER_NEAREST, cv2.INTER_LINEAR}
-        and borderMode == cv2.BORDER_CONSTANT
+        and borderMode in {cv2.BORDER_CONSTANT, cv2.BORDER_REPLICATE}
     )
     status = cuda_status()
     if supported and _use_cuda(src.nbytes + mx.nbytes + my.nbytes):
@@ -331,6 +463,7 @@ def remap(
             1 if src.ndim == 2 else int(src.shape[2]),
             mx.shape,
             interpolation,
+            borderMode,
         )
         if status.mode == "auto" and _AUTO_DECISIONS.get(decision_key) == "cpu":
             _COUNTERS["cpu_calls"] += 1
@@ -357,20 +490,29 @@ def remap(
                     borderValue,
                 )
                 gpu_elapsed = time.perf_counter() - started
-            except cv2.error as exc:
+            except Exception as exc:
                 gpu_error = exc
                 if status.mode == "required" and not status.cupy_available:
                     raise
         if gpu_result is None and status.cupy_available:
             started = time.perf_counter()
             try:
-                gpu_result = _cupy_remap(src, mx, my, interpolation, borderValue)
+                gpu_result = _cupy_remap(
+                    src,
+                    mx,
+                    my,
+                    interpolation,
+                    borderMode,
+                    borderValue,
+                )
                 gpu_elapsed = time.perf_counter() - started
-            except (TypeError, ValueError) as exc:
+            except Exception as exc:
                 gpu_error = exc
                 if status.mode == "required":
                     raise
         if gpu_result is not None and status.mode == "required":
+            return gpu_result
+        if gpu_result is not None and status.mode == "prefer":
             return gpu_result
         if gpu_result is not None and status.mode == "auto":
             started = time.perf_counter()
@@ -416,6 +558,19 @@ def remap(
             return cpu_result
         if status.mode == "required" and gpu_error is not None:
             raise RuntimeError("CUDA remap failed") from gpu_error
+        if gpu_error is not None:
+            _FALLBACKS.append(
+                {
+                    "operation": "remap",
+                    "stage": "runtime",
+                    "reason": f"{type(gpu_error).__name__}: {gpu_error}",
+                }
+            )
+    elif status.mode == "required":
+        raise RuntimeError(
+            "CUDA remap was required but the source dtype, interpolation, "
+            "border mode, or map shape is unsupported"
+        )
     _COUNTERS["cpu_calls"] += 1
     return cv2.remap(
         src,
@@ -442,7 +597,9 @@ def pinhole_unproject(
     uu = np.asarray(u, dtype=np.float64).reshape(-1)
     vv = np.asarray(v, dtype=np.float64).reshape(-1)
     zz = np.asarray(depth, dtype=np.float64).reshape(-1)
-    if _CUPY is not None and _use_cuda(uu.nbytes + vv.nbytes + zz.nbytes):
+    status = cuda_status()
+    use_cuda = _use_cuda(uu.nbytes + vv.nbytes + zz.nbytes)
+    if use_cuda and status.cupy_available and _CUPY is not None:
         cp = _CUPY
         u_gpu, v_gpu, z_gpu = cp.asarray(uu), cp.asarray(vv), cp.asarray(zz)
         result = cp.stack(
@@ -454,6 +611,8 @@ def pinhole_unproject(
         output = cp.asnumpy(result)
         _COUNTERS["device_to_host_bytes"] += int(output.nbytes)
         return output
+    if use_cuda and status.mode == "required":
+        raise RuntimeError("CUDA pinhole unprojection requires a working CuPy device")
     _COUNTERS["cpu_calls"] += 1
     return np.column_stack(((uu - cx) * zz / fx, (vv - cy) * zz / fy, zz))
 
@@ -469,7 +628,9 @@ def pinhole_project(
     """Project a pinhole 3-D batch on CUDA when it is large enough."""
 
     values = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-    if _CUPY is not None and _use_cuda(values.nbytes):
+    status = cuda_status()
+    use_cuda = _use_cuda(values.nbytes)
+    if use_cuda and status.cupy_available and _CUPY is not None:
         cp = _CUPY
         points_gpu = cp.asarray(values)
         positive_z = cp.maximum(points_gpu[:, 2], 1e-12)
@@ -480,6 +641,8 @@ def pinhole_project(
         _COUNTERS["host_to_device_bytes"] += int(values.nbytes)
         _COUNTERS["device_to_host_bytes"] += int(x.nbytes + y.nbytes)
         return x, y
+    if use_cuda and status.mode == "required":
+        raise RuntimeError("CUDA pinhole projection requires a working CuPy device")
     _COUNTERS["cpu_calls"] += 1
     positive_z = np.maximum(values[:, 2], 1e-12)
     return (
@@ -498,7 +661,9 @@ def transform_points(
     values = np.asarray(points, dtype=np.float64)
     rot = np.asarray(rotation, dtype=np.float64)
     offset = np.asarray(translation, dtype=np.float64)
-    if _CUPY is not None and _use_cuda(values.nbytes):
+    status = cuda_status()
+    use_cuda = _use_cuda(values.nbytes)
+    if use_cuda and status.cupy_available and _CUPY is not None:
         cp = _CUPY
         output_gpu = cp.asarray(values) @ cp.asarray(rot).T + cp.asarray(offset)
         output = cp.asnumpy(output_gpu)
@@ -508,5 +673,80 @@ def transform_points(
         )
         _COUNTERS["device_to_host_bytes"] += int(output.nbytes)
         return output
+    if use_cuda and status.mode == "required":
+        raise RuntimeError("CUDA point transforms require a working CuPy device")
     _COUNTERS["cpu_calls"] += 1
     return values @ rot.T + offset
+
+
+def srgb_to_linear_bgr(image: np.ndarray) -> np.ndarray:
+    """Decode uint8/float BGR into float32 linear light on CUDA when possible."""
+
+    values = np.asarray(image)
+    if values.ndim != 3 or values.shape[2] != 3:
+        raise ValueError("sRGB input must be an HxWx3 BGR array")
+    status = cuda_status()
+    use_cuda = _use_cuda(values.nbytes)
+    if use_cuda and status.cupy_available and _CUPY is not None:
+        cp = _CUPY
+        encoded = cp.asarray(values, dtype=cp.float32) / cp.float32(255.0)
+        result_gpu = cp.where(
+            encoded <= cp.float32(0.04045),
+            encoded / cp.float32(12.92),
+            cp.power(
+                (encoded + cp.float32(0.055)) / cp.float32(1.055),
+                cp.float32(2.4),
+            ),
+        ).astype(cp.float32)
+        result = cp.asnumpy(result_gpu)
+        _COUNTERS["cupy_calls"] += 1
+        _COUNTERS["host_to_device_bytes"] += int(values.nbytes)
+        _COUNTERS["device_to_host_bytes"] += int(result.nbytes)
+        return result
+    if use_cuda and status.mode == "required":
+        raise RuntimeError("CUDA sRGB decoding requires a working CuPy device")
+    _COUNTERS["cpu_calls"] += 1
+    encoded = np.asarray(values, dtype=np.float32) / 255.0
+    return np.where(
+        encoded <= 0.04045,
+        encoded / 12.92,
+        np.power((encoded + 0.055) / 1.055, 2.4),
+    ).astype(np.float32)
+
+
+def linear_to_srgb_bgr(linear: np.ndarray) -> np.ndarray:
+    """Encode finite linear BGR samples to uint8 sRGB on CUDA when possible."""
+
+    values = np.asarray(linear, dtype=np.float32)
+    if values.ndim != 3 or values.shape[2] != 3:
+        raise ValueError("Linear RGB input must be an HxWx3 array")
+    status = cuda_status()
+    use_cuda = _use_cuda(values.nbytes)
+    if use_cuda and status.cupy_available and _CUPY is not None:
+        cp = _CUPY
+        linear_gpu = cp.clip(cp.asarray(values), 0.0, 1.0)
+        encoded_gpu = cp.where(
+            linear_gpu <= cp.float32(0.0031308),
+            linear_gpu * cp.float32(12.92),
+            cp.float32(1.055)
+            * cp.power(linear_gpu, cp.float32(1.0 / 2.4))
+            - cp.float32(0.055),
+        )
+        result_gpu = cp.rint(cp.clip(encoded_gpu * 255.0, 0.0, 255.0)).astype(
+            cp.uint8
+        )
+        result = cp.asnumpy(result_gpu)
+        _COUNTERS["cupy_calls"] += 1
+        _COUNTERS["host_to_device_bytes"] += int(values.nbytes)
+        _COUNTERS["device_to_host_bytes"] += int(result.nbytes)
+        return result
+    if use_cuda and status.mode == "required":
+        raise RuntimeError("CUDA sRGB encoding requires a working CuPy device")
+    _COUNTERS["cpu_calls"] += 1
+    clipped = np.clip(values, 0.0, 1.0)
+    encoded = np.where(
+        clipped <= 0.0031308,
+        clipped * 12.92,
+        1.055 * np.power(clipped, 1.0 / 2.4) - 0.055,
+    )
+    return np.rint(np.clip(encoded * 255.0, 0.0, 255.0)).astype(np.uint8)
