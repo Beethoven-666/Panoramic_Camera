@@ -280,6 +280,11 @@ stitch:
 
   calibrated_rgb_pushbroom:
     mode: calibrated_rgb_pushbroom
+    # v5.2: all visible content shares the calibrated central-strip layout and
+    # the one monotone owner map.  Foreground/instance code can contribute
+    # read-only seam evidence later, but cannot reserve an RGB patch or alter
+    # a target coordinate.
+    unified_content_mode: true
     # Every real optimized pose node is a source.  The renderer keeps only a
     # local strip window resident and never stores per-source full canvases.
     maximum_central_band_fraction: 0.20

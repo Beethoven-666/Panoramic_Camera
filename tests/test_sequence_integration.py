@@ -119,6 +119,9 @@ def _make_session(tmp_path: Path, *, seed: int) -> Path:
     )
 
 
+@pytest.mark.skip(
+    reason="v5.2 replaces the dual metric/inspection product with one central-strip RGB product"
+)
 def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -430,6 +433,33 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
         "reference_inventory_comparison.json",
         "baseline_comparison.png",
     }
+
+
+def test_zero_parameter_rgbd_sequence_publishes_unified_central_strip_delivery(
+    tmp_path: Path,
+) -> None:
+    """The default formal path has no panel/metric/object RGB side route."""
+
+    session = _make_session(tmp_path, seed=29)
+    output = tmp_path / "unified-output"
+    backend = _KnownTrajectoryRGBDBackend(session)
+    args = sequence._parser().parse_args([str(session), "--output", str(output)])
+
+    report = sequence.run(args, odometry_backend=backend)
+
+    delivery = json.loads((output / "delivery.json").read_text(encoding="utf-8"))
+    assert report["schema"] == "gemini305-unified-central-strip/v12-r1"
+    assert report["render_strategy"] == "unified_calibrated_central_strip"
+    assert report["render"]["mosaicing_method"]["unified_content_mode"] is True
+    assert report["render"]["unified_render_invariant_audit"]["pass"] is True
+    assert report["render"]["quality_metrics"]["foreground_anchor_reservation_count"] == 0
+    assert report["render"]["quality_metrics"]["foreground_anchor_handoff_retirement_count"] == 0
+    assert delivery["renderer_backend"] == "unified_calibrated_central_strip/v1"
+    assert delivery["unified_render_invariant_audit"]["deprecated_renderer_call_count"] == 0
+    assert (output / "panorama.jpg").is_file()
+    assert (output / "pixel_provenance.npz").is_file()
+    assert not (output / "mosaic_inspection.png").exists()
+    assert not (output / "mosaic_metric.png").exists()
 
 
 def test_tsdf_export_failure_fails_closed_and_removes_all_deliverables(

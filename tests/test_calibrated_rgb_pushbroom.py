@@ -2458,6 +2458,29 @@ def test_pushbroom_uses_every_real_frame_once_with_bounded_strip_residency(
     assert metrics["endpoint_outer_half_fov_trimmed_invalid_pixel_counts"] == [0, 0]
 
 
+def test_unified_content_mode_has_no_legacy_foreground_owner_reservations(
+    tmp_path: Path,
+) -> None:
+    """v5.2 keeps all RGB in the single strip-owner domain."""
+
+    session, poses = _make_rgb_pushbroom_input(tmp_path, seed=23)
+    result = render_calibrated_rgb_pushbroom(
+        session.frames,
+        poses,
+        session.calibration,
+        config={"unified_content_mode": True},
+        rgb_motions=_reliable_adjacent_rgb_motions(len(session.frames)),
+    )
+
+    metrics = result.metadata["quality_metrics"]
+    geometry = result.metadata["geometry_assisted_seam"]
+    assert result.metadata["mosaicing_method"]["unified_content_mode"] is True
+    assert metrics["foreground_anchor_reservation_count"] == 0
+    assert metrics["foreground_anchor_handoff_retirement_count"] == 0
+    assert metrics["foreground_deformation_pixel_count"] == 0
+    assert geometry["foreground_anchor_reservation_count"] == 0
+
+
 @pytest.mark.parametrize("duplicate_distance_mm", [16.1, 15.9])
 def test_pushbroom_suppresses_near_duplicate_pose_owner_but_remaps_it_once(
     tmp_path: Path, duplicate_distance_mm: float

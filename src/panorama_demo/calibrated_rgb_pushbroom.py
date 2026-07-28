@@ -423,6 +423,10 @@ class GeometryAssistedSeamConfig:
 class CalibratedRGBPushbroomConfig:
     """Closed safety/configuration surface for the RGB pushbroom renderer."""
 
+    # v5.2 uses one content-agnostic strip/owner domain.  The previous v3
+    # foreground-owner planner remains available only for its isolated legacy
+    # diagnostics; it must not reserve or rewrite RGB in the formal v5.2 path.
+    unified_content_mode: bool = False
     maximum_central_band_fraction: float = 0.20
     endpoint_outer_half_fov: bool = True
     # This is deliberately a *read-only* seam-search corridor, not a blend
@@ -462,6 +466,7 @@ class CalibratedRGBPushbroomConfig:
         geometry_value = supplied.pop("geometry_assisted_seam", None)
         local_apap_flow_value = supplied.pop("local_apap_flow", None)
         allowed = {
+            "unified_content_mode",
             "maximum_central_band_fraction",
             "endpoint_outer_half_fov",
             "seam_search_width_pixels",
@@ -507,6 +512,8 @@ class CalibratedRGBPushbroomConfig:
         return result
 
     def _validate(self) -> None:
+        if type(self.unified_content_mode) is not bool:
+            raise ValueError("unified_content_mode must be a boolean")
         finite = np.asarray(
             [
                 self.maximum_central_band_fraction,
@@ -11229,34 +11236,49 @@ def render_calibrated_rgb_pushbroom(
                     nominal_boundary_x=left + same_layer_owner_nominal,
                 )
             )
-        # Direct depth tokens are strict identity candidates for the v3
-        # planner.  They do not cast independent per-pair owner votes.
-        (
-            direct_token_sets,
-            direct_token_geometry_overrides,
-            direct_token_visibility_overrides,
-            direct_token_raw_footprints,
-            shared_source_anchor_audit,
-        ) = _build_direct_token_identity_inputs(
-            geometry_plans,
-            preflight_fragments_by_pair,
-            canvas_height=layout.canvas_height,
-            pair_windows=preflight_pair_windows,
-        )
-        # Ordinary RGB guards retain their existing IMAGE_REGION semantics
-        # unless an exact bidirectional direct token promoted that particular
-        # component to a depth-observed identity candidate.
-        foreground_fragments = build_foreground_fragments(
-            preflight_fragments_by_pair,
-            frame_ids=[frame.frame_id for frame in frames],
-            geometry_modes=(GeometryMode.IMAGE_REGION,) * len(
-                preflight_fragments_by_pair
-            ),
-            geometry_mode_overrides=direct_token_geometry_overrides,
-            bidirectional_visibility_overrides=direct_token_visibility_overrides,
-            depth_anchor_token_sets=direct_token_sets,
-            raw_footprints=direct_token_raw_footprints,
-        )
+        if settings.unified_content_mode:
+            # A guard can still affect the adjacent seam cost and a local
+            # alignment candidate, but cannot turn into an independent
+            # foreground position/owner model.  Empty planner input keeps the
+            # existing monotone strip solver intact while making every legacy
+            # anchor reservation mechanically impossible.
+            preflight_fragments_by_pair = [
+                () for _ in range(max(0, len(frames) - 1))
+            ]
+            foreground_fragments = []
+            shared_source_anchor_audit = {
+                "policy": "unified_content_mode_no_direct_or_foreground_anchors",
+                "token_count": 0,
+            }
+        else:
+            # Direct depth tokens are strict identity candidates for the v3
+            # planner.  They do not cast independent per-pair owner votes.
+            (
+                direct_token_sets,
+                direct_token_geometry_overrides,
+                direct_token_visibility_overrides,
+                direct_token_raw_footprints,
+                shared_source_anchor_audit,
+            ) = _build_direct_token_identity_inputs(
+                geometry_plans,
+                preflight_fragments_by_pair,
+                canvas_height=layout.canvas_height,
+                pair_windows=preflight_pair_windows,
+            )
+            # Ordinary RGB guards retain their existing IMAGE_REGION semantics
+            # unless an exact bidirectional direct token promoted that particular
+            # component to a depth-observed identity candidate.
+            foreground_fragments = build_foreground_fragments(
+                preflight_fragments_by_pair,
+                frame_ids=[frame.frame_id for frame in frames],
+                geometry_modes=(GeometryMode.IMAGE_REGION,) * len(
+                    preflight_fragments_by_pair
+                ),
+                geometry_mode_overrides=direct_token_geometry_overrides,
+                bidirectional_visibility_overrides=direct_token_visibility_overrides,
+                depth_anchor_token_sets=direct_token_sets,
+                raw_footprints=direct_token_raw_footprints,
+            )
         (
             foreground_fragments,
             redundant_foreground_owner_suppression,
@@ -11331,10 +11353,14 @@ def render_calibrated_rgb_pushbroom(
                         geometry_plans[diagnostic_pair_index].triggered
                     ),
                 )
-        segment_locked_constraints = [
-            dict(constraints)
-            for constraints in foreground_owner_plan.component_owner_constraints
-        ]
+        segment_locked_constraints = (
+            [{} for _ in preflight_fragments_by_pair]
+            if settings.unified_content_mode
+            else [
+                dict(constraints)
+                for constraints in foreground_owner_plan.component_owner_constraints
+            ]
+        )
         preflight_fragments_for_solver = list(preflight_fragments_by_pair)
         pair_level_hard_owner_pairs: set[int] = set()
         pair_level_hard_owner_reasons: dict[int, str] = {}
@@ -11457,15 +11483,19 @@ def render_calibrated_rgb_pushbroom(
             geometry_pair_hard_owner_options,
             required_owners=required_pair_level_owners,
         )
-        foreground_anchor_reservations = _build_foreground_owner_run_reservations(
-            foreground_owner_plan,
-            foreground_fragments,
-            segment_locked_constraints,
-            pair_level_hard_owners,
-        )
-        planned_foreground_owner_handoffs = _foreground_owner_run_handoff_specs(
-            foreground_owner_plan
-        )
+        if settings.unified_content_mode:
+            foreground_anchor_reservations = ()
+            planned_foreground_owner_handoffs = {}
+        else:
+            foreground_anchor_reservations = _build_foreground_owner_run_reservations(
+                foreground_owner_plan,
+                foreground_fragments,
+                segment_locked_constraints,
+                pair_level_hard_owners,
+            )
+            planned_foreground_owner_handoffs = _foreground_owner_run_handoff_specs(
+                foreground_owner_plan
+            )
         runtime_pair_level_hard_owners: dict[int, int] = {}
         runtime_pair_level_hard_owner_reasons: dict[int, str] = {}
         residual_alignment = ResidualAlignmentResult(
@@ -13325,6 +13355,7 @@ def render_calibrated_rgb_pushbroom(
                 ),
                 "foreground_policy": "single_rgb_owner",
                 "safe_background_seam": "monotonic_graphcut_then_local_multiband",
+                "unified_content_mode": bool(settings.unified_content_mode),
             },
             "pixel_source": "calibrated_rgb_source_samples",
             "depth_used_for_output_pixels": False,

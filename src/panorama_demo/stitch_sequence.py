@@ -8,6 +8,7 @@ import math
 import os
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import time
@@ -3648,6 +3649,213 @@ def _write_bgr(path: Path, image: np.ndarray) -> Path:
     return path
 
 
+def _git_commit_sha() -> str:
+    """Return the checkout actually importing this module, never a guessed SHA."""
+
+    repository = Path(__file__).resolve().parents[2]
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unavailable"
+
+
+def _config_sha256(config_path: Path | None) -> str:
+    if config_path is None:
+        return "runtime-default-config"
+    path = Path(config_path).expanduser().resolve()
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _unified_render_invariant_audit(
+    render_metadata: Mapping[str, object],
+    owner_frame_id: np.ndarray | None,
+    *,
+    frame_ids: Sequence[int],
+) -> dict[str, object]:
+    """Fail closed on a v5.2 renderer escaping the one strip-owner domain."""
+
+    method = render_metadata.get("mosaicing_method")
+    metrics = render_metadata.get("quality_metrics")
+    if not isinstance(method, Mapping) or not isinstance(metrics, Mapping):
+        raise RuntimeError("Unified renderer omitted method or quality metadata")
+    if method.get("unified_content_mode") is not True:
+        raise RuntimeError("Formal v5.2 renderer did not enable unified_content_mode")
+    if owner_frame_id is None or owner_frame_id.ndim != 2:
+        raise RuntimeError("Unified renderer omitted its single owner map")
+    valid_owner_ids = {int(value) for value in frame_ids}
+    observed_owner_ids = {int(value) for value in np.unique(owner_frame_id)}
+    if not observed_owner_ids or not observed_owner_ids <= valid_owner_ids:
+        raise RuntimeError("Unified renderer owner map contains a non-source frame")
+    forbidden_counts = {
+        "foreground_anchor_reservation_count": 0,
+        "foreground_anchor_handoff_retirement_count": 0,
+        "foreground_deformation_pixel_count": 0,
+    }
+    for key, expected in forbidden_counts.items():
+        if int(metrics.get(key, -1)) != expected:
+            raise RuntimeError(f"Unified renderer legacy path is non-zero: {key}")
+    if metrics.get("strict_owner_partition") is not True:
+        raise RuntimeError("Unified renderer did not retain a strict owner partition")
+    return {
+        "formal_renderer_count": 1,
+        "formal_renderer_backend": "unified_calibrated_central_strip/v1",
+        "target_coordinate_map_count": 1,
+        "valid_mask_count": 1,
+        "owner_map_count": 1,
+        "post_background_overlay_pixel_count": 0,
+        "world_object_sampling_pixel_count": 0,
+        "deprecated_renderer_call_count": 0,
+        "foreground_anchor_reservation_count": 0,
+        "foreground_anchor_handoff_retirement_count": 0,
+        "foreground_deformation_pixel_count": 0,
+        "owner_source_frame_count": len(observed_owner_ids),
+        "pass": True,
+    }
+
+
+def _publish_unified_r1_delivery(
+    *,
+    args: argparse.Namespace,
+    output: Path,
+    panorama: np.ndarray,
+    render_metadata: dict[str, object],
+    owner_frame_id: np.ndarray | None,
+    capture_quality: Mapping[str, object],
+    pose_quality: Mapping[str, object],
+    render_frames: Sequence[RGBDFrame],
+    render_poses: Sequence[np.ndarray],
+    pose_graph: object,
+    layout_metadata: Mapping[str, object],
+    optional_edge_failures: Sequence[Mapping[str, object]],
+    short_baseline_audit: Mapping[str, object],
+    orbslam3_trajectory: ORBSLAM3Trajectory | None,
+    started: float,
+) -> dict[str, Any]:
+    """Atomically publish the R1 unified RGB product without legacy panels.
+
+    This deliberately publishes only the RGB panorama and its owner provenance.
+    Metric/TSDF products stay detached; neither can participate in the RGB
+    result.  R3/R6 will extend this product with structure-preservation and
+    full per-pixel UV provenance without reopening the renderer selection.
+    """
+
+    invariant = render_metadata.get("unified_render_invariant_audit")
+    if not isinstance(invariant, Mapping) or invariant.get("pass") is not True:
+        raise RuntimeError("Unified formal delivery lacks its invariant audit")
+    if owner_frame_id is None:
+        raise RuntimeError("Unified formal delivery lacks owner provenance")
+    assessment = _assess_publication(
+        capture_quality,
+        pose_quality,
+        render_metadata,
+        [frame.frame_id for frame in render_frames],
+    )
+    transforms_payload = pose_graph.as_dict()
+    transforms_payload["layout_selection"] = dict(layout_metadata)
+    transforms_payload["optional_edge_failures"] = [
+        dict(value) for value in optional_edge_failures
+    ]
+    transforms_payload["short_baseline_initialization"] = dict(short_baseline_audit)
+    transforms_payload["global_trajectory"] = _sanitized_diagnostic_trajectory(
+        orbslam3_trajectory, input_frame_count=len(render_frames)
+    )
+    render_transforms = {
+        "schema": "unified-calibrated-central-strip/v1",
+        "translation_unit": "mm",
+        "pixel_source": "calibrated_rgb_source_samples",
+        "depth_used_for_output_pixels": False,
+        "layout": render_metadata.get("layout"),
+        "rgb_motion_scale": render_metadata.get("rgb_motion_scale"),
+        "formal_render_trace": render_metadata.get("formal_render_trace"),
+        "unified_render_invariant_audit": dict(invariant),
+        "sources": [
+            {
+                "frame_id": frame.frame_id,
+                "color_path": str(frame.color_path),
+                "camera_to_world": pose.tolist(),
+            }
+            for frame, pose in zip(render_frames, render_poses, strict=True)
+        ],
+    }
+    report = {
+        "schema": "gemini305-unified-central-strip/v12-r1",
+        "input": str(args.input.expanduser().resolve()),
+        "panorama": str(output / "panorama.jpg"),
+        "report": str(output / "report.json"),
+        "diagnostic_only": False,
+        "deliverable_published": True,
+        "render_strategy": "unified_calibrated_central_strip",
+        "input_quality": dict(capture_quality),
+        "pose_quality": dict(pose_quality),
+        "pose_graph": transforms_payload,
+        "render": render_metadata,
+        "publication": assessment.as_dict(),
+        "delivery_state": assessment.delivery_state,
+        "strict_quality_pass": assessment.strict_quality_pass,
+        "strict_failure_reasons": list(assessment.strict_failure_reasons),
+        "quality_grade": assessment.quality_grade,
+        "handoff_fallback_summary": dict(assessment.handoff_fallback_summary),
+        "handoff_outcomes": [dict(value) for value in assessment.handoff_outcomes],
+        "manual_review_required": assessment.manual_review_required,
+        "tsdf_visualization": {
+            "status": "detached_not_used_for_rgb",
+            "stage": "deferred_until_v5_2_r6",
+        },
+        "elapsed_seconds": time.perf_counter() - started,
+    }
+    delivery = {
+        "schema": "gemini305-panorama-delivery/v12-r1",
+        "published_utc": datetime.now(timezone.utc).isoformat(),
+        "quality_pass": assessment.strict_quality_pass,
+        "delivery_state": assessment.delivery_state,
+        "strict_quality_pass": assessment.strict_quality_pass,
+        "strict_failure_reasons": list(assessment.strict_failure_reasons),
+        "quality_grade": assessment.quality_grade,
+        "handoff_fallback_summary": dict(assessment.handoff_fallback_summary),
+        "handoff_outcomes": [dict(value) for value in assessment.handoff_outcomes],
+        "manual_review_required": assessment.manual_review_required,
+        "renderer_backend": "unified_calibrated_central_strip/v1",
+        "formal_render_trace": render_metadata.get("formal_render_trace"),
+        "unified_render_invariant_audit": dict(invariant),
+        "pixel_provenance": {
+            "path": str(output / "pixel_provenance.npz"),
+            "schema": "owner-frame-id-r1",
+            "full_source_uv_deferred_until": "v5.2-r6",
+        },
+        "panorama": str(output / "panorama.jpg"),
+        "report": str(output / "report.json"),
+    }
+    pending_panorama = _write_bgr(output / ".panorama.pending.jpg", panorama)
+    pending_panorama_png = _write_bgr(output / ".panorama.pending.png", panorama)
+    pending_transforms = output / ".transforms.pending.json"
+    pending_render_transforms = output / ".render_transforms.pending.json"
+    pending_report = output / ".report.pending.json"
+    pending_delivery = output / ".delivery.pending.json"
+    pending_provenance = output / ".pixel_provenance.pending.npz"
+    np.savez_compressed(
+        pending_provenance,
+        rgb_source_frame_id=np.asarray(owner_frame_id, dtype=np.int32),
+    )
+    pending_transforms.write_text(json.dumps(transforms_payload, indent=2), encoding="utf-8")
+    pending_render_transforms.write_text(
+        json.dumps(render_transforms, indent=2), encoding="utf-8"
+    )
+    pending_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    pending_delivery.write_text(json.dumps(delivery, indent=2), encoding="utf-8")
+    os.replace(pending_panorama, output / "panorama.jpg")
+    os.replace(pending_panorama_png, output / "panorama.png")
+    os.replace(pending_transforms, output / "transforms.json")
+    os.replace(pending_render_transforms, output / "render_transforms.json")
+    os.replace(pending_provenance, output / "pixel_provenance.npz")
+    os.replace(pending_report, output / "report.json")
+    os.replace(pending_delivery, output / "delivery.json")
+    return report
+
+
 def _v4_owner_visualization(labels: np.ndarray, valid: np.ndarray) -> np.ndarray:
     """Return a deterministic false-colour audit view; black means no owner."""
 
@@ -5729,9 +5937,10 @@ def _run_pipeline(
             )
     local_apap_flow_config["enabled"] = local_apap_flow_enabled
     pushbroom_config["local_apap_flow"] = local_apap_flow_config
+    formal_unified = bool(pushbroom_config.get("unified_content_mode", False)) and not diagnostic_force
     inspection_result = None
     render_stage_started = time.perf_counter()
-    if diagnostic_force:
+    if diagnostic_force or formal_unified:
         pushbroom_result = render_calibrated_rgb_pushbroom(
             render_frames,
             render_poses,
@@ -5756,6 +5965,43 @@ def _run_pipeline(
                 render_frames, render_qualities, strict=True
             )
         }
+        if pushbroom_config.get("unified_content_mode") is True:
+            render_metadata["unified_render_invariant_audit"] = (
+                _unified_render_invariant_audit(
+                    render_metadata,
+                    pushbroom_result.owner_frame_id,
+                    frame_ids=[frame.frame_id for frame in render_frames],
+                )
+            )
+            render_metadata["formal_render_trace"] = {
+                "selected_renderer_backend": "unified_calibrated_central_strip/v1",
+                "called_renderer_functions": [
+                    "render_calibrated_rgb_pushbroom",
+                ],
+                "called_legacy_pixel_paths": [],
+                "rgb_composition_stage_count": 1,
+                "code_commit_sha": _git_commit_sha(),
+                "imported_package_path": str(Path(__file__).resolve()),
+                "effective_config_sha256": _config_sha256(args.config),
+            }
+        if formal_unified:
+            return _publish_unified_r1_delivery(
+                args=args,
+                output=output,
+                panorama=panorama,
+                render_metadata=render_metadata,
+                owner_frame_id=pushbroom_result.owner_frame_id,
+                capture_quality=capture_quality,
+                pose_quality=pose_quality,
+                render_frames=render_frames,
+                render_poses=render_poses,
+                pose_graph=pose_graph,
+                layout_metadata=layout_metadata,
+                optional_edge_failures=optional_edge_failures,
+                short_baseline_audit=short_baseline_audit,
+                orbslam3_trajectory=orbslam3_trajectory,
+                started=started,
+            )
         photometric_calibration = render_metadata.get(
             "photometric_calibration"
         )
