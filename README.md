@@ -1,5 +1,7 @@
 # Gemini 305 RGB-D 移动侧扫全景
 
+Python 集成请参阅完整的 [SDK 使用指南](docs/SDK.md)，其中包含安装、CUDA 可选加速、API 参考和示例；版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+
 正式方法名称为**基于轨迹约束的深度感知多视点侧扫拼接**
 （**Trajectory-Constrained Depth-Aware Multi-Viewpoint Side-Scan
 Mosaicing**）。当前正式实现以 ORB-SLAM3 RGB-D 的真实

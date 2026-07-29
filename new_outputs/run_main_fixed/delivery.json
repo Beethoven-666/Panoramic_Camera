@@ -1,0 +1,1556 @@
+{
+  "schema": "gemini305-panorama-delivery/v12-r1",
+  "published_utc": "2026-07-28T13:11:04.275193+00:00",
+  "quality_pass": false,
+  "delivery_state": "published_degraded",
+  "strict_quality_pass": false,
+  "strict_failure_reasons": [
+    "final render quality did not pass",
+    "final render: photometric identity hard-owner fallback used for adjacent pair(s): 0 (held_out_failed), 1 (held_out_failed), 2 (missing_rgbd_corridor_same_layer), 3 (held_out_failed), 4 (missing_rgbd_corridor_same_layer), 5 (held_out_failed), 6 (held_out_failed), 7 (held_out_failed), 8 (held_out_failed), 9 (missing_rgbd_corridor_same_layer), 10 (held_out_failed), 11 (held_out_failed), 12 (held_out_failed), 13 (missing_rgbd_corridor_same_layer), 14 (held_out_failed), 15 (missing_rgbd_corridor_same_layer), 16 (missing_rgbd_corridor_same_layer), 17 (missing_rgbd_corridor_same_layer), 18 (held_out_failed), 19 (missing_rgbd_corridor_same_layer), 20 (held_out_failed), 21 (held_out_failed), 22 (insufficient_usable), 23 (missing_rgbd_corridor_same_layer), 24 (missing_rgbd_corridor_same_layer), 25 (held_out_failed), 26 (held_out_failed), 27 (missing_rgbd_corridor_same_layer), 28 (held_out_failed), 29 (missing_rgbd_corridor_same_layer), 30 (missing_rgbd_corridor_same_layer), 31 (held_out_failed), 32 (held_out_failed), 33 (held_out_failed), 34 (held_out_failed), 35 (held_out_failed), 36 (held_out_failed), 37 (missing_rgbd_corridor_same_layer), 38 (held_out_failed), 39 (held_out_failed), 40 (held_out_failed), 41 (cross_tile_relation_inconsistent), 42 (cross_tile_relation_inconsistent), 43 (missing_rgbd_corridor_same_layer), 44 (held_out_failed), 45 (held_out_failed), 46 (missing_rgbd_corridor_same_layer), 47 (held_out_failed), 48 (missing_rgbd_corridor_same_layer), 49 (held_out_failed), 50 (missing_rgbd_corridor_same_layer), 51 (missing_rgbd_corridor_same_layer), 52 (cross_tile_relation_inconsistent), 53 (missing_rgbd_corridor_same_layer), 54 (missing_rgbd_corridor_same_layer), 55 (held_out_failed), 56 (held_out_failed), 57 (held_out_failed), 58 (missing_rgbd_corridor_same_layer), 59 (held_out_failed), 60 (missing_rgbd_corridor_same_layer), 61 (held_out_failed), 62 (missing_rgbd_corridor_same_layer), 63 (missing_rgbd_corridor_same_layer), 64 (held_out_failed), 65 (held_out_failed), 66 (missing_rgbd_corridor_same_layer), 67 (held_out_failed), 68 (missing_rgbd_corridor_same_layer), 69 (held_out_failed), 70 (cross_tile_relation_inconsistent), 71 (held_out_failed), 72 (held_out_failed), 73 (held_out_failed), 74 (held_out_failed), 75 (missing_rgbd_corridor_same_layer), 76 (missing_rgbd_corridor_same_layer), 77 (held_out_failed), 78 (missing_rgbd_corridor_same_layer), 79 (held_out_failed), 80 (held_out_failed), 81 (held_out_failed), 82 (missing_rgbd_corridor_same_layer), 83 (missing_rgbd_corridor_same_layer), 84 (missing_rgbd_corridor_same_layer), 85 (missing_rgbd_corridor_same_layer), 86 (missing_rgbd_corridor_same_layer), 87 (missing_rgbd_corridor_same_layer), 88 (held_out_failed), 89 (missing_rgbd_corridor_same_layer), 90 (held_out_failed), 91 (missing_rgbd_corridor_same_layer), 92 (held_out_failed), 93 (cross_tile_relation_inconsistent), 94 (held_out_failed), 95 (held_out_failed), 96 (held_out_failed), 97 (missing_rgbd_corridor_same_layer), 98 (held_out_failed), 99 (insufficient_tiles)",
+    "final render: real source retained its pose/remap but was fully covered by complete adjacent RGB owner topology: 46"
+  ],
+  "quality_grade": "C",
+  "handoff_fallback_summary": {
+    "anchor": 0,
+    "apap": 0,
+    "flow_mesh": 0,
+    "hard_cut": 100
+  },
+  "handoff_outcomes": [
+    {
+      "pair_index": 0,
+      "frame_ids": [
+        13,
+        14
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 1,
+      "frame_ids": [
+        14,
+        15
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 2,
+      "frame_ids": [
+        15,
+        16
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 3,
+      "frame_ids": [
+        16,
+        17
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 4,
+      "frame_ids": [
+        17,
+        18
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 5,
+      "frame_ids": [
+        18,
+        19
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 6,
+      "frame_ids": [
+        19,
+        20
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 7,
+      "frame_ids": [
+        20,
+        21
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 8,
+      "frame_ids": [
+        21,
+        22
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 9,
+      "frame_ids": [
+        22,
+        23
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 10,
+      "frame_ids": [
+        23,
+        24
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 11,
+      "frame_ids": [
+        24,
+        25
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 12,
+      "frame_ids": [
+        25,
+        26
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 13,
+      "frame_ids": [
+        26,
+        27
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 14,
+      "frame_ids": [
+        27,
+        28
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 15,
+      "frame_ids": [
+        28,
+        29
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 16,
+      "frame_ids": [
+        29,
+        30
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 17,
+      "frame_ids": [
+        30,
+        31
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 18,
+      "frame_ids": [
+        31,
+        32
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 19,
+      "frame_ids": [
+        32,
+        33
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 20,
+      "frame_ids": [
+        33,
+        34
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 21,
+      "frame_ids": [
+        34,
+        35
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 22,
+      "frame_ids": [
+        35,
+        36
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 23,
+      "frame_ids": [
+        36,
+        37
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 24,
+      "frame_ids": [
+        37,
+        38
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 25,
+      "frame_ids": [
+        38,
+        39
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 26,
+      "frame_ids": [
+        39,
+        40
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 27,
+      "frame_ids": [
+        40,
+        41
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 28,
+      "frame_ids": [
+        41,
+        42
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 29,
+      "frame_ids": [
+        42,
+        43
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 30,
+      "frame_ids": [
+        43,
+        44
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 31,
+      "frame_ids": [
+        44,
+        45
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 32,
+      "frame_ids": [
+        45,
+        46
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 33,
+      "frame_ids": [
+        46,
+        47
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 34,
+      "frame_ids": [
+        47,
+        48
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 35,
+      "frame_ids": [
+        48,
+        49
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 36,
+      "frame_ids": [
+        49,
+        50
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 37,
+      "frame_ids": [
+        50,
+        51
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 38,
+      "frame_ids": [
+        51,
+        52
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 39,
+      "frame_ids": [
+        52,
+        53
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 40,
+      "frame_ids": [
+        53,
+        54
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 41,
+      "frame_ids": [
+        54,
+        55
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 42,
+      "frame_ids": [
+        55,
+        56
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 43,
+      "frame_ids": [
+        56,
+        57
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 44,
+      "frame_ids": [
+        57,
+        58
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 45,
+      "frame_ids": [
+        58,
+        59
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 46,
+      "frame_ids": [
+        59,
+        60
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 47,
+      "frame_ids": [
+        60,
+        61
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 48,
+      "frame_ids": [
+        61,
+        62
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 49,
+      "frame_ids": [
+        62,
+        63
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 50,
+      "frame_ids": [
+        63,
+        64
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 51,
+      "frame_ids": [
+        64,
+        65
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 52,
+      "frame_ids": [
+        65,
+        66
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 53,
+      "frame_ids": [
+        66,
+        67
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 54,
+      "frame_ids": [
+        67,
+        68
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 55,
+      "frame_ids": [
+        68,
+        69
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 56,
+      "frame_ids": [
+        69,
+        70
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 57,
+      "frame_ids": [
+        70,
+        71
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 58,
+      "frame_ids": [
+        71,
+        72
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 59,
+      "frame_ids": [
+        72,
+        73
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 60,
+      "frame_ids": [
+        73,
+        74
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 61,
+      "frame_ids": [
+        74,
+        75
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 62,
+      "frame_ids": [
+        75,
+        76
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 63,
+      "frame_ids": [
+        76,
+        77
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 64,
+      "frame_ids": [
+        77,
+        78
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 65,
+      "frame_ids": [
+        78,
+        79
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 66,
+      "frame_ids": [
+        79,
+        80
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 67,
+      "frame_ids": [
+        80,
+        81
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 68,
+      "frame_ids": [
+        81,
+        82
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 69,
+      "frame_ids": [
+        82,
+        83
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 70,
+      "frame_ids": [
+        83,
+        84
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 71,
+      "frame_ids": [
+        84,
+        85
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 72,
+      "frame_ids": [
+        85,
+        86
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 73,
+      "frame_ids": [
+        86,
+        87
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 74,
+      "frame_ids": [
+        87,
+        88
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 75,
+      "frame_ids": [
+        88,
+        89
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 76,
+      "frame_ids": [
+        89,
+        90
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 77,
+      "frame_ids": [
+        90,
+        91
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 78,
+      "frame_ids": [
+        91,
+        92
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 79,
+      "frame_ids": [
+        92,
+        93
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 80,
+      "frame_ids": [
+        93,
+        94
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 81,
+      "frame_ids": [
+        94,
+        95
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 82,
+      "frame_ids": [
+        95,
+        96
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 83,
+      "frame_ids": [
+        96,
+        97
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 84,
+      "frame_ids": [
+        97,
+        98
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 85,
+      "frame_ids": [
+        98,
+        99
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 86,
+      "frame_ids": [
+        99,
+        100
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 87,
+      "frame_ids": [
+        100,
+        101
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 88,
+      "frame_ids": [
+        101,
+        102
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 89,
+      "frame_ids": [
+        102,
+        103
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 90,
+      "frame_ids": [
+        103,
+        104
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 91,
+      "frame_ids": [
+        104,
+        105
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 92,
+      "frame_ids": [
+        105,
+        106
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 93,
+      "frame_ids": [
+        106,
+        107
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 94,
+      "frame_ids": [
+        107,
+        108
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 95,
+      "frame_ids": [
+        108,
+        109
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 96,
+      "frame_ids": [
+        109,
+        110
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 97,
+      "frame_ids": [
+        110,
+        111
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "insufficient_same_layer_correspondences",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 98,
+      "frame_ids": [
+        111,
+        112
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    },
+    {
+      "pair_index": 99,
+      "frame_ids": [
+        112,
+        113
+      ],
+      "method": "hard_cut_degraded",
+      "structurally_safe": true,
+      "audit_complete": true,
+      "reason": "rgb_preview_below_geometry_trigger",
+      "foreground_owner_handoff_count": 0,
+      "foreground_owner_handoff_audit_complete_count": 0,
+      "foreground_owner_handoff_owner_only_count": 0,
+      "foreground_owner_handoff_hard_owner_fallback_count": 0
+    }
+  ],
+  "manual_review_required": true,
+  "renderer_backend": "unified_calibrated_central_strip/v1",
+  "formal_render_trace": {
+    "selected_renderer_backend": "unified_calibrated_central_strip/v1",
+    "called_renderer_functions": [
+      "render_calibrated_rgb_pushbroom"
+    ],
+    "called_legacy_pixel_paths": [],
+    "rgb_composition_stage_count": 1,
+    "code_commit_sha": "d19322ae7c359ef555fa27f7e051e2ab80db7f08",
+    "imported_package_path": "D:\\central_strip_Panoramic_Camera\\src\\panorama_demo\\stitch_sequence.py",
+    "effective_config_sha256": "5e5eb1937eec6f8f4627994d2e8a218da2cab6a6991137efefdf8843d3ebc240"
+  },
+  "unified_render_invariant_audit": {
+    "formal_renderer_count": 1,
+    "formal_renderer_backend": "unified_calibrated_central_strip/v1",
+    "target_coordinate_map_count": 1,
+    "valid_mask_count": 1,
+    "owner_map_count": 1,
+    "post_background_overlay_pixel_count": 0,
+    "world_object_sampling_pixel_count": 0,
+    "deprecated_renderer_call_count": 0,
+    "foreground_anchor_reservation_count": 0,
+    "foreground_anchor_handoff_retirement_count": 0,
+    "foreground_deformation_pixel_count": 0,
+    "owner_source_frame_count": 100,
+    "pass": true
+  },
+  "pixel_provenance": {
+    "path": "D:\\central_strip_Panoramic_Camera\\new_outputs\\run_main_fixed\\pixel_provenance.npz",
+    "schema": "owner-frame-id-r1",
+    "full_source_uv_deferred_until": "v5.2-r6"
+  },
+  "panorama": "D:\\central_strip_Panoramic_Camera\\new_outputs\\run_main_fixed\\panorama.jpg",
+  "report": "D:\\central_strip_Panoramic_Camera\\new_outputs\\run_main_fixed\\report.json"
+}

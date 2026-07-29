@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gemini305-rgbd-panorama"
 dynamic = ["version"]
-description = "Fail-closed Gemini 305 RGB-D side-scan panorama pipeline"
+description = "Gemini 305 RGB-D panorama SDK"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [
@@ -18,22 +18,10 @@ dependencies = [
 
 [project.optional-dependencies]
 capture = ["pyorbbecsdk2>=2.1.1"]
-test = ["pytest>=8.0"]
 cuda13 = ["cupy-cuda13x>=14.1,<15"]
-unistitch-diagnostic = [
-    "kornia>=0.7",
-    "torch>=2.1",
-    "torchvision>=0.16",
-]
 
 [project.scripts]
-g305-capture = "panorama_demo.capture_orbbec:main"
 g305-panorama = "panorama_demo.stitch_sequence:main"
-g305-central-strip-diagnostic = "panorama_demo.central_strip_diagnostic:main"
-g305-geometry-pair-diagnostic = "panorama_demo.geometry_pair_diagnostic:main"
-g305-foreground-deformation-diagnostic = "panorama_demo.foreground_deformation_diagnostic:main"
-unistitch-pair = "panorama_demo.stitch_pair:main"
-unistitch-sequence = "panorama_demo.stitch_sequence:main"
 generate-panorama-demo = "panorama_demo.synthetic:main"
 
 [tool.setuptools.packages.find]
@@ -41,7 +29,3 @@ where = ["src"]
 
 [tool.setuptools.dynamic]
 version = {attr = "panorama_demo.version.__version__"}
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-ra"
