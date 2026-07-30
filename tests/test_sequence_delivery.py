@@ -1066,6 +1066,7 @@ def test_structurally_valid_poor_pose_quality_publishes_degraded(
         "_export_display_only_tsdf_mesh",
         lambda *args, **kwargs: (
             _test_glb("degraded-delivery-test"),
+            _test_glb("degraded-delivery-mobile-test"),
             {
                 "backend": "fake_tsdf_display_only",
                 "display_only": True,
@@ -1097,11 +1098,15 @@ def test_structurally_valid_poor_pose_quality_publishes_degraded(
         "display_only": True,
         "participates_in_panorama": False,
         "mesh": "tsdf_mesh.glb",
+        "mobile_mesh": "tsdf_mesh_mobile.glb",
         "viewer": "tsdf_mesh_viewer.html",
     }
     assert delivery["tsdf_visualization"] == visualization
     assert (output / "tsdf_mesh.glb").read_bytes() == _test_glb(
         "degraded-delivery-test"
+    )
+    assert (output / "tsdf_mesh_mobile.glb").read_bytes() == _test_glb(
+        "degraded-delivery-mobile-test"
     )
     assert 'src="tsdf_mesh.glb"' in (
         output / "tsdf_mesh_viewer.html"
@@ -1119,6 +1124,7 @@ def test_nonempty_invalid_tsdf_glb_fails_closed(
         sequence,
         "_export_display_only_tsdf_mesh",
         lambda *args, **kwargs: (
+            b"glTF" + b"not-a-valid-glb" * 2,
             b"glTF" + b"not-a-valid-glb" * 2,
             {
                 "backend": "fake_tsdf_display_only",

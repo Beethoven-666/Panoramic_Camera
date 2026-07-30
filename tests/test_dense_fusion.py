@@ -13,6 +13,7 @@ import panorama_demo.dense_fusion as dense_fusion
 from panorama_demo.dense_fusion import (
     DenseFusionConfig,
     DisplayOnlyTSDFUniqueBlockEstimate,
+    _UVTextureBake,
     _crop_dense_result,
     _depth_point_foreground_overlay,
     _integrate_tsdf_tensor_cuda,
@@ -175,6 +176,26 @@ def test_tsdf_mesh_export_is_a_standard_coloured_glb() -> None:
     primitive = payload["meshes"][0]["primitives"][0]
     assert primitive["attributes"] == {"POSITION": 0, "NORMAL": 1, "COLOR_0": 2}
     assert primitive["indices"] == 3
+
+
+def test_uv_textured_glb_embeds_png_and_omits_tsdf_vertex_colours() -> None:
+    bake = _UVTextureBake(
+        vertices=np.asarray(_TriangleMesh.vertices, dtype=np.float32),
+        triangles=np.asarray(_TriangleMesh.triangles, dtype=np.uint32),
+        normals=np.asarray(_TriangleMesh.vertex_normals, dtype=np.float32),
+        uvs=np.asarray(((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)), dtype=np.float32),
+        png=b"\x89PNG\r\n\x1a\nfixture",
+        audit={},
+    )
+    glb = _mesh_to_glb(_TriangleMesh(), uv_texture=bake)
+    json_length, _ = struct.unpack("<II", glb[12:20])
+    payload = json.loads(glb[20 : 20 + json_length])
+
+    primitive = payload["meshes"][0]["primitives"][0]
+    assert primitive["attributes"] == {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}
+    assert "COLOR_0" not in primitive["attributes"]
+    assert payload["images"] == [{"bufferView": 4, "mimeType": "image/png"}]
+    assert payload["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] == {"index": 0}
 
 
 def test_cuda_capacity_plan_preserves_default_five_mm_short_scan() -> None:

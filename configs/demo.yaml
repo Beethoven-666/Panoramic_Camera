@@ -195,7 +195,20 @@ stitch:
     enabled: true
     voxel_length_mm: 5.0
     sdf_truncation_mm: 20.0
-    maximum_depth_mm: 10000.0
+    minimum_depth_mm: 450.0
+    maximum_depth_mm: 1250.0
+    depth_consistency_floor_mm: 20.0
+    depth_consistency_relative: 0.02
+    minimum_cross_view_support: 1
+    desktop_triangle_target: 200000
+    mobile_triangle_target: 200000
+    desktop_texture_size_px: 4096
+    mobile_texture_size_px: 2048
+    texture_source_views: 5
+    # RGB-D TSDF fusion colour: Open3D fuses each aligned RGB sample into the
+    # same volume as depth, producing the continuous COLOR_0 model used by
+    # the reference Viewer.
+    colour_mode: rgbd_tsdf_vertex_colour
     cuda_gpu_byte_budget: 2500000000
     cuda_block_resolution: 16
     cuda_unique_block_depth_stride: 8

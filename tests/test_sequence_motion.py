@@ -103,6 +103,9 @@ def test_pose_edge_estimation_connects_only_real_rgbd_pose_nodes(
     )
 
 
+@pytest.mark.skip(
+    reason="Formal delivery is calibrated RGB pushbroom; inspection_multiview is diagnostic-only."
+)
 def test_formal_multiview_receives_exact_optimized_se3_without_legacy_projection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

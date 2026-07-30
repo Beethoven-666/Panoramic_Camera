@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import math
 import struct
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -230,7 +231,20 @@ class TSDFMeshVisualizationConfig:
     enabled: bool = True
     voxel_length_mm: float = 5.0
     sdf_truncation_mm: float = 20.0
-    maximum_depth_mm: float = 10000.0
+    # This is an inspection asset, but its geometry must remain bounded to the
+    # physically useful Gemini 305 range for the side-scan.  A ten metre
+    # truncation turns sparse invalid returns into floating TSDF fragments.
+    minimum_depth_mm: float = 450.0
+    maximum_depth_mm: float = 1250.0
+    depth_consistency_floor_mm: float = 20.0
+    depth_consistency_relative: float = 0.02
+    minimum_cross_view_support: int = 1
+    desktop_triangle_target: int = 200_000
+    mobile_triangle_target: int = 200_000
+    desktop_texture_size_px: int = 4096
+    mobile_texture_size_px: int = 2048
+    texture_source_views: int = 5
+    colour_mode: str = "rgbd_tsdf_vertex_colour"
     cuda_gpu_byte_budget: int = 2_500_000_000
     cuda_block_resolution: int = 16
     cuda_unique_block_depth_stride: int = 8
@@ -254,7 +268,10 @@ class TSDFMeshVisualizationConfig:
         for name, number in (
             ("voxel_length_mm", config.voxel_length_mm),
             ("sdf_truncation_mm", config.sdf_truncation_mm),
+            ("minimum_depth_mm", config.minimum_depth_mm),
             ("maximum_depth_mm", config.maximum_depth_mm),
+            ("depth_consistency_floor_mm", config.depth_consistency_floor_mm),
+            ("depth_consistency_relative", config.depth_consistency_relative),
             (
                 "cuda_unique_block_safety_factor",
                 config.cuda_unique_block_safety_factor,
@@ -266,6 +283,44 @@ class TSDFMeshVisualizationConfig:
         if config.sdf_truncation_mm < config.voxel_length_mm:
             raise ValueError(
                 "tsdf_visualization.sdf_truncation_mm must cover one voxel"
+            )
+        if config.maximum_depth_mm <= config.minimum_depth_mm:
+            raise ValueError(
+                "tsdf_visualization.maximum_depth_mm must exceed minimum_depth_mm"
+            )
+        if not 0.0 < config.depth_consistency_relative <= 0.10:
+            raise ValueError(
+                "tsdf_visualization.depth_consistency_relative must be in (0, .10]"
+            )
+        if config.minimum_cross_view_support != 1:
+            raise ValueError(
+                "tsdf_visualization.minimum_cross_view_support is fixed at 1 "
+                "(current frame plus one adjacent real view)"
+            )
+        if not 200_000 <= config.desktop_triangle_target <= 1_000_000:
+            raise ValueError(
+                "tsdf_visualization.desktop_triangle_target must be in [200000, 1000000]"
+            )
+        if not 150_000 <= config.mobile_triangle_target <= 250_000:
+            raise ValueError(
+                "tsdf_visualization.mobile_triangle_target must be in [150000, 250000]"
+            )
+        for name, number in (
+            ("desktop_texture_size_px", config.desktop_texture_size_px),
+            ("mobile_texture_size_px", config.mobile_texture_size_px),
+        ):
+            if number not in {1024, 2048, 4096}:
+                raise ValueError(
+                    f"tsdf_visualization.{name} must be 1024, 2048, or 4096"
+                )
+        if not 3 <= config.texture_source_views <= 5:
+            raise ValueError(
+                "tsdf_visualization.texture_source_views must be in [3, 5]"
+            )
+        if config.colour_mode not in {"rgbd_tsdf_vertex_colour", "projective_uv_real_rgb"}:
+            raise ValueError(
+                "tsdf_visualization.colour_mode must be rgbd_tsdf_vertex_colour "
+                "or projective_uv_real_rgb"
             )
         for name, number in (
             ("cuda_gpu_byte_budget", config.cuda_gpu_byte_budget),
@@ -879,6 +934,98 @@ def _camera_to_world_m(camera_to_world_mm: np.ndarray) -> np.ndarray:
     return pose
 
 
+def _display_depth_filter(
+    frames: Sequence[RGBDFrame],
+    poses: Sequence[np.ndarray],
+    intrinsics: PinholeIntrinsics,
+    maps: tuple[np.ndarray, np.ndarray] | None,
+    config: TSDFMeshVisualizationConfig,
+) -> tuple[list[np.ndarray], dict[str, object]]:
+    """Remove only isolated, single-view depth returns for display TSDF.
+
+    No holes are filled and no median blur is applied.  A pixel is accepted by
+    a neighbouring real pose when its reprojected z value agrees within the
+    documented ``max(20 mm, 2%)`` tolerance.  A locally continuous one-view
+    trace stays intact; this is intentionally conservative for hoses and wire.
+    """
+    if len(frames) != len(poses) or not frames:
+        raise ValueError("Display TSDF depth filtering requires aligned frames and poses")
+    decoded: list[np.ndarray] = []
+    base_valid: list[np.ndarray] = []
+    for frame in frames:
+        _color = _decode_color(frame.color_path)
+        depth = read_aligned_depth_mm(frame)
+        _, depth, undistort_valid = _undistort(_color, depth, maps)
+        valid = (
+            undistort_valid & np.isfinite(depth) &
+            (depth >= config.minimum_depth_mm) &
+            (depth <= config.maximum_depth_mm)
+        )
+        decoded.append(np.where(valid, depth, 0.0).astype(np.float32))
+        base_valid.append(valid)
+
+    height, width = decoded[0].shape
+    yy, xx = np.indices((height, width), dtype=np.float64)
+    support_counts = [np.zeros((height, width), dtype=np.uint8) for _ in frames]
+    k = intrinsics.matrix
+    k_inv = np.linalg.inv(k)
+    rays = k_inv @ np.stack((xx.ravel(), yy.ravel(), np.ones(xx.size)), axis=0)
+    for source_index, (depth, valid) in enumerate(zip(decoded, base_valid, strict=True)):
+        ids = np.flatnonzero(valid.ravel())
+        if not len(ids):
+            continue
+        camera_points = rays[:, ids] * depth.ravel()[ids]
+        world = np.asarray(poses[source_index], dtype=np.float64)[:3, :3] @ camera_points
+        world += np.asarray(poses[source_index], dtype=np.float64)[:3, 3:4]
+        for target_index in (source_index - 1, source_index + 1):
+            if target_index < 0 or target_index >= len(frames):
+                continue
+            target_pose = np.asarray(poses[target_index], dtype=np.float64)
+            target_camera = target_pose[:3, :3].T @ (world - target_pose[:3, 3:4])
+            z = target_camera[2]
+            u = np.rint(intrinsics.fx * target_camera[0] / z + intrinsics.cx).astype(np.int64)
+            v = np.rint(intrinsics.fy * target_camera[1] / z + intrinsics.cy).astype(np.int64)
+            inside = (z > 0.0) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
+            if not np.any(inside):
+                continue
+            source_ids = ids[inside]
+            observed = decoded[target_index][v[inside], u[inside]]
+            predicted = z[inside]
+            tolerance = np.maximum(config.depth_consistency_floor_mm, config.depth_consistency_relative * predicted)
+            agreed = (observed > 0.0) & (np.abs(observed - predicted) <= tolerance)
+            support_counts[source_index].ravel()[source_ids[agreed]] += 1
+
+    filtered: list[np.ndarray] = []
+    total_input = total_kept = total_removed = total_cross_view = total_continuous = 0
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    kernel[1, 1] = 0
+    for depth, valid, support in zip(decoded, base_valid, support_counts, strict=True):
+        local_neighbours = cv2.filter2D(valid.astype(np.uint8), -1, kernel, borderType=cv2.BORDER_CONSTANT)
+        # A one-pixel return with neither geometric nor local support is a
+        # flying pixel.  Do not apply a component-area threshold: a continuous
+        # slender feature is precisely the kind of geometry this export keeps.
+        isolated = valid & (support < config.minimum_cross_view_support) & (local_neighbours <= 1)
+        kept = valid & ~isolated
+        filtered.append(np.where(kept, depth, 0.0).astype(np.float32))
+        total_input += int(np.count_nonzero(valid))
+        total_kept += int(np.count_nonzero(kept))
+        total_removed += int(np.count_nonzero(isolated))
+        total_cross_view += int(np.count_nonzero(valid & (support >= 1)))
+        total_continuous += int(np.count_nonzero(kept & (support < 1)))
+    return filtered, {
+        "depth_range_mm": [config.minimum_depth_mm, config.maximum_depth_mm],
+        "depth_consistency_tolerance": "max(20 mm, 2% * predicted_depth_mm)",
+        "input_valid_pixel_count": total_input,
+        "cross_view_supported_pixel_count": total_cross_view,
+        "continuous_single_view_pixel_count": total_continuous,
+        "removed_single_view_isolated_pixel_count": total_removed,
+        "kept_pixel_count": total_kept,
+        "hole_filling": False,
+        "strong_median_filter": False,
+        "uses_real_adjacent_orbslam3_poses": True,
+    }
+
+
 def _integrate_tsdf(
     all_frames: Sequence[RGBDFrame],
     all_poses: Sequence[np.ndarray],
@@ -901,6 +1048,7 @@ def _integrate_tsdf_with_audit(
     *,
     cuda_capacity_plan: DisplayOnlyTSDFCudaCapacityPlan | None = None,
     cuda_unique_block_estimate: Mapping[str, object] | None = None,
+    filtered_depths: Sequence[np.ndarray] | None = None,
 ) -> tuple[Any, dict[str, object]]:
     if len(all_frames) != len(all_poses) or not all_frames:
         raise ValueError("Dense TSDF inputs must contain aligned frames and poses")
@@ -948,7 +1096,7 @@ def _integrate_tsdf_with_audit(
             intrinsics,
             maps,
             config,
-            capacity_plan=cuda_capacity_plan,
+            capacity_plan=cuda_capacity_plan, filtered_depths=filtered_depths,
         )
         return mesh, {
             "backend": "open3d_tensor_cuda_voxel_block_grid_display_only",
@@ -975,7 +1123,7 @@ def _integrate_tsdf_with_audit(
             **cuda_details,
         }
     mesh = _integrate_tsdf_legacy_cpu(
-        o3d, all_frames, all_poses, intrinsics, maps, config
+        o3d, all_frames, all_poses, intrinsics, maps, config, filtered_depths=filtered_depths
     )
     return mesh, {
         "backend": "open3d_scalable_tsdf_cpu_display_only",
@@ -1000,6 +1148,7 @@ def _integrate_tsdf_legacy_cpu(
     intrinsics: PinholeIntrinsics,
     maps: tuple[np.ndarray, np.ndarray] | None,
     config: DenseFusionConfig,
+    *, filtered_depths: Sequence[np.ndarray] | None = None,
 ) -> Any:
     volume = o3d.pipelines.integration.ScalableTSDFVolume(
         voxel_length=config.voxel_length_mm / 1000.0,
@@ -1007,10 +1156,12 @@ def _integrate_tsdf_legacy_cpu(
         color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8,
     )
     intrinsic = _open3d_intrinsics(o3d, intrinsics)
-    for frame, pose in zip(all_frames, all_poses, strict=True):
+    for index, (frame, pose) in enumerate(zip(all_frames, all_poses, strict=True)):
         color = _decode_color(frame.color_path)
         depth = read_aligned_depth_mm(frame)
         color, depth, undistort_valid = _undistort(color, depth, maps)
+        if filtered_depths is not None:
+            depth = np.asarray(filtered_depths[index], dtype=np.float32)
         bounded_depth = np.where(
             undistort_valid
             & np.isfinite(depth)
@@ -1045,6 +1196,7 @@ def _integrate_tsdf_tensor_cuda(
     config: DenseFusionConfig,
     *,
     capacity_plan: DisplayOnlyTSDFCudaCapacityPlan | None = None,
+    filtered_depths: Sequence[np.ndarray] | None = None,
 ) -> tuple[Any, dict[str, object]]:
     """Integrate display-only TSDF on an Open3D CUDA tensor build.
 
@@ -1096,10 +1248,12 @@ def _integrate_tsdf_tensor_cuda(
     truncation_multiplier = (
         config.sdf_truncation_mm / voxel_length_mm
     )
-    for frame, pose in zip(all_frames, all_poses, strict=True):
+    for index, (frame, pose) in enumerate(zip(all_frames, all_poses, strict=True)):
         color = _decode_color(frame.color_path)
         depth = read_aligned_depth_mm(frame)
         color, depth, undistort_valid = _undistort(color, depth, maps)
+        if filtered_depths is not None:
+            depth = np.asarray(filtered_depths[index], dtype=np.float32)
         bounded_depth = np.where(
             undistort_valid
             & np.isfinite(depth)
@@ -1167,11 +1321,76 @@ def _integrate_tsdf_tensor_cuda(
     return mesh, details
 
 
-def _mesh_to_glb(mesh: Any) -> bytes:
+@dataclass(frozen=True)
+class _UVTextureBake:
+    """glTF-ready UV geometry and an embedded PNG atlas."""
+
+    vertices: np.ndarray
+    triangles: np.ndarray
+    normals: np.ndarray
+    uvs: np.ndarray
+    png: bytes
+    audit: dict[str, object]
+
+
+@dataclass(frozen=True)
+class _ProjectiveTextureBake:
+    """glTF geometry whose UVs address tiles containing real camera RGB."""
+
+    vertices: np.ndarray
+    normals: np.ndarray
+    colours: np.ndarray
+    uvs: np.ndarray
+    page_indices: tuple[np.ndarray, ...]
+    png_pages: tuple[bytes, ...]
+    audit: dict[str, object]
+    image_mime_type: str = "image/png"
+
+
+@dataclass(frozen=True)
+class _GLTFVertexColourMesh:
+    """Small mesh protocol adapter for the COLOR_0 glTF encoder."""
+
+    vertices: np.ndarray
+    triangles: np.ndarray
+    vertex_normals: np.ndarray
+    vertex_colors: np.ndarray
+
+    def has_vertex_normals(self) -> bool:
+        return True
+
+
+def _projective_filtered_vertex_colour_mesh(
+    texture: _ProjectiveTextureBake,
+) -> _GLTFVertexColourMesh:
+    """Keep projectively verified geometry but expose fused TSDF RGB as COLOR_0."""
+    indices = np.concatenate(texture.page_indices).reshape(-1, 3)
+    return _GLTFVertexColourMesh(
+        vertices=np.asarray(texture.vertices, dtype=np.float32),
+        triangles=np.asarray(indices, dtype=np.uint32),
+        vertex_normals=np.asarray(texture.normals, dtype=np.float32),
+        vertex_colors=np.asarray(texture.colours, dtype=np.float32),
+    )
+
+
+def _mesh_to_glb(
+    mesh: Any,
+    *,
+    uv_texture: _UVTextureBake | _ProjectiveTextureBake | None = None,
+) -> bytes:
     """Encode a TSDF mesh with the Open3D RGB-D axes converted to glTF axes."""
 
-    vertices = np.asarray(mesh.vertices, dtype=np.float32)
-    triangles = np.asarray(mesh.triangles, dtype=np.int64)
+    if isinstance(uv_texture, _ProjectiveTextureBake):
+        return _projective_texture_to_glb(uv_texture)
+
+    vertices = (
+        np.asarray(mesh.vertices, dtype=np.float32)
+        if uv_texture is None else np.asarray(uv_texture.vertices, dtype=np.float32)
+    )
+    triangles = (
+        np.asarray(mesh.triangles, dtype=np.int64)
+        if uv_texture is None else np.asarray(uv_texture.triangles, dtype=np.int64)
+    )
     if vertices.ndim != 2 or vertices.shape[1] != 3 or not len(vertices):
         raise RuntimeError("TSDF mesh has no exportable vertices")
     if triangles.ndim != 2 or triangles.shape[1] != 3 or not len(triangles):
@@ -1181,9 +1400,12 @@ def _mesh_to_glb(mesh: Any) -> bytes:
     if int(triangles.max()) >= len(vertices):
         raise RuntimeError("TSDF mesh triangle index exceeds vertex count")
 
-    if not mesh.has_vertex_normals():
+    if uv_texture is None and not mesh.has_vertex_normals():
         mesh.compute_vertex_normals()
-    normals = np.asarray(mesh.vertex_normals, dtype=np.float32)
+    normals = (
+        np.asarray(mesh.vertex_normals, dtype=np.float32)
+        if uv_texture is None else np.asarray(uv_texture.normals, dtype=np.float32)
+    )
     if normals.shape != vertices.shape or not np.isfinite(normals).all():
         raise RuntimeError("TSDF mesh has no finite vertex normals")
     colors = np.asarray(mesh.vertex_colors, dtype=np.float64)
@@ -1209,7 +1431,12 @@ def _mesh_to_glb(mesh: Any) -> bytes:
 
     position_view = append_view(vertices, 34962)
     normal_view = append_view(normals, 34962)
-    color_view = append_view(colors_u8, 34962)
+    color_view = None if uv_texture is not None else append_view(colors_u8, 34962)
+    uv_view = (
+        None
+        if uv_texture is None
+        else append_view(np.asarray(uv_texture.uvs, dtype=np.float32), 34962)
+    )
     index_view = append_view(indices, 34963)
     index_component_type = 5123 if index_dtype is np.uint16 else 5125
     accessors: list[dict[str, object]] = [
@@ -1227,13 +1454,19 @@ def _mesh_to_glb(mesh: Any) -> bytes:
             "count": int(len(normals)),
             "type": "VEC3",
         },
-        {
+        *([] if uv_texture is not None else [{
             "bufferView": color_view,
             "componentType": 5121,
             "normalized": True,
             "count": int(len(colors_u8)),
             "type": "VEC3",
-        },
+        }]),
+        *([] if uv_texture is None else [{
+            "bufferView": uv_view,
+            "componentType": 5126,
+            "count": int(len(uv_texture.uvs)),
+            "type": "VEC2",
+        }]),
         {
             "bufferView": index_view,
             "componentType": index_component_type,
@@ -1241,6 +1474,13 @@ def _mesh_to_glb(mesh: Any) -> bytes:
             "type": "SCALAR",
         },
     ]
+    primitive_attributes: dict[str, int] = {"POSITION": 0, "NORMAL": 1}
+    if uv_texture is None:
+        primitive_attributes["COLOR_0"] = 2
+        index_accessor = 3
+    else:
+        primitive_attributes["TEXCOORD_0"] = 2
+        index_accessor = 3
     document: dict[str, object] = {
         "asset": {"version": "2.0", "generator": "gemini305-rgbd-panorama"},
         "scene": 0,
@@ -1260,8 +1500,8 @@ def _mesh_to_glb(mesh: Any) -> bytes:
                 "name": "tsdf_mesh",
                 "primitives": [
                     {
-                        "attributes": {"POSITION": 0, "NORMAL": 1, "COLOR_0": 2},
-                        "indices": 3,
+                        "attributes": primitive_attributes,
+                        "indices": index_accessor,
                         "material": 0,
                         "mode": 4,
                     }
@@ -1274,6 +1514,7 @@ def _mesh_to_glb(mesh: Any) -> bytes:
                     "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
                     "metallicFactor": 0.0,
                     "roughnessFactor": 1.0,
+                    **({"baseColorTexture": {"index": 0}} if uv_texture is not None else {}),
                 },
                 "doubleSided": True,
             }
@@ -1282,6 +1523,18 @@ def _mesh_to_glb(mesh: Any) -> bytes:
         "bufferViews": buffer_views,
         "accessors": accessors,
     }
+    if uv_texture is not None:
+        while len(binary) % 4:
+            binary.append(0)
+        texture_offset = len(binary)
+        binary.extend(uv_texture.png)
+        buffer_views.append(
+            {"buffer": 0, "byteOffset": texture_offset, "byteLength": len(uv_texture.png)}
+        )
+        document["images"] = [{"bufferView": len(buffer_views) - 1, "mimeType": "image/png"}]
+        document["textures"] = [{"source": 0, "sampler": 0}]
+        document["samplers"] = [{"magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071}]
+    document["buffers"] = [{"byteLength": len(binary)}]
     json_chunk = json.dumps(document, separators=(",", ":")).encode("utf-8")
     json_chunk += b" " * ((-len(json_chunk)) % 4)
     binary_chunk = bytes(binary)
@@ -1298,13 +1551,524 @@ def _mesh_to_glb(mesh: Any) -> bytes:
     )
 
 
+def _projective_texture_to_glb(texture: _ProjectiveTextureBake) -> bytes:
+    """Encode a multi-page, source-image projective texture GLB.
+
+    Unlike a vertex-colour or per-triangle atlas, a UV refers directly to an
+    undistorted RGB camera tile.  Each primitive only addresses one texture
+    page, while its triangles may use different camera tiles on that page.
+    """
+    vertices = np.asarray(texture.vertices, dtype=np.float32)
+    normals = np.asarray(texture.normals, dtype=np.float32)
+    uvs = np.asarray(texture.uvs, dtype=np.float32)
+    if vertices.ndim != 2 or vertices.shape[1] != 3 or not len(vertices):
+        raise RuntimeError("Projective texture has no exportable vertices")
+    if normals.shape != vertices.shape or uvs.shape != (len(vertices), 2):
+        raise RuntimeError("Projective texture attributes have incompatible shapes")
+    if not np.isfinite(vertices).all() or not np.isfinite(normals).all() or not np.isfinite(uvs).all():
+        raise RuntimeError("Projective texture contains non-finite attributes")
+    if not texture.page_indices or len(texture.page_indices) != len(texture.png_pages):
+        raise RuntimeError("Projective texture has no matching image pages")
+
+    binary = bytearray()
+    buffer_views: list[dict[str, int]] = []
+
+    def append_view(values: np.ndarray | bytes, target: int | None = None) -> int:
+        while len(binary) % 4:
+            binary.append(0)
+        offset = len(binary)
+        encoded = values if isinstance(values, bytes) else np.ascontiguousarray(values).tobytes()
+        binary.extend(encoded)
+        view: dict[str, int] = {"buffer": 0, "byteOffset": offset, "byteLength": len(encoded)}
+        if target is not None:
+            view["target"] = target
+        buffer_views.append(view)
+        return len(buffer_views) - 1
+
+    position_view = append_view(vertices, 34962)
+    normal_view = append_view(normals, 34962)
+    uv_view = append_view(uvs, 34962)
+    accessors: list[dict[str, object]] = [
+        {"bufferView": position_view, "componentType": 5126, "count": int(len(vertices)), "type": "VEC3", "min": vertices.min(axis=0).astype(float).tolist(), "max": vertices.max(axis=0).astype(float).tolist()},
+        {"bufferView": normal_view, "componentType": 5126, "count": int(len(normals)), "type": "VEC3"},
+        {"bufferView": uv_view, "componentType": 5126, "count": int(len(uvs)), "type": "VEC2"},
+    ]
+    primitives: list[dict[str, object]] = []
+    for page, page_index_values in enumerate(texture.page_indices):
+        indices64 = np.asarray(page_index_values, dtype=np.int64).reshape(-1)
+        if not len(indices64) or np.any(indices64 < 0) or int(indices64.max()) >= len(vertices):
+            raise RuntimeError("Projective texture page has invalid triangle indices")
+        dtype = np.uint16 if int(indices64.max()) <= np.iinfo(np.uint16).max else np.uint32
+        index_view = append_view(indices64.astype(dtype), 34963)
+        index_accessor = len(accessors)
+        accessors.append({"bufferView": index_view, "componentType": 5123 if dtype is np.uint16 else 5125, "count": int(len(indices64)), "type": "SCALAR"})
+        primitives.append({"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "indices": index_accessor, "material": page, "mode": 4})
+    image_views = [append_view(page) for page in texture.png_pages]
+    document: dict[str, object] = {
+        "asset": {"version": "2.0", "generator": "gemini305-rgbd-panorama"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0, "name": "Gemini 305 TSDF mesh", "rotation": [1.0, 0.0, 0.0, 0.0]}],
+        "meshes": [{"name": "tsdf_mesh", "primitives": primitives}],
+        "materials": [{"pbrMetallicRoughness": {"baseColorFactor": [1.0, 1.0, 1.0, 1.0], "baseColorTexture": {"index": page}, "metallicFactor": 0.0, "roughnessFactor": 1.0}, "doubleSided": True} for page in range(len(texture.png_pages))],
+        "images": [{"bufferView": view, "mimeType": texture.image_mime_type} for view in image_views],
+        "textures": [{"source": page, "sampler": 0} for page in range(len(texture.png_pages))],
+        "samplers": [{"magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071}],
+        "buffers": [{"byteLength": len(binary)}],
+        "bufferViews": buffer_views,
+        "accessors": accessors,
+    }
+    json_chunk = json.dumps(document, separators=(",", ":")).encode("utf-8")
+    json_chunk += b" " * ((-len(json_chunk)) % 4)
+    binary_chunk = bytes(binary) + b"\x00" * ((-len(binary)) % 4)
+    total_length = 12 + 8 + len(json_chunk) + 8 + len(binary_chunk)
+    return b"".join((struct.pack("<4sII", b"glTF", 2, total_length), struct.pack("<I4s", len(json_chunk), b"JSON"), json_chunk, struct.pack("<I4s", len(binary_chunk), b"BIN\x00"), binary_chunk))
+
+
+def _clean_display_mesh(mesh: Any) -> tuple[Any, dict[str, object]]:
+    """Apply conservative topology cleanup without an area-only cull."""
+    before_triangles = int(len(mesh.triangles))
+    before_vertices = int(len(mesh.vertices))
+    # Open3D's cleanup operations are exact topology repairs, not smoothing or
+    # geometry inference.  They are safe for thin observed structures.
+    # The small mesh doubles in pure serialization tests deliberately expose
+    # only the glTF-facing protocol.  Real Open3D meshes provide all methods.
+    for name in (
+        "remove_non_manifold_edges",
+        "remove_duplicated_vertices",
+        "remove_duplicated_triangles",
+        "remove_degenerate_triangles",
+        "remove_unreferenced_vertices",
+    ):
+        method = getattr(mesh, name, None)
+        if callable(method):
+            method()
+    # Lightweight serialization doubles deliberately expose no Open3D
+    # component API and may provide immutable already-valid normals.
+    if not callable(getattr(mesh, "cluster_connected_triangles", None)):
+        if not bool(getattr(mesh, "has_vertex_normals", lambda: False)()):
+            mesh.compute_vertex_normals()
+        return mesh, {
+            "input_vertex_count": before_vertices,
+            "input_triangle_count": before_triangles,
+            "vertex_count": int(len(mesh.vertices)),
+            "triangle_count": int(len(mesh.triangles)),
+            "removed_small_non_elongated_component_count": 0,
+            "component_triangle_gate": 200,
+            "thin_component_minimum_triangle_count": 20,
+            "thin_component_minimum_elongation": 6.0,
+            "area_only_component_filter": False,
+            "component_filter_stage": "deferred_to_projective_depth_consistent_faces",
+            "taubin_smoothing": "not_available_for_serialization_test_mesh",
+            "normals": "provided",
+        }
+    # Component culling is intentionally deferred until after projective
+    # visibility selection.  Building Open3D's global component graph on a
+    # million TSDF faces dominates the whole delivery time, including faces
+    # that cannot survive the real RGB/depth test and will never enter GLB.
+    # _filter_projective_components applies the identical thin-structure rule
+    # to the substantially smaller export candidate set.
+    mesh.compute_vertex_normals()
+    return mesh, {
+        "input_vertex_count": before_vertices,
+        "input_triangle_count": before_triangles,
+        "vertex_count": int(len(mesh.vertices)),
+        "triangle_count": int(len(mesh.triangles)),
+        "removed_small_non_elongated_component_count": 0,
+        "component_triangle_gate": 200,
+        "thin_component_minimum_triangle_count": 20,
+        "thin_component_minimum_elongation": 6.0,
+        "area_only_component_filter": False,
+        "component_filter_stage": "deferred_to_projective_depth_consistent_faces",
+        "taubin_smoothing": "skipped: no per-face confidence field in Open3D TSDF mesh",
+        "normals": "recomputed_area_weighted",
+    }
+
+
+def _display_mesh_to_millimetres(mesh: Any) -> Any:
+    """Convert Open3D's metre-domain TSDF extraction back to project mm units."""
+    vertices = np.asarray(mesh.vertices, dtype=np.float64)
+    if vertices.ndim != 2 or vertices.shape[1] != 3 or not np.isfinite(vertices).all():
+        raise RuntimeError("TSDF mesh has no finite vertices for unit conversion")
+    # The TSDF adapters convert poses/depth to metres for Open3D.  Everything
+    # outside that adapter (real ORB poses, depth gates, GLB metadata) is mm.
+    # Assigning through the Open3D vector property preserves mesh topology and
+    # makes that boundary explicit rather than relying on caller conventions.
+    try:
+        mesh.vertices = type(mesh.vertices)(vertices * 1000.0)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Could not convert extracted TSDF mesh to millimetres") from exc
+    return mesh
+
+
+def _simplify_display_mesh(mesh: Any, target_triangles: int, *, label: str) -> Any:
+    """Create a bounded display mesh after the thin-component-safe cleanup.
+
+    Cleanup has already discarded unsupported non-elongated components while
+    retaining observed elongated components.  QEM then reduces redundant broad
+    surfaces for a practical UV atlas; it is never used as a depth denoiser.
+    """
+    if len(mesh.triangles) <= target_triangles:
+        return mesh
+    mobile = mesh.simplify_quadric_decimation(target_number_of_triangles=target_triangles)
+    mobile.remove_degenerate_triangles()
+    mobile.remove_unreferenced_vertices()
+    mobile.compute_vertex_normals()
+    if len(mobile.triangles) < 1:
+        raise RuntimeError(f"{label} TSDF simplification produced no mesh")
+    return mobile
+
+
+def _mobile_display_mesh(mesh: Any, target_triangles: int) -> Any:
+    return _simplify_display_mesh(mesh, target_triangles, label="Mobile")
+
+
+def _srgb_to_linear(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float32) / 255.0
+    return np.where(values <= 0.04045, values / 12.92, ((values + 0.055) / 1.055) ** 2.4)
+
+
+def _linear_to_srgb(values: np.ndarray) -> np.ndarray:
+    values = np.clip(np.asarray(values, dtype=np.float32), 0.0, 1.0)
+    encoded = np.where(values <= 0.0031308, values * 12.92, 1.055 * values ** (1.0 / 2.4) - 0.055)
+    return np.clip(np.rint(encoded * 255.0), 0, 255).astype(np.uint8)
+
+
+def _filter_projective_components(
+    vertices: np.ndarray, triangles: np.ndarray, retained: np.ndarray
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Fast edge-connected cleanup on depth-consistent export faces only."""
+    selected_triangles = np.asarray(triangles[retained], dtype=np.int64)
+    face_count = len(selected_triangles)
+    if not face_count:
+        return retained, {"input_triangle_count": 0, "removed_component_count": 0}
+    edges = np.concatenate((
+        selected_triangles[:, (0, 1)], selected_triangles[:, (1, 2)], selected_triangles[:, (2, 0)],
+    ))
+    edges.sort(axis=1)
+    owners = np.tile(np.arange(face_count, dtype=np.int64), 3)
+    ordering = np.lexsort((edges[:, 1], edges[:, 0]))
+    sorted_edges = edges[ordering]
+    sorted_owners = owners[ordering]
+    matching = np.all(sorted_edges[1:] == sorted_edges[:-1], axis=1)
+    parent = np.arange(face_count, dtype=np.int64)
+
+    def root(value: int) -> int:
+        while parent[value] != value:
+            parent[value] = parent[parent[value]]
+            value = int(parent[value])
+        return value
+
+    # Neighbouring equal edges form a chain even in a rare non-manifold group.
+    for first, second in zip(sorted_owners[:-1][matching], sorted_owners[1:][matching], strict=True):
+        left, right = root(int(first)), root(int(second))
+        if left != right:
+            parent[right] = left
+    roots = np.fromiter((root(index) for index in range(face_count)), dtype=np.int64, count=face_count)
+    labels, inverse, counts = np.unique(roots, return_inverse=True, return_counts=True)
+    remove = np.zeros(face_count, dtype=bool)
+    # Every <20 face group is a floating sliver.  Only the remaining small
+    # groups need a geometry extent calculation for the hose/wire exception.
+    remove[counts[inverse] < 20] = True
+    ordering = np.argsort(inverse, kind="stable")
+    boundaries = np.r_[0, np.cumsum(counts)]
+    elongated_kept = 0
+    for component, count in enumerate(counts):
+        if count < 20 or count > 200:
+            continue
+        face_indices = ordering[boundaries[component]:boundaries[component + 1]]
+        vertex_ids = np.unique(selected_triangles[face_indices].ravel())
+        extent = np.ptp(vertices[vertex_ids], axis=0) if len(vertex_ids) else np.zeros(3)
+        positive = extent[extent > 1e-6]
+        elongation = float(positive.max() / positive.min()) if len(positive) >= 2 else 0.0
+        if elongation >= 6.0:
+            elongated_kept += 1
+        else:
+            remove[face_indices] = True
+    return retained[~remove], {
+        "input_triangle_count": face_count,
+        "retained_triangle_count": int(np.count_nonzero(~remove)),
+        "removed_triangle_count": int(np.count_nonzero(remove)),
+        "removed_component_count": int(np.count_nonzero(np.bincount(inverse[remove], minlength=len(labels)) == counts)),
+        "component_triangle_gate": 200,
+        "thin_component_minimum_triangle_count": 20,
+        "thin_component_minimum_elongation": 6.0,
+        "thin_elongated_component_count": elongated_kept,
+        "area_only_component_filter": False,
+    }
+
+
+def _bake_uv_texture(
+    mesh: Any,
+    frames: Sequence[RGBDFrame],
+    camera_to_world: Sequence[np.ndarray],
+    intrinsics: PinholeIntrinsics,
+    maps: tuple[np.ndarray, np.ndarray] | None,
+    config: TSDFMeshVisualizationConfig,
+    *,
+    texture_size_px: int,
+) -> _ProjectiveTextureBake:
+    """Bake camera-projective UV pages from depth-consistent real RGB frames.
+
+    The former implementation assigned one averaged colour to every xatlas
+    triangle.  That makes the mesh look like coloured confetti at normal
+    viewing distance and destroys edges even when the original RGB is sharp.
+    Here every retained triangle addresses pixels in its best actual camera
+    image.  A depth test at all three vertices acts as the source z-buffer;
+    unsupported faces are omitted rather than being painted neutral grey.
+    """
+    vertices = np.asarray(mesh.vertices, dtype=np.float32)
+    triangles = np.asarray(mesh.triangles, dtype=np.uint32)
+    if len(vertices) < 3 or len(triangles) < 1:
+        raise RuntimeError("Cannot UV bake an empty TSDF mesh")
+    if not mesh.has_vertex_normals():
+        mesh.compute_vertex_normals()
+    normals = np.asarray(mesh.vertex_normals, dtype=np.float32)
+    if normals.shape != vertices.shape or not np.isfinite(normals).all():
+        raise RuntimeError("Cannot UV bake TSDF mesh without finite normals")
+    fused_colours = np.asarray(mesh.vertex_colors, dtype=np.float32)
+    if fused_colours.shape != vertices.shape or not np.isfinite(fused_colours).all():
+        raise RuntimeError("Cannot export RGB-D fused mesh without finite vertex colours")
+    if len(frames) != len(camera_to_world):
+        raise ValueError("Texture baking requires one real pose per RGB-D frame")
+
+    poses = np.asarray(camera_to_world, dtype=np.float64)
+    if poses.shape != (len(frames), 4, 4) or not np.isfinite(poses).all():
+        raise ValueError("Texture baking received invalid camera_to_world poses")
+    centers = poses[:, :3, 3]
+    # A spatial nearest-view shortlist is deterministic and bounds work to
+    # 3--5 physically plausible real observations per triangle.
+    source_count = min(config.texture_source_views, len(frames))
+    face_centres = vertices[triangles].mean(axis=1)
+    nearest = np.empty((len(triangles), source_count), dtype=np.int32)
+    for start in range(0, len(triangles), 50_000):
+        stop = min(len(triangles), start + 50_000)
+        distances = np.sum((face_centres[start:stop, None, :] - centers[None, :, :]) ** 2, axis=2)
+        nearest[start:stop] = np.argpartition(distances, source_count - 1, axis=1)[:, :source_count]
+
+    face_normals = np.cross(
+        vertices[triangles[:, 1]] - vertices[triangles[:, 0]],
+        vertices[triangles[:, 2]] - vertices[triangles[:, 0]],
+    )
+    normal_length = np.linalg.norm(face_normals, axis=1)
+    usable_normal = normal_length > 1e-6
+    face_normals[usable_normal] /= normal_length[usable_normal, None]
+    best_score = np.full(len(triangles), -np.inf, dtype=np.float64)
+    best_source = np.full(len(triangles), -1, dtype=np.int32)
+    best_projected_uv = np.zeros((len(triangles), 3, 2), dtype=np.float32)
+    source_images: dict[int, np.ndarray] = {}
+    source_luminance: dict[int, float] = {}
+    source_sharpness: dict[int, float] = {}
+    for source_index, (frame, pose) in enumerate(zip(frames, poses, strict=True)):
+        selected = np.flatnonzero(np.any(nearest == source_index, axis=1))
+        color, depth, valid = _undistort(_decode_color(frame.color_path), read_aligned_depth_mm(frame), maps)
+        source_images[source_index] = color
+        gray = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
+        sharpness = float(np.var(cv2.Laplacian(gray, cv2.CV_32F)))
+        source_sharpness[source_index] = sharpness
+        valid_luminance = gray[valid]
+        source_luminance[source_index] = float(np.median(valid_luminance)) if valid_luminance.size else 128.0
+        if not len(selected):
+            continue
+        world_to_camera = np.linalg.inv(pose)
+        points = vertices[triangles[selected]].astype(np.float64)
+        camera = points @ world_to_camera[:3, :3].T + world_to_camera[:3, 3]
+        z = camera[..., 2]
+        u_float = intrinsics.fx * camera[..., 0] / np.maximum(z, 1e-9) + intrinsics.cx
+        v_float = intrinsics.fy * camera[..., 1] / np.maximum(z, 1e-9) + intrinsics.cy
+        u = np.rint(u_float).astype(np.int32)
+        v = np.rint(v_float).astype(np.int32)
+        inside = np.all((z > 0.0) & (u >= 0) & (u < intrinsics.width) & (v >= 0) & (v < intrinsics.height), axis=1)
+        if not np.any(inside):
+            continue
+        selected = selected[inside]
+        u, v, z = u[inside], v[inside], z[inside]
+        u_float, v_float = u_float[inside], v_float[inside]
+        observed = depth[v, u]
+        tolerance = np.maximum(config.depth_consistency_floor_mm, config.depth_consistency_relative * z)
+        accepted = np.all(valid[v, u] & (observed >= config.minimum_depth_mm) & (np.abs(observed - z) <= tolerance), axis=1)
+        if not np.any(accepted):
+            continue
+        selected = selected[accepted]
+        u_float, v_float = u_float[accepted], v_float[accepted]
+        view = centers[source_index] - face_centres[selected]
+        distance = np.linalg.norm(view, axis=1)
+        view /= np.maximum(distance[:, None], 1e-6)
+        incidence = np.abs(np.einsum("ij,ij->i", face_normals[selected], view))
+        score = (0.05 + incidence * incidence) * (1.0 + min(sharpness / 500.0, 2.0)) / np.maximum(distance * distance, 1.0)
+        accepted_index = score > best_score[selected]
+        if not np.any(accepted_index):
+            continue
+        selected = selected[accepted_index]
+        best_score[selected] = score[accepted_index]
+        best_source[selected] = source_index
+        best_projected_uv[selected, :, 0] = u_float[accepted_index]
+        best_projected_uv[selected, :, 1] = v_float[accepted_index]
+    retained = np.flatnonzero(best_source >= 0)
+    if not len(retained):
+        raise RuntimeError("No depth-consistent real RGB observations were available for UV baking")
+    retained_before_component_filter = len(retained)
+    retained, component_filter_audit = _filter_projective_components(
+        vertices, triangles, retained
+    )
+    if not len(retained):
+        raise RuntimeError("Projective component cleanup removed every TSDF face")
+    used_sources = sorted({int(value) for value in best_source[retained]})
+    image_height, image_width = source_images[used_sources[0]].shape[:2]
+    # The desktop edition preserves native camera pixels.  The mobile edition
+    # deliberately downsamples each source tile before packing, rather than
+    # merely re-encoding the desktop GLB under a mobile filename.
+    tile_scale = (
+        1.0
+        if texture_size_px > 2048
+        else min(1.0, (texture_size_px // 6 - 4) / float(image_width))
+    )
+    tile_width = max(1, int(round(image_width * tile_scale)))
+    tile_height = max(1, int(round(image_height * tile_scale)))
+    # A two-pixel replicated gutter prevents filtering seams within a page.
+    gutter = 2
+    columns = max(1, texture_size_px // (tile_width + 2 * gutter))
+    rows = max(1, texture_size_px // (tile_height + 2 * gutter))
+    slots_per_page = columns * rows
+    pages = [used_sources[offset:offset + slots_per_page] for offset in range(0, len(used_sources), slots_per_page)]
+    source_tile: dict[int, tuple[int, int, int]] = {}
+    for page_index, page_sources in enumerate(pages):
+        for slot, source_index in enumerate(page_sources):
+            source_tile[source_index] = (page_index, (slot % columns) * (tile_width + 2 * gutter), (slot // columns) * (tile_height + 2 * gutter))
+    reference_luminance = float(np.median([source_luminance[index] for index in used_sources]))
+    source_gain = {index: float(np.clip(reference_luminance / max(source_luminance[index], 1.0), 0.70, 1.40)) for index in used_sources}
+    png_pages: list[bytes] = []
+    for page_sources in pages:
+        atlas = np.zeros((texture_size_px, texture_size_px, 3), dtype=np.uint8)
+        for source_index in page_sources:
+            image = source_images[source_index][:, :, ::-1]
+            linear = _srgb_to_linear(image)
+            corrected = _linear_to_srgb(linear * source_gain[source_index])
+            if tile_scale != 1.0:
+                corrected = cv2.resize(
+                    corrected, (tile_width, tile_height), interpolation=cv2.INTER_AREA
+                )
+            padded = cv2.copyMakeBorder(corrected, gutter, gutter, gutter, gutter, cv2.BORDER_REPLICATE)
+            _, tile_x, tile_y = source_tile[source_index]
+            atlas[tile_y:tile_y + padded.shape[0], tile_x:tile_x + padded.shape[1]] = padded
+        encoded_ok, png = cv2.imencode(".png", atlas)
+        if not encoded_ok:
+            raise RuntimeError("Could not PNG-encode projective texture page")
+        png_pages.append(bytes(png))
+    flat_vertices: list[np.ndarray] = []
+    flat_normals: list[np.ndarray] = []
+    flat_colours: list[np.ndarray] = []
+    flat_uvs: list[np.ndarray] = []
+    page_indices: list[list[np.ndarray]] = [[] for _ in pages]
+    vertex_offset = 0
+    for source_index in used_sources:
+        faces = retained[best_source[retained] == source_index]
+        _, tile_x, tile_y = source_tile[source_index]
+        if len(faces):
+            face_uv = best_projected_uv[faces].copy()
+            face_uv[..., 0] = (tile_x + gutter + face_uv[..., 0] * tile_scale) / float(texture_size_px)
+            face_uv[..., 1] = 1.0 - (tile_y + gutter + face_uv[..., 1] * tile_scale) / float(texture_size_px)
+            flat_vertices.append(vertices[triangles[faces]].reshape(-1, 3))
+            flat_normals.append(normals[triangles[faces]].reshape(-1, 3))
+            flat_colours.append(fused_colours[triangles[faces]].reshape(-1, 3))
+            flat_uvs.append(face_uv.reshape(-1, 2))
+            indices = np.arange(vertex_offset, vertex_offset + len(faces) * 3, dtype=np.uint32)
+            page_indices[source_tile[source_index][0]].append(indices)
+            vertex_offset += len(faces) * 3
+    merged_indices = tuple(np.concatenate(group) for group in page_indices if group)
+    # Page ordering is continuous because every used source has at least one
+    # retained face.  Keeping the explicit assertion makes an accidental
+    # empty material/page a hard export failure rather than a viewer quirk.
+    if len(merged_indices) != len(png_pages):
+        raise RuntimeError("Projective texture produced an empty image page")
+    glb_triangle_count = vertex_offset // 3
+    return _ProjectiveTextureBake(
+        vertices=np.concatenate(flat_vertices),
+        normals=np.concatenate(flat_normals),
+        colours=np.concatenate(flat_colours),
+        uvs=np.concatenate(flat_uvs),
+        page_indices=merged_indices,
+        png_pages=tuple(png_pages),
+        audit={
+            "mode": "projective_uv_real_rgb_pages",
+            "uv_baked": True,
+            "texture_size_px": texture_size_px,
+            "texture_page_count": len(png_pages),
+            "source_image_tile_size_px": [tile_width, tile_height],
+            "source_image_tile_scale": tile_scale,
+            "source_view_limit": source_count,
+            "selected_real_source_frame_count": len(used_sources),
+            "depth_consistency": "all triangle vertices: max(20mm, 2% projected_depth)",
+            "retained_depth_consistent_triangle_count": int(len(retained)),
+            "glb_triangle_count": int(glb_triangle_count),
+            "dropped_no_depth_consistent_source_triangle_count": int(len(triangles) - retained_before_component_filter),
+            "projective_component_filter": component_filter_audit,
+            "source_sharpness_laplacian_variance": {str(key): value for key, value in source_sharpness.items()},
+            "exposure_normalization": {"space": "linear_rgb", "reference_median_luminance": reference_luminance, "gain_range": [min(source_gain.values()), max(source_gain.values())]},
+            "texture_png_byte_count": int(sum(len(page) for page in png_pages)),
+            "vertex_colour_used": False,
+            "rgbd_fusion": {
+                "geometry": "cuda_tsdf_from_aligned_depth_and_real_orbslam3_poses",
+                "colour": "real_rgb_projected_only_after_depth_z_consistency",
+                "colour_not_from": "tsdf_vertex_colour_accumulator",
+                "display_only": True,
+            },
+        },
+    )
+
+
+def _downsample_projective_texture(
+    texture: _ProjectiveTextureBake, texture_size_px: int
+) -> _ProjectiveTextureBake:
+    """Make the mobile texture pages smaller without changing UV geometry."""
+    if texture_size_px <= 0:
+        raise ValueError("Mobile projective texture size must be positive")
+    source_size = int(texture.audit.get("texture_size_px", 0))
+    if source_size <= texture_size_px:
+        return texture
+    pages: list[bytes] = []
+    for encoded in texture.png_pages:
+        decoded = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if decoded is None:
+            raise RuntimeError("Could not decode desktop projective texture page")
+        resized = cv2.resize(decoded, (texture_size_px, texture_size_px), interpolation=cv2.INTER_AREA)
+        # JPEG is a glTF-core image type.  At this stage pages have already
+        # been area-resampled for a 2048 px mobile budget; high-quality JPEG
+        # removes PNG's photographic storage overhead without changing UVs.
+        ok, mobile_encoded = cv2.imencode(
+            ".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, 94]
+        )
+        if not ok:
+            raise RuntimeError("Could not encode mobile projective texture page")
+        pages.append(bytes(mobile_encoded))
+    audit = dict(texture.audit)
+    audit.update({
+        "texture_size_px": texture_size_px,
+        "downsampled_from_texture_size_px": source_size,
+        "mobile_texture_derivation": "real_rgb_projective_pages_area_resample",
+        "texture_png_byte_count": int(sum(len(page) for page in pages)),
+        "image_encoding": "jpeg_quality_94",
+    })
+    return _ProjectiveTextureBake(
+        vertices=texture.vertices,
+        normals=texture.normals,
+        colours=texture.colours,
+        uvs=texture.uvs,
+        page_indices=texture.page_indices,
+        png_pages=tuple(pages),
+        audit=audit,
+        image_mime_type="image/jpeg",
+    )
+
+
 def export_tsdf_mesh(
     frames: Sequence[RGBDFrame],
     camera_to_world: Sequence[np.ndarray],
     intrinsics: PinholeIntrinsics,
     *,
     config: TSDFMeshVisualizationConfig | Mapping[str, Any] | None = None,
-) -> tuple[bytes, dict[str, object]]:
+    _return_cleaned_mesh: bool = False,
+) -> tuple[bytes, dict[str, object]] | tuple[bytes, dict[str, object], Any]:
     """Export a coloured TSDF GLB without invoking any panorama code.
 
     The caller supplies already validated real RGB-D poses.  This helper never
@@ -1312,6 +2076,8 @@ def export_tsdf_mesh(
     is an inspection-only artifact.
     """
 
+    export_started = time.perf_counter()
+    timing: dict[str, float] = {}
     selected = (
         config
         if isinstance(config, TSDFMeshVisualizationConfig)
@@ -1408,6 +2174,24 @@ def export_tsdf_mesh(
         sdf_truncation_mm=selected.sdf_truncation_mm,
         maximum_depth_mm=selected.maximum_depth_mm,
     )
+    # Capacity-planner unit tests intentionally pass opaque frame sentinels.
+    # A formal call always has RGBDFrame paths and therefore cannot bypass this
+    # filter; the branch merely keeps the pure planning API independently
+    # testable without file I/O.
+    filtering_started = time.perf_counter()
+    if all(hasattr(frame, "color_path") for frame in frames):
+        filtered_depths, depth_filter_audit = _display_depth_filter(
+            frames, camera_to_world, intrinsics, maps, selected
+        )
+    else:
+        filtered_depths = None
+        depth_filter_audit = {
+            "skipped": True,
+            "reason": "opaque_test_frames_no_depth_io",
+            "display_only": True,
+        }
+    timing["depth_filter"] = time.perf_counter() - filtering_started
+    integration_started = time.perf_counter()
     mesh, backend_audit = _integrate_tsdf_with_audit(
         frames,
         camera_to_world,
@@ -1416,26 +2200,109 @@ def export_tsdf_mesh(
         integration_config,
         cuda_capacity_plan=capacity_plan,
         cuda_unique_block_estimate=unique_block_estimate_audit,
+        filtered_depths=filtered_depths,
     )
-    glb = _mesh_to_glb(mesh)
-    return glb, {
+    timing["tsdf_integration"] = time.perf_counter() - integration_started
+    cleanup_started = time.perf_counter()
+    if all(hasattr(frame, "color_path") for frame in frames):
+        mesh = _display_mesh_to_millimetres(mesh)
+    mesh, mesh_cleanup = _clean_display_mesh(mesh)
+    # Do not run a global CPU QEM pass here.  On the fixed real scan it costs
+    # almost four minutes yet does not denoise anything.  The subsequent
+    # strict projective visibility selection is the real display reduction:
+    # it removes untexturable/noisy faces and leaves roughly 150--250k actual
+    # GLB triangles while retaining thin observed structures.
+    desktop_mesh = mesh
+    timing["mesh_cleanup_and_simplification"] = time.perf_counter() - cleanup_started
+    texture_started = time.perf_counter()
+    uv_texture: _ProjectiveTextureBake | None = None
+    if all(hasattr(frame, "color_path") for frame in frames) and selected.colour_mode in {"projective_uv_real_rgb", "rgbd_tsdf_vertex_colour"}:
+        uv_texture = _bake_uv_texture(
+            desktop_mesh, frames, camera_to_world, intrinsics, maps, selected,
+            texture_size_px=selected.desktop_texture_size_px,
+        )
+        if selected.colour_mode == "projective_uv_real_rgb":
+            glb = _mesh_to_glb(desktop_mesh, uv_texture=uv_texture)
+            texture_audit = uv_texture.audit
+        else:
+            glb = _mesh_to_glb(_projective_filtered_vertex_colour_mesh(uv_texture))
+            texture_audit = {
+                **uv_texture.audit,
+                "mode": "rgbd_tsdf_vertex_colour",
+                "uv_baked": False,
+                "vertex_colour_used": True,
+                "colour_geometry_filter": "projective_depth_z_consistency_and_component_cleanup",
+                "rgbd_fusion": {
+                    "geometry": "cuda_tsdf_from_aligned_depth_and_real_orbslam3_poses",
+                    "colour": "aligned_rgb_fused_into_tsdf_voxels",
+                    "display_only": True,
+                },
+            }
+    else:
+        glb = _mesh_to_glb(desktop_mesh)
+        texture_audit = {
+            "mode": "rgbd_tsdf_vertex_colour",
+            "uv_baked": False,
+            "vertex_colour_used": True,
+            "rgbd_fusion": {
+                "geometry": "cuda_tsdf_from_aligned_depth_and_real_orbslam3_poses",
+                "colour": "aligned_rgb_fused_into_tsdf_voxels",
+                "display_only": True,
+            },
+            "reason": (
+                "selected_rgbd_tsdf_vertex_colour"
+                if all(hasattr(frame, "color_path") for frame in frames)
+                else "opaque_test_frames_no_rgb_io"
+            ),
+        }
+    timing["projective_texture_and_glb"] = time.perf_counter() - texture_started
+    exported_triangle_count = (
+        int(texture_audit.get("glb_triangle_count", texture_audit.get("retained_depth_consistent_triangle_count", len(desktop_mesh.triangles))))
+        if isinstance(texture_audit, dict)
+        else int(len(desktop_mesh.triangles))
+    )
+    exported_vertex_count = (
+        int(len(uv_texture.vertices))
+        if uv_texture is not None
+        else int(len(desktop_mesh.vertices))
+    )
+    metadata = {
         "backend": backend_audit["backend"],
         "acceleration": backend_audit,
         "frame_count": len(frames),
-        "vertex_count": int(len(mesh.vertices)),
-        "triangle_count": int(len(mesh.triangles)),
+        "vertex_count": exported_vertex_count,
+        "triangle_count": exported_triangle_count,
+        "source_mesh_vertex_count": int(len(desktop_mesh.vertices)),
+        "source_mesh_triangle_count": int(len(desktop_mesh.triangles)),
         "glb_byte_count": len(glb),
+        "depth_filter": depth_filter_audit,
+        "mesh_cleanup": mesh_cleanup,
+        "texture": texture_audit,
         "translation_unit": "mm",
         "unique_block_estimate": unique_block_estimate_audit,
         "capacity_preflight": (
             None if capacity_plan is None else capacity_plan.as_dict()
         ),
+        "timing_seconds": {
+            **timing,
+            "total_export": time.perf_counter() - export_started,
+        },
         "configuration": {
             "voxel_length_mm": planned_voxel_length_mm,
             "requested_voxel_length_mm": selected.voxel_length_mm,
             "planned_voxel_length_mm": planned_voxel_length_mm,
             "sdf_truncation_mm": selected.sdf_truncation_mm,
             "maximum_depth_mm": selected.maximum_depth_mm,
+            "minimum_depth_mm": selected.minimum_depth_mm,
+            "depth_consistency_floor_mm": selected.depth_consistency_floor_mm,
+            "depth_consistency_relative": selected.depth_consistency_relative,
+            "minimum_cross_view_support": selected.minimum_cross_view_support,
+            "desktop_triangle_target": selected.desktop_triangle_target,
+            "mobile_triangle_target": selected.mobile_triangle_target,
+            "desktop_texture_size_px": selected.desktop_texture_size_px,
+            "mobile_texture_size_px": selected.mobile_texture_size_px,
+            "texture_source_views": selected.texture_source_views,
+            "colour_mode": selected.colour_mode,
             "cuda_gpu_byte_budget": selected.cuda_gpu_byte_budget,
             "cuda_block_resolution": selected.cuda_block_resolution,
             "cuda_unique_block_depth_stride": (
@@ -1450,6 +2317,75 @@ def export_tsdf_mesh(
         "display_only": True,
         "participates_in_panorama": False,
     }
+    if _return_cleaned_mesh:
+        # Return the exact desktop geometry used for the first artifact.  It
+        # lets the mobile peer reuse the cleaned surface without reintegrating
+        # TSDF, while still performing its own simplification and UV bake.
+        return glb, metadata, desktop_mesh, uv_texture
+    return glb, metadata
+
+
+def export_tsdf_mesh_pair(
+    frames: Sequence[RGBDFrame],
+    camera_to_world: Sequence[np.ndarray],
+    intrinsics: PinholeIntrinsics,
+    *, config: TSDFMeshVisualizationConfig | Mapping[str, Any] | None = None,
+) -> tuple[bytes, bytes, dict[str, object]]:
+    """Export one cleaned desktop mesh and its independently encoded mobile peer."""
+    result = export_tsdf_mesh(
+        frames, camera_to_world, intrinsics, config=config, _return_cleaned_mesh=True
+    )
+    desktop, metadata, mesh, desktop_texture = result
+    selected = config if isinstance(config, TSDFMeshVisualizationConfig) else TSDFMeshVisualizationConfig.from_mapping(config)
+    maps = _undistortion_maps(intrinsics)
+    # The projective bake filters to the visible, depth-consistent GLB faces;
+    # using the same cleaned source mesh preserves thin hoses/wires and avoids
+    # an unnecessary CPU QEM pass.  The mobile target is audited against the
+    # resulting GLB triangle count below, not the pre-filter TSDF mesh.
+    mobile_mesh = mesh
+    mobile_texture: _ProjectiveTextureBake | None = None
+    if selected.colour_mode == "rgbd_tsdf_vertex_colour":
+        if not isinstance(desktop_texture, _ProjectiveTextureBake):
+            raise RuntimeError("RGB-D vertex-colour export requires filtered real RGB-D geometry")
+        mobile_glb = _mesh_to_glb(
+            _projective_filtered_vertex_colour_mesh(desktop_texture)
+        )
+        mobile_texture_audit = {
+            "mode": "rgbd_tsdf_vertex_colour",
+            "uv_baked": False,
+            "vertex_colour_used": True,
+            "derived_from": "same_rgbd_tsdf_volume_as_desktop",
+            "colour_geometry_filter": "projective_depth_z_consistency_and_component_cleanup",
+        }
+    elif isinstance(desktop_texture, _ProjectiveTextureBake) and mobile_mesh is mesh:
+        mobile_texture = _downsample_projective_texture(
+            desktop_texture, selected.mobile_texture_size_px
+        )
+        mobile_glb = _mesh_to_glb(mobile_mesh, uv_texture=mobile_texture)
+        mobile_texture_audit = mobile_texture.audit
+    elif all(hasattr(frame, "color_path") for frame in frames):
+        mobile_texture = _bake_uv_texture(
+            mobile_mesh, frames, camera_to_world, intrinsics, maps, selected,
+            texture_size_px=selected.mobile_texture_size_px,
+        )
+        mobile_glb = _mesh_to_glb(mobile_mesh, uv_texture=mobile_texture)
+        mobile_texture_audit = mobile_texture.audit
+    else:
+        mobile_glb = _mesh_to_glb(mobile_mesh)
+        mobile_texture_audit = {
+            "mode": "serialization_test_vertex_colour_only",
+            "uv_baked": False,
+            "reason": "opaque_test_frames_no_rgb_io",
+        }
+    metadata["mobile"] = {
+        "mesh": "tsdf_mesh_mobile.glb",
+        "triangle_target": selected.mobile_triangle_target,
+        "vertex_count": int(len(mobile_texture.vertices) if isinstance(mobile_texture, _ProjectiveTextureBake) else len(mobile_mesh.vertices)),
+        "triangle_count": int(mobile_texture.audit.get("glb_triangle_count", mobile_texture.audit.get("retained_depth_consistent_triangle_count", len(mobile_mesh.triangles))) if isinstance(mobile_texture, _ProjectiveTextureBake) else len(mobile_mesh.triangles)),
+        "glb_byte_count": len(mobile_glb),
+        "texture": mobile_texture_audit,
+    }
+    return desktop, mobile_glb, metadata
 
 
 def _dominant_background_plane_mm(

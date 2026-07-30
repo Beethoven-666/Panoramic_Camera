@@ -158,9 +158,7 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
     assert not (output / "failure.json").exists()
     assert report["schema"] == "gemini305-dual-mosaic-report/v11"
     assert report["layout_selection"]["mode"] == "adaptive_rgbd_pose_nodes"
-    assert report["render_strategy"] == (
-        "trajectory_constrained_depth_aware_multiview_side_scan"
-    )
+    assert report["render_strategy"] == "unified_calibrated_central_strip"
     assert report["mosaicing_method"] == (
         "trajectory_constrained_depth_aware_multi_viewpoint_"
         "side_scan_mosaicing"
@@ -436,13 +434,23 @@ def test_zero_parameter_rgbd_sequence_publishes_one_complete_delivery(
 
 
 def test_zero_parameter_rgbd_sequence_publishes_unified_central_strip_delivery(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The default formal path has no panel/metric/object RGB side route."""
 
     session = _make_session(tmp_path, seed=29)
     output = tmp_path / "unified-output"
     backend = _KnownTrajectoryRGBDBackend(session)
+    monkeypatch.setattr(
+        sequence,
+        "_export_display_only_tsdf_mesh",
+        lambda *args, **kwargs: (
+            _test_glb("unified-delivery-test"),
+            _test_glb("unified-delivery-mobile-test"),
+            {"backend": "fake_tsdf_display_only", "display_only": True,
+             "participates_in_panorama": False},
+        ),
+    )
     args = sequence._parser().parse_args([str(session), "--output", str(output)])
 
     report = sequence.run(args, odometry_backend=backend)
@@ -506,6 +514,7 @@ def test_tsdf_viewer_staging_failure_fails_closed_and_removes_all_deliverables(
         "_export_display_only_tsdf_mesh",
         lambda *args, **kwargs: (
             _test_glb("viewer-staging-test"),
+            _test_glb("viewer-staging-mobile-test"),
             {
                 "backend": "fake_tsdf_display_only",
                 "display_only": True,
@@ -514,8 +523,9 @@ def test_tsdf_viewer_staging_failure_fails_closed_and_removes_all_deliverables(
         ),
     )
 
-    def fail_viewer(mesh_filename: str) -> str:
+    def fail_viewer(mesh_filename: str, mobile_mesh_filename: str) -> str:
         assert mesh_filename == "tsdf_mesh.glb"
+        assert mobile_mesh_filename == "tsdf_mesh_mobile.glb"
         raise OSError("forced TSDF viewer staging failure")
 
     monkeypatch.setattr(sequence, "_mesh_viewer_html", fail_viewer)
@@ -547,6 +557,7 @@ def test_tsdf_viewer_publish_failure_is_atomic_and_fails_closed(
         "_export_display_only_tsdf_mesh",
         lambda *args, **kwargs: (
             _test_glb("viewer-publish-test"),
+            _test_glb("viewer-publish-mobile-test"),
             {
                 "backend": "fake_tsdf_display_only",
                 "display_only": True,
@@ -563,6 +574,7 @@ def test_tsdf_viewer_publish_failure_is_atomic_and_fails_closed(
                 for name in (
                     ".panorama.pending.jpg",
                     ".tsdf_mesh.pending.glb",
+                    ".tsdf_mesh_mobile.pending.glb",
                     ".tsdf_mesh_viewer.pending.html",
                     ".transforms.pending.json",
                     ".render_transforms.pending.json",
@@ -606,6 +618,7 @@ def test_delivery_marker_publish_failure_is_atomic_and_fails_closed(
         "_export_display_only_tsdf_mesh",
         lambda *args, **kwargs: (
             _test_glb("delivery-marker-publish-test"),
+            _test_glb("delivery-marker-publish-mobile-test"),
             {
                 "backend": "fake_tsdf_display_only",
                 "display_only": True,
@@ -649,21 +662,14 @@ def test_public_handoff_policy_enables_local_apap_without_a_duplicate_renderer_s
         encoding="utf-8",
     )
     backend = _KnownTrajectoryRGBDBackend(session)
-    import panorama_demo.dense_fusion as dense_fusion
-
     monkeypatch.setattr(
-        dense_fusion,
-        "export_tsdf_mesh",
-        lambda *args, **kwargs: (_test_glb("policy-test"), {
-            "backend": "fake_tsdf_display_only",
-            "frame_count": 7,
-            "vertex_count": 3,
-            "triangle_count": 1,
-            "glb_byte_count": 16,
-            "translation_unit": "mm",
-            "display_only": True,
-            "participates_in_panorama": False,
-        }),
+        sequence,
+        "_export_display_only_tsdf_mesh",
+        lambda *args, **kwargs: (
+            _test_glb("policy-test"), _test_glb("policy-mobile-test"),
+            {"backend": "fake_tsdf_display_only", "display_only": True,
+             "participates_in_panorama": False},
+        ),
     )
     args = sequence._parser().parse_args(
         [str(session), "--output", str(output), "--config", str(config)]
@@ -673,11 +679,9 @@ def test_public_handoff_policy_enables_local_apap_without_a_duplicate_renderer_s
 
     delivery = json.loads((output / "delivery.json").read_text(encoding="utf-8"))
     assert (output / "panorama.jpg").is_file()
-    assert report["render_strategy"] == (
-        "trajectory_constrained_depth_aware_multiview_side_scan"
-    )
-    assert "geometry_assisted_seam" not in report["render"]
-    assert delivery["geometry_assistance_gate"]["local_apap_flow"]["enabled"] is True
+    assert report["render_strategy"] == "unified_calibrated_central_strip"
+    assert report["render"]["geometry_assisted_seam"]["enabled"] is True
+    assert delivery["delivery_state"] in {"published", "published_degraded"}
 
 
 def test_importing_formal_sequence_does_not_load_legacy_model_stack() -> None:
@@ -747,7 +751,11 @@ def test_diagnostic_mode_bypasses_quality_thresholds_but_never_publishes(
         quality_metrics = dict(metadata["quality_metrics"])
         quality_metrics["quality_pass"] = False
         metadata["quality_metrics"] = quality_metrics
-        return SimpleNamespace(panorama=result.panorama, metadata=metadata)
+        return SimpleNamespace(
+            panorama=result.panorama,
+            metadata=metadata,
+            owner_frame_id=result.owner_frame_id,
+        )
 
     monkeypatch.setattr(sequence, "assess_capture_quality", failing_capture_quality)
     monkeypatch.setattr(

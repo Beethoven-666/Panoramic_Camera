@@ -166,7 +166,7 @@ Open3D CUDA:0 相邻边链的 staging、各自耗时、并发墙钟时间、重�
 
 以下步骤可在已配置 WSL ORB-SLAM3、CUDA Toolkit 与项目 Conda 环境的 Windows
 主机上复现正式交付。不要调用系统 Python 或旧的全局 `g305-panorama.exe`；直接
-使用项目主环境的 Python 模块入口，以确保运行的是当前工作区源码。
+使用项目主环境的启动器，以确保运行的是当前工作区源码。
 
 ```powershell
 cd D:\central_strip_Panoramic_Camera
@@ -183,7 +183,8 @@ wsl.exe -e bash -lc 'test -f ~/Projects/ORB_SLAM3_WS/ORB_SLAM3/Examples/RGB-D/rg
 wsl.exe -e bash -lc 'test -f ~/Projects/ORB_SLAM3_WS/ORB_SLAM3/Vocabulary/ORBvoc.txt && echo vocabulary-ok'
 
 # 运行单个完整 ORB-SLAM3 进程与单条顺序 Open3D CUDA 边链的正式流程。
-& 'D:\Panoramic_Camera\.conda\python.exe' -m panorama_demo.stitch_sequence `
+# 必须显式调用主环境启动器，不能直接使用 PATH 中的 g305-panorama。
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-panorama.exe' `
   'D:\central_strip_Panoramic_Camera\data\captures\run_20260727_110952_326' `
   --output 'D:\central_strip_Panoramic_Camera\outputs\parallel_orb_open3d_20260730'
 ```

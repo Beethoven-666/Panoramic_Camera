@@ -51,6 +51,7 @@ from .orbslam3_bridge import (
     ORBSLAM3Trajectory,
     ORBSLAM3Error,
     prepare_orbslam3_rgbd,
+    run_orbslam3_rgbd,
     run_prepared_orbslam3_rgbd,
 )
 from .quality import (
@@ -108,6 +109,7 @@ _DELIVERY_FILES = (
     "foreground_confidence.png",
     "background_source_id.png",
     "tsdf_mesh.glb",
+    "tsdf_mesh_mobile.glb",
     "tsdf_mesh_viewer.html",
     "report.json",
     "transforms.json",
@@ -3770,7 +3772,7 @@ def _publish_unified_r1_delivery(
     # RGB publication quality has been assessed and has no route back into the
     # panorama, pose, seam, crop, or grade decisions.
     tsdf_started = time.perf_counter()
-    pending_mesh, pending_mesh_viewer, tsdf_visualization = (
+    pending_mesh, pending_mobile_mesh, pending_mesh_viewer, tsdf_visualization = (
         _stage_required_tsdf_visualization(
             output,
             list(render_frames),
@@ -3894,6 +3896,7 @@ def _publish_unified_r1_delivery(
     os.replace(pending_render_transforms, output / "render_transforms.json")
     os.replace(pending_provenance, output / "pixel_provenance.npz")
     os.replace(pending_mesh, output / "tsdf_mesh.glb")
+    os.replace(pending_mobile_mesh, output / "tsdf_mesh_mobile.glb")
     os.replace(pending_mesh_viewer, output / "tsdf_mesh_viewer.html")
     os.replace(pending_report, output / "report.json")
     os.replace(pending_delivery, output / "delivery.json")
@@ -4123,25 +4126,41 @@ def _validate_glb_bytes(data: bytes) -> None:
         raise RuntimeError("TSDF GLB JSON lacks glTF 2.0 asset metadata")
 
 
-def _mesh_viewer_html(mesh_filename: str) -> str:
+def _mesh_viewer_html(mesh_filename: str, mobile_mesh_filename: str = "tsdf_mesh_mobile.glb") -> str:
     """Build a self-contained entry page for a locally served GLB mesh."""
 
     mesh_url = html.escape(mesh_filename, quote=True)
+    mobile_url = html.escape(mobile_mesh_filename, quote=True)
     return f"""<!doctype html>
 <html lang=\"zh-CN\">
 <head>
   <meta charset=\"utf-8\">
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
   <title>TSDF 三维网格</title>
-  <script type=\"module\" src=\"https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js\"></script>
+  <script type=\"module\" src=\"https://unpkg.com/@google/model-viewer@3.5.0/dist/model-viewer.min.js\"></script>
   <style>
-    html, body, model-viewer {{ width: 100%; height: 100%; margin: 0; background: #16181d; }}
+    html, body, model-viewer {{ width: 100%; height: 100%; margin: 0; background: #16181d; color: #eef2ff; }}
     model-viewer {{ --poster-color: #16181d; }}
+    #toolbar {{ position: fixed; z-index: 1; left: 12px; top: 12px; display: flex; gap: 8px; }}
+    button {{ background:#2a3040; color:#fff; border:1px solid #5b6787; border-radius:6px; padding:8px 10px; }}
   </style>
 </head>
 <body>
-  <model-viewer src=\"{mesh_url}\" alt=\"TSDF RGB-D mesh\" camera-controls
-      auto-rotate shadow-intensity=\"0.7\" exposure=\"1\"></model-viewer>
+  <div id=\"toolbar\"><button id=\"quality\">高清 / 流畅</button><button id=\"retry\">重试</button><button id=\"reset\">复位视角</button><button id=\"fullscreen\">全屏</button></div>
+  <model-viewer id=\"viewer\" src=\"{mesh_url}\" alt=\"TSDF RGB-D mesh\" camera-controls touch-action=\"pan-y\"
+      shadow-intensity=\"0.7\" exposure=\"1.05\" interaction-prompt=\"none\"></model-viewer>
+  <script>
+    document.title = 'TSDF 三维网格';
+    const desktop = \"{mesh_url}\", mobile = \"{mobile_url}\", viewer = document.querySelector('#viewer');
+    let useMobile = (navigator.deviceMemory && navigator.deviceMemory <= 4) || Math.min(screen.width, screen.height) < 900;
+    function load() {{ viewer.src = useMobile ? mobile : desktop; document.querySelector('#quality').textContent = useMobile ? '流畅（切换高清）' : '高清（切换流畅）'; }}
+    document.querySelector('#quality').onclick = () => {{ useMobile = !useMobile; load(); }};
+    document.querySelector('#retry').onclick = load;
+    document.querySelector('#reset').onclick = () => viewer.resetTurntableRotation();
+    document.querySelector('#fullscreen').onclick = () => viewer.requestFullscreen();
+    viewer.addEventListener('error', () => {{ document.querySelector('#retry').textContent = '加载失败，点击重试'; }});
+    load();
+  </script>
 </body>
 </html>
 """
@@ -4152,7 +4171,7 @@ def _export_display_only_tsdf_mesh(
     poses: list[np.ndarray],
     intrinsics: CameraIntrinsics,
     config: dict[str, Any],
-) -> tuple[bytes, dict[str, object]]:
+) -> tuple[bytes, bytes, dict[str, object]]:
     """Build the required 3-D inspection asset after RGB rendering is complete.
 
     This delayed import is intentionally below the RGB panorama quality gate.
@@ -4160,9 +4179,9 @@ def _export_display_only_tsdf_mesh(
     blending, crop, or delivery-quality decisions.
     """
 
-    from .dense_fusion import export_tsdf_mesh
+    from .dense_fusion import export_tsdf_mesh_pair
 
-    return export_tsdf_mesh(
+    return export_tsdf_mesh_pair(
         frames,
         poses,
         _pinhole_intrinsics(intrinsics),
@@ -4176,7 +4195,7 @@ def _stage_required_tsdf_visualization(
     poses: list[np.ndarray],
     intrinsics: CameraIntrinsics,
     config: dict[str, Any],
-) -> tuple[Path, Path, dict[str, object]]:
+) -> tuple[Path, Path, Path, dict[str, object]]:
     """Stage the mandatory display-only mesh and its sibling viewer.
 
     A formal A/B/C delivery requires both files.  This helper deliberately
@@ -4185,7 +4204,7 @@ def _stage_required_tsdf_visualization(
     publication assessment.
     """
 
-    mesh_glb, mesh_metadata = _export_display_only_tsdf_mesh(
+    mesh_glb, mobile_mesh_glb, mesh_metadata = _export_display_only_tsdf_mesh(
         frames,
         poses,
         intrinsics,
@@ -4194,6 +4213,7 @@ def _stage_required_tsdf_visualization(
     if not isinstance(mesh_glb, bytes) or not mesh_glb:
         raise RuntimeError("TSDF mesh export must return non-empty GLB bytes")
     _validate_glb_bytes(mesh_glb)
+    _validate_glb_bytes(mobile_mesh_glb)
     if not isinstance(mesh_metadata, Mapping):
         raise RuntimeError("TSDF mesh export must return metadata as a mapping")
     if mesh_metadata.get("display_only") is not True:
@@ -4204,20 +4224,23 @@ def _stage_required_tsdf_visualization(
         )
 
     mesh_filename = "tsdf_mesh.glb"
+    mobile_mesh_filename = "tsdf_mesh_mobile.glb"
     viewer_filename = "tsdf_mesh_viewer.html"
-    viewer_html = _mesh_viewer_html(mesh_filename)
+    viewer_html = _mesh_viewer_html(mesh_filename, mobile_mesh_filename)
     if f'src="{mesh_filename}"' not in viewer_html:
         raise RuntimeError("TSDF viewer must reference its sibling tsdf_mesh.glb")
 
     pending_mesh = output / ".tsdf_mesh.pending.glb"
+    pending_mobile_mesh = output / ".tsdf_mesh_mobile.pending.glb"
     pending_viewer = output / ".tsdf_mesh_viewer.pending.html"
     try:
         _write_bytes(pending_mesh, mesh_glb)
+        _write_bytes(pending_mobile_mesh, mobile_mesh_glb)
         pending_viewer.write_text(viewer_html, encoding="utf-8")
     except Exception:
         # ``run`` also clears these on the failure path, but leave the helper
         # safe if it is exercised directly in a focused delivery test.
-        for path in (pending_mesh, pending_viewer):
+        for path in (pending_mesh, pending_mobile_mesh, pending_viewer):
             try:
                 path.unlink(missing_ok=True)
             except OSError:
@@ -4232,10 +4255,11 @@ def _stage_required_tsdf_visualization(
             "display_only": True,
             "participates_in_panorama": False,
             "mesh": mesh_filename,
+            "mobile_mesh": mobile_mesh_filename,
             "viewer": viewer_filename,
         }
     )
-    return pending_mesh, pending_viewer, visualization
+    return pending_mesh, pending_mobile_mesh, pending_viewer, visualization
 
 
 def _intrinsics_payload(intrinsics: CameraIntrinsics) -> dict[str, object]:
@@ -4514,6 +4538,7 @@ def _run_parallel_pose_frontend(
     short_baseline_initialization: bool,
     orb_work_root: Path,
     orb_config: Mapping[str, Any] | None,
+    diagnostic_legacy_orb_runner: bool = False,
 ) -> tuple[
     list[Any], list[dict[str, object]], list[dict[str, object]], ORBSLAM3Trajectory,
     dict[str, object], float,
@@ -4524,6 +4549,46 @@ def _run_parallel_pose_frontend(
     calibrated ORB staging uses CUDA remap, while the worker below only waits
     for the one native WSL process.  No pose graph work begins at this seam.
     """
+
+    # Diagnostics are isolated and never form a delivery.  Retaining the
+    # complete-run bridge here keeps their current-ORB contract testable with
+    # a deterministic runner substitute, while formal delivery always uses
+    # the prepared CPU-ORB/CUDA-Open3D overlap below.
+    if diagnostic_legacy_orb_runner:
+        started = time.perf_counter()
+        trajectory = run_orbslam3_rgbd(
+            scan_frames, intrinsics, orb_work_root, config=orb_config
+        )
+        orb_elapsed = time.perf_counter() - started
+        edge_started = time.perf_counter()
+        short_baseline_audit: list[dict[str, object]] = []
+        edges, optional_edge_failures = _estimate_pose_edges(
+            pose_frames, intrinsics, odometry_config, backend=odometry_backend,
+            nonadjacent_gap=nonadjacent_gap, scan_frames=tuple(scan_frames),
+            short_baseline_audit=short_baseline_audit,
+            short_baseline_initialization=short_baseline_initialization,
+        )
+        edge_elapsed = time.perf_counter() - edge_started
+        return (
+            edges,
+            optional_edge_failures,
+            short_baseline_audit,
+            trajectory,
+            {
+                "mode": "orbslam3_full_scan_diagnostic_serial",
+                "orbslam3_device": "cpu",
+                "open3d_device": "diagnostic",
+                "orbslam3_elapsed_seconds": orb_elapsed,
+                "open3d_elapsed_seconds": edge_elapsed,
+                "parallel_wall_seconds": orb_elapsed + edge_elapsed,
+                "overlap_seconds": 0.0,
+                "serial_baseline_estimate_seconds": orb_elapsed + edge_elapsed,
+                "estimated_wall_time_saved_seconds": 0.0,
+                "orbslam3_retry_serial_elapsed_seconds": 0.0,
+                "execution_attempts": list(getattr(trajectory, "attempt_audit", ())),
+            },
+            0.0,
+        )
 
     staging_started = time.perf_counter()
     prepared = prepare_orbslam3_rgbd(
@@ -5651,6 +5716,11 @@ def _run_pipeline(
                     odometry_backend=odometry_backend, nonadjacent_gap=nonadjacent_gap,
                     short_baseline_initialization=bool(stitch_config.get("short_baseline_initialization", True)),
                     orb_work_root=Path(root), orb_config=stitch_config.get("orbslam3_rgbd"),
+                    diagnostic_legacy_orb_runner=(
+                        diagnostic_renderer is not None
+                        or geometry_pair_diagnostic_renderer is not None
+                        or foreground_deformation_diagnostic_renderer is not None
+                    ),
                 )
         else:
             (edges, optional_edge_failures, short_baseline_audit,
@@ -5659,6 +5729,11 @@ def _run_pipeline(
                 odometry_backend=odometry_backend, nonadjacent_gap=nonadjacent_gap,
                 short_baseline_initialization=bool(stitch_config.get("short_baseline_initialization", True)),
                 orb_work_root=orb_work_root, orb_config=stitch_config.get("orbslam3_rgbd"),
+                diagnostic_legacy_orb_runner=(
+                    diagnostic_renderer is not None
+                    or geometry_pair_diagnostic_renderer is not None
+                    or foreground_deformation_diagnostic_renderer is not None
+                ),
             )
         stage_elapsed_seconds["orbslam3_staging"] = staging_seconds
         stage_elapsed_seconds["parallel_pose_frontend"] = float(
@@ -6422,6 +6497,7 @@ def _run_pipeline(
     # publication.
     tsdf_visualization: dict[str, object] | None = None
     pending_mesh: Path | None = None
+    pending_mobile_mesh: Path | None = None
     pending_mesh_viewer: Path | None = None
     if not diagnostic_force:
         tsdf_stage_started = time.perf_counter()
@@ -6429,6 +6505,7 @@ def _run_pipeline(
         visualization_config = dict(stitch_config.get("tsdf_visualization", {}))
         (
             pending_mesh,
+            pending_mobile_mesh,
             pending_mesh_viewer,
             tsdf_visualization,
         ) = _stage_required_tsdf_visualization(
@@ -6738,6 +6815,7 @@ def _run_pipeline(
     assert metric_manifest is not None
     assert inspection_manifest is not None
     assert pending_mesh is not None
+    assert pending_mobile_mesh is not None
     assert pending_mesh_viewer is not None
     assert pending_pixel_provenance is not None
     assert pending_object_tracks is not None
@@ -6868,6 +6946,7 @@ def _run_pipeline(
     os.replace(pending_panorama_png, output / "panorama.png")
     staged_dual_output.commit(output)
     os.replace(pending_mesh, output / "tsdf_mesh.glb")
+    os.replace(pending_mobile_mesh, output / "tsdf_mesh_mobile.glb")
     os.replace(pending_mesh_viewer, output / "tsdf_mesh_viewer.html")
     os.replace(pending_transforms, output / "transforms.json")
     os.replace(pending_render_transforms, output / "render_transforms.json")
