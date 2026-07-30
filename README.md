@@ -2,28 +2,14 @@
 
 Python 集成请参阅完整的 [SDK 使用指南](docs/SDK.md)，其中包含安装、CUDA 可选加速、API 参考和示例；版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
-正式方法名称为**基于轨迹约束的深度感知多视点侧扫拼接**
-（**Trajectory-Constrained Depth-Aware Multi-Viewpoint Side-Scan
-Mosaicing**）。当前正式实现以 ORB-SLAM3 RGB-D 的真实
-`camera_to_world` 节点为唯一全局轨迹，并从同一组原始 RGB-D 独立生成两个产品：
+当前正式方法是**校准 RGB 中央窄条侧扫全景**。完整 ORB-SLAM3 RGB-D
+`camera_to_world` 轨迹是唯一全局轨迹；全景像素只来自经一次标定 inverse remap
+的原始 RGB。aligned depth 仅在相邻风险走廊内执行可见性、遮挡保护与局部
+inverse sampling 审计，绝不生成颜色、补洞、修改 pose 或向全景回传 TSDF。
 
-- 固定 `2 mm/pixel` 的 2.5D metric mosaic，通过逐像素 RGB-D 反投影、世界坐标
-  变换、正交栅格 z-buffer、时间一致性和深度置信度生成；
-- 面向人工巡检的 full-FOV multi-view inspection mosaic，通过沿真实轨迹布置的
-  重叠虚拟透视 panel、前景单源 owner、曝光补偿、DIS 安全背景恢复、
-  GraphCut 引导的单调相邻 panel 链和受保护 MultiBand 生成。
-
-两个产品都直接读取原始 RGB-D 和同一条不可变轨迹，互不采样、互不补洞。正式
-V1 不是固定中央条带 pushbroom，也不是普通二维全景或 TSDF 主图。TSDF 只生成
-独立的三维浏览附件，不向任何主图回传结果。
-
-物体的可测位置以 metric 产品中的毫米世界坐标、depth、confidence 和
-`owner_frame_id` 为准；inspection 是分段透视浏览图，不能把其二维横坐标解释为
-所有深度层共享的毫米位置。正式 inspection 使用 RGB-D 深度保护、相邻 panel 的
-单一 RGB owner 和安全背景融合来避免物体缺失或半透明重影。实验性的
-`foreground_world_anchor_enabled` 默认保持 `false`：它只有在跨场景物体身份、
-至少两个独立 RGB 观察、边界与裁剪审计均完成后才可显式启用，不能以未验证的
-局部 RGB 替换冒充真实世界定位。
+正式交付同时包含 RGB 全景与只读三维浏览附件。`tsdf_mesh.glb` 和
+`tsdf_mesh_viewer.html` 使用相同的真实 RGB-D 帧和已审计 pose 构建，但 TSDF
+严格位于全景质量与接缝决策之后；它不属于主图 renderer，也不影响 A/B/C 等级。
 
 ## CUDA 加速
 
@@ -75,6 +61,17 @@ D:\Panoramic_Camera\.conda\python.exe .\scripts\verify_open3d_cuda.py
 因 capability/preflight 不通过而选择 CPU；一旦开始 CUDA 集成，运行期
 异常会 fail closed，不会通过降低分辨率、跳帧或静默 CPU 回退来发布。
 
+验证成功后，把新生成的 wheel 安装到正式环境（路径会随 Open3D commit 变化）：
+
+```powershell
+$wheel = Get-ChildItem `
+  'D:\open3d_cuda_build\Open3D-v0.19.0\build-cuda12.8-sm120-v3\lib\python_package\pip_package' `
+  -Filter 'open3d-*.whl' | Select-Object -First 1 -ExpandProperty FullName
+
+& 'D:\Panoramic_Camera\.conda\python.exe' -m pip install --force-reinstall --no-deps $wheel
+& 'D:\Panoramic_Camera\.conda\python.exe' .\scripts\verify_open3d_cuda.py
+```
+
 主环境已经安装 CUDA wheel 和本工作区 editable 包时，日常运行不必设置
 环境变量，默认就是 CUDA 优先：
 
@@ -113,8 +110,9 @@ GraphCut、MultiBand、DIS 或标量拓扑审计伪装成 GPU 算法。
 
 ```text
 严格 RGB-D 会话与可选 sidecar 审计
-  → Open3D 相邻 RGB-D odometry（局部几何质量）
-  → ORB-SLAM3 RGB-D 完整真实全局轨迹
+  → ORB 输入去畸变、完整 staging（串行 CUDA remap）
+  → 单个 ORB-SLAM3 CPU/WSL 完整序列进程 ║ 单条 Open3D CUDA:0 相邻 RGB-D 边链
+  → 等待两者完成后才进行轨迹覆盖、边质量、SE(3) 和连通性审计
   → 有限、连续、毫米 camera_to_world SE(3)
   ├─→ 固定 2 mm/pixel 的全场景 2.5D metric 重投影
   │     → RGB / world-normal depth / confidence / hard owner
@@ -146,13 +144,89 @@ GraphCut、MultiBand、DIS 或标量拓扑审计伪装成 GPU 算法。
   硬限、TSDF 浏览附件或原子交付任一结构项失败。F 不发布 `delivery.json`，
   只写 `failure.json`。
 
-正式 `report.json` 为 `gemini305-dual-mosaic-report/v11`，
-`delivery.json` 为 `gemini305-panorama-delivery/v11`，并公开
+当前统一中央窄条正式路径的 `report.json` 为
+`gemini305-unified-central-strip/v12-r1`，`delivery.json` 为
+`gemini305-panorama-delivery/v12-r1`。A/B/C 均必须原子发布
+`panorama.jpg`、`panorama.png`、`tsdf_mesh.glb`、`tsdf_mesh_viewer.html`、
+`transforms.json`、`render_transforms.json`、`report.json` 和 `delivery.json`；
+TSDF 只读展示附件在 RGB 全景质量判定之后构建，绝不反向参与条带、接缝、
+裁剪、位姿或等级决定。任一 TSDF/GLB/Viewer/staging/publish 失败都是 F，
+并且不会留下 `delivery.json`。
+
+报告与交付都会公开
 `delivery_state`、`strict_quality_pass`、`quality_grade`、
-`handoff_fallback_summary`、`foreground_owner_continuity_summary`、
-`metric_mosaic`、`inspection_mosaic`、`tsdf_visualization` 和
-`manual_review_required`。`quality_pass` 只是严格质量的兼容别名；是否已发布
+`handoff_fallback_summary`、`tsdf_visualization`、`manual_review_required` 和
+`pose_frontend_concurrency`。后者记录完整 ORB-SLAM3 CPU 进程与顺序
+Open3D CUDA:0 相邻边链的 staging、各自耗时、并发墙钟时间、重叠时间和重试；
+阶段总账只计 staging、并发 wall 和后续审计，绝不重复相加重叠耗时。
+`quality_pass` 只是严格质量的兼容别名；是否已发布
 必须以最后原子写入的 `delivery.json` 及其 `delivery_state` 为准。
+
+## 快速复现：正式全景、TSDF 与 Viewer
+
+以下步骤可在已配置 WSL ORB-SLAM3、CUDA Toolkit 与项目 Conda 环境的 Windows
+主机上复现正式交付。不要调用系统 Python 或旧的全局 `g305-panorama.exe`；直接
+使用项目主环境的 Python 模块入口，以确保运行的是当前工作区源码。
+
+```powershell
+cd D:\central_strip_Panoramic_Camera
+
+# 强制 Open3D Tensor odometry 与 TSDF 使用 CUDA:0；不可用即 fail closed。
+$env:G305_CUDA = 'required'
+
+# 先验证 CUDA Open3D wheel。输出必须含 cuda_available: true 与
+# odometry_backend: open3d_tensor_cuda_rgbd。
+& 'D:\Panoramic_Camera\.conda\python.exe' .\scripts\verify_open3d_cuda.py
+
+# 验证 WSL 中配置的 ORB-SLAM3 示例和词典。两项都应输出 ok。
+wsl.exe -e bash -lc 'test -f ~/Projects/ORB_SLAM3_WS/ORB_SLAM3/Examples/RGB-D/rgbd_tum && echo orb-executable-ok'
+wsl.exe -e bash -lc 'test -f ~/Projects/ORB_SLAM3_WS/ORB_SLAM3/Vocabulary/ORBvoc.txt && echo vocabulary-ok'
+
+# 运行单个完整 ORB-SLAM3 进程与单条顺序 Open3D CUDA 边链的正式流程。
+& 'D:\Panoramic_Camera\.conda\python.exe' -m panorama_demo.stitch_sequence `
+  'D:\central_strip_Panoramic_Camera\data\captures\run_20260727_110952_326' `
+  --output 'D:\central_strip_Panoramic_Camera\outputs\parallel_orb_open3d_20260730'
+```
+
+成功时终端会输出 `Panorama`、`Report` 和总 `Processing time`。输出目录必须有
+最后写入的 `delivery.json`，并包含以下全部文件：
+
+```text
+panorama.jpg
+panorama.png
+tsdf_mesh.glb
+tsdf_mesh_viewer.html
+transforms.json
+render_transforms.json
+report.json
+delivery.json
+```
+
+检查发布状态、CUDA edge provenance 与并发时账：
+
+```powershell
+$out = 'D:\central_strip_Panoramic_Camera\outputs\parallel_orb_open3d_20260730'
+$report = Get-Content "$out\report.json" -Raw | ConvertFrom-Json
+$delivery = Get-Content "$out\delivery.json" -Raw | ConvertFrom-Json
+
+$delivery | Select-Object delivery_state, quality_grade, strict_quality_pass, manual_review_required
+$report.pose_frontend_concurrency
+$report.tsdf_visualization | Select-Object backend, status, mesh, viewer
+```
+
+`delivery_state=published` 或 `published_degraded` 表示交付已发布；C 级必须按
+`manual_review_required=true` 人工检查全景和网格。不存在 `delivery.json`，或只
+存在 `failure.json`，都表示本次没有交付。
+
+在浏览器中打开 TSDF Viewer 时应通过本地 HTTP server，而不是直接双击 HTML：
+
+```powershell
+cd $out
+& 'D:\Panoramic_Camera\.conda\python.exe' -m http.server 8080
+```
+
+访问 [http://localhost:8080/tsdf_mesh_viewer.html](http://localhost:8080/tsdf_mesh_viewer.html)。
+该页面通过 CDN 加载 `model-viewer`，首次使用需要网络连接。
 
 ## 命令概览
 
@@ -639,19 +713,12 @@ metric renderer 与 full-FOV inspection renderer。`200 MP`、160 pose nodes、
 
 ## 产物、报告和原子交付
 
-正式成功目录：
+统一中央窄条正式成功目录：
 
 ```text
 outputs/greenhouse_sequence/
 ├─ panorama.jpg
-├─ mosaic_metric.png
-├─ mosaic_depth.exr
-├─ mosaic_confidence.png
-├─ mosaic_owner.png
-├─ mosaic_meta.json
-├─ mosaic_inspection.png
-├─ inspection_owner.png
-├─ inspection_meta.json
+├─ panorama.png
 ├─ tsdf_mesh.glb
 ├─ tsdf_mesh_viewer.html
 ├─ transforms.json
@@ -660,26 +727,21 @@ outputs/greenhouse_sequence/
 └─ delivery.json
 ```
 
-- `panorama.jpg`：`mosaic_inspection.png` 的兼容 JPEG；不是 metric、TSDF 或第三套 renderer；
-- `mosaic_metric.png` / `mosaic_depth.exr` / `mosaic_confidence.png` /
-  `mosaic_owner.png`：固定 `2 mm/pixel` 的 RGB、毫米 depth、uint16 confidence
-  和 frame-id owner；`mosaic_meta.json` schema 为
-  `gemini305-metric-mosaic/v1`；
-- `mosaic_inspection.png` / `inspection_owner.png`：full-FOV multiview
-  inspection 与其 frame-id owner；`inspection_meta.json` schema 为
-  `gemini305-inspection-mosaic/v1`；
-- `transforms.json`：`rgbd-pose-graph/v1`，包含坐标约定、毫米单位、pose nodes 的 4×4 `camera_to_world`、RGB-D 边、信息矩阵、残差、优化和连通状态；
-- `render_transforms.json`：`trajectory-constrained-rgbd-multiview/v1`，声明
-  真实 SE(3) 源、full-FOV panel 选择、无 pose 插值、metric/TSDF 不参与
-  inspection RGB，以及深度置信度和背景接缝审计；
-- `report.json`：`gemini305-dual-mosaic-report/v11`，汇总严格会话、
-  `v1_input_sidecars`、Open3D odometry、ORB-SLAM3 轨迹、metric/inspection
-  manifest、前景 owner、背景 seam、CUDA provenance、TSDF 和 publication；
-- `delivery.json`：`gemini305-panorama-delivery/v11`，最后发布并列出
-  `products.metric`、`products.inspection`、`projection`、`seam_backend`、
-  `blend_backend`、`acceleration`、`tsdf_visualization` 以及 A/C/F 状态。
 
-每次任务先使旧 `delivery.json` 失效；双产品、GLB、Viewer、报告、位姿和
+- `panorama.jpg` / `panorama.png`：同一 RGB-only 中央窄条全景的 JPEG/PNG；
+  不是 TSDF、深度投影或其它 renderer 的颜色输出；
+- `transforms.json`：真实 RGB-D pose graph、完整 ORB-SLAM3 轨迹与
+  `pose_frontend_concurrency` 审计；
+- `render_transforms.json`：全分辨率 calibrated RGB source 与真实 SE(3) 的
+  渲染 provenance；
+- `tsdf_mesh.glb`：显示用途的标准 glTF 2.0 二进制网格；
+  `tsdf_mesh_viewer.html` 只引用同级文件，不向全景反馈数据；
+- `report.json`：`gemini305-unified-central-strip/v12-r1`，包含 RGB 渲染、
+  Open3D/ORB、TSDF、并发时账和 publication 审计；
+- `delivery.json`：`gemini305-panorama-delivery/v12-r1`，最后发布，记录等级、
+  人工复核要求、`tsdf_visualization` 与并发审计。
+
+每次任务先使旧 `delivery.json` 失效；全景、GLB、Viewer、报告、位姿和
 `delivery.json` 都先写隐藏 pending 文件，再用 `os.replace` 发布，
 `delivery.json` 始终最后写入。C 级仍强制人工复核，并同样交付成对的 TSDF
 展示文件。TSDF 不是主图，但其生成、Viewer 或任意发布步骤失败仍会清除正式

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import html
 import json
@@ -48,7 +49,9 @@ from .rgb_residual_alignment import ResidualAlignmentConfig
 from .orbslam3_bridge import (
     ORBSLAM3PoseGraphOptimizer,
     ORBSLAM3Trajectory,
-    run_orbslam3_rgbd,
+    ORBSLAM3Error,
+    prepare_orbslam3_rgbd,
+    run_prepared_orbslam3_rgbd,
 )
 from .quality import (
     FrameQuality,
@@ -233,6 +236,8 @@ def _write_failure_report(output: Path, input_path: Path, exc: Exception) -> Non
         "deliverable_published": False,
     }
     attempt_audit = getattr(exc, "attempt_audit", ())
+    if not attempt_audit:
+        attempt_audit = getattr(exc, "orbslam3_execution_attempts", ())
     if isinstance(attempt_audit, (list, tuple)):
         compact_attempt_audit = [
             dict(row) for row in attempt_audit if isinstance(row, Mapping)
@@ -241,6 +246,9 @@ def _write_failure_report(output: Path, input_path: Path, exc: Exception) -> Non
             # Keep the native process facts that explain a bounded retry, but
             # never leak a temporary RGB-D staging location into the output.
             payload["orbslam3_execution_attempts"] = compact_attempt_audit
+    frontend_audit = getattr(exc, "pose_frontend_concurrency", None)
+    if isinstance(frontend_audit, Mapping):
+        payload["pose_frontend_concurrency"] = dict(frontend_audit)
     pending = output / ".failure.pending.json"
     pending.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     os.replace(pending, output / "failure.json")
@@ -3733,6 +3741,10 @@ def _publish_unified_r1_delivery(
     optional_edge_failures: Sequence[Mapping[str, object]],
     short_baseline_audit: Mapping[str, object],
     orbslam3_trajectory: ORBSLAM3Trajectory | None,
+    pose_frontend_concurrency: Mapping[str, object] | None,
+    stage_elapsed_seconds: dict[str, float],
+    intrinsics: CameraIntrinsics,
+    tsdf_visualization_config: Mapping[str, object],
     started: float,
 ) -> dict[str, Any]:
     """Atomically publish the R1 unified RGB product without legacy panels.
@@ -3754,12 +3766,33 @@ def _publish_unified_r1_delivery(
         render_metadata,
         [frame.frame_id for frame in render_frames],
     )
+    # The mesh is a required, display-only companion.  It is built only after
+    # RGB publication quality has been assessed and has no route back into the
+    # panorama, pose, seam, crop, or grade decisions.
+    tsdf_started = time.perf_counter()
+    pending_mesh, pending_mesh_viewer, tsdf_visualization = (
+        _stage_required_tsdf_visualization(
+            output,
+            list(render_frames),
+            list(render_poses),
+            intrinsics,
+            dict(tsdf_visualization_config),
+        )
+    )
+    stage_elapsed_seconds["tsdf_visualization_and_staging"] = (
+        time.perf_counter() - tsdf_started
+    )
     transforms_payload = pose_graph.as_dict()
     transforms_payload["layout_selection"] = dict(layout_metadata)
     transforms_payload["optional_edge_failures"] = [
         dict(value) for value in optional_edge_failures
     ]
     transforms_payload["short_baseline_initialization"] = dict(short_baseline_audit)
+    transforms_payload["pose_frontend_concurrency"] = (
+        dict(pose_frontend_concurrency)
+        if pose_frontend_concurrency is not None
+        else None
+    )
     transforms_payload["global_trajectory"] = _sanitized_diagnostic_trajectory(
         orbslam3_trajectory, input_frame_count=len(render_frames)
     )
@@ -3792,6 +3825,11 @@ def _publish_unified_r1_delivery(
         "input_quality": dict(capture_quality),
         "pose_quality": dict(pose_quality),
         "pose_graph": transforms_payload,
+        "pose_frontend_concurrency": (
+            dict(pose_frontend_concurrency)
+            if pose_frontend_concurrency is not None
+            else None
+        ),
         "render": render_metadata,
         "publication": assessment.as_dict(),
         "delivery_state": assessment.delivery_state,
@@ -3801,11 +3839,9 @@ def _publish_unified_r1_delivery(
         "handoff_fallback_summary": dict(assessment.handoff_fallback_summary),
         "handoff_outcomes": [dict(value) for value in assessment.handoff_outcomes],
         "manual_review_required": assessment.manual_review_required,
-        "tsdf_visualization": {
-            "status": "detached_not_used_for_rgb",
-            "stage": "deferred_until_v5_2_r6",
-        },
+        "tsdf_visualization": tsdf_visualization,
         "elapsed_seconds": time.perf_counter() - started,
+        "stage_elapsed_seconds": dict(stage_elapsed_seconds),
     }
     delivery = {
         "schema": "gemini305-panorama-delivery/v12-r1",
@@ -3820,12 +3856,18 @@ def _publish_unified_r1_delivery(
         "manual_review_required": assessment.manual_review_required,
         "renderer_backend": "unified_calibrated_central_strip/v1",
         "formal_render_trace": render_metadata.get("formal_render_trace"),
+        "pose_frontend_concurrency": (
+            dict(pose_frontend_concurrency)
+            if pose_frontend_concurrency is not None
+            else None
+        ),
         "unified_render_invariant_audit": dict(invariant),
         "pixel_provenance": {
             "path": str(output / "pixel_provenance.npz"),
             "schema": "owner-frame-id-r1",
             "full_source_uv_deferred_until": "v5.2-r6",
         },
+        "tsdf_visualization": tsdf_visualization,
         "panorama": str(output / "panorama.jpg"),
         "report": str(output / "report.json"),
     }
@@ -3851,6 +3893,8 @@ def _publish_unified_r1_delivery(
     os.replace(pending_transforms, output / "transforms.json")
     os.replace(pending_render_transforms, output / "render_transforms.json")
     os.replace(pending_provenance, output / "pixel_provenance.npz")
+    os.replace(pending_mesh, output / "tsdf_mesh.glb")
+    os.replace(pending_mesh_viewer, output / "tsdf_mesh_viewer.html")
     os.replace(pending_report, output / "report.json")
     os.replace(pending_delivery, output / "delivery.json")
     return report
@@ -4457,6 +4501,125 @@ def _estimate_pose_edges(
                 continue
             edges.append(edge)
     return edges, optional_failures
+
+
+def _run_parallel_pose_frontend(
+    pose_frames: list[RGBDFrame],
+    scan_frames: Sequence[RGBDFrame],
+    intrinsics: CameraIntrinsics,
+    odometry_config: RGBDOdometryConfig,
+    *,
+    odometry_backend: object | None,
+    nonadjacent_gap: int,
+    short_baseline_initialization: bool,
+    orb_work_root: Path,
+    orb_config: Mapping[str, Any] | None,
+) -> tuple[
+    list[Any], list[dict[str, object]], list[dict[str, object]], ORBSLAM3Trajectory,
+    dict[str, object], float,
+]:
+    """Overlap one complete CPU ORB run with the ordered Open3D CUDA chain.
+
+    The input staging is intentionally complete before the executor starts:
+    calibrated ORB staging uses CUDA remap, while the worker below only waits
+    for the one native WSL process.  No pose graph work begins at this seam.
+    """
+
+    staging_started = time.perf_counter()
+    prepared = prepare_orbslam3_rgbd(
+        scan_frames, intrinsics, orb_work_root, config=orb_config,
+    )
+    staging_seconds = time.perf_counter() - staging_started
+    audit: dict[str, object] = {
+        "mode": "orbslam3_cpu_open3d_cuda_parallel",
+        "orbslam3_device": "cpu",
+        "open3d_device": "cuda:0",
+        "host_logical_cpu_count": os.cpu_count(),
+        "orbslam3_cpu_affinity": "not_pinned_initial_measurement",
+        "orbslam3_staging_elapsed_seconds": staging_seconds,
+    }
+    parallel_started = time.perf_counter()
+    short_baseline_audit: list[dict[str, object]] = []
+    edge_error: Exception | None = None
+    orb_error: Exception | None = None
+    edges: list[Any] = []
+    optional_edge_failures: list[dict[str, object]] = []
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="g305-orbslam3") as executor:
+        orb_future = executor.submit(run_prepared_orbslam3_rgbd, prepared)
+        edge_started = time.perf_counter()
+        try:
+            edges, optional_edge_failures = _estimate_pose_edges(
+                pose_frames, intrinsics, odometry_config, backend=odometry_backend,
+                nonadjacent_gap=nonadjacent_gap, scan_frames=tuple(scan_frames),
+                short_baseline_audit=short_baseline_audit,
+                short_baseline_initialization=short_baseline_initialization,
+            )
+        except Exception as exc:
+            edge_error = exc
+        open3d_elapsed_seconds = time.perf_counter() - edge_started
+        if edge_error is None:
+            non_cuda_edges = [
+                str(getattr(edge, "backend", "unknown"))
+                for edge in edges
+                if str(getattr(edge, "backend", "")) != "open3d_tensor_cuda_rgbd"
+            ]
+            if non_cuda_edges:
+                edge_error = RuntimeError(
+                    "Formal parallel pose frontend requires every Open3D RGB-D "
+                    "edge to use open3d_tensor_cuda_rgbd; observed "
+                    + ", ".join(sorted(set(non_cuda_edges)))
+                )
+        try:
+            trajectory = orb_future.result()
+        except Exception as exc:
+            orb_error = exc
+            trajectory = None
+    parallel_wall_seconds = time.perf_counter() - parallel_started
+
+    # A native 134/139 retry receives fresh staging only after the CUDA chain
+    # has joined.  It is deliberately serial, never a second CUDA contender.
+    retry_seconds = 0.0
+    if isinstance(orb_error, ORBSLAM3Error) and orb_error.retryable_native_failure:
+        retry_started = time.perf_counter()
+        retry_prepared = prepare_orbslam3_rgbd(
+            scan_frames, intrinsics, orb_work_root, config=orb_config,
+            _attempt_index=2, _prior_attempt_audit=orb_error.attempt_audit,
+        )
+        try:
+            trajectory = run_prepared_orbslam3_rgbd(retry_prepared)
+            orb_error = None
+        except Exception as exc:
+            orb_error = exc
+        retry_seconds = time.perf_counter() - retry_started
+
+    attempts = (
+        trajectory.attempt_audit if trajectory is not None
+        else getattr(orb_error, "attempt_audit", ())
+    )
+    orb_elapsed_seconds = sum(float(row.get("elapsed_seconds", 0.0)) for row in attempts)
+    overlap_seconds = max(0.0, min(orb_elapsed_seconds, open3d_elapsed_seconds))
+    audit.update({
+        "orbslam3_elapsed_seconds": orb_elapsed_seconds,
+        "open3d_elapsed_seconds": open3d_elapsed_seconds,
+        "parallel_wall_seconds": parallel_wall_seconds,
+        "overlap_seconds": overlap_seconds,
+        "serial_baseline_estimate_seconds": orb_elapsed_seconds + open3d_elapsed_seconds,
+        "estimated_wall_time_saved_seconds": overlap_seconds,
+        "orbslam3_retry_serial_elapsed_seconds": retry_seconds,
+        "execution_attempts": [dict(row) for row in attempts],
+    })
+    if edge_error is not None or orb_error is not None:
+        parts = []
+        if edge_error is not None:
+            parts.append(f"Open3D edge chain: {type(edge_error).__name__}: {edge_error}")
+        if orb_error is not None:
+            parts.append(f"ORB-SLAM3: {type(orb_error).__name__}: {orb_error}")
+        failure = RuntimeError("pose frontend failure; " + " | ".join(parts))
+        failure.pose_frontend_concurrency = audit  # type: ignore[attr-defined]
+        failure.orbslam3_execution_attempts = tuple(attempts)  # type: ignore[attr-defined]
+        raise failure
+    assert trajectory is not None
+    return edges, optional_edge_failures, short_baseline_audit, trajectory, audit, staging_seconds
 
 
 def _working_projection_frames(
@@ -5452,24 +5615,6 @@ def _run_pipeline(
     )
     started = time.perf_counter()
     stage_elapsed_seconds: dict[str, float] = {}
-    stage_started = started
-    short_baseline_audit: list[dict[str, object]] = []
-    edges, optional_edge_failures = _estimate_pose_edges(
-        pose_frames,
-        session.calibration,
-        odometry_config,
-        backend=odometry_backend,
-        nonadjacent_gap=nonadjacent_gap,
-        scan_frames=scan_frames,
-        short_baseline_audit=short_baseline_audit,
-        short_baseline_initialization=bool(
-            stitch_config.get("short_baseline_initialization", True)
-        ),
-    )
-    stage_elapsed_seconds["open3d_rgbd_odometry"] = (
-        time.perf_counter() - stage_started
-    )
-    stage_started = time.perf_counter()
     pose_backend = str(stitch_config.get("pose_backend", "hybrid_orbslam3_rgbd"))
     if (
         geometry_pair_diagnostic_renderer is not None
@@ -5481,6 +5626,7 @@ def _run_pipeline(
         )
     orbslam3_trajectory: ORBSLAM3Trajectory | None = None
     global_pose_backend: object | None = odometry_backend
+    pose_frontend_concurrency: dict[str, object] | None = None
     if pose_backend == "hybrid_orbslam3_rgbd" and odometry_backend is None:
         print(
             "[ORB-SLAM3] solving the global RGB-D trajectory from the complete "
@@ -5494,25 +5640,42 @@ def _run_pipeline(
             raise RuntimeError(
                 "Diagnostic rendering requires an isolated ORB staging directory"
             )
-        if orb_work_root is not None:
-            orbslam3_trajectory = run_orbslam3_rgbd(
-                scan_frames,
-                session.calibration,
-                orb_work_root,
-                config=stitch_config.get("orbslam3_rgbd"),
-            )
-        else:
+        if orb_work_root is None:
             # The formal output directory must contain only final pending or
             # delivered artifacts.  RGB-D staging is sensitive analysis input
             # and belongs to a system temporary directory even on success.
             with tempfile.TemporaryDirectory(prefix="g305-panorama-orbslam3-") as root:
-                orbslam3_trajectory = run_orbslam3_rgbd(
-                    scan_frames,
-                    session.calibration,
-                    Path(root),
-                    config=stitch_config.get("orbslam3_rgbd"),
+                (edges, optional_edge_failures, short_baseline_audit,
+                 orbslam3_trajectory, pose_frontend_concurrency, staging_seconds) = _run_parallel_pose_frontend(
+                    pose_frames, scan_frames, session.calibration, odometry_config,
+                    odometry_backend=odometry_backend, nonadjacent_gap=nonadjacent_gap,
+                    short_baseline_initialization=bool(stitch_config.get("short_baseline_initialization", True)),
+                    orb_work_root=Path(root), orb_config=stitch_config.get("orbslam3_rgbd"),
                 )
+        else:
+            (edges, optional_edge_failures, short_baseline_audit,
+             orbslam3_trajectory, pose_frontend_concurrency, staging_seconds) = _run_parallel_pose_frontend(
+                pose_frames, scan_frames, session.calibration, odometry_config,
+                odometry_backend=odometry_backend, nonadjacent_gap=nonadjacent_gap,
+                short_baseline_initialization=bool(stitch_config.get("short_baseline_initialization", True)),
+                orb_work_root=orb_work_root, orb_config=stitch_config.get("orbslam3_rgbd"),
+            )
+        stage_elapsed_seconds["orbslam3_staging"] = staging_seconds
+        stage_elapsed_seconds["parallel_pose_frontend"] = float(
+            pose_frontend_concurrency["parallel_wall_seconds"]
+        )
         global_pose_backend = ORBSLAM3PoseGraphOptimizer(orbslam3_trajectory)
+    else:
+        stage_started = time.perf_counter()
+        short_baseline_audit = []
+        edges, optional_edge_failures = _estimate_pose_edges(
+            pose_frames, session.calibration, odometry_config, backend=odometry_backend,
+            nonadjacent_gap=nonadjacent_gap, scan_frames=scan_frames,
+            short_baseline_audit=short_baseline_audit,
+            short_baseline_initialization=bool(stitch_config.get("short_baseline_initialization", True)),
+        )
+        stage_elapsed_seconds["open3d_rgbd_odometry"] = time.perf_counter() - stage_started
+    stage_started = time.perf_counter()
     pose_graph = optimize_rgbd_pose_graph(
         pose_frames,
         edges,
@@ -6000,6 +6163,12 @@ def _run_pipeline(
                 optional_edge_failures=optional_edge_failures,
                 short_baseline_audit=short_baseline_audit,
                 orbslam3_trajectory=orbslam3_trajectory,
+                pose_frontend_concurrency=pose_frontend_concurrency,
+                stage_elapsed_seconds=stage_elapsed_seconds,
+                intrinsics=session.calibration,
+                tsdf_visualization_config=dict(
+                    stitch_config.get("tsdf_visualization", {})
+                ),
                 started=started,
             )
         photometric_calibration = render_metadata.get(
@@ -6283,6 +6452,7 @@ def _run_pipeline(
     transforms_payload["layout_selection"] = layout_metadata
     transforms_payload["optional_edge_failures"] = optional_edge_failures
     transforms_payload["short_baseline_initialization"] = short_baseline_audit
+    transforms_payload["pose_frontend_concurrency"] = pose_frontend_concurrency
     transforms_payload["global_trajectory"] = _sanitized_diagnostic_trajectory(
         orbslam3_trajectory, input_frame_count=len(scan_frames)
     )
@@ -6478,6 +6648,7 @@ def _run_pipeline(
         "global_trajectory": transforms_payload["global_trajectory"],
         "pose_graph": transforms_payload,
         "pose_quality": pose_quality,
+        "pose_frontend_concurrency": pose_frontend_concurrency,
         "projection": render_transforms_payload,
         "render_strategy": (
             "calibrated_rgb_pushbroom"
@@ -6602,6 +6773,7 @@ def _run_pipeline(
         ),
         "pixel_provenance": render_metadata.get("pixel_provenance_v1"),
         "manual_review_required": publication_assessment.manual_review_required,
+        "pose_frontend_concurrency": pose_frontend_concurrency,
         "pose_backend": (
             "hybrid_orbslam3_rgbd"
             if orbslam3_trajectory is not None
@@ -6783,6 +6955,7 @@ def main() -> None:
         raise SystemExit(1) from exc
     print(f"Panorama: {report['panorama']}")
     print(f"Report: {report['report']}")
+    print(f"Processing time: {float(report['elapsed_seconds']):.3f} s")
     if bool(report.get("diagnostic_only", False)):
         print("Diagnostic only: no delivery.json was published")
 

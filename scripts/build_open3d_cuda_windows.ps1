@@ -1,7 +1,7 @@
 param(
     [string]$PythonExe = 'D:\Panoramic_Camera\.conda\python.exe',
     [string]$SourceRoot = 'D:\open3d_cuda_build\Open3D-v0.19.0',
-    [string]$BuildRoot = 'D:\open3d_cuda_build\Open3D-v0.19.0\build-cuda12.8-sm120-v2',
+    [string]$BuildRoot = 'D:\open3d_cuda_build\Open3D-v0.19.0\build-cuda12.8-sm120-v3',
     [string]$CudaRoot = 'D:\open3d_cuda_build\cuda128-toolkit\Library',
     [string]$CudaArchitecture = '120',
     [int]$ParallelJobs = 2
@@ -57,37 +57,36 @@ if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot '.git'))) {
     & git clone --depth 1 --branch v0.19.0 `
         https://github.com/isl-org/Open3D.git $SourceRoot
 }
-$savedErrorActionPreference = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-& git -C $SourceRoot apply --check $patchPath 2>$null
-$canApplyPatch = $LASTEXITCODE -eq 0
-$ErrorActionPreference = $savedErrorActionPreference
-if ($canApplyPatch) {
+function Apply-Open3DPatchOnce([string]$Path, [string]$Marker, [string]$Label) {
+    # Previous failed builds leave the source tree intentionally patched, while
+    # their external stdgpu checkout is incomplete.  Detect the semantic marker
+    # instead of relying on git's reverse-check, which cannot distinguish that
+    # state from an offset patch in Open3D's vendored source.
+    $sourceText = Get-Content -LiteralPath $Path -Raw
+    if ($sourceText.Contains($Marker)) {
+        return
+    }
     & git -C $SourceRoot apply $patchPath
-} else {
-    $ErrorActionPreference = 'Continue'
-    & git -C $SourceRoot apply --reverse --check $patchPath
-    $patchAlreadyApplied = $LASTEXITCODE -eq 0
-    $ErrorActionPreference = $savedErrorActionPreference
-    if (-not $patchAlreadyApplied) {
-        throw 'Open3D CUDA compatibility patch cannot be applied'
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Label compatibility patch cannot be applied"
     }
 }
-$ErrorActionPreference = 'Continue'
-& git -C $SourceRoot apply --check $shutdownPatchPath 2>$null
-$canApplyShutdownPatch = $LASTEXITCODE -eq 0
-$ErrorActionPreference = $savedErrorActionPreference
-if ($canApplyShutdownPatch) {
+Apply-Open3DPatchOnce `
+    (Join-Path $SourceRoot '3rdparty\stdgpu\stdgpu.cmake') `
+    'OPEN3D_THRUST_INCLUDE_DIR' `
+    'Open3D CUDA'
+if (-not (Get-Content -LiteralPath (Join-Path $SourceRoot 'cpp\open3d\core\MemoryManagerCUDA.cpp') -Raw).Contains('cudaErrorCudartUnloading')) {
     & git -C $SourceRoot apply $shutdownPatchPath
-} else {
-    $ErrorActionPreference = 'Continue'
-    & git -C $SourceRoot apply --reverse --check $shutdownPatchPath
-    $shutdownPatchAlreadyApplied = $LASTEXITCODE -eq 0
-    $ErrorActionPreference = $savedErrorActionPreference
-    if (-not $shutdownPatchAlreadyApplied) {
+    if ($LASTEXITCODE -ne 0) {
         throw 'Open3D CUDA shutdown compatibility patch cannot be applied'
     }
 }
+
+# CUDA 12.8 diagnoses legacy libcu++/stdgpu `1e+300` float casts as
+# diagnostic 221.  Open3D 0.19 treats all CUDA diagnostics as errors, so
+# suppress this toolkit compatibility diagnostic at CMake configure time
+# (NVCC_PREPEND_FLAGS alone is not propagated into generated Ninja rules).
+$cudaCompatibilityFlags = '-DCMAKE_CUDA_FLAGS=--allow-unsupported-compiler --diag-suppress=221'
 
 & $cmake -S $SourceRoot -B $BuildRoot -G Ninja `
     -DCMAKE_BUILD_TYPE=Release `
@@ -96,6 +95,7 @@ if ($canApplyShutdownPatch) {
     "-DPython3_EXECUTABLE=$PythonExe" `
     -DBUILD_PYTHON_MODULE=ON `
     -DBUILD_CUDA_MODULE=ON `
+    $cudaCompatibilityFlags `
     "-DCMAKE_CUDA_ARCHITECTURES=$CudaArchitecture" `
     "-DCUDAToolkit_ROOT=$CudaRoot" `
     "-DOPEN3D_CUDA13_STDGPU_PATCH=$stdgpuPatchPath" `

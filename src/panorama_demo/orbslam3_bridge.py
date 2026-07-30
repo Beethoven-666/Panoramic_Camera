@@ -57,12 +57,14 @@ class ORBSLAM3Error(RuntimeError):
         message: str,
         *,
         attempt_audit: Sequence[Mapping[str, object]] = (),
+        retryable_native_failure: bool = False,
     ) -> None:
         super().__init__(message)
         # This audit deliberately contains only scalar process facts.  It is
         # safe to include in a report without retaining an RGB-D staging path,
         # command, image name, or partial pose from a failed native process.
         self.attempt_audit = tuple(dict(row) for row in attempt_audit)
+        self.retryable_native_failure = bool(retryable_native_failure)
 
 
 @dataclass(frozen=True)
@@ -157,6 +159,23 @@ class _StagedORBSLAM3Attempt:
     trajectory_path: Path
     timestamps: tuple[float, ...]
     command: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PreparedORBSLAM3RGBD:
+    """A fully staged, GPU-free-to-execute ORB-SLAM3 RGB-D attempt.
+
+    Preparation deliberately owns decoding, calibrated remapping and all WSL
+    path checks.  Running this object only launches the native WSL process and
+    parses its trajectory, which lets the formal scheduler overlap it with the
+    single ordered Open3D CUDA edge chain without CUDA contention.
+    """
+
+    frames: tuple[RGBDFrame, ...]
+    config: ORBSLAM3Config
+    staged: _StagedORBSLAM3Attempt
+    attempt_index: int
+    prior_attempt_audit: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -633,19 +652,16 @@ def _attempt_audit_row(
     }
 
 
-def run_orbslam3_rgbd(
+def prepare_orbslam3_rgbd(
     frames: Sequence[RGBDFrame],
     intrinsics: CameraIntrinsics,
     work_dir: str | Path,
     *,
     config: ORBSLAM3Config | Mapping[str, Any] | None = None,
-) -> ORBSLAM3Trajectory:
-    """Run ORB-SLAM3 RGB-D and return every genuinely tracked camera pose.
-
-    The bridge never manufactures a pose for an untracked frame.  Its caller
-    must either select only the returned frame ids or reject the incomplete
-    trajectory according to ``minimum_tracked_fraction``.
-    """
+    _attempt_index: int = 1,
+    _prior_attempt_audit: Sequence[Mapping[str, object]] = (),
+) -> PreparedORBSLAM3RGBD:
+    """Perform all CUDA-using ORB input work before native execution."""
 
     selected_config = (
         config
@@ -673,74 +689,59 @@ def run_orbslam3_rgbd(
         )
 
     work_root = Path(work_dir).expanduser().resolve()
-    attempt_audit: list[dict[str, object]] = []
-    for attempt_index in range(1, _ORB_SLAM3_MAX_EXECUTION_ATTEMPTS + 1):
-        staged = _stage_orbslam3_attempt(
-            frames,
-            intrinsics,
-            work_root,
-            config=selected_config,
-            executable_wsl=executable_wsl,
-            vocabulary_wsl=vocabulary_wsl,
-        )
-        completed, elapsed_seconds = _run_orbslam3_process(
-            staged.command,
-            stage_dir=staged.stage_dir,
-            timeout_seconds=selected_config.timeout_seconds,
-        )
-        stdout_path = staged.stage_dir / "orbslam3.stdout.txt"
-        stderr_path = staged.stage_dir / "orbslam3.stderr.txt"
-        stdout_path.write_text(completed.stdout or "", encoding="utf-8")
-        stderr_path.write_text(completed.stderr or "", encoding="utf-8")
+    staged = _stage_orbslam3_attempt(
+        frames, intrinsics, work_root, config=selected_config,
+        executable_wsl=executable_wsl, vocabulary_wsl=vocabulary_wsl,
+    )
+    return PreparedORBSLAM3RGBD(
+        frames=tuple(frames), config=selected_config, staged=staged,
+        attempt_index=int(_attempt_index),
+        prior_attempt_audit=tuple(dict(row) for row in _prior_attempt_audit),
+    )
 
-        retry_reason = (
-            _ORB_SLAM3_RETRYABLE_NATIVE_FAILURES.get(int(completed.returncode))
-            if attempt_index < _ORB_SLAM3_MAX_EXECUTION_ATTEMPTS
-            else None
+
+def run_prepared_orbslam3_rgbd(prepared: PreparedORBSLAM3RGBD) -> ORBSLAM3Trajectory:
+    """Execute one prepared attempt; this path does not remap or use CUDA."""
+
+    staged = prepared.staged
+    completed, elapsed_seconds = _run_orbslam3_process(
+        staged.command, stage_dir=staged.stage_dir,
+        timeout_seconds=prepared.config.timeout_seconds,
+    )
+    stdout_path = staged.stage_dir / "orbslam3.stdout.txt"
+    stderr_path = staged.stage_dir / "orbslam3.stderr.txt"
+    stdout_path.write_text(completed.stdout or "", encoding="utf-8")
+    stderr_path.write_text(completed.stderr or "", encoding="utf-8")
+    retry_reason = (
+        _ORB_SLAM3_RETRYABLE_NATIVE_FAILURES.get(int(completed.returncode))
+        if prepared.attempt_index < _ORB_SLAM3_MAX_EXECUTION_ATTEMPTS else None
+    )
+    attempt_audit = [*prepared.prior_attempt_audit, _attempt_audit_row(
+        attempt_index=prepared.attempt_index, completed=completed,
+        elapsed_seconds=elapsed_seconds, accepted=False, retry_reason=retry_reason,
+    )]
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "no process output").strip()
+        raise ORBSLAM3Error(
+            f"ORB-SLAM3 RGB-D failed ({completed.returncode}): {detail[-1200:]}",
+            attempt_audit=attempt_audit,
+            retryable_native_failure=retry_reason is not None,
         )
-        attempt_audit.append(
-            _attempt_audit_row(
-                attempt_index=attempt_index,
-                completed=completed,
-                elapsed_seconds=elapsed_seconds,
-                accepted=False,
-                retry_reason=retry_reason,
-            )
-        )
-        if completed.returncode != 0:
-            if retry_reason is not None:
-                continue
-            detail = (completed.stderr or completed.stdout or "no process output").strip()
+    try:
+        poses = _read_tum_trajectory(staged.trajectory_path, prepared.frames, staged.timestamps)
+        tracked_ids = tuple(frame.frame_id for frame in prepared.frames if frame.frame_id in poses)
+        tracked_fraction = len(tracked_ids) / len(prepared.frames)
+        if tracked_fraction < prepared.config.minimum_tracked_fraction:
             raise ORBSLAM3Error(
-                f"ORB-SLAM3 RGB-D failed ({completed.returncode}): {detail[-1200:]}",
-                attempt_audit=attempt_audit,
+                "ORB-SLAM3 tracked only "
+                f"{len(tracked_ids)}/{len(prepared.frames)} frames "
+                f"({tracked_fraction:.1%}), below the required "
+                f"{prepared.config.minimum_tracked_fraction:.1%}"
             )
-
-        # A normal process exit does not justify a retry.  Missing, duplicate,
-        # or insufficient poses remain a structural failure of the sole real
-        # trajectory attempt and must not be concealed by another run.
-        try:
-            poses = _read_tum_trajectory(
-                staged.trajectory_path, frames, staged.timestamps
-            )
-            tracked_ids = tuple(
-                frame.frame_id for frame in frames if frame.frame_id in poses
-            )
-            tracked_fraction = len(tracked_ids) / len(frames)
-            if tracked_fraction < selected_config.minimum_tracked_fraction:
-                raise ORBSLAM3Error(
-                    "ORB-SLAM3 tracked only "
-                    f"{len(tracked_ids)}/{len(frames)} frames "
-                    f"({tracked_fraction:.1%}), below the required "
-                    f"{selected_config.minimum_tracked_fraction:.1%}"
-                )
-        except ORBSLAM3Error as exc:
-            raise ORBSLAM3Error(
-                str(exc), attempt_audit=attempt_audit
-            ) from exc
-
-        attempt_audit[-1]["accepted"] = True
-        return ORBSLAM3Trajectory(
+    except ORBSLAM3Error as exc:
+        raise ORBSLAM3Error(str(exc), attempt_audit=attempt_audit) from exc
+    attempt_audit[-1]["accepted"] = True
+    return ORBSLAM3Trajectory(
             poses_by_frame_id=poses,
             tracked_frame_ids=tracked_ids,
             work_dir=staged.stage_dir,
@@ -750,8 +751,27 @@ def run_orbslam3_rgbd(
             settings_path=staged.settings_path,
             association_path=staged.association_path,
             trajectory_path=staged.trajectory_path,
-            config=selected_config,
+            config=prepared.config,
             attempt_audit=tuple(attempt_audit),
-        )
+    )
 
+
+def run_orbslam3_rgbd(
+    frames: Sequence[RGBDFrame], intrinsics: CameraIntrinsics, work_dir: str | Path,
+    *, config: ORBSLAM3Config | Mapping[str, Any] | None = None,
+) -> ORBSLAM3Trajectory:
+    """Prepare and run ORB-SLAM3, retaining the legacy retry behaviour."""
+
+    audit: tuple[dict[str, object], ...] = ()
+    for attempt_index in range(1, _ORB_SLAM3_MAX_EXECUTION_ATTEMPTS + 1):
+        prepared = prepare_orbslam3_rgbd(
+            frames, intrinsics, work_dir, config=config,
+            _attempt_index=attempt_index, _prior_attempt_audit=audit,
+        )
+        try:
+            return run_prepared_orbslam3_rgbd(prepared)
+        except ORBSLAM3Error as exc:
+            audit = exc.attempt_audit
+            if not exc.retryable_native_failure:
+                raise
     raise AssertionError("ORB-SLAM3 retry loop ended without a result")

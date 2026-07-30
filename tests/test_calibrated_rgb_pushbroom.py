@@ -2554,6 +2554,20 @@ def test_pushbroom_keeps_outward_endpoint_coverage_when_virtual_x_is_reversed(
     layout = result.metadata["layout"]
     metrics = result.metadata["quality_metrics"]
     assert layout["temporal_to_virtual_x_sign"] < 0.0
+    assert layout["presentation_horizontal_flip"] is True
+    assert result.metadata["presentation_orientation"] == {
+        "axis": "calibrated_virtual_camera_image_right",
+        "temporal_order_preserved_in_internal_canvas": True,
+        "horizontal_flip_applied": True,
+        "reason": "temporal_scan_axis_opposes_calibrated_image_right",
+    }
+    assert result.owner_frame_id is not None
+    # The source chain remains chronological internally, but a camera whose
+    # image-right points opposite to scan time must be presented spatially,
+    # so its final (later) frame appears at the delivered image's left edge.
+    assert int(np.median(result.owner_frame_id[:, 0])) > int(
+        np.median(result.owner_frame_id[:, -1])
+    )
     assert layout["endpoint_policy"] == "outward_half_fov"
     assert all(
         count > 0

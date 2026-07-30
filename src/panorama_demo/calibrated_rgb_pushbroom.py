@@ -662,6 +662,14 @@ class PushbroomLayout:
             "temporal_scan_axis": list(self.temporal_scan_axis),
             "level_camera_to_world_rotation": self.level_camera_to_world_rotation.tolist(),
             "temporal_to_virtual_x_sign": self.temporal_to_virtual_x_sign,
+            # The streaming canvas is deliberately ordered by capture time so
+            # adjacent-pair ownership remains chronological.  A negative sign
+            # means that chronology runs opposite to calibrated image-right;
+            # the delivered panorama is flipped once, together with its owner
+            # map, to retain the camera's normal left-to-right presentation.
+            "presentation_horizontal_flip": bool(
+                self.temporal_to_virtual_x_sign < 0.0
+            ),
             "scan_frame_audit": dict(self.scan_frame_audit),
         }
 
@@ -12804,6 +12812,21 @@ def render_calibrated_rgb_pushbroom(
         )
         owned = cropped_owner >= 0
         cropped_owner_frame_id[owned] = frame_id_lookup[cropped_owner[owned]]
+        # Internally, x grows in temporal order.  If the calibrated virtual
+        # camera's image-right direction is opposite to that temporal axis,
+        # retaining that order would mirror a right-to-left sweep.  Flip the
+        # completed RGB result and its owner map together.  This is a
+        # presentation-only reindexing after every source has completed its
+        # one calibrated inverse remap; it neither changes any pose nor
+        # samples/generates any RGB pixel.
+        presentation_horizontal_flip = bool(
+            layout.temporal_to_virtual_x_sign < 0.0
+        )
+        if presentation_horizontal_flip:
+            panorama = np.ascontiguousarray(panorama[:, ::-1])
+            cropped_owner_frame_id = np.ascontiguousarray(
+                cropped_owner_frame_id[:, ::-1]
+            )
         source_owner_pixel_counts = [
             int(np.count_nonzero(cropped_owner == source_index))
             for source_index in range(len(frames))
@@ -13368,6 +13391,16 @@ def render_calibrated_rgb_pushbroom(
             "reference_plane_fitted": False,
             "single_inverse_remap_per_source": True,
             "interpolated_pose_count": 0,
+            "presentation_orientation": {
+                "axis": "calibrated_virtual_camera_image_right",
+                "temporal_order_preserved_in_internal_canvas": True,
+                "horizontal_flip_applied": presentation_horizontal_flip,
+                "reason": (
+                    "temporal_scan_axis_opposes_calibrated_image_right"
+                    if presentation_horizontal_flip
+                    else "temporal_scan_axis_matches_calibrated_image_right"
+                ),
+            },
             "layout": layout.as_dict(),
             "rgb_motion_scale": scale.as_dict(),
             "crop": crop.as_dict(),
@@ -13891,10 +13924,31 @@ def render_geometry_pair_diagnostic(
         )
 
     def panel_from(result: CalibratedRGBPushbroomResult, crop: tuple[int, int, int, int]) -> np.ndarray:
-        x0, y0, _x1, _y1 = crop
+        x0, y0, x1, _y1 = crop
+        orientation = result.metadata.get("presentation_orientation")
+        # Small renderer fakes used by diagnostic callers predating the
+        # presentation-orientation audit have never flipped their output.
+        # Preserve that compatible identity interpretation; production
+        # renderer results always emit the explicit mapping above.
+        flip = False if orientation is None else (
+            orientation.get("horizontal_flip_applied")
+            if isinstance(orientation, Mapping)
+            else None
+        )
+        if type(flip) is not bool:
+            raise RuntimeError("Geometry pair diagnostic presentation orientation is malformed")
+        if flip:
+            # ``roi_x*`` remain internal calibrated-canvas coordinates in the
+            # scalar pair audit.  Convert them to columns in the delivered,
+            # horizontally reoriented panorama before extracting the A/B panel.
+            image_x0 = x1 - roi_x1
+            image_x1 = x1 - roi_x0
+        else:
+            image_x0 = roi_x0 - x0
+            image_x1 = roi_x1 - x0
         panel = result.panorama[
             common_y0 - y0 : common_y1 - y0,
-            roi_x0 - x0 : roi_x1 - x0,
+            image_x0:image_x1,
         ]
         expected_shape = (common_y1 - common_y0, roi_x1 - roi_x0, 3)
         if panel.shape != expected_shape or panel.dtype != np.uint8:
