@@ -99,7 +99,7 @@ data/captures/run_YYYYMMDD_HHMMSS/
 }
 ```
 
-### 2.1 采集连续 RGB-D 视频（非正式）
+### 2.1 采集连续 RGB-D 视频（独立视频产品输入）
 
 不带 `--photo-mode` 时，`g305-capture` 进入与照片模式隔离的连续 RGB-D 视频路径：
 
@@ -109,9 +109,40 @@ data/captures/run_YYYYMMDD_HHMMSS/
   --output 'D:\central_strip_Panoramic_Camera\data\captures'
 ```
 
-此模式面向实时预览、设备检查或采集诊断，并非正式全景输入。它始终启用相机自动曝光（快门时间随 AE 自动调节）、自动增益和自动白平衡；不会在预热后锁定控制值。`--exposure-us`、`--gain`、`--white-balance` 和曝光模式覆盖参数会被拒绝，以免将视频路径改回手动控制。
+此模式与照片全景隔离：它不能传给 `g305-panorama`，但可以传给独立的
+`g305-video-panorama`。默认始终启用相机自动曝光（快门时间随 AE 自动调节）、自动增益和自动白平衡；不会在预热后锁定控制值。需要固定视频曝光时使用
+`--video-exposure-us 800`（不能与 `--photo-mode` 同用）；此时仍保持自动增益和自动白平衡。
 
-视频会话会写入 `capture_mode="continuous_rgbd_video_auto"`，并标记 `diagnostic_only=true`、`formal_stitch_allowed=false`。因此不能传给 `g305-panorama` 生成正式交付；正式侧扫请使用上面的照片模式。
+视频会话会写入 `capture_mode="continuous_rgbd_video_auto"` 或
+`continuous_rgbd_video_fixed_exposure`，并保留 `diagnostic_only=true`、
+`formal_stitch_allowed=false` 以拒绝照片流程。v2 会话在安全关闭且没有写盘错误时还会写入
+`product_eligibility={"photo_panorama": false, "video_panorama": true}`。
+
+### 2.2 生成独立视频全景与三维附件
+
+视频入口会选择最长连续单向扫描段，运行完整段的真实 ORB-SLAM3 RGB-D 轨迹，对全部实际
+渲染源执行相邻 Open3D RGB-D 审计，然后复用统一 calibrated central-strip renderer。它不会
+插值 pose，也不会使用 Open3D 或二维运动代替缺失 ORB pose。
+
+```powershell
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-panorama.exe' `
+  'D:\central_strip_Panoramic_Camera\data\captures\run_YYYYMMDD_HHMMSS' `
+  --output 'D:\central_strip_Panoramic_Camera\outputs\video_sequence'
+```
+
+默认在 2-D 发布后生成 GLB；若要延后：
+
+```powershell
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-panorama.exe' SESSION --output OUTPUT --defer-3d
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-3d.exe' OUTPUT --input SESSION
+```
+
+自动曝光、超过 `1200 µs` 的曝光或严格质量未过但结构完整的视频会发布为 C 级：
+`video_delivery.json` 的 `delivery_state` 为 `published_degraded`，并要求人工复核。2-D 交付
+包含 `video_panorama.jpg/png`、`video_pixel_provenance.npz`、`video_report.json` 和最后写入的
+`video_delivery.json`。三维发布是独立的：`video_tsdf_mesh.glb`、mobile GLB、离线
+`video_tsdf_mesh_viewer.html` 及 `video_3d_delivery.json`；3-D 失败只写
+`video_3d_failure.json`，不会撤销已经发布的 2-D 交付。
 
 ### 3. 验证 CUDA Open3D 与 ORB-SLAM3
 
@@ -238,7 +269,7 @@ formal_stitch_allowed=false
 
 只有相机、pipeline、writer 和设备配置都安全关闭，且没有采集、队列或写盘错误时，最终 manifest 才会将二者设为 `true`。强制结束、写盘失败、同步不确定或设备恢复失败的会话不能正式拼接。
 
-连续流采集仍可通过不带 `--photo-mode` 的 `g305-capture` 使用，具体控制行为和限制见“采集连续 RGB-D 视频（非正式）”。它不能替代照片模式的固定控制 RGB-D 会话；RGB-only 截图、普通照片目录或未对齐深度同样不能替代正式输入。
+连续流采集仍可通过不带 `--photo-mode` 的 `g305-capture` 使用，具体控制行为和限制见“采集连续 RGB-D 视频（独立视频产品输入）”。它不能替代照片模式的固定控制 RGB-D 会话，也不能传给 `g305-panorama`；RGB-only 截图、普通照片目录或未对齐深度同样不能替代任何正式 RGB-D 输入。
 
 ## 严格 RGB-D 会话
 

@@ -30,6 +30,8 @@ unistitch-diagnostic = [
 [project.scripts]
 g305-capture = "panorama_demo.capture_orbbec:main"
 g305-panorama = "panorama_demo.stitch_sequence:main"
+g305-video-panorama = "panorama_demo.video_panorama:main"
+g305-video-3d = "panorama_demo.video_3d:main"
 g305-orbslam3-trajectory = "panorama_demo.export_orbslam3_trajectory:main"
 g305-central-strip-diagnostic = "panorama_demo.central_strip_diagnostic:main"
 g305-geometry-pair-diagnostic = "panorama_demo.geometry_pair_diagnostic:main"

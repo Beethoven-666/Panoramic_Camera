@@ -36,6 +36,32 @@
 
 `unistitch-sequence` 是 `g305-panorama` 的弃用别名。`unistitch-pair` 仅用于历史双图诊断。`g305-central-strip-diagnostic`、`g305-geometry-pair-diagnostic` 和 `g305-foreground-deformation-diagnostic` 是隔离诊断入口，不能成为正式 backend、CLI 模式或失败回退。
 
+### 1.2 独立连续视频全景产品
+
+照片模式的 `g305-panorama` 契约保持不变。连续 RGB-D 视频通过独立入口
+`g305-video-panorama` 处理，绝不能传给 `g305-panorama`，也不能复用照片的
+`delivery.json`。视频产品当前流程为：严格视频 session 验证 → 最长连续单向扫描段
+分析 → 该段完整 ORB-SLAM3 RGB-D 真实 `camera_to_world` → 所有实际渲染源的相邻
+Open3D RGB-D 边审计 → 共享 `render_calibrated_rgb_pushbroom()` → 独立 2-D 发布 →
+可独立重试的 TSDF/GLB 发布。
+
+- 只接受 `continuous_rgbd_video_auto` 与
+  `continuous_rgbd_video_fixed_exposure`，并接受旧的 v1 auto 会话用于 C 级兼容。
+  v2 会话还必须有 `product_eligibility.photo_panorama=false` 和
+  `product_eligibility.video_panorama=true`。
+- 视频也不得插值、伪造或用 Open3D/二维运动替代缺失 ORB pose；所有渲染源必须有真实
+  ORB pose，所有相邻渲染源边必须经 Open3D 审计。
+- 自动曝光、曝光超过 `1200 µs` 或严格质量未过的结构完整视频发布为 C：
+  `video_delivery.json` 的 `delivery_state=published_degraded`，且必须人工复核。
+- 2-D 文件为 `video_panorama.jpg`、`video_panorama.png`、
+  `video_pixel_provenance.npz`、`video_report.json` 和最后写入的
+  `video_delivery.json`。3-D 文件为 `video_tsdf_mesh.glb`、
+  `video_tsdf_mesh_mobile.glb`、`video_tsdf_mesh_viewer.html` 和
+  `video_3d_delivery.json`；3-D 失败只写 `video_3d_failure.json`，不得撤销已发布的
+  2-D 交付。
+- 视频 Viewer 必须离线可用，不得依赖 CDN。GLB 的节点已将 Open3D `+Y-down` 转为
+  glTF `+Y-up`；自定义 Viewer 必须同样应用 180° X 轴转换，不得将上下显示颠倒。
+
 ## 2. 开始工作
 
 1. 工作目录固定为 `D:\central_strip_Panoramic_Camera`。
@@ -61,7 +87,7 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 | 路径 | 当前职责 |
 | --- | --- |
 | `configs/demo.yaml` | 照片采集、位姿、unified RGB renderer、接缝、TSDF 与发布安全默认值 |
-| `capture_orbbec.py` | CLI、连续采集及照片模式路由、同步对齐和会话写盘基础设施 |
+| `capture_orbbec.py` | CLI、连续采集（自动或 `--video-exposure-us` 固定曝光）及照片模式路由、同步对齐和会话写盘基础设施 |
 | `photo_capture.py` | 正式主采集路径：软件触发、Trigger Out 门控、逐帧同步 RGB-D 照片序列 |
 | `session.py` | 严格 manifest、标定、aligned depth、时间戳、曝光与毫米单位契约 |
 | `quality.py` | 输入画质、主扫描段、pose-node 与渲染源审计 |
@@ -73,6 +99,8 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 | `handoff_continuity.py` / `local_apap_flow.py` | handoff 标量审计及默认关闭的 APAP/flow 候选 |
 | `dense_fusion.py` | 交付后只读 TSDF、GLB 和 Viewer；不得向 RGB renderer 回传结果 |
 | `stitch_sequence.py` | 正式编排、v12-r1 判定、失败清理和原子发布 |
+| `video_session.py` / `video_scan_segment.py` / `video_source_selection.py` | 隔离的视频会话资格、连续单向段分析和真实渲染源选择 |
+| `video_panorama.py` / `video_delivery.py` / `video_3d.py` | 独立视频 2-D 编排与原子发布、独立可重试 TSDF/GLB/离线 Viewer 发布 |
 | `metric_mosaic.py` / `inspection_multiview.py` | 兼容验证、历史/诊断实现；不是 unified 正式 RGB 输出 |
 | `*_diagnostic.py`、`central_strip.py`、`rgbd_projection.py` | 隔离诊断或历史回归 |
 | `tests/` | 采集、会话、轨迹、渲染、发布、CUDA 与集成回归 |
@@ -98,7 +126,12 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 - 正式彩色曝光固定不超过 `800 µs`，设备 metadata 单位为 `100 µs/单位`。
 - 会话打开期间 `formal_stitch_allowed=false`。只有相机/写盘资源安全关闭、无采集或写盘错误时，最终 manifest 才可写 `clean_shutdown=true`、`formal_stitch_allowed=true`。
 
-连续流采集仍保留，但属于与照片模式隔离的次要视频路径：必须全程使用自动曝光（自动快门时间）、自动增益和自动白平衡，且 `capture_mode=continuous_rgbd_video_auto`、`diagnostic_only=true`、`formal_stitch_allowed=false`。它不能用作正式 `g305-panorama` 输入，也不能用 RGB-only 截图替代正式照片 RGB-D 序列。
+连续流采集与照片模式隔离：默认使用自动曝光、自动增益和自动白平衡，写入
+`capture_mode=continuous_rgbd_video_auto`、`diagnostic_only=true` 与
+`formal_stitch_allowed=false`。可用 `--video-exposure-us` 采集固定曝光视频，写入
+`continuous_rgbd_video_fixed_exposure`；二者都不能用作 `g305-panorama` 输入。安全关闭且
+无写盘错误的 v2 视频会话会写入仅供视频产品使用的 `product_eligibility`，可传给
+`g305-video-panorama`；RGB-only 截图仍不能替代 RGB-D 会话。
 
 ## 5. 严格 RGB-D 会话
 
@@ -192,8 +225,10 @@ delivery.json
 | CLI | 用途 |
 | --- | --- |
 | `g305-capture --photo-mode` | 正式主采集：低帧率软件触发同步 RGB-D 照片序列 |
-| `g305-capture` | 次要连续 RGB-D 视频：全自动色彩控制，非正式全景输入 |
+| `g305-capture` | 连续 RGB-D 视频采集：默认自动控制；`--video-exposure-us` 可固定曝光；仅作为独立视频产品输入 |
 | `g305-panorama` | 正式 unified RGB-D 全景 |
+| `g305-video-panorama` | 独立视频 2-D 全景；默认随后生成独立 3-D，`--defer-3d` 可延后 |
+| `g305-video-3d` | 为已发布的视频 2-D 交付独立重试 TSDF/GLB；需 `--input` 原始会话 |
 | `g305-orbslam3-trajectory` | 独立重新运行完整 ORB-SLAM3 并导出真实轨迹 |
 | `g305-central-strip-diagnostic` | 隔离中央条带诊断 |
 | `g305-geometry-pair-diagnostic` | 隔离相邻 geometry A/B 诊断 |
@@ -210,5 +245,6 @@ delivery.json
 - unified renderer：`test_calibrated_rgb_pushbroom.py`、`test_geometry_assisted_local_warp.py`、`test_handoff_continuity.py`
 - 发布：`test_sequence_delivery.py`、`test_sequence_integration.py`、`test_config.py`
 - TSDF：`test_dense_fusion.py`
+- 视频：`test_video_session.py`、`test_video_scan_segment.py`、`test_video_delivery.py`
 
 合成测试不等于实机验收。涉及相机、Open3D、CUDA、ORB-SLAM3 或性能的改动，交付说明必须分别注明单元/合成测试、真实 Open3D 边、真实完整 ORB-SLAM3、历史失败数据和现场速度验收状态。历史输出和旧 schema 不能作为当前 v12-r1 正式验收。

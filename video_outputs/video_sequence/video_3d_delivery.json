@@ -1,0 +1,286 @@
+{
+  "schema": "gemini305-video-3d-delivery/v1",
+  "delivery_state": "published",
+  "mesh": "video_tsdf_mesh.glb",
+  "mobile_mesh": "video_tsdf_mesh_mobile.glb",
+  "viewer": "video_tsdf_mesh_viewer.html",
+  "audit": {
+    "backend": "open3d_scalable_tsdf_cpu_display_only",
+    "acceleration": {
+      "backend": "open3d_scalable_tsdf_cpu_display_only",
+      "requested": "off",
+      "selected": "cpu",
+      "device": "CPU:0",
+      "build_cuda": true,
+      "capability_probe_pass": true,
+      "preflight_pass": false,
+      "fallback_used": false,
+      "fallback_stage": null,
+      "fallback_reason": null,
+      "cpu_selected_explicitly": true,
+      "runtime_fallback_permitted": false
+    },
+    "frame_count": 70,
+    "vertex_count": 763800,
+    "triangle_count": 254600,
+    "source_mesh_vertex_count": 1362155,
+    "source_mesh_triangle_count": 1858470,
+    "glb_byte_count": 23679024,
+    "depth_filter": {
+      "depth_range_mm": [
+        450.0,
+        1250.0
+      ],
+      "depth_consistency_tolerance": "max(20 mm, 2% * predicted_depth_mm)",
+      "input_valid_pixel_count": 49155708,
+      "cross_view_supported_pixel_count": 25251609,
+      "continuous_single_view_pixel_count": 23898851,
+      "removed_single_view_isolated_pixel_count": 5248,
+      "kept_pixel_count": 49150460,
+      "hole_filling": false,
+      "strong_median_filter": false,
+      "uses_real_adjacent_orbslam3_poses": true
+    },
+    "mesh_cleanup": {
+      "input_vertex_count": 1362156,
+      "input_triangle_count": 1858472,
+      "vertex_count": 1362155,
+      "triangle_count": 1858470,
+      "removed_small_non_elongated_component_count": 0,
+      "component_triangle_gate": 200,
+      "thin_component_minimum_triangle_count": 20,
+      "thin_component_minimum_elongation": 6.0,
+      "area_only_component_filter": false,
+      "component_filter_stage": "deferred_to_projective_depth_consistent_faces",
+      "taubin_smoothing": "skipped: no per-face confidence field in Open3D TSDF mesh",
+      "normals": "recomputed_area_weighted"
+    },
+    "texture": {
+      "mode": "rgbd_tsdf_vertex_colour",
+      "uv_baked": false,
+      "texture_size_px": 4096,
+      "texture_page_count": 5,
+      "source_image_tile_size_px": [
+        1280,
+        800
+      ],
+      "source_image_tile_scale": 1.0,
+      "source_view_limit": 5,
+      "selected_real_source_frame_count": 70,
+      "depth_consistency": "all triangle vertices: max(20mm, 2% projected_depth)",
+      "retained_depth_consistent_triangle_count": 254600,
+      "glb_triangle_count": 254600,
+      "dropped_no_depth_consistent_source_triangle_count": 1370088,
+      "projective_component_filter": {
+        "input_triangle_count": 488382,
+        "retained_triangle_count": 254600,
+        "removed_triangle_count": 233782,
+        "removed_component_count": 30032,
+        "component_triangle_gate": 200,
+        "thin_component_minimum_triangle_count": 20,
+        "thin_component_minimum_elongation": 6.0,
+        "thin_elongated_component_count": 55,
+        "area_only_component_filter": false,
+        "position_bounds_before_upper_island_removal": {
+          "minimum_mm": [
+            -2539.31982421875,
+            -737.5,
+            427.2076110839844
+          ],
+          "maximum_mm": [
+            1108.32421875,
+            717.5,
+            1229.8597412109375
+          ]
+        },
+        "upper_island_removal_applied": true,
+        "upper_island_exclusion_maximum_y_mm": -500.0,
+        "upper_island_removed_component_count": 10,
+        "upper_island_removed_triangle_count": 4999,
+        "upper_island_removed_bounds_mm": {
+          "minimum_mm": [
+            -1384.6170654296875,
+            -737.5,
+            943.4771728515625
+          ],
+          "maximum_mm": [
+            1062.5,
+            -576.6815795898438,
+            1097.5
+          ]
+        }
+      },
+      "source_sharpness_laplacian_variance": {
+        "0": 95.31315612792969,
+        "1": 96.66847229003906,
+        "2": 97.06294250488281,
+        "3": 95.9765625,
+        "4": 95.00333404541016,
+        "5": 94.86617279052734,
+        "6": 96.04911041259766,
+        "7": 93.60627746582031,
+        "8": 92.57624816894531,
+        "9": 92.52188873291016,
+        "10": 92.99728393554688,
+        "11": 93.20222473144531,
+        "12": 93.92670440673828,
+        "13": 96.97256469726562,
+        "14": 96.65540313720703,
+        "15": 94.91040802001953,
+        "16": 93.14086151123047,
+        "17": 90.45482635498047,
+        "18": 88.19856262207031,
+        "19": 86.630859375,
+        "20": 86.53387451171875,
+        "21": 86.12908935546875,
+        "22": 83.07441711425781,
+        "23": 83.47945404052734,
+        "24": 84.18012237548828,
+        "25": 85.72665405273438,
+        "26": 86.25191497802734,
+        "27": 89.9864501953125,
+        "28": 94.35287475585938,
+        "29": 95.45321655273438,
+        "30": 95.26567077636719,
+        "31": 93.16045379638672,
+        "32": 90.36886596679688,
+        "33": 92.37825775146484,
+        "34": 92.92084503173828,
+        "35": 92.19522094726562,
+        "36": 92.68439483642578,
+        "37": 91.88505554199219,
+        "38": 92.0132827758789,
+        "39": 90.0724105834961,
+        "40": 89.71676635742188,
+        "41": 90.10882568359375,
+        "42": 89.97342681884766,
+        "43": 87.68169403076172,
+        "44": 90.00521850585938,
+        "45": 92.0279541015625,
+        "46": 90.16802215576172,
+        "47": 89.04301452636719,
+        "48": 87.9025650024414,
+        "49": 87.88046264648438,
+        "50": 86.92157745361328,
+        "51": 88.81433868408203,
+        "52": 91.61290740966797,
+        "53": 100.615966796875,
+        "54": 100.26787567138672,
+        "55": 99.49832916259766,
+        "56": 93.66895294189453,
+        "57": 86.75912475585938,
+        "58": 90.1746597290039,
+        "59": 96.07740783691406,
+        "60": 98.72516632080078,
+        "61": 102.39055633544922,
+        "62": 104.21601867675781,
+        "63": 104.4803466796875,
+        "64": 102.90308380126953,
+        "65": 105.9618148803711,
+        "66": 106.64302825927734,
+        "67": 107.55064392089844,
+        "68": 108.22843933105469,
+        "69": 109.30154418945312
+      },
+      "exposure_normalization": {
+        "space": "linear_rgb",
+        "reference_median_luminance": 120.0,
+        "gain_range": [
+          0.9302325581395349,
+          1.0526315789473684
+        ]
+      },
+      "texture_png_byte_count": 79197919,
+      "vertex_colour_used": true,
+      "rgbd_fusion": {
+        "geometry": "cuda_tsdf_from_aligned_depth_and_real_orbslam3_poses",
+        "colour": "aligned_rgb_fused_into_tsdf_voxels",
+        "display_only": true
+      },
+      "colour_geometry_filter": "projective_depth_z_consistency_and_component_cleanup"
+    },
+    "viewer_camera": {
+      "reference_position_bounds_mm": {
+        "minimum_mm": [
+          -2539.31982421875,
+          -737.5,
+          427.2076110839844
+        ],
+        "maximum_mm": [
+          1108.32421875,
+          717.5,
+          1229.8597412109375
+        ]
+      },
+      "camera_target_gltf_model_units": [
+        -715.497802734375,
+        10.0,
+        -828.5336761474609
+      ],
+      "camera_orbit": [
+        "0deg",
+        "75deg",
+        "7853.597m"
+      ],
+      "field_of_view": "30deg",
+      "framing": "fixed_from_pre_upper_island_removal_bounds"
+    },
+    "translation_unit": "mm",
+    "unique_block_estimate": {
+      "skipped": true,
+      "reason": "cuda_disabled_explicitly",
+      "read_only": true,
+      "display_only": true,
+      "participates_in_panorama": false,
+      "rgb_owner_feedback_permitted": false
+    },
+    "capacity_preflight": null,
+    "timing_seconds": {
+      "depth_filter": 10.285493999996106,
+      "tsdf_integration": 5.926501299996744,
+      "mesh_cleanup_and_simplification": 3.5843254999927012,
+      "projective_texture_and_glb": 22.048049200006062,
+      "total_export": 41.84578820000752
+    },
+    "configuration": {
+      "voxel_length_mm": 5.0,
+      "requested_voxel_length_mm": 5.0,
+      "planned_voxel_length_mm": 5.0,
+      "sdf_truncation_mm": 20.0,
+      "maximum_depth_mm": 1250.0,
+      "minimum_depth_mm": 450.0,
+      "depth_consistency_floor_mm": 20.0,
+      "depth_consistency_relative": 0.02,
+      "minimum_cross_view_support": 1,
+      "upper_island_exclusion_maximum_y_mm": -500.0,
+      "desktop_triangle_target": 200000,
+      "mobile_triangle_target": 200000,
+      "desktop_texture_size_px": 4096,
+      "mobile_texture_size_px": 2048,
+      "texture_source_views": 5,
+      "colour_mode": "rgbd_tsdf_vertex_colour",
+      "cuda_gpu_byte_budget": 2500000000,
+      "cuda_block_resolution": 16,
+      "cuda_unique_block_depth_stride": 8,
+      "cuda_unique_block_safety_factor": 1.85,
+      "cuda_max_block_capacity": 30000,
+      "cuda_max_voxel_length_mm": 8.0
+    },
+    "display_only": true,
+    "participates_in_panorama": false,
+    "mobile": {
+      "mesh": "tsdf_mesh_mobile.glb",
+      "triangle_target": 200000,
+      "vertex_count": 1362155,
+      "triangle_count": 1858470,
+      "glb_byte_count": 23679024,
+      "texture": {
+        "mode": "rgbd_tsdf_vertex_colour",
+        "uv_baked": false,
+        "vertex_colour_used": true,
+        "derived_from": "same_rgbd_tsdf_volume_as_desktop",
+        "colour_geometry_filter": "projective_depth_z_consistency_and_component_cleanup"
+      }
+    }
+  }
+}

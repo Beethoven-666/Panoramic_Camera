@@ -1225,13 +1225,21 @@ def run_capture(args: argparse.Namespace) -> Path:
     capture_config = config_file.get("capture", {})
     if not isinstance(capture_config, dict):
         raise ValueError("Configuration is missing capture settings")
-    _validate_video_auto_control_args(args)
+    fixed_video_exposure = getattr(args, "video_exposure_us", None)
+    if fixed_video_exposure is None:
+        _validate_video_auto_control_args(args)
+    elif bool(getattr(args, "photo_mode", False)):
+        raise ValueError("--video-exposure-us cannot be used with --photo-mode")
     options = _video_capture_options(capture_config)
+    if fixed_video_exposure is not None:
+        options["color_auto_exposure"] = False
+        options["color_exposure_us"] = int(fixed_video_exposure)
+        options["diagnostic_unrestricted_auto_exposure"] = False
     for name in ("width", "height", "fps", "warmup_frames", "queue_size"):
         value = getattr(args, name, None)
         if value is not None:
             options[name] = value
-    diagnostic_only = _apply_color_exposure_mode(options, args)
+    _apply_color_exposure_mode(options, args)
     if args.gain is not None:
         options["color_gain"] = args.gain
     if args.white_balance is not None:
@@ -1273,12 +1281,13 @@ def run_capture(args: argparse.Namespace) -> Path:
     session_root.mkdir(parents=True, exist_ok=False)
     started_utc = datetime.now(timezone.utc).isoformat()
     manifest: dict[str, Any] = {
-        "schema": "panorama-demo-session/v1",
+        "schema": "panorama-demo-session/v2",
         "started_utc": started_utc,
         "clean_shutdown": False,
-        "capture_mode": "continuous_rgbd_video_auto",
-        "diagnostic_only": diagnostic_only,
-        "formal_stitch_allowed": not diagnostic_only,
+        "capture_mode": ("continuous_rgbd_video_fixed_exposure" if fixed_video_exposure is not None else "continuous_rgbd_video_auto"),
+        "diagnostic_only": True,
+        "formal_stitch_allowed": False,
+        "product_eligibility": {"photo_panorama": False, "video_panorama": False},
         "capture_options": options,
     }
     _write_manifest(session_root, manifest)
@@ -1588,6 +1597,15 @@ def run_capture(args: argparse.Namespace) -> Path:
             "timestamp_regressions": timestamp_regressions,
         }
     )
+    manifest["product_eligibility"] = {
+        "photo_panorama": False,
+        "video_panorama": bool(
+            capture_exception is None
+            and manifest["clean_shutdown"] is True
+            and writer.stats.write_errors == 0
+            and writer.stats.errors == []
+        ),
+    }
     if capture_exception is not None:
         manifest["capture_error"] = {
             "type": type(capture_exception).__name__,
@@ -1622,6 +1640,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-exposure",
         action="store_true",
         help="Deprecated for continuous video; automatic controls are always enabled",
+    )
+    parser.add_argument(
+        "--video-exposure-us",
+        type=int,
+        help="Fixed continuous-video exposure in microseconds; gain and white balance remain automatic",
     )
     exposure.add_argument(
         "--diagnostic-unrestricted-auto-exposure",
