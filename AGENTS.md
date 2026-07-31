@@ -120,11 +120,11 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 - 正式 `pose_backend=hybrid_orbslam3_rgbd`。每条 Open3D 边记录 source-to-reference SE(3)、收敛、fitness、RMSE、正定 `6×6` information matrix、深度有效率和失败原因。
 - 正式并行前端要求每条 Open3D 边实际使用 `open3d_tensor_cuda_rgbd`。若观察到 `open3d_rgbd`，说明 CUDA Open3D 未生效，必须失败，不能静默接受 CPU legacy edge。
 - ORB-SLAM3 必须跟踪完整正式序列。缺 pose、非有限/非刚体 SE(3)、图不连通、逆向或不连续运动、步长/跨度异常、垂直/前后漂移、旋转或边残差越界均为 F。
-- 正式渲染保留主扫描段全部真实 pose nodes，数量为 2–160。不得固定抽稀为 32 个画布源，不得插值、重排或伪造 pose。
+- 正式渲染保留主扫描段全部真实 pose nodes，不设固定的 pose-node 数量上限。不得固定抽稀为 32 个画布源，不得插值、重排或伪造 pose。
 - 近重复节点只能在完整审计后成为零最终 owner；其真实 pose、边和一次 RGB remap 仍须保留。
 - 每源只做一次全分辨率标定 inverse remap。中间源中央条带最多为输入宽度的 `20%`；首尾只可向扫描外侧扩展到校准图像边缘。
 - 布局比例来自相邻 RGB 局部运动与真实 SE(3) 相机中心位移的稳健标量。它仅决定条带 x 布局，不是二维轨迹、单应矩阵、深度平面或 pose 修正。
-- 画布和 aggregate working set 均不超过 `200 MP`；常驻 RGB 条带为 2–5 个，pose node 上限 160。
+- 画布和 aggregate working set 均不超过 `200 MP`；常驻 RGB 条带为 2–5 个。序列长度不由固定 pose-node 数量限制，但必须受上述资源上限约束。
 
 ## 7. 风险走廊、局部几何与 owner
 

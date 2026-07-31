@@ -310,10 +310,12 @@ unified_calibrated_central_strip/v1
 - 中间源中央条带不超过输入宽度的 `20%`；
 - 首尾源只向扫描外侧扩展到校准图像边缘；
 - 画布和 aggregate working set 分别不超过 `200 MP`；
-- pose nodes 为 2–160；
+- 保留主扫描段全部真实 pose nodes，不设固定数量上限；
 - 同时常驻的 RGB 条带不超过 5。
 
 布局 x 比例由相邻 RGB 局部运动与已审计 SE(3) 相机中心位移的稳健比值决定。这个比例只控制条带位置，不是二维 pose、单应矩阵、深度平面或 pose 修正。
+
+因此，序列帧数不会因固定 pose-node 数量而被截断；实际可交付长度仍受 `200 MP` 画布/aggregate working set 上限约束，超过上限会 fail-closed，而不是增量续拼。
 
 `metric_mosaic` 和 `inspection_multiview` 模块目前仍保留配置兼容验证、历史测试和隔离实现，但在 `unified_content_mode=true` 的正式路径中不会生成第二张 RGB 主图、后渲染 overlay 或失败回退。
 
@@ -492,7 +494,7 @@ diagnostic_report.json
 - 有限真实 SE(3)、必需边和图连通；
 - 有效 RGB inverse remap；
 - owner/MultiBand 拓扑；
-- `200 MP` 和 pose-node 资源上限；
+- `200 MP` 画布和 aggregate working set 资源上限；
 - 原子发布语义。
 
 ## 原子交付与失败
@@ -544,7 +546,7 @@ failure.json
 | 局部位移 | `≤8 px` |
 | MultiBand | 2–8 px，最多 3 层 |
 | 画布/aggregate | 各 `≤200 MP` |
-| pose nodes | 2–160 |
+| pose nodes | 不设固定数量上限；保留全部真实节点，仍受 `200 MP` 资源上限约束 |
 | 常驻 RGB 条带 | 2–5 |
 | `local_apap_flow` | 默认关闭 |
 | TSDF | 必需、只读、不得反馈 RGB 全景 |
