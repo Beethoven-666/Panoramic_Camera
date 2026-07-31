@@ -15,6 +15,7 @@ from panorama_demo.calibrated_rgb_pushbroom import (
     GeometryAssistedSeamConfig,
     LocalGeometryContribution,
     PushbroomContribution,
+    RGBMotionScaleEstimate,
     _GeometryPairPlan,
     _ForegroundAnchorHandoff,
     _ForegroundAnchorReservation,
@@ -121,6 +122,34 @@ def _reliable_adjacent_rgb_motions(frame_count: int) -> list[dict[str, object]]:
     """Synthetic frames advance by 16 RGB pixels at the far background."""
 
     return [{"dx": 16.0, "reliable": True} for _ in range(frame_count - 1)]
+
+
+def test_unlimited_pose_admission_keeps_more_than_160_real_nodes(tmp_path: Path) -> None:
+    """A null total limit is not silently converted back to the old 160 cap."""
+
+    session, _ = _make_rgb_pushbroom_input(tmp_path, seed=79)
+    count = 161
+    poses = []
+    for index in range(count):
+        pose = np.eye(4, dtype=np.float64)
+        pose[0, 3] = float(index * 10)
+        poses.append(pose)
+    layout = build_calibrated_rgb_pushbroom_layout(
+        list(range(count)),
+        poses,
+        session.calibration,
+        RGBMotionScaleEstimate(
+            pixels_per_mm=1.0,
+            valid_pair_count=count - 1,
+            candidate_pair_count=count - 1,
+            relative_mad=0.0,
+            samples=(),
+        ),
+        CalibratedRGBPushbroomConfig(max_pose_count=None),
+    )
+
+    assert len(layout.frame_ids) == count
+    assert layout.retained_owner_source_indices == tuple(range(count))
 
 
 def test_sparse_depth_anchor_hands_off_to_a_later_valid_pair() -> None:
@@ -2425,6 +2454,7 @@ def test_pushbroom_uses_every_real_frame_once_with_bounded_strip_residency(
     assert metadata["single_inverse_remap_per_source"] is True
     assert metadata["interpolated_pose_count"] == 0
     assert result.owner_frame_id is not None
+    assert result.owner_frame_id.dtype == np.int64
     assert result.owner_frame_id.shape == result.panorama.shape[:2]
     assert set(np.unique(result.owner_frame_id)) <= {
         frame.frame_id for frame in session.frames
@@ -3470,7 +3500,7 @@ def test_preview_residual_diagnostics_keep_identity_output_and_remap_counts_sepa
         working["preview_evidence_pixel_count"]
         <= working["preview_evidence_hard_limit_pixels"]
     )
-    assert working["preview_evidence_storage"] == "bounded_in_memory_analysis_only"
+    assert working["preview_evidence_storage"] == "disk_backed_adjacent_analysis_only"
 
 
 def test_preview_evidence_budget_fails_before_formal_full_resolution_remaps(

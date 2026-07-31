@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TSDF 三维网格</title>
+  <script type="module" src="https://unpkg.com/@google/model-viewer@3.5.0/dist/model-viewer.min.js"></script>
+  <style>
+    html, body, model-viewer { width: 100%; height: 100%; margin: 0; background: #16181d; color: #eef2ff; }
+    model-viewer { --poster-color: #16181d; }
+    #toolbar { position: fixed; z-index: 1; left: 12px; top: 12px; display: flex; gap: 8px; }
+    button { background:#2a3040; color:#fff; border:1px solid #5b6787; border-radius:6px; padding:8px 10px; }
+  </style>
+</head>
+<body>
+  <div id="toolbar"><button id="quality">高清 / 流畅</button><button id="retry">重试</button><button id="reset">复位视角</button><button id="fullscreen">全屏</button></div>
+  <model-viewer id="viewer" src="tsdf_mesh.glb" alt="TSDF RGB-D mesh" camera-controls touch-action="pan-y"
+      shadow-intensity="0.7" exposure="1.05" interaction-prompt="none"></model-viewer>
+  <script>
+    document.title = 'TSDF 三维网格';
+    const desktop = "tsdf_mesh.glb", mobile = "tsdf_mesh_mobile.glb", viewer = document.querySelector('#viewer');
+    let useMobile = (navigator.deviceMemory && navigator.deviceMemory <= 4) || Math.min(screen.width, screen.height) < 900;
+    function load() { viewer.src = useMobile ? mobile : desktop; document.querySelector('#quality').textContent = useMobile ? '流畅（切换高清）' : '高清（切换流畅）'; }
+    document.querySelector('#quality').onclick = () => { useMobile = !useMobile; load(); };
+    document.querySelector('#retry').onclick = load;
+    document.querySelector('#reset').onclick = () => viewer.resetTurntableRotation();
+    document.querySelector('#fullscreen').onclick = () => viewer.requestFullscreen();
+    viewer.addEventListener('error', () => { document.querySelector('#retry').textContent = '加载失败，点击重试'; });
+    load();
+  </script>
+</body>
+</html>

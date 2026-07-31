@@ -63,7 +63,9 @@ stitch:
   analysis_width: 320
   layout_target_displacement_fraction: 0.18
   layout_max_displacement_fraction: 0.28
-  layout_max_frames: 160
+  # Total sequence length is deliberately unbounded.  The renderer still
+  # enforces its independent canvas and resident-source limits.
+  layout_max_frames: null
   # Keep every real frame in a normal-length scan as a pose node. This makes
   # both odometry and rendering short-baseline at close range; it never
   # interpolates a pose between captures.
@@ -311,7 +313,10 @@ stitch:
     seam_search_width_pixels: 96
     max_canvas_megapixels: 200
     max_aggregate_megapixels: 200
-    max_pose_count: 160
+    # This is a sequence admission limit, not a per-process working-set
+    # budget.  ``null`` retains every real pose node subject to the canvas
+    # and 2--5 resident-strip safeguards below.
+    max_pose_count: null
     max_resident_frames: 5
     # The layout scale is estimated from adjacent RGB motion divided by the
     # corresponding verified SE(3) camera-centre displacement.  It is not a

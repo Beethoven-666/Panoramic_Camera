@@ -137,7 +137,6 @@ _DIAGNOSTIC_FILES = (
 )
 
 _HARD_MAX_CANVAS_MEGAPIXELS = 200.0
-_HARD_MAX_LAYOUT_FRAMES = 160
 _HARD_MAX_RENDER_SOURCES = 32
 
 _CENTRAL_STRIP_DIAGNOSTIC_DEFAULTS: dict[str, object] = {
@@ -3882,7 +3881,7 @@ def _publish_unified_r1_delivery(
     pending_provenance = output / ".pixel_provenance.pending.npz"
     np.savez_compressed(
         pending_provenance,
-        rgb_source_frame_id=np.asarray(owner_frame_id, dtype=np.int32),
+        rgb_source_frame_id=np.asarray(owner_frame_id, dtype=np.int64),
     )
     pending_transforms.write_text(json.dumps(transforms_payload, indent=2), encoding="utf-8")
     pending_render_transforms.write_text(
@@ -4336,6 +4335,10 @@ def _select_pose_nodes(
     scan_frames = frames[segment.start_index : segment.end_index + 1]
     scan_qualities = qualities[segment.start_index : segment.end_index + 1]
     scan_motions = motions[segment.start_index : segment.end_index]
+    configured_limit = stitch_config.get("layout_max_frames")
+    maximum_nodes = (
+        len(scan_frames) if configured_limit is None else int(configured_limit)
+    )
     selection = select_layout_from_motion_estimates(
         scan_motions,
         frame_count=len(scan_frames),
@@ -4346,10 +4349,9 @@ def _select_pose_nodes(
         maximum_fraction=float(
             stitch_config.get("layout_max_displacement_fraction", 0.28)
         ),
-        max_selected=int(stitch_config.get("layout_max_frames", 160)),
+        max_selected=maximum_nodes,
     )
     dense_chain = bool(stitch_config.get("dense_rgbd_pose_chain", True))
-    maximum_nodes = int(stitch_config.get("layout_max_frames", 160))
     if dense_chain:
         if len(scan_frames) > maximum_nodes:
             raise RuntimeError(
@@ -4919,11 +4921,11 @@ def _validate_safety_envelope(
     )
     if not np.isfinite(canvas_limit) or not 0.0 < canvas_limit <= _HARD_MAX_CANVAS_MEGAPIXELS:
         raise ValueError("max_canvas_megapixels cannot exceed the 200 MP hard limit")
-    layout_limit = int(
-        stitch_config.get("layout_max_frames", _HARD_MAX_LAYOUT_FRAMES)
-    )
-    if not 2 <= layout_limit <= _HARD_MAX_LAYOUT_FRAMES:
-        raise ValueError("layout_max_frames must remain within the 2-160 hard budget")
+    layout_value = stitch_config.get("layout_max_frames")
+    if layout_value is not None and (
+        isinstance(layout_value, bool) or int(layout_value) < 2
+    ):
+        raise ValueError("layout_max_frames must be null or an integer of at least 2")
 
     pushbroom = dict(stitch_config.get("calibrated_rgb_pushbroom", {}))
     pushbroom_canvas_limit = float(
@@ -4947,13 +4949,13 @@ def _validate_safety_envelope(
             "calibrated_rgb_pushbroom.max_aggregate_megapixels cannot exceed "
             "200 MP"
         )
-    pushbroom_pose_limit = int(
-        pushbroom.get("max_pose_count", _HARD_MAX_LAYOUT_FRAMES)
-    )
-    if not 2 <= pushbroom_pose_limit <= _HARD_MAX_LAYOUT_FRAMES:
+    pushbroom_pose_value = pushbroom.get("max_pose_count")
+    if pushbroom_pose_value is not None and (
+        isinstance(pushbroom_pose_value, bool) or int(pushbroom_pose_value) < 2
+    ):
         raise ValueError(
-            "calibrated_rgb_pushbroom.max_pose_count must remain within the "
-            "2-160 hard budget"
+            "calibrated_rgb_pushbroom.max_pose_count must be null or an integer "
+            "of at least 2"
         )
     resident_limit = int(pushbroom.get("max_resident_frames", 5))
     if not 2 <= resident_limit <= 5:
@@ -5879,14 +5881,15 @@ def _run_pipeline(
         # contributes one narrow calibrated RGB strip; no pose is synthesized,
         # reordered, or interpolated.
         render_indices = list(range(len(pose_frames)))
+        configured_source_cap = dict(
+            stitch_config.get("calibrated_rgb_pushbroom", {})
+        ).get("max_pose_count")
         render_selection = {
             "mode": "calibrated_rgb_pushbroom_all_real_pose_nodes",
             "frame_ids": [frame.frame_id for frame in pose_frames],
             "interpolated_pose_count": 0,
-            "source_cap": int(
-                dict(stitch_config.get("calibrated_rgb_pushbroom", {})).get(
-                    "max_pose_count", _HARD_MAX_LAYOUT_FRAMES
-                )
+            "source_cap": (
+                None if configured_source_cap is None else int(configured_source_cap)
             ),
             "streaming": True,
         }

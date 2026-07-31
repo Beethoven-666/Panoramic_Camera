@@ -111,7 +111,7 @@ def test_default_capture_uses_motion_capped_auto_exposure() -> None:
         "seam_search_width_pixels": 96,
         "max_canvas_megapixels": 200,
         "max_aggregate_megapixels": 200,
-        "max_pose_count": 160,
+        "max_pose_count": None,
         "max_resident_frames": 5,
         "unified_content_mode": True,
         "minimum_valid_scale_pairs": 3,

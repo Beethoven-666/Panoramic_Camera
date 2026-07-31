@@ -20,6 +20,7 @@ camera-centre displacement* estimate, not an estimated 2-D camera trajectory.
 from __future__ import annotations
 
 import math
+import pickle
 import tempfile
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -67,6 +68,7 @@ from .local_apap_flow import (
 )
 from .render import largest_valid_rectangle
 from .rgb_residual_alignment import (
+    PairResidualEvidence,
     ProtectedComponentFragment,
     ResidualAlignmentConfig,
     ResidualAlignmentResult,
@@ -80,13 +82,62 @@ from .rgb_residual_alignment import (
 from .session import CameraIntrinsics, RGBDFrame, read_aligned_depth_mm
 
 
-_HARD_MAX_POSES = 160
 _HARD_MAX_CANVAS_MEGAPIXELS = 200.0
 _HARD_MAX_RESIDENT_STRIPS = 5
 _MINIMUM_SHARED_SOURCE_SIGNED_OCCLUSION_OVERLAP_PIXELS = 64
 _MINIMUM_SHARED_SOURCE_SIGNED_OCCLUSION_OVERLAP_ROWS = 8
 _MINIMUM_SHARED_SOURCE_SIGNED_OCCLUSION_OVERLAP_FRACTION = 0.20
 _MINIMUM_SOURCE_ANCHOR_FRAGMENT_PIXELS = 12
+
+
+class _DiskBackedEvidence(Sequence[object]):
+    """Read adjacent preview evidence on demand instead of retaining a scan in RAM."""
+
+    def __init__(self, paths: Sequence[Path]) -> None:
+        self._paths = tuple(paths)
+
+    def __len__(self) -> int:
+        return len(self._paths)
+
+    def __getitem__(self, index: int | slice) -> object:
+        if isinstance(index, slice):
+            return tuple(self[item] for item in range(*index.indices(len(self))))
+        with self._paths[index].open("rb") as stream:
+            return pickle.load(stream)
+
+
+def _compact_pair_evidence(evidence: Sequence[object]) -> tuple[PairResidualEvidence, ...]:
+    """Keep report scalars after geometry planning, releasing preview arrays."""
+
+    compact: list[PairResidualEvidence] = []
+    for item in evidence:
+        if not isinstance(item, PairResidualEvidence):
+            raise TypeError("Preview evidence has an unexpected type")
+        empty = np.zeros((0, 0), dtype=bool)
+        compact.append(
+            PairResidualEvidence(
+                pair_index=item.pair_index,
+                frame_ids=item.frame_ids,
+                candidate_count=item.candidate_count,
+                accepted_count=item.accepted_count,
+                held_out_count=item.held_out_count,
+                held_out_accepted_count=item.held_out_accepted_count,
+                observable_mask=empty,
+                accepted_mask=empty,
+                held_out_mask=empty,
+                flow_uncertain_mask=empty,
+                occluded_mask=empty,
+                forward_flow=np.zeros((0, 0, 2), dtype=np.float32),
+                backward_flow=np.zeros((0, 0, 2), dtype=np.float32),
+                forward_backward_error=np.zeros((0, 0), dtype=np.float32),
+                structure_minimum_eigenvalue=np.zeros((0, 0), dtype=np.float32),
+                epipolar_residual_pixels=np.zeros((0, 0), dtype=np.float32),
+                edge_normal_step_pixels=np.zeros((0, 0), dtype=np.float32),
+                edge_orientation_delta_degrees=np.zeros((0, 0), dtype=np.float32),
+                metrics=item.metrics,
+            )
+        )
+    return tuple(compact)
 
 
 @dataclass(frozen=True)
@@ -437,7 +488,7 @@ class CalibratedRGBPushbroomConfig:
     seam_search_width_pixels: int = 96
     max_canvas_megapixels: float = 200.0
     max_aggregate_megapixels: float = 200.0
-    max_pose_count: int = _HARD_MAX_POSES
+    max_pose_count: int | None = None
     max_resident_frames: int = _HARD_MAX_RESIDENT_STRIPS
     minimum_valid_scale_pairs: int = 3
     scale_central_fraction: float = 0.20
@@ -538,8 +589,11 @@ class CalibratedRGBPushbroomConfig:
             raise ValueError("max_canvas_megapixels must be in (0, 200]")
         if not 0.0 < self.max_aggregate_megapixels <= _HARD_MAX_CANVAS_MEGAPIXELS:
             raise ValueError("max_aggregate_megapixels must be in (0, 200]")
-        if not 2 <= int(self.max_pose_count) <= _HARD_MAX_POSES:
-            raise ValueError("max_pose_count must be in [2, 160]")
+        if self.max_pose_count is not None and (
+            isinstance(self.max_pose_count, bool)
+            or not 2 <= int(self.max_pose_count)
+        ):
+            raise ValueError("max_pose_count must be null or an integer of at least 2")
         if not 2 <= int(self.max_resident_frames) <= _HARD_MAX_RESIDENT_STRIPS:
             raise ValueError("max_resident_frames must be in [2, 5]")
         if int(self.minimum_valid_scale_pairs) < 1:
@@ -1398,8 +1452,10 @@ def build_calibrated_rgb_pushbroom_layout(
 ) -> PushbroomLayout:
     """Allocate contiguous real-pose owner intervals without a depth plane."""
 
-    if len(frame_ids) != len(poses) or not 2 <= len(poses) <= config.max_pose_count:
-        raise ValueError("Pushbroom layout requires 2-160 aligned real pose nodes")
+    if len(frame_ids) != len(poses) or len(poses) < 2:
+        raise ValueError("Pushbroom layout requires at least two aligned real pose nodes")
+    if config.max_pose_count is not None and len(poses) > int(config.max_pose_count):
+        raise ValueError("Pushbroom layout exceeds configured total pose-node limit")
     (
         temporal,
         level_rotation,
@@ -5842,7 +5898,7 @@ def _foreground_anchor_completed_lock_mask(
 
     shape = (int(height), max(0, int(right) - int(left)))
     reserved = np.zeros(shape, dtype=bool)
-    source_owner = np.full(shape, -1, dtype=np.int16)
+    source_owner = np.full(shape, -1, dtype=np.int64)
     for reservation, fragment in completed:
         clipped = _fragment_mask_in_window(
             fragment,
@@ -5990,7 +6046,7 @@ def _foreground_anchor_handoff_mask(
 
     shape = (int(height), max(0, int(right) - int(left)))
     protected = np.zeros(shape, dtype=bool)
-    retired_source = np.full(shape, -1, dtype=np.int16)
+    retired_source = np.full(shape, -1, dtype=np.int64)
     for handoff in handoffs:
         clipped = _fragment_mask_in_window(
             handoff.fragment,
@@ -6287,7 +6343,7 @@ def _audit_foreground_owner_run_handoffs(
         or owner_canvas.shape[0] != int(height)
     ):
         raise RuntimeError("Foreground owner handoff audit has inconsistent pair arrays")
-    owner_view = np.asarray(owner_canvas[:, left:right], dtype=np.int16)
+    owner_view = np.asarray(owner_canvas[:, left:right], dtype=np.int64)
     audits: list[dict[str, object]] = []
     complete_count = 0
     owner_only_count = 0
@@ -6605,7 +6661,7 @@ def _audit_foreground_anchor_handoff_continuity(
             raise RuntimeError("Foreground anchor handoff exact support changed during audit")
         canvas_x = slice(int(left) + int(x_slice.start), int(left) + int(x_slice.stop))
         valid = np.asarray(valid_canvas[y_slice, canvas_x], dtype=bool)
-        owners = np.asarray(owner_canvas[y_slice, canvas_x], dtype=np.int16)
+        owners = np.asarray(owner_canvas[y_slice, canvas_x], dtype=np.int64)
         current_pair_owner = (owners == int(pair_index)) | (
             owners == int(pair_index) + 1
         )
@@ -8999,7 +9055,11 @@ def _identity_residual_alignment_result(
     return ResidualAlignmentResult(
         selected_model="identity",
         source_warps=warps,
-        pair_evidence=tuple(evidence),
+        # Dense evidence remains in the caller's sequential spool until local
+        # geometry is planned; storing it here would recreate an unbounded
+        # whole-session working set.  Compact audit entries are attached once
+        # that pass completes.
+        pair_evidence=(),
         held_out_metrics_before=held_out,
         held_out_metrics_after=dict(held_out),
         component_tracks=(),
@@ -10538,8 +10598,10 @@ def render_calibrated_rgb_pushbroom(
         raise ValueError(
             "foreground deformation diagnostic callback requires a pair index or pair-index sequence"
         )
-    if len(frames) != len(poses) or not 2 <= len(frames) <= settings.max_pose_count:
-        raise ValueError("Calibrated RGB pushbroom requires 2-160 aligned frames/poses")
+    if len(frames) != len(poses) or len(frames) < 2:
+        raise ValueError("Calibrated RGB pushbroom requires at least two aligned frames/poses")
+    if settings.max_pose_count is not None and len(frames) > int(settings.max_pose_count):
+        raise ValueError("Calibrated RGB pushbroom exceeds configured total pose-node limit")
     if not 1 <= int(multiband_levels) <= 3:
         raise ValueError("Calibrated RGB pushbroom MultiBand levels must be in [1, 3]")
     checked_poses = [validate_camera_to_world(pose) for pose in poses]
@@ -10576,7 +10638,7 @@ def render_calibrated_rgb_pushbroom(
         geometry_trigger_renderer = CalibratedRGBPushbroomRenderer(
             layout, calibration, checked_poses
         )
-        preview_evidence: list[object] = []
+        preview_evidence_paths: list[Path] = []
         preview_boundary_geometry: list[dict[str, object]] = []
         preview_pair_origins: list[tuple[float, float]] = []
         preview_evidence_pixels = 0
@@ -10655,7 +10717,10 @@ def render_calibrated_rgb_pushbroom(
                 frame_ids=(first_preview.frame_id, second_preview.frame_id),
                 config=settings.residual_alignment,
             )
-            preview_evidence.append(evidence)
+            evidence_path = root / f"preview-evidence-{pair_index:04d}.pickle"
+            with evidence_path.open("wb") as stream:
+                pickle.dump(evidence, stream, protocol=pickle.HIGHEST_PROTOCOL)
+            preview_evidence_paths.append(evidence_path)
             preview_nominal_boundary = int(
                 round(
                     layout.owner_boundaries_x[pair_index]
@@ -10697,7 +10762,7 @@ def render_calibrated_rgb_pushbroom(
             "preview_evidence_pixel_count": preview_evidence_pixels,
             "preview_evidence_hard_limit_pixels": preview_evidence_limit_pixels,
             "preview_evidence_estimated_bytes": preview_evidence_pixels * 64,
-            "preview_evidence_storage": "bounded_in_memory_analysis_only",
+            "preview_evidence_storage": "disk_backed_adjacent_analysis_only",
             "preview_streaming_maximum_resident_previews": 2,
             "geometry_trigger_preview_scale": geometry_trigger_preview_scale,
             "geometry_trigger_preview_remap_count": (
@@ -10710,6 +10775,7 @@ def render_calibrated_rgb_pushbroom(
         # RGB SE(2) residual: the validated RGB-D camera_to_world chain is the
         # one and only global geometry, and local geometry assistance below is
         # limited to accepted adjacent seam corridors.
+        preview_evidence = _DiskBackedEvidence(preview_evidence_paths)
         residual_alignment = _identity_residual_alignment_result(
             layout,
             calibration,
@@ -10738,6 +10804,19 @@ def render_calibrated_rgb_pushbroom(
             settings=settings.geometry_assisted_seam,
             local_apap_flow_settings=settings.local_apap_flow,
             root=root,
+        )
+        # The per-pair dense preview fields have served their sole purpose:
+        # scalar reporting and sequential local geometry planning.  Retain
+        # only audited scalars before any full-resolution rendering begins.
+        residual_alignment = ResidualAlignmentResult(
+            selected_model=residual_alignment.selected_model,
+            source_warps=residual_alignment.source_warps,
+            pair_evidence=_compact_pair_evidence(preview_evidence),
+            held_out_metrics_before=residual_alignment.held_out_metrics_before,
+            held_out_metrics_after=residual_alignment.held_out_metrics_after,
+            component_tracks=residual_alignment.component_tracks,
+            topology_audit=residual_alignment.topology_audit,
+            working_set_audit=residual_alignment.working_set_audit,
         )
         # Final owner decisions add scalar closure evidence below.  The mesh
         # decision itself remains immutable; replacing this compact plan never
@@ -11550,7 +11629,7 @@ def render_calibrated_rgb_pushbroom(
         )
         valid_canvas = np.zeros((layout.canvas_height, layout.canvas_width), dtype=bool)
         owner_canvas = np.full(
-            (layout.canvas_height, layout.canvas_width), -1, dtype=np.int16
+            (layout.canvas_height, layout.canvas_width), -1, dtype=np.int64
         )
         for index, path in enumerate(strip_paths):
             contribution = _load_contribution(path)
@@ -12423,7 +12502,7 @@ def render_calibrated_rgb_pushbroom(
                 deformation_zone=geometry_active,
             )
             foreground_owner_handoff_audits.append(foreground_owner_handoff_audit)
-            current_owner_view = np.asarray(owner_canvas[:, left:right], dtype=np.int16)
+            current_owner_view = np.asarray(owner_canvas[:, left:right], dtype=np.int64)
             current_nonadjacent_owner = current_pair_valid & (
                 (current_owner_view < int(index))
                 | (current_owner_view > int(index) + 1)
@@ -12805,10 +12884,10 @@ def render_calibrated_rgb_pushbroom(
             crop.y : crop.y + crop.height, crop.x : crop.x + crop.width
         ]
         cropped_owner_frame_id = np.full(
-            cropped_owner.shape, -1, dtype=np.int32
+            cropped_owner.shape, -1, dtype=np.int64
         )
         frame_id_lookup = np.asarray(
-            [int(frame.frame_id) for frame in frames], dtype=np.int32
+            [int(frame.frame_id) for frame in frames], dtype=np.int64
         )
         owned = cropped_owner >= 0
         cropped_owner_frame_id[owned] = frame_id_lookup[cropped_owner[owned]]
