@@ -1725,10 +1725,6 @@ def photo_settings_from_config(
         raise ValueError(
             "capture.photo_mode must select the fastest common RGB-D FPS"
         )
-    if bool(capture.get("diagnostic_unrestricted_auto_exposure", False)):
-        raise ValueError(
-            "Unrestricted diagnostic auto exposure cannot be used by photo mode"
-        )
     try:
         settings = PhotoCaptureSettings(
             output_root=Path(output_root),

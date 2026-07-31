@@ -12,18 +12,18 @@ from panorama_demo.stitch_sequence import (
 )
 
 
-def test_default_capture_uses_motion_capped_auto_exposure() -> None:
+def test_default_video_capture_uses_isolated_automatic_controls() -> None:
     config = load_config()
+    video = config["capture"]["video_mode"]
 
-    assert config["capture"]["color_auto_exposure"] is True
-    assert config["capture"]["color_exposure_us"] is None
-    assert config["capture"]["color_ae_max_exposure_us"] == 800
-    assert config["capture"]["diagnostic_unrestricted_auto_exposure"] is False
-    assert config["capture"]["color_auto_white_balance"] is True
-    assert config["capture"]["color_white_balance"] is None
-    assert config["capture"]["lock_color_controls_after_warmup"] is True
-    assert config["capture"]["post_lock_verified_frames"] == 2
-    assert config["capture"]["require_locked_control_metadata"] is True
+    assert video["color_auto_exposure"] is True
+    assert video["color_exposure_us"] is None
+    assert video["color_ae_max_exposure_us"] == 800
+    assert video["diagnostic_unrestricted_auto_exposure"] is True
+    assert video["color_gain"] is None
+    assert video["color_auto_white_balance"] is True
+    assert video["color_white_balance"] is None
+    assert video["lock_color_controls_after_warmup"] is False
     assert config["capture"]["frame_sync"] is True
     assert config["capture"]["external_sync_output"] is True
     assert config["capture"]["fps"] == 30
@@ -248,11 +248,12 @@ def test_unrestricted_auto_exposure_config_is_explicitly_diagnostic() -> None:
         / "capture_unrestricted_auto_exposure.yaml"
     )
 
-    assert config["capture"]["diagnostic_unrestricted_auto_exposure"] is True
-    assert config["capture"]["color_auto_exposure"] is True
-    assert config["capture"]["color_exposure_us"] is None
-    assert config["capture"]["color_ae_max_exposure_us"] is None
-    assert config["capture"]["diagnostic_replaced_auto_cap_us"] == 800
+    video = config["capture"]["video_mode"]
+    assert video["diagnostic_unrestricted_auto_exposure"] is True
+    assert video["color_auto_exposure"] is True
+    assert video["color_exposure_us"] is None
+    assert video["color_ae_max_exposure_us"] is None
+    assert video["diagnostic_replaced_auto_cap_us"] == 800
     assert config["stitch"]["diagnostic_force"] is True
     assert config["stitch"]["input_quality_gate"] is False
     assert config["stitch"]["scan_seam"]["quality_gate"] is False
@@ -281,8 +282,8 @@ def test_legacy_exposure_override_infers_auto_exposure_mode(
 
     config = load_config(custom)
 
-    assert config["capture"]["color_auto_exposure"] is expected_auto_exposure
-    assert config["capture"]["color_exposure_us"] == expected_exposure
+    assert config["capture"]["video_mode"]["color_auto_exposure"] is expected_auto_exposure
+    assert config["capture"]["video_mode"]["color_exposure_us"] == expected_exposure
 
 
 def test_explicit_auto_exposure_mode_is_not_overridden(tmp_path: Path) -> None:
@@ -296,8 +297,8 @@ def test_explicit_auto_exposure_mode_is_not_overridden(tmp_path: Path) -> None:
 
     config = load_config(custom)
 
-    assert config["capture"]["color_auto_exposure"] is True
-    assert config["capture"]["color_exposure_us"] == 800
+    assert config["capture"]["video_mode"]["color_auto_exposure"] is True
+    assert config["capture"]["video_mode"]["color_exposure_us"] == 800
 
 
 @pytest.mark.parametrize(

@@ -755,7 +755,7 @@ def test_default_cli_keeps_configured_auto_exposure_mode() -> None:
 
 
 def test_diagnostic_unrestricted_cli_resolves_explicit_capture_mode() -> None:
-    options = dict(load_config()["capture"])
+    options = capture._video_capture_options(load_config()["capture"])
     args = capture.build_parser().parse_args(
         ["--diagnostic-unrestricted-auto-exposure"]
     )
@@ -776,7 +776,7 @@ def test_standard_auto_exposure_cli_clears_diagnostic_config() -> None:
         / "configs"
         / "capture_unrestricted_auto_exposure.yaml"
     )
-    options = dict(load_config(diagnostic_config)["capture"])
+    options = capture._video_capture_options(load_config(diagnostic_config)["capture"])
     args = capture.build_parser().parse_args(["--auto-exposure"])
 
     diagnostic_only = capture._apply_color_exposure_mode(options, args)
@@ -825,13 +825,7 @@ def test_diagnostic_capture_manifest_is_marked_before_camera_discovery(
         "pyorbbecsdk",
         SimpleNamespace(Context=lambda: context),
     )
-    args = capture.build_parser().parse_args(
-        [
-            "--output",
-            str(output),
-            "--diagnostic-unrestricted-auto-exposure",
-        ]
-    )
+    args = capture.build_parser().parse_args(["--output", str(output)])
 
     with pytest.raises(RuntimeError, match="No Orbbec camera"):
         capture.run_capture(args)
@@ -841,7 +835,7 @@ def test_diagnostic_capture_manifest_is_marked_before_camera_discovery(
     manifest = json.loads(
         (sessions[0] / "manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["capture_mode"] == "diagnostic_unrestricted_auto_exposure"
+    assert manifest["capture_mode"] == "continuous_rgbd_video_auto"
     assert manifest["diagnostic_only"] is True
     assert manifest["formal_stitch_allowed"] is False
     assert manifest["capture_options"]["color_ae_max_exposure_us"] is None
@@ -854,7 +848,7 @@ def test_invalid_manual_exposure_fails_before_session_creation(tmp_path) -> None
         ["--output", str(output), "--exposure-us", "0"]
     )
 
-    with pytest.raises(ValueError, match="must be positive"):
+    with pytest.raises(ValueError, match="always uses automatic"):
         capture.run_capture(args)
 
     assert not output.exists()
@@ -1055,13 +1049,11 @@ def test_property_configuration_failure_is_recorded_in_manifest(
     monkeypatch.setattr(
         capture,
         "_configure_color",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("manual readback failed")),
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("auto readback failed")),
     )
-    args = capture.build_parser().parse_args(
-        ["--output", str(tmp_path), "--exposure-us", "1000"]
-    )
+    args = capture.build_parser().parse_args(["--output", str(tmp_path)])
 
-    with pytest.raises(RuntimeError, match="manual readback failed"):
+    with pytest.raises(RuntimeError, match="auto readback failed"):
         capture.run_capture(args)
 
     sessions = list(tmp_path.glob("run_*"))
@@ -1071,7 +1063,7 @@ def test_property_configuration_failure_is_recorded_in_manifest(
     )
     assert manifest["capture_error"] == {
         "type": "RuntimeError",
-        "message": "manual readback failed",
+        "message": "auto readback failed",
     }
 
 

@@ -99,6 +99,20 @@ data/captures/run_YYYYMMDD_HHMMSS/
 }
 ```
 
+### 2.1 采集连续 RGB-D 视频（非正式）
+
+不带 `--photo-mode` 时，`g305-capture` 进入与照片模式隔离的连续 RGB-D 视频路径：
+
+```powershell
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-capture.exe' `
+  --duration 20 `
+  --output 'D:\central_strip_Panoramic_Camera\data\captures'
+```
+
+此模式面向实时预览、设备检查或采集诊断，并非正式全景输入。它始终启用相机自动曝光（快门时间随 AE 自动调节）、自动增益和自动白平衡；不会在预热后锁定控制值。`--exposure-us`、`--gain`、`--white-balance` 和曝光模式覆盖参数会被拒绝，以免将视频路径改回手动控制。
+
+视频会话会写入 `capture_mode="continuous_rgbd_video_auto"`，并标记 `diagnostic_only=true`、`formal_stitch_allowed=false`。因此不能传给 `g305-panorama` 生成正式交付；正式侧扫请使用上面的照片模式。
+
 ### 3. 验证 CUDA Open3D 与 ORB-SLAM3
 
 正式并行位姿前端要求 Open3D 相邻边实际使用 `open3d_tensor_cuda_rgbd`。先执行：
@@ -224,7 +238,7 @@ formal_stitch_allowed=false
 
 只有相机、pipeline、writer 和设备配置都安全关闭，且没有采集、队列或写盘错误时，最终 manifest 才会将二者设为 `true`。强制结束、写盘失败、同步不确定或设备恢复失败的会话不能正式拼接。
 
-连续流采集仍可通过不带 `--photo-mode` 的 `g305-capture` 使用，但它是次要路径。RGB-only 截图、普通照片目录或未对齐深度不能替代正式 RGB-D 会话。
+连续流采集仍可通过不带 `--photo-mode` 的 `g305-capture` 使用，具体控制行为和限制见“采集连续 RGB-D 视频（非正式）”。它不能替代照片模式的固定控制 RGB-D 会话；RGB-only 截图、普通照片目录或未对齐深度同样不能替代正式输入。
 
 ## 严格 RGB-D 会话
 

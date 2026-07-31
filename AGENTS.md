@@ -98,7 +98,7 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 - 正式彩色曝光固定不超过 `800 µs`，设备 metadata 单位为 `100 µs/单位`。
 - 会话打开期间 `formal_stitch_allowed=false`。只有相机/写盘资源安全关闭、无采集或写盘错误时，最终 manifest 才可写 `clean_shutdown=true`、`formal_stitch_allowed=true`。
 
-连续流采集仍保留，但属于次要路径；不能用 RGB-only 截图替代正式照片 RGB-D 序列。
+连续流采集仍保留，但属于与照片模式隔离的次要视频路径：必须全程使用自动曝光（自动快门时间）、自动增益和自动白平衡，且 `capture_mode=continuous_rgbd_video_auto`、`diagnostic_only=true`、`formal_stitch_allowed=false`。它不能用作正式 `g305-panorama` 输入，也不能用 RGB-only 截图替代正式照片 RGB-D 序列。
 
 ## 5. 严格 RGB-D 会话
 
@@ -192,7 +192,7 @@ delivery.json
 | CLI | 用途 |
 | --- | --- |
 | `g305-capture --photo-mode` | 正式主采集：低帧率软件触发同步 RGB-D 照片序列 |
-| `g305-capture` | 次要连续流采集 |
+| `g305-capture` | 次要连续 RGB-D 视频：全自动色彩控制，非正式全景输入 |
 | `g305-panorama` | 正式 unified RGB-D 全景 |
 | `g305-orbslam3-trajectory` | 独立重新运行完整 ORB-SLAM3 并导出真实轨迹 |
 | `g305-central-strip-diagnostic` | 隔离中央条带诊断 |

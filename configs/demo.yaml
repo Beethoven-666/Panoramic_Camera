@@ -12,28 +12,27 @@ capture:
   warmup_timeout_seconds: 15
   frame_timeout_seconds: 5
   queue_size: 64
-  # Default: capped automatic exposure. For a fixed manual duration, set
-  # color_auto_exposure: false and color_exposure_us to a positive microsecond value.
-  color_auto_exposure: true
-  color_exposure_us: null
-  color_ae_max_exposure_us: 800
-  # Explicitly unsafe-for-delivery opt-in. Prefer the CLI flag for one-off diagnostics.
-  diagnostic_unrestricted_auto_exposure: false
-  color_gain: null
-  # Let capped AE/AWB settle during warm-up.  The formal continuous capture
-  # then reads back and locks exposure, sensor gain and white balance before
-  # any delivered scan frame is accepted.
-  color_auto_white_balance: true
-  color_white_balance: null
-  lock_color_controls_after_warmup: true
-  # Discard transition frames and require two consecutive metadata-verified
-  # frames after the exposure/gain/AWB lock has been read back.
-  post_lock_verified_frames: 2
-  require_locked_control_metadata: true
   color_anti_flicker: true
   jpeg_quality: 95
   depth_png_compression: 1
   save_raw_depth: false
+
+  # Continuous video is deliberately isolated from the formal photo sequence.
+  # It always leaves exposure (and therefore electronic shutter time), gain,
+  # and white balance under the camera's automatic controls. Unrestricted AE
+  # is intentionally non-formal: these sessions cannot publish a panorama.
+  video_mode:
+    enabled: true
+    color_auto_exposure: true
+    color_exposure_us: null
+    # Baseline required by the SDK audit; runtime unrestricted AE removes it.
+    color_ae_max_exposure_us: 800
+    diagnostic_unrestricted_auto_exposure: true
+    color_gain: null
+    color_auto_white_balance: true
+    color_white_balance: null
+    lock_color_controls_after_warmup: false
+    require_locked_control_metadata: false
 
   # No-preview, one-trigger-per-frame RGB-D photo sequence used by
   # g305-capture --photo-mode. It runs without artificial throttling and

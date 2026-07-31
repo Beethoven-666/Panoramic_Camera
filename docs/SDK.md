@@ -120,6 +120,8 @@ if result.manual_review_required:
     print("C 级交付：请人工检查 report.json 后再使用")
 ```
 
+SDK 的 `capture()` 固定使用照片模式。若需要实时或诊断用途的连续 RGB-D 视频，请从 CLI 调用不带 `--photo-mode` 的 `g305-capture`；该路径独立使用自动曝光（自动快门时间）、自动增益和自动白平衡，并明确标记为非正式全景输入，不能传给 `PanoramaSDK.build()` 或 `g305-panorama` 取得正式交付。
+
 ### 加载既有结果
 
 ```python

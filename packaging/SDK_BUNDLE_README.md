@@ -36,6 +36,8 @@ print(result.delivery_state, result.quality_grade)
 
 SDK 的采集入口固定默认使用无预览的 photo-mode：每个正式帧只触发一次，完整收取、对齐和落盘后再继续下一帧。
 
+连续 RGB-D 视频不是 SDK 的正式采集入口。需要实时或诊断视频时，请使用 CLI 的 `g305-capture`（不带 `--photo-mode`）；它独立启用自动曝光（自动快门时间）、自动增益和自动白平衡，并标记为非正式全景输入，不能用于 `sdk.build()` 发布正式全景。
+
 `CudaMode.PREFER` 与 `CudaMode.AUTO` 在 CUDA 不可用或某个 GPU 操作失败时自动使用等价 CPU 路径；`CudaMode.REQUIRED` 会强制 CUDA 并在失败时终止。
 
 详细 API 参考和完整示例见 `docs/SDK.md`。

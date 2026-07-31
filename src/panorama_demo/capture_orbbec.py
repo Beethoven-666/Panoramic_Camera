@@ -1163,6 +1163,56 @@ def _write_manifest(session_root: Path, manifest: dict[str, Any]) -> None:
     )
 
 
+def _video_capture_options(capture: dict[str, Any]) -> dict[str, Any]:
+    """Return continuous-video controls without inheriting photo settings."""
+
+    video = capture.get("video_mode")
+    if not isinstance(video, dict) or not bool(video.get("enabled", False)):
+        raise ValueError("capture.video_mode must be enabled for continuous video")
+    options = dict(capture)
+    options.update(video)
+    options.pop("video_mode", None)
+    options.pop("photo_mode", None)
+    required = {
+        "color_auto_exposure": True,
+        "color_exposure_us": None,
+        "diagnostic_unrestricted_auto_exposure": True,
+        "color_gain": None,
+        "color_auto_white_balance": True,
+        "color_white_balance": None,
+        "lock_color_controls_after_warmup": False,
+    }
+    for name, expected in required.items():
+        if options.get(name) != expected:
+            raise ValueError(
+                "Continuous video requires automatic color controls: "
+                f"{name} must be {expected!r}"
+            )
+    return options
+
+
+def _validate_video_auto_control_args(args: argparse.Namespace) -> None:
+    """Prevent CLI overrides from turning continuous video into a manual mode."""
+
+    incompatible: list[str] = []
+    if bool(getattr(args, "auto_exposure", False)):
+        incompatible.append("--auto-exposure")
+    if bool(getattr(args, "diagnostic_unrestricted_auto_exposure", False)):
+        incompatible.append("--diagnostic-unrestricted-auto-exposure")
+    if getattr(args, "exposure_us", None) is not None:
+        incompatible.append("--exposure-us")
+    if getattr(args, "gain", None) is not None:
+        incompatible.append("--gain")
+    if getattr(args, "white_balance", None) is not None:
+        incompatible.append("--white-balance")
+    if incompatible:
+        raise ValueError(
+            "Continuous video always uses automatic exposure/shutter, gain, and "
+            "white balance; it rejects: "
+            + ", ".join(incompatible)
+        )
+
+
 def run_capture(args: argparse.Namespace) -> Path:
     if bool(getattr(args, "photo_mode", False)):
         # Keep the photo controller and SDK state machine lazy. photo_capture
@@ -1172,7 +1222,11 @@ def run_capture(args: argparse.Namespace) -> Path:
         return run_photo_sequence(args)
 
     config_file = load_config(args.config)
-    options = dict(config_file.get("capture", {}))
+    capture_config = config_file.get("capture", {})
+    if not isinstance(capture_config, dict):
+        raise ValueError("Configuration is missing capture settings")
+    _validate_video_auto_control_args(args)
+    options = _video_capture_options(capture_config)
     for name in ("width", "height", "fps", "warmup_frames", "queue_size"):
         value = getattr(args, name, None)
         if value is not None:
@@ -1222,11 +1276,7 @@ def run_capture(args: argparse.Namespace) -> Path:
         "schema": "panorama-demo-session/v1",
         "started_utc": started_utc,
         "clean_shutdown": False,
-        "capture_mode": (
-            "diagnostic_unrestricted_auto_exposure"
-            if diagnostic_only
-            else "standard"
-        ),
+        "capture_mode": "continuous_rgbd_video_auto",
         "diagnostic_only": diagnostic_only,
         "formal_stitch_allowed": not diagnostic_only,
         "capture_options": options,
@@ -1571,14 +1621,14 @@ def build_parser() -> argparse.ArgumentParser:
     exposure.add_argument(
         "--auto-exposure",
         action="store_true",
-        help="Enable color auto exposure with the configured motion-safe cap",
+        help="Deprecated for continuous video; automatic controls are always enabled",
     )
     exposure.add_argument(
         "--diagnostic-unrestricted-auto-exposure",
         action="store_true",
         help=(
-            "Diagnostic only: enable color auto exposure at the device-reported "
-            "maximum range; the session cannot publish an official panorama"
+            "Deprecated for continuous video; it already uses unrestricted "
+            "automatic exposure and cannot publish an official panorama"
         ),
     )
     exposure.add_argument(
@@ -1587,9 +1637,8 @@ def build_parser() -> argparse.ArgumentParser:
         dest="exposure_us",
         type=int,
         help=(
-            "Disable color auto exposure and use this duration in microseconds "
-            "(Gemini 305 applies 100 us units; moving-sequence delivery still "
-            "enforces its configured exposure limit)"
+            "Unsupported for continuous video, which always uses automatic "
+            "exposure/shutter"
         ),
     )
     parser.add_argument("--gain", type=int)
