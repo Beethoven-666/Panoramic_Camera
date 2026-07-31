@@ -4125,11 +4125,45 @@ def _validate_glb_bytes(data: bytes) -> None:
         raise RuntimeError("TSDF GLB JSON lacks glTF 2.0 asset metadata")
 
 
-def _mesh_viewer_html(mesh_filename: str, mobile_mesh_filename: str = "tsdf_mesh_mobile.glb") -> str:
+def _mesh_viewer_html(
+    mesh_filename: str,
+    mobile_mesh_filename: str = "tsdf_mesh_mobile.glb",
+    viewer_camera: Mapping[str, object] | None = None,
+) -> str:
     """Build a self-contained entry page for a locally served GLB mesh."""
 
     mesh_url = html.escape(mesh_filename, quote=True)
     mobile_url = html.escape(mobile_mesh_filename, quote=True)
+    camera_attributes = ""
+    if viewer_camera is not None:
+        target = viewer_camera.get("camera_target_gltf_model_units")
+        orbit = viewer_camera.get("camera_orbit")
+        field_of_view = viewer_camera.get("field_of_view")
+        if (
+            isinstance(target, list)
+            and len(target) == 3
+            and all(
+                isinstance(value, (int, float)) and math.isfinite(value)
+                for value in target
+            )
+            and isinstance(orbit, list)
+            and len(orbit) == 3
+            and all(isinstance(value, str) for value in orbit)
+            and isinstance(field_of_view, str)
+        ):
+            target_value = " ".join(
+                f"{float(value):.3f}m" for value in target
+            )
+            orbit_value = " ".join(
+                html.escape(value, quote=True) for value in orbit
+            )
+            camera_attributes = (
+                f' camera-target="{target_value}"'
+                f' camera-orbit="{orbit_value}"'
+                f' field-of-view="{html.escape(field_of_view, quote=True)}"'
+            )
+        else:
+            raise RuntimeError("TSDF viewer camera metadata is malformed")
     return f"""<!doctype html>
 <html lang=\"zh-CN\">
 <head>
@@ -4146,7 +4180,7 @@ def _mesh_viewer_html(mesh_filename: str, mobile_mesh_filename: str = "tsdf_mesh
 </head>
 <body>
   <div id=\"toolbar\"><button id=\"quality\">高清 / 流畅</button><button id=\"retry\">重试</button><button id=\"reset\">复位视角</button><button id=\"fullscreen\">全屏</button></div>
-  <model-viewer id=\"viewer\" src=\"{mesh_url}\" alt=\"TSDF RGB-D mesh\" camera-controls touch-action=\"pan-y\"
+  <model-viewer id=\"viewer\" src=\"{mesh_url}\" alt=\"TSDF RGB-D mesh\" camera-controls touch-action=\"pan-y\"{camera_attributes}
       shadow-intensity=\"0.7\" exposure=\"1.05\" interaction-prompt=\"none\"></model-viewer>
   <script>
     document.title = 'TSDF 三维网格';
@@ -4225,7 +4259,14 @@ def _stage_required_tsdf_visualization(
     mesh_filename = "tsdf_mesh.glb"
     mobile_mesh_filename = "tsdf_mesh_mobile.glb"
     viewer_filename = "tsdf_mesh_viewer.html"
-    viewer_html = _mesh_viewer_html(mesh_filename, mobile_mesh_filename)
+    viewer_camera = mesh_metadata.get("viewer_camera")
+    viewer_html = (
+        _mesh_viewer_html(mesh_filename, mobile_mesh_filename)
+        if viewer_camera is None
+        else _mesh_viewer_html(
+            mesh_filename, mobile_mesh_filename, viewer_camera
+        )
+    )
     if f'src="{mesh_filename}"' not in viewer_html:
         raise RuntimeError("TSDF viewer must reference its sibling tsdf_mesh.glb")
 

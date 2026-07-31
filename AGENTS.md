@@ -31,7 +31,7 @@
 - `calibrated_rgb_pushbroom.unified_content_mode=true` 时，正式 RGB 输出只有一个 renderer、一个目标坐标域、一个 valid mask 和一个严格 owner map。
 - `metric_mosaic`、`inspection_multiview` 目前保留配置验证和历史/诊断实现，但不能在 unified 正式路径产生第二幅 RGB 主图、overlay 或失败回退。
 - aligned depth 只能在已触发的相邻 `96–160 px` 风险走廊中做双向重投影、z-buffer、层分类、遮挡/孔洞/透明保护和受限局部 inverse sampling。它不得生成颜色、补洞、拟合全局平面、修改 pose、构造全景深度或向 RGB 全景回传 TSDF 结果。
-- TSDF 仅在 RGB 全景的结构和质量判定完成后生成展示附件，不参与条带、接缝、融合、裁剪、轨迹或等级决定。
+- TSDF 仅在 RGB 全景的结构和质量判定完成后生成展示附件，不参与条带、接缝、融合、裁剪、轨迹或等级决定。正式 GLB 导出可按 `tsdf_visualization.upper_island_exclusion_maximum_y_mm` 删除完全断开且 `max(raw Y) < threshold` 的上方噪声分量；glTF 将 `+Y-down` 翻转为 Viewer 的 `+Y-up`，故默认 `-500 mm` 对应 Viewer 画面上方，绝不可反向删除画面下方或裁剪跨阈值/主体连通分量。
 - 禁止把 UniStitch、LightGlue、MAGSAC、Torch、全局/pose/全景级 `3×3` 单应、全局 flow 或时间/二维 pose 插值引入正式路径。
 
 `unistitch-sequence` 是 `g305-panorama` 的弃用别名。`unistitch-pair` 仅用于历史双图诊断。`g305-central-strip-diagnostic`、`g305-geometry-pair-diagnostic` 和 `g305-foreground-deformation-diagnostic` 是隔离诊断入口，不能成为正式 backend、CLI 模式或失败回退。

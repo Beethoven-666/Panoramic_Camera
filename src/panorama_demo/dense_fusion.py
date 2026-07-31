@@ -239,6 +239,10 @@ class TSDFMeshVisualizationConfig:
     depth_consistency_floor_mm: float = 20.0
     depth_consistency_relative: float = 0.02
     minimum_cross_view_support: int = 1
+    # The glTF encoder flips Open3D's +Y-down axis.  The Gemini 305 validation
+    # rig's visible upper floating-return band is therefore at smaller raw Y.
+    # This display-only guard rejects only a complete island in that band.
+    upper_island_exclusion_maximum_y_mm: float | None = -500.0
     desktop_triangle_target: int = 200_000
     mobile_triangle_target: int = 200_000
     desktop_texture_size_px: int = 4096
@@ -279,7 +283,20 @@ class TSDFMeshVisualizationConfig:
             ("cuda_max_voxel_length_mm", config.cuda_max_voxel_length_mm),
         ):
             if not math.isfinite(number) or number <= 0.0:
-                raise ValueError(f"tsdf_visualization.{name} must be finite and positive")
+                raise ValueError(
+                    f"tsdf_visualization.{name} must be finite and positive"
+                )
+        if (
+            config.upper_island_exclusion_maximum_y_mm is not None
+            and (
+                not math.isfinite(config.upper_island_exclusion_maximum_y_mm)
+                or config.upper_island_exclusion_maximum_y_mm >= 0.0
+            )
+        ):
+            raise ValueError(
+                "tsdf_visualization.upper_island_exclusion_maximum_y_mm "
+                "must be finite and negative when enabled"
+            )
         if config.sdf_truncation_mm < config.voxel_length_mm:
             raise ValueError(
                 "tsdf_visualization.sdf_truncation_mm must cover one voxel"
@@ -1735,13 +1752,36 @@ def _linear_to_srgb(values: np.ndarray) -> np.ndarray:
 
 
 def _filter_projective_components(
-    vertices: np.ndarray, triangles: np.ndarray, retained: np.ndarray
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    retained: np.ndarray,
+    *,
+    upper_island_exclusion_maximum_y_mm: float | None = None,
 ) -> tuple[np.ndarray, dict[str, object]]:
-    """Fast edge-connected cleanup on depth-consistent export faces only."""
+    """Fast edge-connected cleanup on depth-consistent export faces only.
+
+    The optional upper-island guard is deliberately component-level: a mesh
+    island is rejected only if *every* one of its vertices lies in the Viewer
+    upper band, i.e. below the configured raw Open3D ``+Y`` limit.  Thus a
+    tall object that crosses the limit remains intact, with no triangle
+    clipping or attribute recompute.
+    """
     selected_triangles = np.asarray(triangles[retained], dtype=np.int64)
     face_count = len(selected_triangles)
     if not face_count:
-        return retained, {"input_triangle_count": 0, "removed_component_count": 0}
+        return retained, {
+            "input_triangle_count": 0,
+            "removed_component_count": 0,
+            "upper_island_removal_applied": (
+                upper_island_exclusion_maximum_y_mm is not None
+            ),
+            "upper_island_exclusion_maximum_y_mm": (
+                upper_island_exclusion_maximum_y_mm
+            ),
+            "upper_island_removed_component_count": 0,
+            "upper_island_removed_triangle_count": 0,
+            "upper_island_removed_bounds_mm": None,
+        }
     edges = np.concatenate((
         selected_triangles[:, (0, 1)], selected_triangles[:, (1, 2)], selected_triangles[:, (2, 0)],
     ))
@@ -1785,6 +1825,37 @@ def _filter_projective_components(
             elongated_kept += 1
         else:
             remove[face_indices] = True
+    retained_after_thin_cleanup = retained[~remove]
+    retained_vertices = vertices[triangles[retained_after_thin_cleanup].ravel()]
+    if not len(retained_vertices):
+        raise RuntimeError("Projective component cleanup removed every TSDF face")
+    position_bounds_before_upper_island_removal = {
+        "minimum_mm": retained_vertices.min(axis=0).astype(float).tolist(),
+        "maximum_mm": retained_vertices.max(axis=0).astype(float).tolist(),
+    }
+
+    upper_island_remove = np.zeros(face_count, dtype=bool)
+    upper_bounds: list[np.ndarray] = []
+    if upper_island_exclusion_maximum_y_mm is not None:
+        for component, _count in enumerate(counts):
+            face_indices = ordering[boundaries[component]:boundaries[component + 1]]
+            # Components already rejected by the topology cleanup are not
+            # double-counted as upper-island removals.
+            remaining = face_indices[~remove[face_indices]]
+            if not len(remaining):
+                continue
+            component_vertices = vertices[
+                selected_triangles[remaining].ravel()
+            ]
+            if float(component_vertices[:, 1].max()) < float(
+                upper_island_exclusion_maximum_y_mm
+            ):
+                upper_island_remove[remaining] = True
+                upper_bounds.append(component_vertices)
+    remove |= upper_island_remove
+    removed_upper_vertices = (
+        np.concatenate(upper_bounds, axis=0) if upper_bounds else None
+    )
     return retained[~remove], {
         "input_triangle_count": face_count,
         "retained_triangle_count": int(np.count_nonzero(~remove)),
@@ -1795,6 +1866,72 @@ def _filter_projective_components(
         "thin_component_minimum_elongation": 6.0,
         "thin_elongated_component_count": elongated_kept,
         "area_only_component_filter": False,
+        "position_bounds_before_upper_island_removal": (
+            position_bounds_before_upper_island_removal
+        ),
+        "upper_island_removal_applied": (
+            upper_island_exclusion_maximum_y_mm is not None
+        ),
+        "upper_island_exclusion_maximum_y_mm": (
+            upper_island_exclusion_maximum_y_mm
+        ),
+        "upper_island_removed_component_count": int(len(upper_bounds)),
+        "upper_island_removed_triangle_count": int(
+            np.count_nonzero(upper_island_remove)
+        ),
+        "upper_island_removed_bounds_mm": (
+            None
+            if removed_upper_vertices is None
+            else {
+                "minimum_mm": removed_upper_vertices.min(axis=0)
+                .astype(float)
+                .tolist(),
+                "maximum_mm": removed_upper_vertices.max(axis=0)
+                .astype(float)
+                .tolist(),
+            }
+        ),
+    }
+
+
+def _fixed_viewer_camera(
+    component_filter_audit: Mapping[str, object],
+) -> dict[str, object] | None:
+    """Derive stable model-viewer framing from pre-removal mesh bounds."""
+
+    payload = component_filter_audit.get(
+        "position_bounds_before_upper_island_removal"
+    )
+    if not isinstance(payload, Mapping):
+        return None
+    minimum = np.asarray(payload.get("minimum_mm"), dtype=np.float64)
+    maximum = np.asarray(payload.get("maximum_mm"), dtype=np.float64)
+    if (
+        minimum.shape != (3,)
+        or maximum.shape != (3,)
+        or not np.isfinite(minimum).all()
+        or not np.isfinite(maximum).all()
+        or np.any(maximum < minimum)
+    ):
+        raise RuntimeError("Projective component bounds are invalid for TSDF viewer")
+    center = (minimum + maximum) * 0.5
+    diagonal = float(np.linalg.norm(maximum - minimum))
+    # A 30 degree FOV enclosing the old bounding sphere with a small margin.
+    radius = max(1.0, diagonal * 1.05 / (2.0 * math.tan(math.radians(15.0))))
+    return {
+        "reference_position_bounds_mm": {
+            "minimum_mm": minimum.astype(float).tolist(),
+            "maximum_mm": maximum.astype(float).tolist(),
+        },
+        # The encoder applies a 180-degree X rotation to raw RGB-D axes.
+        "camera_target_gltf_model_units": [
+            float(center[0]),
+            float(-center[1]),
+            float(-center[2]),
+        ],
+        "camera_orbit": ["0deg", "75deg", f"{radius:.3f}m"],
+        "field_of_view": "30deg",
+        "framing": "fixed_from_pre_upper_island_removal_bounds",
     }
 
 
@@ -1909,7 +2046,12 @@ def _bake_uv_texture(
         raise RuntimeError("No depth-consistent real RGB observations were available for UV baking")
     retained_before_component_filter = len(retained)
     retained, component_filter_audit = _filter_projective_components(
-        vertices, triangles, retained
+        vertices,
+        triangles,
+        retained,
+        upper_island_exclusion_maximum_y_mm=(
+            config.upper_island_exclusion_maximum_y_mm
+        ),
     )
     if not len(retained):
         raise RuntimeError("Projective component cleanup removed every TSDF face")
@@ -2256,6 +2398,13 @@ def export_tsdf_mesh(
             ),
         }
     timing["projective_texture_and_glb"] = time.perf_counter() - texture_started
+    viewer_camera = (
+        _fixed_viewer_camera(
+            texture_audit.get("projective_component_filter", {})
+        )
+        if isinstance(texture_audit, Mapping)
+        else None
+    )
     exported_triangle_count = (
         int(texture_audit.get("glb_triangle_count", texture_audit.get("retained_depth_consistent_triangle_count", len(desktop_mesh.triangles))))
         if isinstance(texture_audit, dict)
@@ -2278,6 +2427,7 @@ def export_tsdf_mesh(
         "depth_filter": depth_filter_audit,
         "mesh_cleanup": mesh_cleanup,
         "texture": texture_audit,
+        "viewer_camera": viewer_camera,
         "translation_unit": "mm",
         "unique_block_estimate": unique_block_estimate_audit,
         "capacity_preflight": (
@@ -2297,6 +2447,9 @@ def export_tsdf_mesh(
             "depth_consistency_floor_mm": selected.depth_consistency_floor_mm,
             "depth_consistency_relative": selected.depth_consistency_relative,
             "minimum_cross_view_support": selected.minimum_cross_view_support,
+            "upper_island_exclusion_maximum_y_mm": (
+                selected.upper_island_exclusion_maximum_y_mm
+            ),
             "desktop_triangle_target": selected.desktop_triangle_target,
             "mobile_triangle_target": selected.mobile_triangle_target,
             "desktop_texture_size_px": selected.desktop_texture_size_px,

@@ -198,6 +198,71 @@ def test_uv_textured_glb_embeds_png_and_omits_tsdf_vertex_colours() -> None:
     assert payload["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] == {"index": 0}
 
 
+def test_projective_component_filter_removes_only_complete_upper_island() -> None:
+    """The upper guard must not clip a component which crosses its boundary."""
+
+    face_count = 201
+
+    def fan(*, x: float, center_y: float, ring_y: float) -> tuple[np.ndarray, np.ndarray]:
+        angle = np.linspace(0.0, 2.0 * np.pi, face_count, endpoint=False)
+        vertices = np.vstack((
+            np.array([[x, center_y, 0.0]], dtype=np.float32),
+            np.column_stack((
+                np.full(face_count, x, dtype=np.float32) + np.cos(angle),
+                np.full(face_count, ring_y, dtype=np.float32),
+                np.sin(angle).astype(np.float32),
+            )),
+        ))
+        triangles = np.array(
+            [[0, index + 1, (index + 1) % face_count + 1] for index in range(face_count)],
+            dtype=np.int64,
+        )
+        return vertices, triangles
+
+    upper_vertices, upper_triangles = fan(x=-10.0, center_y=-600.0, ring_y=-600.0)
+    lower_vertices, lower_triangles = fan(x=0.0, center_y=100.0, ring_y=100.0)
+    crossing_vertices, crossing_triangles = fan(x=10.0, center_y=100.0, ring_y=-600.0)
+    vertices = np.vstack((upper_vertices, lower_vertices, crossing_vertices))
+    triangles = np.vstack((
+        upper_triangles,
+        lower_triangles + len(upper_vertices),
+        crossing_triangles + len(upper_vertices) + len(lower_vertices),
+    ))
+    before_vertices = vertices.copy()
+    retained = np.arange(len(triangles), dtype=np.int64)
+
+    filtered, audit = dense_fusion._filter_projective_components(
+        vertices,
+        triangles,
+        retained,
+        upper_island_exclusion_maximum_y_mm=-500.0,
+    )
+
+    np.testing.assert_array_equal(filtered, np.arange(face_count, len(triangles)))
+    np.testing.assert_array_equal(vertices, before_vertices)
+    assert audit["upper_island_removed_component_count"] == 1
+    assert audit["upper_island_removed_triangle_count"] == face_count
+    removed_bounds = audit["upper_island_removed_bounds_mm"]
+    assert removed_bounds is not None
+    np.testing.assert_allclose(
+        removed_bounds["minimum_mm"], [-11.0, -600.0, -1.0], atol=1e-3
+    )
+    np.testing.assert_allclose(
+        removed_bounds["maximum_mm"], [-9.0, -600.0, 1.0], atol=1e-3
+    )
+    retained_bounds = audit["position_bounds_before_upper_island_removal"]
+    np.testing.assert_allclose(
+        retained_bounds["minimum_mm"], [-11.0, -600.0, -1.0], atol=1e-3
+    )
+    np.testing.assert_allclose(
+        retained_bounds["maximum_mm"], [11.0, 100.0, 1.0], atol=1e-3
+    )
+    viewer = dense_fusion._fixed_viewer_camera(audit)
+    assert viewer is not None
+    assert viewer["framing"] == "fixed_from_pre_upper_island_removal_bounds"
+    assert viewer["reference_position_bounds_mm"] == retained_bounds
+
+
 def test_cuda_capacity_plan_preserves_default_five_mm_short_scan() -> None:
     plan = plan_display_only_tsdf_cuda_capacity(
         target_gpu_byte_budget=2_500_000_000,

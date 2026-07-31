@@ -32,6 +32,22 @@ def _test_glb(label: str) -> bytes:
     )
 
 
+def test_tsdf_viewer_uses_explicit_audited_camera_when_supplied() -> None:
+    viewer = sequence._mesh_viewer_html(
+        "tsdf_mesh.glb",
+        "tsdf_mesh_mobile.glb",
+        {
+            "camera_target_gltf_model_units": [1.0, -2.0, -3.0],
+            "camera_orbit": ["0deg", "75deg", "42.000m"],
+            "field_of_view": "30deg",
+        },
+    )
+
+    assert 'camera-target="1.000m -2.000m -3.000m"' in viewer
+    assert 'camera-orbit="0deg 75deg 42.000m"' in viewer
+    assert 'field-of-view="30deg"' in viewer
+
+
 class _DeliveryTestRGBDBackend:
     name = "delivery_test_rgbd"
 

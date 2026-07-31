@@ -202,6 +202,9 @@ stitch:
     depth_consistency_floor_mm: 20.0
     depth_consistency_relative: 0.02
     minimum_cross_view_support: 1
+    # Display-only: after glTF flips +Y-down to +Y-up, visible upper noise is
+    # at smaller raw Y. Reject only a complete disconnected island in this band.
+    upper_island_exclusion_maximum_y_mm: -500.0
     desktop_triangle_target: 200000
     mobile_triangle_target: 200000
     desktop_texture_size_px: 4096

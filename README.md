@@ -400,6 +400,17 @@ tsdf_mesh_viewer.html
 - 不影响 A/B/C 的 RGB 决策；
 - 任一 GLB/Viewer 构建或发布失败仍属于结构 F。
 
+### Viewer 画面上方的离散噪声分量
+
+正式默认配置 `tsdf_visualization.upper_island_exclusion_maximum_y_mm: -500.0`
+会在 GLB 导出前移除**完全断开**且所有顶点原始 TSDF `Y < -500 mm`
+的连通三角面分量。glTF 导出会将相机式 `+Y-down` 转成 Viewer 的 `+Y-up`，
+所以这正对应 Viewer 画面上方的漂浮噪声；不能把该条件改成较大的 `Y`，否则会误删画面下方。
+
+该过滤只删除满足条件的完整连通分量：不会裁剪与主体相连、跨过阈值的网格，也不会修改
+`panorama.jpg`、`panorama.png`、RGB owner、真实 pose 或质量等级。导出审计会记录阈值、删除的
+分量/三角面数量及其边界；desktop/mobile GLB 使用同一筛选结果。
+
 ## CUDA Open3D 安装与验证
 
 Windows 官方 Open3D wheel 不包含本项目正式位姿前端需要的 CUDA Tensor odometry。项目提供构建脚本，默认针对 CUDA Toolkit 12.8 和 `sm_120`：
