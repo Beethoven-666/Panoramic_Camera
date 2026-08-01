@@ -105,8 +105,9 @@ data/captures/run_YYYYMMDD_HHMMSS/
 
 ```powershell
 & 'D:\Panoramic_Camera\.conda\Scripts\g305-capture.exe' `
-  --duration 20 `
-  --output 'D:\central_strip_Panoramic_Camera\data\captures'
+  --duration 3 `
+  --video-exposure-us 600 `
+  --output 'D:\central_strip_Panoramic_Camera\data\captures\video'
 ```
 
 此模式与照片全景隔离：它不能传给 `g305-panorama`，但可以传给独立的
