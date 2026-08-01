@@ -12,18 +12,21 @@ from panorama_demo.stitch_sequence import (
 )
 
 
-def test_default_video_capture_uses_isolated_automatic_controls() -> None:
+def test_default_video_capture_uses_capped_auto_exposure_and_locked_awb() -> None:
     config = load_config()
     video = config["capture"]["video_mode"]
 
     assert video["color_auto_exposure"] is True
     assert video["color_exposure_us"] is None
     assert video["color_ae_max_exposure_us"] == 800
-    assert video["diagnostic_unrestricted_auto_exposure"] is True
+    assert video["diagnostic_unrestricted_auto_exposure"] is False
     assert video["color_gain"] is None
     assert video["color_auto_white_balance"] is True
     assert video["color_white_balance"] is None
     assert video["lock_color_controls_after_warmup"] is False
+    assert video["lock_white_balance_after_warmup"] is True
+    assert video["require_locked_white_balance_metadata"] is True
+    assert video["post_lock_verified_frames"] == 2
     assert config["capture"]["frame_sync"] is True
     assert config["capture"]["external_sync_output"] is True
     assert config["capture"]["fps"] == 30

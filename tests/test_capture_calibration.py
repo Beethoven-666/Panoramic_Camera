@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
 from types import SimpleNamespace
 
@@ -202,6 +201,84 @@ def test_post_warmup_color_control_lock_freezes_converged_controls() -> None:
         "gain_raw": 16,
         "auto_white_balance": False,
         "white_balance_raw": 4_600,
+    }
+
+
+def test_post_warmup_white_balance_lock_preserves_video_auto_exposure_and_gain() -> None:
+    device = _ColorControlDevice()
+    sdk = _color_control_sdk()
+
+    audit = capture._lock_white_balance_after_warmup(
+        device,
+        sdk,
+        {
+            "post_lock_verified_frames": 2,
+            "require_locked_white_balance_metadata": True,
+        },
+        warmup_frame_sets=30,
+    )
+
+    assert device.bool_properties == {
+        "auto_exposure": True,
+        "auto_white_balance": False,
+    }
+    assert device.int_properties == {
+        "exposure": 8,
+        "gain": 16,
+        "white_balance": 4_600,
+    }
+    assert device.set_calls == [
+        ("bool", "auto_white_balance", False),
+        ("int", "white_balance", 4_600),
+    ]
+    assert audit["lock_scope"] == "white_balance"
+    assert audit["locked_controls"] == {
+        "auto_white_balance": False,
+        "white_balance_raw": 4_600,
+    }
+    capture._require_valid_locked_color_metadata(
+        {
+            "color_exposure": None,
+            "color_gain": None,
+            "color_auto_white_balance": 0,
+            "color_white_balance": 4_600,
+        },
+        audit,
+    )
+    with pytest.raises(RuntimeError, match="color_white_balance=4700"):
+        capture._require_valid_locked_color_metadata(
+            {
+                "color_exposure": 8,
+                "color_gain": 16,
+                "color_auto_white_balance": 0,
+                "color_white_balance": 4_700,
+            },
+            audit,
+        )
+
+
+def test_warmup_exposure_over_cap_falls_back_to_fixed_800_us() -> None:
+    device = _ColorControlDevice()
+
+    fallback = capture._fall_back_to_fixed_motion_safe_exposure(
+        device,
+        _color_control_sdk(),
+        {
+            "color_auto_exposure": True,
+            "color_exposure_us": None,
+            "color_ae_max_exposure_us": 800,
+            "diagnostic_unrestricted_auto_exposure": False,
+        },
+    )
+
+    assert device.bool_properties["auto_exposure"] is False
+    assert device.int_properties["exposure"] == 8
+    assert fallback == {
+        "auto_exposure": False,
+        "exposure": 8,
+        "exposure_us": 800,
+        "fallback_reason": "warmup_metadata_exceeded_auto_exposure_cap",
+        "fallback_cap_us": 800,
     }
 
 
@@ -770,13 +847,8 @@ def test_diagnostic_unrestricted_cli_resolves_explicit_capture_mode() -> None:
     assert options["diagnostic_replaced_auto_cap_us"] == 800
 
 
-def test_standard_auto_exposure_cli_clears_diagnostic_config() -> None:
-    diagnostic_config = (
-        Path(__file__).resolve().parents[1]
-        / "configs"
-        / "capture_unrestricted_auto_exposure.yaml"
-    )
-    options = capture._video_capture_options(load_config(diagnostic_config)["capture"])
+def test_standard_auto_exposure_cli_retains_motion_safe_video_cap() -> None:
+    options = capture._video_capture_options(load_config()["capture"])
     args = capture.build_parser().parse_args(["--auto-exposure"])
 
     diagnostic_only = capture._apply_color_exposure_mode(options, args)
@@ -838,8 +910,8 @@ def test_diagnostic_capture_manifest_is_marked_before_camera_discovery(
     assert manifest["capture_mode"] == "continuous_rgbd_video_auto"
     assert manifest["diagnostic_only"] is True
     assert manifest["formal_stitch_allowed"] is False
-    assert manifest["capture_options"]["color_ae_max_exposure_us"] is None
-    assert manifest["capture_options"]["diagnostic_replaced_auto_cap_us"] == 800
+    assert manifest["capture_options"]["color_ae_max_exposure_us"] == 800
+    assert manifest["capture_options"]["diagnostic_unrestricted_auto_exposure"] is False
 
 
 def test_invalid_manual_exposure_fails_before_session_creation(tmp_path) -> None:

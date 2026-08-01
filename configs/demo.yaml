@@ -18,21 +18,25 @@ capture:
   save_raw_depth: false
 
   # Continuous video is deliberately isolated from the formal photo sequence.
-  # It always leaves exposure (and therefore electronic shutter time), gain,
-  # and white balance under the camera's automatic controls. Unrestricted AE
-  # is intentionally non-formal: these sessions cannot publish a panorama.
+  # Exposure (and therefore electronic shutter time) and gain remain
+  # automatic. AWB is allowed to settle only during warmup, then its converged
+  # value is locked and verified on every emitted frame. Auto exposure remains
+  # capped at 800 us for the moving-camera safety contract.
   video_mode:
     enabled: true
     color_auto_exposure: true
     color_exposure_us: null
-    # Baseline required by the SDK audit; runtime unrestricted AE removes it.
+    # Moving-camera shutter cap, enforced while auto exposure remains active.
     color_ae_max_exposure_us: 800
-    diagnostic_unrestricted_auto_exposure: true
+    diagnostic_unrestricted_auto_exposure: false
     color_gain: null
     color_auto_white_balance: true
     color_white_balance: null
     lock_color_controls_after_warmup: false
     require_locked_control_metadata: false
+    lock_white_balance_after_warmup: true
+    require_locked_white_balance_metadata: true
+    post_lock_verified_frames: 2
 
   # No-preview, one-trigger-per-frame RGB-D photo sequence used by
   # g305-capture --photo-mode. It runs without artificial throttling and

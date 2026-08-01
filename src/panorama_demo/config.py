@@ -21,6 +21,8 @@ _LEGACY_VIDEO_CONTROL_KEYS = (
     "lock_color_controls_after_warmup",
     "post_lock_verified_frames",
     "require_locked_control_metadata",
+    "lock_white_balance_after_warmup",
+    "require_locked_white_balance_metadata",
 )
 
 

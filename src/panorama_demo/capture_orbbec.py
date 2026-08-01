@@ -575,16 +575,22 @@ def _locked_color_metadata_status(
     """Return missing and mismatched metadata labels for a locked source frame."""
 
     expected = lock_audit["locked_controls"]
-    expected_values = {
-        "color_exposure": int(expected["exposure_raw"]),
-        "color_gain": int(expected["gain_raw"]),
+    expected_values: dict[str, int] = {
         "color_auto_white_balance": 0,
         "color_white_balance": int(expected["white_balance_raw"]),
     }
-    missing = [name for name, value in metadata.items() if value is None]
+    if lock_audit.get("lock_scope") != "white_balance":
+        expected_values.update(
+            {
+                "color_exposure": int(expected["exposure_raw"]),
+                "color_gain": int(expected["gain_raw"]),
+            }
+        )
+    selected_metadata = {name: metadata.get(name) for name in expected_values}
+    missing = [name for name, value in selected_metadata.items() if value is None]
     mismatches = [
         f"{name}={value} (expected {expected_values[name]})"
-        for name, value in metadata.items()
+        for name, value in selected_metadata.items()
         if value is not None and int(value) != expected_values[name]
     ]
     return missing, mismatches
@@ -606,6 +612,72 @@ def _require_valid_locked_color_metadata(
             "Locked color-control metadata changed after warmup: "
             + ", ".join(mismatches)
         )
+
+
+def _lock_white_balance_after_warmup(
+    device: Any,
+    sdk: Any,
+    options: dict[str, Any],
+    *,
+    warmup_frame_sets: int,
+) -> dict[str, Any]:
+    """Freeze converged AWB while video auto-exposure and gain remain active."""
+
+    auto_white_balance = _strict_color_control_property(
+        device,
+        sdk,
+        "OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL",
+        "color auto white balance",
+    )
+    white_balance = _strict_color_control_property(
+        device,
+        sdk,
+        "OB_PROP_COLOR_WHITE_BALANCE_INT",
+        "color white balance",
+    )
+    before_auto_white_balance = _strict_read_bool_property(
+        device, auto_white_balance, "color auto white balance"
+    )
+    white_balance_raw = _strict_read_int_property(
+        device, white_balance, "color white balance"
+    )
+    if white_balance_raw <= 0:
+        raise RuntimeError(
+            "Post-warmup white-balance lock read a non-positive white balance"
+        )
+    _strict_set_bool_property(
+        device, auto_white_balance, False, "color auto white balance"
+    )
+    _strict_set_int_property(
+        device, white_balance, white_balance_raw, "color white balance"
+    )
+    requested_verification_frames = int(options.get("post_lock_verified_frames", 2))
+    if requested_verification_frames <= 0:
+        raise ValueError("post_lock_verified_frames must be positive")
+    return {
+        "requested": True,
+        "completed": False,
+        "state": "locked_pending_frame_metadata",
+        "lock_scope": "white_balance",
+        "warmup_frame_sets": int(warmup_frame_sets),
+        "device_before_lock": {
+            "auto_white_balance": before_auto_white_balance,
+            "white_balance_raw": white_balance_raw,
+        },
+        "locked_controls": {
+            "auto_white_balance": False,
+            "white_balance_raw": white_balance_raw,
+        },
+        "readback_verified": True,
+        "require_frame_metadata": bool(
+            options.get("require_locked_white_balance_metadata", True)
+        ),
+        "post_lock_verified_frames_requested": requested_verification_frames,
+        "post_lock_verified_frames": 0,
+        "post_lock_discarded_frames": 0,
+        "post_lock_incomplete_frame_sets": 0,
+        "post_lock_metadata_mismatches": 0,
+    }
 
 
 def _discard_and_verify_post_lock_frames(
@@ -793,6 +865,39 @@ def _color_exposure_metadata_violation(
             f"({requested_units * COLOR_EXPOSURE_UNIT_US} us)"
         )
     return None
+
+
+def _fall_back_to_fixed_motion_safe_exposure(
+    device: Any, sdk: Any, options: dict[str, Any]
+) -> dict[str, Any]:
+    """Stop AE and enforce its 800-us safety ceiling before formal video frames."""
+
+    cap_us = _formal_locked_exposure_cap_us(options)
+    if cap_us is None:
+        raise RuntimeError(
+            "Cannot fall back from uncapped automatic exposure without a safety cap"
+        )
+    cap_units = _color_exposure_units(cap_us)
+    applied_auto = _set_bool_property(
+        device, sdk, "OB_PROP_COLOR_AUTO_EXPOSURE_BOOL", False
+    )
+    if applied_auto is not False:
+        raise RuntimeError("The camera did not disable auto exposure for fallback")
+    applied_units = _set_int_property(
+        device, sdk, "OB_PROP_COLOR_EXPOSURE_INT", cap_units
+    )
+    if applied_units is None or int(applied_units) > cap_units:
+        raise RuntimeError("The camera cannot enforce the 800-us exposure fallback")
+    options["color_auto_exposure"] = False
+    options["color_exposure_us"] = cap_us
+    options["diagnostic_unrestricted_auto_exposure"] = False
+    return {
+        "auto_exposure": False,
+        "exposure": int(applied_units),
+        "exposure_us": int(applied_units) * COLOR_EXPOSURE_UNIT_US,
+        "fallback_reason": "warmup_metadata_exceeded_auto_exposure_cap",
+        "fallback_cap_us": cap_us,
+    }
 
 
 def _color_exposure_control_summary(
@@ -1176,16 +1281,19 @@ def _video_capture_options(capture: dict[str, Any]) -> dict[str, Any]:
     required = {
         "color_auto_exposure": True,
         "color_exposure_us": None,
-        "diagnostic_unrestricted_auto_exposure": True,
+        "diagnostic_unrestricted_auto_exposure": False,
         "color_gain": None,
         "color_auto_white_balance": True,
         "color_white_balance": None,
         "lock_color_controls_after_warmup": False,
+        "lock_white_balance_after_warmup": True,
+        "require_locked_white_balance_metadata": True,
     }
     for name, expected in required.items():
         if options.get(name) != expected:
             raise ValueError(
-                "Continuous video requires automatic color controls: "
+                "Continuous video requires automatic exposure/gain and a "
+                "post-warmup white-balance lock: "
                 f"{name} must be {expected!r}"
             )
     return options
@@ -1264,7 +1372,15 @@ def run_capture(args: argparse.Namespace) -> Path:
     color_control_lock_requested = bool(
         options.get("lock_color_controls_after_warmup", False)
     )
-    if color_control_lock_requested and int(
+    white_balance_lock_requested = bool(
+        options.get("lock_white_balance_after_warmup", False)
+    )
+    if color_control_lock_requested and white_balance_lock_requested:
+        raise ValueError(
+            "Continuous video cannot request both full color-control and "
+            "white-balance-only post-warmup locks"
+        )
+    if (color_control_lock_requested or white_balance_lock_requested) and int(
         options.get("post_lock_verified_frames", 2)
     ) <= 0:
         raise ValueError("post_lock_verified_frames must be positive")
@@ -1382,6 +1498,7 @@ def run_capture(args: argparse.Namespace) -> Path:
     started_monotonic = 0.0
     metadata_checked = False
     exposure_violation_run = 0
+    warmup_exposure_fallback = False
     metadata_types: Any | None = None
     color_control_lock: dict[str, Any] | None = None
     pipeline_started = False
@@ -1390,7 +1507,7 @@ def run_capture(args: argparse.Namespace) -> Path:
         try:
             metadata_types = sdk.OBFrameMetadataType
         except AttributeError as exc:
-            if color_control_lock_requested:
+            if color_control_lock_requested or white_balance_lock_requested:
                 raise RuntimeError(
                     "Post-warmup color-control lock requires the SDK frame metadata API"
                 ) from exc
@@ -1402,6 +1519,33 @@ def run_capture(args: argparse.Namespace) -> Path:
         while warmup_received < int(options["warmup_frames"]):
             warmup_frames = pipeline.wait_for_frames(1000)
             if warmup_frames is not None:
+                raw_warmup_color = warmup_frames.get_color_frame()
+                if raw_warmup_color is not None:
+                    warmup_exposure = _metadata(
+                        raw_warmup_color, metadata_types.EXPOSURE
+                    )
+                    warmup_violation = _color_exposure_metadata_violation(
+                        options, warmup_exposure
+                    )
+                    if warmup_exposure_fallback and warmup_violation is not None:
+                        raise RuntimeError(warmup_violation)
+                    if (
+                        not warmup_exposure_fallback
+                        and warmup_violation is not None
+                    ):
+                        fallback = _fall_back_to_fixed_motion_safe_exposure(
+                            device, sdk, options
+                        )
+                        warmup_exposure_fallback = True
+                        manifest["capture_mode"] = (
+                            "continuous_rgbd_video_fixed_exposure"
+                        )
+                        manifest["warmup_exposure_fallback"] = fallback
+                        manifest["applied_color_properties"].update(fallback)
+                        manifest["color_exposure_control"] = (
+                            _color_exposure_control_summary(options, fallback)
+                        )
+                        _write_manifest(session_root, manifest)
                 warmup_received += 1
             if time.monotonic() - warmup_started >= float(
                 options.get("warmup_timeout_seconds", 15)
@@ -1412,7 +1556,7 @@ def run_capture(args: argparse.Namespace) -> Path:
                     "Try MJPG color, a lower resolution, another USB 3 port, or disable "
                     "other camera applications."
                 )
-        if color_control_lock_requested:
+        if color_control_lock_requested or white_balance_lock_requested:
             manifest["color_control_lock"] = {
                 "requested": True,
                 "completed": False,
@@ -1420,11 +1564,13 @@ def run_capture(args: argparse.Namespace) -> Path:
                 "warmup_frame_sets": warmup_received,
             }
             _write_manifest(session_root, manifest)
-            color_control_lock = _lock_color_controls_after_warmup(
-                device,
-                sdk,
-                options,
-                warmup_frame_sets=warmup_received,
+            lock_function = (
+                _lock_color_controls_after_warmup
+                if color_control_lock_requested
+                else _lock_white_balance_after_warmup
+            )
+            color_control_lock = lock_function(
+                device, sdk, options, warmup_frame_sets=warmup_received
             )
             manifest["color_control_lock"] = color_control_lock
             _write_manifest(session_root, manifest)
@@ -1474,6 +1620,8 @@ def run_capture(args: argparse.Namespace) -> Path:
             exposure_violation_run = (
                 exposure_violation_run + 1 if exposure_violation is not None else 0
             )
+            if warmup_exposure_fallback and exposure_violation is not None:
+                raise RuntimeError(exposure_violation)
             if exposure_violation_run >= 3:
                 assert exposure_violation is not None
                 raise RuntimeError(
@@ -1644,7 +1792,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--video-exposure-us",
         type=int,
-        help="Fixed continuous-video exposure in microseconds; gain and white balance remain automatic",
+        help="Fixed continuous-video exposure in microseconds; gain remains automatic and white balance locks after warmup",
     )
     exposure.add_argument(
         "--diagnostic-unrestricted-auto-exposure",
