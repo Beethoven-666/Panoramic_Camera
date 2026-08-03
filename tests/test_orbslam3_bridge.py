@@ -72,6 +72,24 @@ def test_staged_settings_explicitly_disable_orbslam3_far_point_filter(
     assert "System.thFarPoints: 0.0" in settings_path.read_text(encoding="utf-8")
 
 
+def test_staged_command_keeps_orbslam3_viewer_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Do not override Pangolin's normal visible Viewer backend from the bridge."""
+
+    session = _session(tmp_path)
+    _patch_wsl_runtime(monkeypatch)
+    prepared = bridge.prepare_orbslam3_rgbd(
+        session.frames, session.calibration, tmp_path / "orb-work"
+    )
+
+    assert "env" not in prepared.staged.command
+    assert not any(
+        item.startswith("PANGOLIN_WINDOW_URI=")
+        for item in prepared.staged.command
+    )
+
+
 def test_sigsegv_139_retries_once_with_a_fresh_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -579,8 +579,6 @@ def _stage_orbslam3_attempt(
         "--cd",
         stage_wsl,
         "-e",
-        "env",
-        "PANGOLIN_WINDOW_URI=headless://",
         executable_wsl,
         vocabulary_wsl,
         settings_wsl,
