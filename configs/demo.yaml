@@ -23,11 +23,13 @@ capture:
   # capped at 800 us for the moving-camera safety contract.
   video_mode:
     enabled: true
-    # Both applied values are read back for every accepted frame. CLI flags
-    # can override them for a capture without editing this file.
+    # Both requested values are read back for every accepted frame. The image
+    # delay is applied to depth_delay_us, color_delay_us, and
+    # trigger_to_image_delay_us, matching the D:\Flash timing contract.
+    # CLI flags can override them for a capture without editing this file.
     trigger_out_delay_us: 7000
-    # Delay from the synchronization trigger to image capture. The applied
-    # SDK value is read back at startup and again for every accepted frame.
+    # Delay from the synchronization trigger to RGB-D image capture. All three
+    # applied SDK image-delay fields are read back at startup and per frame.
     trigger_to_image_delay_us: 8000
     color_auto_exposure: true
     color_exposure_us: null
@@ -52,7 +54,8 @@ capture:
     fastest_common_fps: true
     exposure_us: 800
     # Both delays can be overridden from the CLI and are read back for every
-    # formal frame.
+    # formal frame. The image delay is written to the same three SDK fields as
+    # video mode.
     trigger_to_image_delay_us: 8000
     trigger_out_delay_us: 7000
     capture_timeout_ms: 8000

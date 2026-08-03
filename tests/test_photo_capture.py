@@ -691,6 +691,8 @@ def test_prepare_primes_with_gate_off_and_applies_exact_trigger_contract(
     assert sdk.device.sync.mode == "SOFTWARE_TRIGGERING"
     assert sdk.device.sync.trigger_out_enable is True
     assert sdk.device.sync.frames_per_trigger == 1
+    assert sdk.device.sync.depth_delay_us == 8000
+    assert sdk.device.sync.color_delay_us == 8000
     assert sdk.device.sync.trigger_to_image_delay_us == 8000
     assert sdk.device.sync.trigger_out_delay_us == 7000
     assert sdk.device.bool_properties["output_gate"] is True

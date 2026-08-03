@@ -653,8 +653,8 @@ class SoftwareTriggeredRGBDPhotoController:
             mode = sdk.OBMultiDeviceSyncMode.SOFTWARE_TRIGGERING
             config = self._device.get_multi_device_sync_config()
             config.mode = mode
-            config.depth_delay_us = 0
-            config.color_delay_us = 0
+            config.depth_delay_us = self.settings.trigger_to_image_delay_us
+            config.color_delay_us = self.settings.trigger_to_image_delay_us
             config.trigger_to_image_delay_us = (
                 self.settings.trigger_to_image_delay_us
             )
@@ -678,13 +678,14 @@ class SoftwareTriggeredRGBDPhotoController:
                 "Could not read back the synchronization configuration"
             ) from exc
         expected_mode = sdk.OBMultiDeviceSyncMode.SOFTWARE_TRIGGERING
+        image_delay_us = self.settings.trigger_to_image_delay_us
         required = {
             "mode": (applied.mode, expected_mode),
-            "depth_delay_us": (int(applied.depth_delay_us), 0),
-            "color_delay_us": (int(applied.color_delay_us), 0),
+            "depth_delay_us": (int(applied.depth_delay_us), image_delay_us),
+            "color_delay_us": (int(applied.color_delay_us), image_delay_us),
             "trigger_to_image_delay_us": (
                 int(applied.trigger_to_image_delay_us),
-                self.settings.trigger_to_image_delay_us,
+                image_delay_us,
             ),
             "trigger_out_enable": (bool(applied.trigger_out_enable), True),
             "trigger_out_delay_us": (
@@ -706,9 +707,9 @@ class SoftwareTriggeredRGBDPhotoController:
             "mode": _enum_name(applied.mode),
             "trigger_out_enable": True,
             "frames_per_trigger": 1,
-            "depth_delay_us": 0,
-            "color_delay_us": 0,
-            "trigger_to_image_delay_us": self.settings.trigger_to_image_delay_us,
+            "depth_delay_us": image_delay_us,
+            "color_delay_us": image_delay_us,
+            "trigger_to_image_delay_us": image_delay_us,
             "trigger_out_delay_us": self.settings.trigger_out_delay_us,
         }
 

@@ -1214,9 +1214,12 @@ def _configure_external_sync_output(
     try:
         requested = get_sync_config()
         requested.mode = primary_mode
-        requested.trigger_out_enable = True
+        requested.depth_delay_us = image_delay_us
+        requested.color_delay_us = image_delay_us
         requested.trigger_to_image_delay_us = image_delay_us
+        requested.trigger_out_enable = True
         requested.trigger_out_delay_us = trigger_out_delay_us
+        requested.frames_per_trigger = 1
         set_sync_config(requested)
     except Exception as exc:
         raise RuntimeError(
@@ -1276,6 +1279,11 @@ def _verify_external_sync_output(
         )
     if not bool(getattr(applied, "trigger_out_enable", False)):
         raise RuntimeError("The camera did not enable its external sync trigger output")
+    if getattr(applied, "frames_per_trigger", None) != 1:
+        raise RuntimeError(
+            "The camera did not apply single-frame synchronization: "
+            f"frames_per_trigger={getattr(applied, 'frames_per_trigger', None)!r}"
+        )
     if getattr(applied, "trigger_out_delay_us", None) != trigger_out_delay_us:
         raise RuntimeError(
             "The camera did not apply Trigger Out delay: "
@@ -1288,6 +1296,13 @@ def _verify_external_sync_output(
             f"read {getattr(applied, 'trigger_to_image_delay_us', None)!r}, "
             f"expected {image_delay_us}"
         )
+    for delay_field in ("color_delay_us", "depth_delay_us"):
+        actual = getattr(applied, delay_field, None)
+        if actual != image_delay_us:
+            raise RuntimeError(
+                f"The camera did not apply image delay to {delay_field}: "
+                f"read {actual!r}, expected {image_delay_us}"
+            )
 
     result = _sync_config_to_dict(applied)
     result.update(

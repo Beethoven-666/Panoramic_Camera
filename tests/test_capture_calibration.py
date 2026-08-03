@@ -1077,10 +1077,10 @@ def test_external_sync_output_uses_primary_mode_and_capture_fps() -> None:
     assert config.mode is primary_mode
     assert config.trigger_out_enable is True
     assert config.trigger_out_delay_us == 17000
-    assert config.color_delay_us == 11
-    assert config.depth_delay_us == 12
+    assert config.color_delay_us == 17000
+    assert config.depth_delay_us == 17000
     assert config.trigger_to_image_delay_us == 17000
-    assert config.frames_per_trigger == 2
+    assert config.frames_per_trigger == 1
     assert result["enabled"] is True
     assert result["readback_verified"] is True
     assert result["per_frame_readback_verified_frames"] == 0
@@ -1179,11 +1179,19 @@ def test_external_sync_output_rejects_wrong_output_delay_readback() -> None:
         mode=SimpleNamespace(name="STANDALONE"),
         trigger_out_enable=False,
         trigger_out_delay_us=7,
+        color_delay_us=0,
+        depth_delay_us=0,
+        trigger_to_image_delay_us=0,
+        frames_per_trigger=2,
     )
     applied = SimpleNamespace(
         mode=primary_mode,
         trigger_out_enable=True,
         trigger_out_delay_us=7,
+        color_delay_us=17_000,
+        depth_delay_us=17_000,
+        trigger_to_image_delay_us=17_000,
+        frames_per_trigger=1,
     )
     reads = iter((requested, applied))
     device = SimpleNamespace(
@@ -1200,19 +1208,71 @@ def test_external_sync_output_rejects_wrong_output_delay_readback() -> None:
         )
 
 
+@pytest.mark.parametrize("field", ["color_delay_us", "depth_delay_us"])
+def test_external_sync_output_rejects_wrong_rgbd_image_delay_readback(
+    field: str,
+) -> None:
+    primary_mode = SimpleNamespace(name="PRIMARY")
+    requested = SimpleNamespace(
+        mode=SimpleNamespace(name="STANDALONE"),
+        trigger_out_enable=False,
+        trigger_out_delay_us=0,
+        color_delay_us=0,
+        depth_delay_us=0,
+        trigger_to_image_delay_us=0,
+        frames_per_trigger=2,
+    )
+    applied = SimpleNamespace(
+        mode=primary_mode,
+        trigger_out_enable=True,
+        trigger_out_delay_us=17_000,
+        color_delay_us=17_000,
+        depth_delay_us=17_000,
+        trigger_to_image_delay_us=17_000,
+        frames_per_trigger=1,
+    )
+    setattr(applied, field, 16_000)
+    reads = iter((requested, applied))
+    device = SimpleNamespace(
+        get_multi_device_sync_config=lambda: next(reads),
+        set_multi_device_sync_config=lambda _value: None,
+    )
+    sdk = SimpleNamespace(
+        OBMultiDeviceSyncMode=SimpleNamespace(PRIMARY=primary_mode)
+    )
+
+    with pytest.raises(RuntimeError, match=field):
+        capture._configure_external_sync_output(
+            device,
+            sdk,
+            {
+                "external_sync_output": True,
+                "fps": 30,
+                "trigger_out_delay_us": 17_000,
+                "trigger_to_image_delay_us": 17_000,
+            },
+        )
+
+
 def test_external_sync_output_rejects_wrong_image_delay_readback() -> None:
     primary_mode = SimpleNamespace(name="PRIMARY")
     requested = SimpleNamespace(
         mode=SimpleNamespace(name="STANDALONE"),
         trigger_out_enable=False,
         trigger_out_delay_us=0,
+        color_delay_us=0,
+        depth_delay_us=0,
         trigger_to_image_delay_us=0,
+        frames_per_trigger=1,
     )
     applied = SimpleNamespace(
         mode=primary_mode,
         trigger_out_enable=True,
         trigger_out_delay_us=17_000,
+        color_delay_us=17_000,
+        depth_delay_us=17_000,
         trigger_to_image_delay_us=16_000,
+        frames_per_trigger=1,
     )
     reads = iter((requested, applied))
     device = SimpleNamespace(

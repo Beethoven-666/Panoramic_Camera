@@ -132,9 +132,10 @@ data/captures/run_YYYYMMDD_HHMMSS/
 `g305-video-panorama`。默认始终启用相机自动曝光（快门时间随 AE 自动调节）、自动增益和自动白平衡；不会在预热后锁定控制值。需要固定视频曝光时使用
 `--video-exposure-us 800`（不能与 `--photo-mode` 同用）；此时仍保持自动增益和自动白平衡。
 
-默认视频同步配置将 `trigger_to_image_delay_us`（触发到图像采集延时）设为 `8000 µs`，
-将 `trigger_out_delay_us` 设为 `7000 µs`。两项均可用上面的命令行参数覆盖。程序在启动写入后立即回读，并在每个完整对齐
-RGB-D 帧进入写盘前再次回读完整同步配置。任一帧读到的模式、Trigger Out gate、图像延时
+默认视频同步配置将图像延时设为 `8000 µs`，并像 `D:\Flash` 一样同时写入
+`depth_delay_us`、`color_delay_us` 和 `trigger_to_image_delay_us`；`trigger_out_delay_us`
+独立设为 `7000 µs`。两项均可用上面的命令行参数覆盖。程序在启动写入后立即逐项回读，并在每个完整对齐
+RGB-D 帧进入写盘前再次回读完整同步配置。任一帧读到的模式、Trigger Out gate、任一图像延时字段
 或 Trigger Out 延时与配置不符，采集会立即失败，最终 `manifest.json` 不会标记为干净关闭。
 成功会话在 `external_sync_output.per_frame_readback_verified_frames` 记录逐帧回读通过数。
 
@@ -325,7 +326,7 @@ cd $G305Output
 - 彩色格式按 `RGB → BGR → YUYV → MJPG` 自动选择，深度固定为 `Y16`，无需且不允许用户通过 CLI 设定；精确帧率使用 `--fps`，未指定时才自动选择共同支持且能容纳两种延时的最高 FPS；
 - 不允许偷偷降低采集分辨率；
 - 每个正式帧只调用一次 `device.trigger_capture()`；
-- 每帧返回后都重新读取同步配置，确认图像延时和 Trigger Out 延时仍为设定值；
+- 每帧返回后都重新读取同步配置，确认三个图像延时字段和 Trigger Out 延时仍为设定值；
 - 上一帧必须完整收取、COLOR_STREAM 对齐并写盘成功后，才能触发下一帧；
 - 正式失败路径不重触发。
 
@@ -631,7 +632,9 @@ failure.json
 
 正式默认配置位于 [configs/demo.yaml](configs/demo.yaml)。普通用户通常不需要传 `--config`。
 
-同步延时使用 SDK 的微秒字段配置。照片和视频都可由命令行覆盖；未指定时图像延时默认
+同步延时使用 SDK 的微秒字段配置。`--image-delay-us` 同时设置 `depth_delay_us`、
+`color_delay_us` 与 `trigger_to_image_delay_us`，`--trigger-out-delay-us` 独立设置
+`trigger_out_delay_us`。照片和视频都可由命令行覆盖；未指定时图像延时默认
 `8000 µs`、Trigger Out 延时默认 `7000 µs`。两项都必须是非负整数，并且所选 FPS 的帧周期
 必须能容纳较大的延时和安全 guard：
 
