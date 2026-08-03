@@ -76,7 +76,22 @@ Gemini 305 采集需要 `pyorbbecsdk2`。正式全景还需要：
   --output 'D:\central_strip_Panoramic_Camera\data\captures'
 ```
 
-采集时保持相机连续、单向、近似水平侧移。照片模式不显示视频，不添加人为帧率限制；它会在每张 RGB-D 照片完整接收、对齐和写盘后再触发下一张。
+采集时保持相机连续、单向、近似水平侧移。照片模式不显示视频；未指定 `--fps` 时不添加人为帧率限制。它会在每张 RGB-D 照片完整接收、对齐和写盘后再触发下一张。
+
+格式、帧率和同步延时可直接覆盖。例如：
+
+```powershell
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-capture.exe' `
+  --photo-mode `
+  --width 848 --height 480 --fps 30 `
+  --color-format MJPG --depth-format Y16 `
+  --image-delay-us 8000 --trigger-out-delay-us 7000 `
+  --max-frames 120 `
+  --output 'D:\central_strip_Panoramic_Camera\data\captures'
+```
+
+省略 `--fps` 时照片模式选择满足分辨率、格式和同步延时条件的最高共同 FPS；指定后则要求
+SDK 存在完全一致的彩色与深度 profile，不会自动换分辨率、格式或帧率。
 
 成功后会得到类似目录：
 
@@ -107,6 +122,9 @@ data/captures/run_YYYYMMDD_HHMMSS/
 & 'D:\Panoramic_Camera\.conda\Scripts\g305-capture.exe' `
   --duration 3 `
   --video-exposure-us 600 `
+  --width 1280 --height 800 --fps 30 `
+  --color-format RGB --depth-format Y16 `
+  --image-delay-us 8000 --trigger-out-delay-us 7000 `
   --output 'D:\central_strip_Panoramic_Camera\data\captures\video'
 ```
 
@@ -114,8 +132,8 @@ data/captures/run_YYYYMMDD_HHMMSS/
 `g305-video-panorama`。默认始终启用相机自动曝光（快门时间随 AE 自动调节）、自动增益和自动白平衡；不会在预热后锁定控制值。需要固定视频曝光时使用
 `--video-exposure-us 800`（不能与 `--photo-mode` 同用）；此时仍保持自动增益和自动白平衡。
 
-默认视频同步配置将 `trigger_to_image_delay_us`（触发到图像采集延时）和
-`trigger_out_delay_us` 都设为 `17000 µs`。程序在启动写入后立即回读，并在每个完整对齐
+默认视频同步配置将 `trigger_to_image_delay_us`（触发到图像采集延时）设为 `8000 µs`，
+将 `trigger_out_delay_us` 设为 `7000 µs`。两项均可用上面的命令行参数覆盖。程序在启动写入后立即回读，并在每个完整对齐
 RGB-D 帧进入写盘前再次回读完整同步配置。任一帧读到的模式、Trigger Out gate、图像延时
 或 Trigger Out 延时与配置不符，采集会立即失败，最终 `manifest.json` 不会标记为干净关闭。
 成功会话在 `external_sync_output.per_frame_readback_verified_frames` 记录逐帧回读通过数。
@@ -125,7 +143,51 @@ RGB-D 帧进入写盘前再次回读完整同步配置。任一帧读到的模�
 `formal_stitch_allowed=false` 以拒绝照片流程。v2 会话在安全关闭且没有写盘错误时还会写入
 `product_eligibility={"photo_panorama": false, "video_panorama": true}`。
 
-### 2.2 生成独立视频全景与三维附件
+### 2.2 Gemini 305 SDK 格式、分辨率与帧率
+
+下面是 2026-08-03 从当前连接的 Orbbec Gemini 305 通过 SDK profile API 实时去重得到的完整
+列表：固件 `1.0.70`、硬件 `0.1`、USB 3.2、Orbbec SDK `2.8.6`、Python wrapper
+`2.1.1`。SDK 通过 `get_video_stream_profile(width, height, format, fps)` 做精确选择，参见
+[Orbbec Stream Profile 官方文档](https://orbbec.github.io/pyorbbecsdk/source/6_API_Reference/stream_profile.html)。
+不同固件若返回不同列表，以运行时 SDK 为准；选择失败时程序会把设备实际 profiles 写入错误信息。
+
+彩色流的全部 profile（相同 FPS 集合合并展示）：
+
+| 分辨率 | 彩色格式 | FPS |
+| --- | --- | --- |
+| `640×480` | `BGR`、`BGRA`、`MJPG`、`RGB`、`RGBA`、`Y16`、`Y8`、`YUYV` | `5, 10, 15, 20, 30, 60` |
+| `848×480` | `BGR`、`BGRA`、`MJPG`、`RGB`、`RGBA`、`Y16`、`Y8`、`YUYV` | `5, 10, 15, 20, 30, 60` |
+| `848×530` | `BGR`、`BGRA`、`MJPG`、`RGB`、`RGBA`、`Y16`、`Y8`、`YUYV` | `5, 10, 15, 20, 30, 60` |
+| `1280×720` | `BGR`、`BGRA`、`MJPG` | `5, 10, 15, 20, 30, 60` |
+| `1280×720` | `RGB`、`RGBA`、`Y16`、`Y8`、`YUYV` | `5, 10, 15, 20, 30` |
+| `1280×800` | `BGR`、`BGRA`、`MJPG` | `5, 10, 15, 20, 30, 60` |
+| `1280×800` | `RGB`、`RGBA`、`Y16`、`Y8`、`YUYV` | `5, 10, 15, 20, 30` |
+
+深度流的全部 profile；当前设备枚举到的深度格式全部为 `Y16`：
+
+| 分辨率 | 深度格式 | FPS |
+| --- | --- | --- |
+| `320×180` | `Y16` | `5, 10, 15, 20, 30` |
+| `320×200` | `Y16` | `5, 10, 15, 20, 30` |
+| `320×240` | `Y16` | `5, 10, 15, 20, 30, 60` |
+| `424×240` | `Y16` | `5, 10, 15, 20, 30, 60` |
+| `424×266` | `Y16` | `5, 10, 15, 20, 30` |
+| `640×360` | `Y16` | `5, 10, 15, 20, 30` |
+| `640×400` | `Y16` | `5, 10, 15, 20, 30` |
+| `640×480` | `Y16` | `5, 10, 15, 20, 30, 60` |
+| `848×480` | `Y16` | `5, 10, 15, 20, 30, 60` |
+| `848×530` | `Y16` | `5, 10, 15, 20, 30` |
+| `1280×720` | `Y16` | `5, 10, 15, 20, 30` |
+| `1280×800` | `Y16` | `5, 10, 15, 20, 30` |
+
+本程序要求彩色和深度使用相同分辨率与 FPS，因此 RGB-D 可选共同分辨率为 `640×480`、
+`848×480`、`848×530`、`1280×720`、`1280×800`。其中 `640×480` 和 `848×480` 可达
+`60 FPS`；其余共同分辨率的深度流最高为 `30 FPS`。`--color-format` 可选上述八种彩色
+格式，`--depth-format` 当前只能选 `Y16`，`--fps` 可选 `5/10/15/20/30/60`，但最终组合
+必须在两张表中同时存在。所有彩色源格式都会转换为 BGR 后保存为会话 JPEG；CLI 选择的是
+相机输入 stream 格式，不会改变会话文件扩展名。
+
+### 2.3 生成独立视频全景与三维附件
 
 视频入口会选择最长连续单向扫描段，运行完整段的真实 ORB-SLAM3 RGB-D 轨迹，对全部实际
 渲染源执行相邻 Open3D RGB-D 审计，然后复用统一 calibrated central-strip renderer。它不会
@@ -257,10 +319,10 @@ cd $G305Output
 - 使用 `SOFTWARE_TRIGGERING`；
 - `frames_per_trigger=1`；
 - `Trigger Out Enable=true`；
-- 触发到图像采集延时 `trigger_to_image_delay_us=17000 µs`；
-- Trigger Out 延时固定为 `17000 µs`；
+- 触发到图像采集延时默认 `trigger_to_image_delay_us=8000 µs`，可由 `--image-delay-us` 覆盖；
+- Trigger Out 延时默认 `7000 µs`，可由 `--trigger-out-delay-us` 覆盖；
 - 彩色曝光不超过 `800 µs`；
-- 在指定分辨率下自动选择彩色与 Y16 深度共同支持、且能同时容纳图像延时和 Trigger Out 延时的最高 FPS；
+- 彩色格式使用 `--color-format`、深度格式使用 `--depth-format`、精确帧率使用 `--fps`；未指定 FPS 时才自动选择共同支持且能容纳两种延时的最高 FPS；
 - 不允许偷偷降低采集分辨率；
 - 每个正式帧只调用一次 `device.trigger_capture()`；
 - 每帧返回后都重新读取同步配置，确认图像延时和 Trigger Out 延时仍为设定值；
@@ -569,21 +631,24 @@ failure.json
 
 正式默认配置位于 [configs/demo.yaml](configs/demo.yaml)。普通用户通常不需要传 `--config`。
 
-同步延时使用 SDK 的微秒字段配置。照片模式是正式硬约束，两项都必须保持 `17000`；视频模式
-也默认使用相同值，并允许在站点配置中显式设定，但两项都必须是非负整数且小于当前帧周期：
+同步延时使用 SDK 的微秒字段配置。照片和视频都可由命令行覆盖；未指定时图像延时默认
+`8000 µs`、Trigger Out 延时默认 `7000 µs`。两项都必须是非负整数，并且所选 FPS 的帧周期
+必须能容纳较大的延时和安全 guard：
 
 ```yaml
 capture:
   video_mode:
-    trigger_out_delay_us: 17000
-    trigger_to_image_delay_us: 17000
+    trigger_out_delay_us: 7000
+    trigger_to_image_delay_us: 8000
   photo_mode:
-    trigger_out_delay_us: 17000
-    trigger_to_image_delay_us: 17000
+    trigger_out_delay_us: 7000
+    trigger_to_image_delay_us: 8000
 ```
 
 `trigger_to_image_delay_us` 是触发到图像采集的延时，`trigger_out_delay_us` 是触发到外部
-Trigger Out 边沿的延时。它们分别写入并分别回读；默认设为相同值不代表程序用一个字段冒充另一个。
+Trigger Out 边沿的延时。它们分别写入并分别回读，不会用一个字段冒充另一个。命令行优先级高于
+配置文件，完整参数为 `--image-delay-us`（别名 `--trigger-to-image-delay-us`）和
+`--trigger-out-delay-us`。
 
 重要固定值：
 
@@ -592,8 +657,8 @@ Trigger Out 边沿的延时。它们分别写入并分别回读；默认设为�
 | 正式主采集 | 照片模式驱动的低帧率同步 RGB-D 序列 |
 | 照片曝光上限 | `800 µs` |
 | 输入曝光绝对上限 | `1200 µs` |
-| 触发到图像采集延时 | 照片/视频默认 `17000 µs`，逐帧回读确认 |
-| Trigger Out 延时 | `17000 µs` |
+| 触发到图像采集延时 | 照片/视频默认 `8000 µs`，可用 CLI 覆盖并逐帧回读确认 |
+| Trigger Out 延时 | 照片/视频默认 `7000 µs`，可用 CLI 覆盖并逐帧回读确认 |
 | 照片预热触发 | 最多 8 次，gate-off |
 | 全局 pose | 完整 ORB-SLAM3 RGB-D |
 | 相邻边 | Open3D Tensor CUDA RGB-D |
@@ -608,7 +673,8 @@ Trigger Out 边沿的延时。它们分别写入并分别回读；默认设为�
 | `local_apap_flow` | 默认关闭 |
 | TSDF | 必需、只读、不得反馈 RGB 全景 |
 
-正式配置只能等于或收紧安全默认值。需要放宽质量阈值的实验应进入隔离诊断，不应修改正式发布语义。
+采集格式、FPS 和同步延时允许使用上述 CLI 显式选择，但必须通过 SDK 精确 profile、帧周期和逐帧
+回读检查。算法质量阈值仍只能等于或收紧安全默认值；需要放宽的实验应进入隔离诊断。
 
 ## 测试
 

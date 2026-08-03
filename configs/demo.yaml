@@ -3,6 +3,7 @@ capture:
   height: 800
   fps: 30
   color_formats: [RGB, BGR, YUYV, MJPG]
+  depth_format: Y16
   align: software
   frame_sync: true
   # PRIMARY mode emits one external synchronization pulse per RGB-D frame.
@@ -24,12 +25,12 @@ capture:
   # capped at 800 us for the moving-camera safety contract.
   video_mode:
     enabled: true
-    # Keep image capture and the external Trigger Out edge at the same default
-    # offset. Both applied values are read back for every accepted frame.
-    trigger_out_delay_us: 17000
+    # Both applied values are read back for every accepted frame. CLI flags
+    # can override them for a capture without editing this file.
+    trigger_out_delay_us: 7000
     # Delay from the synchronization trigger to image capture. The applied
     # SDK value is read back at startup and again for every accepted frame.
-    trigger_to_image_delay_us: 17000
+    trigger_to_image_delay_us: 8000
     color_auto_exposure: true
     color_exposure_us: null
     # Moving-camera shutter cap, enforced while auto exposure remains active.
@@ -45,16 +46,17 @@ capture:
     post_lock_verified_frames: 2
 
   # No-preview, one-trigger-per-frame RGB-D photo sequence used by
-  # g305-capture --photo-mode. It runs without artificial throttling and
-  # selects the highest common color/depth FPS at the configured resolution.
+  # g305-capture --photo-mode. Without --fps it runs without artificial
+  # throttling and selects the highest common color/depth FPS at the selected
+  # resolution and formats.
   photo_mode:
     enabled: true
     fastest_common_fps: true
     exposure_us: 800
-    # Delay from the software trigger to image capture. It defaults to the
-    # same offset as Trigger Out and is read back for every formal frame.
-    trigger_to_image_delay_us: 17000
-    trigger_out_delay_us: 17000
+    # Both delays can be overridden from the CLI and are read back for every
+    # formal frame.
+    trigger_to_image_delay_us: 8000
+    trigger_out_delay_us: 7000
     capture_timeout_ms: 8000
     # Gemini firmware may consume early gate-off triggers while warming the
     # RGB-D pipeline. All attempts remain physically gated, and the gate stays

@@ -22,6 +22,20 @@ from .config import load_config
 
 COLOR_EXPOSURE_UNIT_US = 100
 MAX_FORMAL_COLOR_EXPOSURE_US = 800
+DEFAULT_TRIGGER_TO_IMAGE_DELAY_US = 8_000
+DEFAULT_TRIGGER_OUT_DELAY_US = 7_000
+GEMINI305_COLOR_FORMATS = (
+    "BGR",
+    "BGRA",
+    "MJPG",
+    "RGB",
+    "RGBA",
+    "Y16",
+    "Y8",
+    "YUYV",
+)
+GEMINI305_DEPTH_FORMATS = ("Y16",)
+GEMINI305_FRAME_RATES = (5, 10, 15, 20, 30, 60)
 
 
 CSV_FIELDS = [
@@ -184,25 +198,38 @@ def _frame_to_bgr(frame: Any, sdk: Any) -> np.ndarray:
     width = frame.get_width()
     height = frame.get_height()
     fmt = frame.get_format()
+    format_name = getattr(fmt, "name", str(fmt)).upper()
     data = np.frombuffer(frame.get_data(), dtype=np.uint8)
-    if fmt == sdk.OBFormat.RGB:
+    if format_name == "RGB":
         return cv2.cvtColor(data.reshape(height, width, 3), cv2.COLOR_RGB2BGR)
-    if fmt == sdk.OBFormat.BGR:
+    if format_name == "BGR":
         return data.reshape(height, width, 3).copy()
-    if fmt == sdk.OBFormat.YUYV:
+    if format_name == "RGBA":
+        return cv2.cvtColor(data.reshape(height, width, 4), cv2.COLOR_RGBA2BGR)
+    if format_name == "BGRA":
+        return cv2.cvtColor(data.reshape(height, width, 4), cv2.COLOR_BGRA2BGR)
+    if format_name == "Y8":
+        return cv2.cvtColor(data.reshape(height, width), cv2.COLOR_GRAY2BGR)
+    if format_name == "Y16":
+        gray16 = np.frombuffer(frame.get_data(), dtype=np.uint16).reshape(
+            height, width
+        )
+        gray8 = np.right_shift(gray16, 8).astype(np.uint8)
+        return cv2.cvtColor(gray8, cv2.COLOR_GRAY2BGR)
+    if format_name == "YUYV":
         return cv2.cvtColor(data.reshape(height, width, 2), cv2.COLOR_YUV2BGR_YUY2)
-    if fmt == sdk.OBFormat.UYVY:
+    if format_name == "UYVY":
         return cv2.cvtColor(data.reshape(height, width, 2), cv2.COLOR_YUV2BGR_UYVY)
-    if fmt == sdk.OBFormat.MJPG:
+    if format_name == "MJPG":
         image = cv2.imdecode(data, cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError("Could not decode MJPG color frame")
         return image
-    if fmt == sdk.OBFormat.NV12:
+    if format_name == "NV12":
         return cv2.cvtColor(data.reshape(height * 3 // 2, width), cv2.COLOR_YUV2BGR_NV12)
-    if fmt == sdk.OBFormat.NV21:
+    if format_name == "NV21":
         return cv2.cvtColor(data.reshape(height * 3 // 2, width), cv2.COLOR_YUV2BGR_NV21)
-    if fmt == sdk.OBFormat.I420:
+    if format_name == "I420":
         return cv2.cvtColor(data.reshape(height * 3 // 2, width), cv2.COLOR_YUV2BGR_I420)
     raise ValueError(f"Unsupported color format: {fmt}")
 
@@ -1161,8 +1188,12 @@ def _configure_external_sync_output(
     frame_rate_hz = int(options["fps"])
     if frame_rate_hz <= 0:
         raise ValueError("fps must be positive when external_sync_output is enabled")
-    image_delay_us = options.get("trigger_to_image_delay_us", 0)
-    trigger_out_delay_us = options.get("trigger_out_delay_us", 0)
+    image_delay_us = options.get(
+        "trigger_to_image_delay_us", DEFAULT_TRIGGER_TO_IMAGE_DELAY_US
+    )
+    trigger_out_delay_us = options.get(
+        "trigger_out_delay_us", DEFAULT_TRIGGER_OUT_DELAY_US
+    )
     if (
         isinstance(image_delay_us, bool)
         or not isinstance(image_delay_us, int)
@@ -1221,8 +1252,12 @@ def _verify_external_sync_output(
     enabled = bool(options.get("external_sync_output", True))
     if not enabled:
         return {"enabled": False}
-    image_delay_us = options.get("trigger_to_image_delay_us", 0)
-    trigger_out_delay_us = options.get("trigger_out_delay_us", 0)
+    image_delay_us = options.get(
+        "trigger_to_image_delay_us", DEFAULT_TRIGGER_TO_IMAGE_DELAY_US
+    )
+    trigger_out_delay_us = options.get(
+        "trigger_out_delay_us", DEFAULT_TRIGGER_OUT_DELAY_US
+    )
     if (
         isinstance(image_delay_us, bool)
         or not isinstance(image_delay_us, int)
@@ -1424,6 +1459,23 @@ def run_capture(args: argparse.Namespace) -> Path:
         value = getattr(args, name, None)
         if value is not None:
             options[name] = value
+    color_format = getattr(args, "color_format", None)
+    if color_format is not None:
+        options["color_formats"] = [str(color_format).upper()]
+    depth_format = getattr(args, "depth_format", None)
+    if depth_format is not None:
+        options["depth_format"] = str(depth_format).upper()
+    for argument, option in (
+        ("trigger_to_image_delay_us", "trigger_to_image_delay_us"),
+        ("trigger_out_delay_us", "trigger_out_delay_us"),
+    ):
+        value = getattr(args, argument, None)
+        if value is not None:
+            options[option] = value
+    for name in ("trigger_out_delay_us", "trigger_to_image_delay_us"):
+        value = options.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
     _apply_color_exposure_mode(options, args)
     if args.gain is not None:
         options["color_gain"] = args.gain
@@ -1530,6 +1582,13 @@ def run_capture(args: argparse.Namespace) -> Path:
         color_formats = [getattr(sdk.OBFormat, name) for name in options["color_formats"]]
     except AttributeError as exc:
         raise ValueError(f"Unknown Orbbec color format in {options['color_formats']!r}") from exc
+    depth_format_name = str(options.get("depth_format", "Y16")).upper()
+    try:
+        depth_format = getattr(sdk.OBFormat, depth_format_name)
+    except AttributeError as exc:
+        raise ValueError(
+            f"Unknown Orbbec depth format {depth_format_name!r}"
+        ) from exc
     color_profile = _choose_profile(
         color_list, options["width"], options["height"], options["fps"], color_formats, "color"
     )
@@ -1538,7 +1597,7 @@ def run_capture(args: argparse.Namespace) -> Path:
         options["width"],
         options["height"],
         options["fps"],
-        [sdk.OBFormat.Y16],
+        [depth_format],
         "depth",
     )
     stream_config.enable_stream(color_profile)
@@ -1856,13 +1915,51 @@ def build_parser() -> argparse.ArgumentParser:
         "--photo-mode",
         action="store_true",
         help=(
-            "Use no-preview SOFTWARE_TRIGGERING as a fastest-unthrottled "
-            "low-frame-rate RGB-D photo sequence"
+            "Use no-preview SOFTWARE_TRIGGERING for an RGB-D photo sequence; "
+            "--fps may select an exact supported rate"
         ),
     )
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
-    parser.add_argument("--fps", type=int)
+    parser.add_argument(
+        "--fps",
+        type=int,
+        choices=GEMINI305_FRAME_RATES,
+        help=(
+            "Exact RGB-D frame rate; photo mode otherwise chooses the fastest "
+            "compatible rate, video mode uses configuration"
+        ),
+    )
+    parser.add_argument(
+        "--color-format",
+        type=str.upper,
+        choices=GEMINI305_COLOR_FORMATS,
+        help="Exact SDK color stream format",
+    )
+    parser.add_argument(
+        "--depth-format",
+        type=str.upper,
+        choices=GEMINI305_DEPTH_FORMATS,
+        help="Exact SDK depth stream format",
+    )
+    parser.add_argument(
+        "--image-delay-us",
+        "--trigger-to-image-delay-us",
+        dest="trigger_to_image_delay_us",
+        type=int,
+        help=(
+            "Trigger-to-image delay in microseconds; defaults to "
+            f"{DEFAULT_TRIGGER_TO_IMAGE_DELAY_US}"
+        ),
+    )
+    parser.add_argument(
+        "--trigger-out-delay-us",
+        type=int,
+        help=(
+            "Trigger Out delay in microseconds; defaults to "
+            f"{DEFAULT_TRIGGER_OUT_DELAY_US}"
+        ),
+    )
     parser.add_argument("--warmup-frames", type=int)
     parser.add_argument("--queue-size", type=int)
     exposure = parser.add_mutually_exclusive_group()

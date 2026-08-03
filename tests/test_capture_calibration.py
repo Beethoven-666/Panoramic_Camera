@@ -156,6 +156,51 @@ def test_calibration_flattens_sdk_matrix_arrays() -> None:
     assert result["depth_to_color"]["translation_mm"] == [1.0, 2.0, 3.0]
 
 
+@pytest.mark.parametrize(
+    ("format_name", "array"),
+    [
+        ("BGR", np.zeros((2, 2, 3), dtype=np.uint8)),
+        ("BGRA", np.zeros((2, 2, 4), dtype=np.uint8)),
+        ("RGB", np.zeros((2, 2, 3), dtype=np.uint8)),
+        ("RGBA", np.zeros((2, 2, 4), dtype=np.uint8)),
+        ("Y8", np.zeros((2, 2), dtype=np.uint8)),
+        ("Y16", np.full((2, 2), 32_768, dtype=np.uint16)),
+        ("YUYV", np.full((2, 2, 2), 128, dtype=np.uint8)),
+    ],
+)
+def test_frame_to_bgr_supports_all_raw_gemini305_color_formats(
+    format_name: str, array: np.ndarray
+) -> None:
+    frame = SimpleNamespace(
+        get_width=lambda: 2,
+        get_height=lambda: 2,
+        get_format=lambda: format_name,
+        get_data=array.tobytes,
+    )
+
+    image = capture._frame_to_bgr(frame, object())
+
+    assert image.shape == (2, 2, 3)
+    assert image.dtype == np.uint8
+
+
+def test_frame_to_bgr_supports_gemini305_mjpg() -> None:
+    source = np.full((2, 2, 3), 64, dtype=np.uint8)
+    ok, encoded = capture.cv2.imencode(".jpg", source)
+    assert ok
+    frame = SimpleNamespace(
+        get_width=lambda: 2,
+        get_height=lambda: 2,
+        get_format=lambda: "MJPG",
+        get_data=encoded.tobytes,
+    )
+
+    image = capture._frame_to_bgr(frame, object())
+
+    assert image.shape == (2, 2, 3)
+    assert image.dtype == np.uint8
+
+
 def test_post_warmup_color_control_lock_freezes_converged_controls() -> None:
     device = _ColorControlDevice()
     sdk = _color_control_sdk()
@@ -831,6 +876,39 @@ def test_default_cli_keeps_configured_auto_exposure_mode() -> None:
     assert args.exposure_us is None
 
 
+def test_capture_cli_accepts_profile_and_sync_timing_overrides() -> None:
+    args = capture.build_parser().parse_args(
+        [
+            "--photo-mode",
+            "--fps",
+            "20",
+            "--color-format",
+            "rgba",
+            "--depth-format",
+            "y16",
+            "--image-delay-us",
+            "6000",
+            "--trigger-out-delay-us",
+            "5000",
+        ]
+    )
+
+    assert args.fps == 20
+    assert args.color_format == "RGBA"
+    assert args.depth_format == "Y16"
+    assert args.trigger_to_image_delay_us == 6_000
+    assert args.trigger_out_delay_us == 5_000
+
+
+def test_capture_cli_rejects_unknown_profile_values() -> None:
+    with pytest.raises(SystemExit):
+        capture.build_parser().parse_args(["--color-format", "H264"])
+    with pytest.raises(SystemExit):
+        capture.build_parser().parse_args(["--depth-format", "Z16"])
+    with pytest.raises(SystemExit):
+        capture.build_parser().parse_args(["--fps", "25"])
+
+
 def test_diagnostic_unrestricted_cli_resolves_explicit_capture_mode() -> None:
     options = capture._video_capture_options(load_config()["capture"])
     args = capture.build_parser().parse_args(
@@ -914,6 +992,54 @@ def test_diagnostic_capture_manifest_is_marked_before_camera_discovery(
     assert manifest["capture_options"]["diagnostic_unrestricted_auto_exposure"] is False
 
 
+def test_video_cli_profile_and_delay_overrides_reach_capture_options(
+    tmp_path, monkeypatch
+) -> None:
+    output = tmp_path / "captures"
+    device_list = SimpleNamespace(get_count=lambda: 0)
+    context = SimpleNamespace(query_devices=lambda: device_list)
+    monkeypatch.setitem(
+        sys.modules,
+        "pyorbbecsdk",
+        SimpleNamespace(Context=lambda: context),
+    )
+    args = capture.build_parser().parse_args(
+        [
+            "--output",
+            str(output),
+            "--width",
+            "848",
+            "--height",
+            "480",
+            "--fps",
+            "20",
+            "--color-format",
+            "bgra",
+            "--depth-format",
+            "y16",
+            "--image-delay-us",
+            "6000",
+            "--trigger-out-delay-us",
+            "5000",
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="No Orbbec camera"):
+        capture.run_capture(args)
+
+    session = next(output.glob("run_*"))
+    options = json.loads(
+        (session / "manifest.json").read_text(encoding="utf-8")
+    )["capture_options"]
+    assert options["width"] == 848
+    assert options["height"] == 480
+    assert options["fps"] == 20
+    assert options["color_formats"] == ["BGRA"]
+    assert options["depth_format"] == "Y16"
+    assert options["trigger_to_image_delay_us"] == 6_000
+    assert options["trigger_out_delay_us"] == 5_000
+
+
 def test_invalid_manual_exposure_fails_before_session_creation(tmp_path) -> None:
     output = tmp_path / "captures"
     args = capture.build_parser().parse_args(
@@ -971,6 +1097,35 @@ def test_external_sync_output_uses_primary_mode_and_capture_fps() -> None:
     assert result["mode"] == "PRIMARY"
     assert result["expected_frequency_hz"] == 30
     assert result["frequency_source"] == "capture_fps"
+
+
+def test_external_sync_output_uses_new_default_delays_when_undefined() -> None:
+    primary_mode = SimpleNamespace(name="PRIMARY")
+    config = SimpleNamespace(
+        mode=SimpleNamespace(name="STANDALONE"),
+        trigger_out_enable=False,
+        color_delay_us=0,
+        depth_delay_us=0,
+        trigger_to_image_delay_us=0,
+        trigger_out_delay_us=0,
+        frames_per_trigger=1,
+    )
+    device = SimpleNamespace(
+        get_multi_device_sync_config=lambda: config,
+        set_multi_device_sync_config=lambda _value: None,
+    )
+    sdk = SimpleNamespace(
+        OBMultiDeviceSyncMode=SimpleNamespace(PRIMARY=primary_mode)
+    )
+
+    result = capture._configure_external_sync_output(
+        device, sdk, {"external_sync_output": True, "fps": 30}
+    )
+
+    assert config.trigger_to_image_delay_us == 8_000
+    assert config.trigger_out_delay_us == 7_000
+    assert result["trigger_to_image_delay_us"] == 8_000
+    assert result["trigger_out_delay_us"] == 7_000
 
 
 def test_external_sync_output_rejects_unverified_readback() -> None:

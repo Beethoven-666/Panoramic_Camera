@@ -118,8 +118,8 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 
 照片模式必须保持以下硬契约：
 
-- 无预览，使用 `SOFTWARE_TRIGGERING`、`frames_per_trigger=1`、`Trigger Out Enable=true`、固定 `17000 µs` 的 `trigger_to_image_delay_us` 和固定 `17000 µs` Trigger Out 延时。
-- 在配置分辨率下选择彩色与 Y16 深度共同支持且能容纳图像延时和 Trigger Out 延时的最高 FPS；不允许偷偷降分辨率。
+- 无预览，使用 `SOFTWARE_TRIGGERING`、`frames_per_trigger=1` 和 `Trigger Out Enable=true`。`trigger_to_image_delay_us` 默认 `8000 µs`，Trigger Out 延时默认 `7000 µs`；二者可由命令行覆盖，但必须为非负整数并能被所选帧周期安全容纳。
+- 彩色格式、深度格式和 FPS 均可由命令行精确选择；未指定 FPS 时，在配置分辨率与格式候选中选择彩色/深度共同支持且能容纳两种延时的最高 FPS。不得回退分辨率、格式或帧率；SDK 没有精确共同 profile 时必须失败并报告实际 profile。
 - 准备阶段先关闭并回读物理输出 gate，最多执行 8 次有界内部预热触发。预热期间 gate 始终关闭。
 - 获得完整预热 RGB-D 后，gate 继续关闭，直到最后一次内部触发的完整迟到响应窗口结束并确认队列为空。
 - 每个正式序列帧只调用一次 `device.trigger_capture()`；每帧返回后必须重新读取完整同步配置，确认 `trigger_to_image_delay_us` 与 Trigger Out 延时仍为设定值；上一帧必须完整收取、COLOR_STREAM 对齐、写盘并确认成功后才能触发下一帧。失败路径不得重触发。
@@ -131,9 +131,10 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 `formal_stitch_allowed=false`。可用 `--video-exposure-us` 采集固定曝光视频，写入
 `continuous_rgbd_video_fixed_exposure`；二者都不能用作 `g305-panorama` 输入。安全关闭且
 无写盘错误的 v2 视频会话会写入仅供视频产品使用的 `product_eligibility`，可传给
-`g305-video-panorama`；RGB-only 截图仍不能替代 RGB-D 会话。视频默认将
-`trigger_to_image_delay_us` 与 `trigger_out_delay_us` 都设为 `17000 µs`，启动时和每个完整
-对齐 RGB-D 帧写盘前都必须回读确认；任一帧回读不符都使会话失败。
+`g305-video-panorama`；RGB-only 截图仍不能替代 RGB-D 会话。视频的图像延时默认
+`8000 µs`，Trigger Out 延时默认 `7000 µs`，也可从命令行覆盖。视频的彩色格式、深度格式
+和 FPS 必须按命令行或默认配置做 SDK 精确 profile 匹配；启动时和每个完整对齐 RGB-D 帧
+写盘前都必须回读同步配置，任一帧回读不符都使会话失败。
 
 ## 5. 严格 RGB-D 会话
 
@@ -226,8 +227,8 @@ delivery.json
 
 | CLI | 用途 |
 | --- | --- |
-| `g305-capture --photo-mode` | 正式主采集：低帧率软件触发同步 RGB-D 照片序列 |
-| `g305-capture` | 连续 RGB-D 视频采集：默认自动控制；`--video-exposure-us` 可固定曝光；仅作为独立视频产品输入 |
+| `g305-capture --photo-mode` | 正式主采集：软件触发同步 RGB-D 照片序列；可选格式、FPS 和两种同步延时 |
+| `g305-capture` | 连续 RGB-D 视频采集：可选格式、FPS 和两种同步延时；`--video-exposure-us` 可固定曝光；仅作为独立视频产品输入 |
 | `g305-panorama` | 正式 unified RGB-D 全景 |
 | `g305-video-panorama` | 独立视频 2-D 全景；默认随后生成独立 3-D，`--defer-3d` 可延后 |
 | `g305-video-3d` | 为已发布的视频 2-D 交付独立重试 TSDF/GLB；需 `--input` 原始会话 |

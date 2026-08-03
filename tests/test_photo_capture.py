@@ -439,9 +439,10 @@ def _settings(tmp_path: Path, **overrides: object) -> PhotoCaptureSettings:
         "width": 4,
         "height": 3,
         "color_formats": ("RGB", "MJPG"),
+        "depth_format": "Y16",
         "exposure_us": 800,
-        "trigger_to_image_delay_us": 17000,
-        "trigger_out_delay_us": 17000,
+        "trigger_to_image_delay_us": 8000,
+        "trigger_out_delay_us": 7000,
         "capture_timeout_ms": 30,
         "prime_attempts": 8,
         "prime_timeout_ms": 1,
@@ -547,6 +548,10 @@ def _photo_args(tmp_path: Path, **overrides: object) -> SimpleNamespace:
         "width": None,
         "height": None,
         "fps": None,
+        "color_format": None,
+        "depth_format": None,
+        "trigger_to_image_delay_us": None,
+        "trigger_out_delay_us": None,
         "warmup_frames": None,
         "queue_size": None,
         "exposure_us": None,
@@ -614,6 +619,51 @@ def test_fastest_profile_respects_trigger_out_delay_safety() -> None:
     assert selected_depth.get_fps() == 30
 
 
+def test_photo_profile_selection_honors_exact_cli_fps_and_format() -> None:
+    sdk = _SDK()
+    color = _ProfileList(
+        [_Profile(4, 3, "RGB", 30), _Profile(4, 3, "MJPG", 60)]
+    )
+    depth = _ProfileList(
+        [_Profile(4, 3, "Y16", 30), _Profile(4, 3, "Y16", 60)]
+    )
+
+    selected_color, selected_depth = select_fastest_rgbd_profiles(
+        color,
+        depth,
+        width=4,
+        height=3,
+        color_formats=("RGB",),
+        depth_format="Y16",
+        requested_fps=30,
+        sdk=sdk,
+        trigger_to_image_delay_us=8_000,
+        trigger_out_delay_us=7_000,
+    )
+
+    assert selected_color.get_format() == "RGB"
+    assert selected_color.get_fps() == 30
+    assert selected_depth.get_fps() == 30
+
+
+def test_photo_profile_selection_rejects_missing_exact_cli_profile() -> None:
+    sdk = _SDK()
+    color = _ProfileList([_Profile(4, 3, "RGB", 60)])
+    depth = _ProfileList([_Profile(4, 3, "Y16", 60)])
+
+    with pytest.raises(PhotoCaptureError, match="No exact common"):
+        select_fastest_rgbd_profiles(
+            color,
+            depth,
+            width=4,
+            height=3,
+            color_formats=("RGB",),
+            depth_format="Y16",
+            requested_fps=30,
+            sdk=sdk,
+        )
+
+
 def test_fastest_profile_downcasts_real_sdk_base_stream_profiles() -> None:
     sdk = _SDK()
     color = _BaseProfileList([_Profile(4, 3, "RGB", 60)])
@@ -640,14 +690,14 @@ def test_prepare_primes_with_gate_off_and_applies_exact_trigger_contract(
 
     prepared = controller.prepare()
 
-    assert prepared.fps == 30
+    assert prepared.fps == 60
     assert sdk.device.trigger_count >= 1
     assert sdk.device.external_pulse_count == 0
     assert sdk.device.sync.mode == "SOFTWARE_TRIGGERING"
     assert sdk.device.sync.trigger_out_enable is True
     assert sdk.device.sync.frames_per_trigger == 1
-    assert sdk.device.sync.trigger_to_image_delay_us == 17000
-    assert sdk.device.sync.trigger_out_delay_us == 17000
+    assert sdk.device.sync.trigger_to_image_delay_us == 8000
+    assert sdk.device.sync.trigger_out_delay_us == 7000
     assert sdk.device.bool_properties["output_gate"] is True
     assert sdk.device.bool_properties["auto_capture"] is False
     manifest = json.loads(
@@ -1062,18 +1112,20 @@ def test_physical_gate_settle_wait_cannot_be_relaxed(tmp_path: Path) -> None:
         _settings(tmp_path, gate_settle_ms=249).validated()
 
 
-def test_formal_photo_sequence_requires_17000_us_trigger_out_delay(
+def test_photo_sequence_rejects_negative_trigger_out_delay(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(ValueError, match="trigger_out_delay_us=17000"):
-        _settings(tmp_path, trigger_out_delay_us=0).validated()
+    with pytest.raises(ValueError, match="trigger_out_delay_us must be non-negative"):
+        _settings(tmp_path, trigger_out_delay_us=-1).validated()
 
 
-def test_formal_photo_sequence_requires_matching_17000_us_image_delay(
+def test_photo_sequence_rejects_negative_image_delay(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(ValueError, match="trigger_to_image_delay_us=17000"):
-        _settings(tmp_path, trigger_to_image_delay_us=0).validated()
+    with pytest.raises(
+        ValueError, match="trigger_to_image_delay_us must be non-negative"
+    ):
+        _settings(tmp_path, trigger_to_image_delay_us=-1).validated()
 
 
 def test_formal_photo_sequence_locks_bounded_priming_attempts(
@@ -1154,12 +1206,37 @@ def test_photo_sequence_stops_after_q_without_an_extra_capture(
     assert controllers[0].stop_reason == "console_key"
 
 
-def test_photo_sequence_rejects_manual_fps_override(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="--fps"):
-        run_photo_sequence(
-            _photo_args(tmp_path, fps=30),
-            output=lambda _message: None,
-        )
+def test_photo_sequence_accepts_cli_profile_and_delay_overrides(
+    tmp_path: Path,
+) -> None:
+    controllers: list[_SequenceController] = []
+
+    def factory(settings: PhotoCaptureSettings) -> _SequenceController:
+        controller = _SequenceController(settings)
+        controllers.append(controller)
+        return controller
+
+    run_photo_sequence(
+        _photo_args(
+            tmp_path,
+            fps=30,
+            color_format="MJPG",
+            depth_format="Y16",
+            trigger_to_image_delay_us=6_000,
+            trigger_out_delay_us=5_000,
+            max_frames=1,
+        ),
+        controller_factory=factory,  # type: ignore[arg-type]
+        key_reader=lambda: None,
+        output=lambda _message: None,
+    )
+
+    settings = controllers[0].settings
+    assert settings.fps == 30
+    assert settings.color_formats == ("MJPG",)
+    assert settings.depth_format == "Y16"
+    assert settings.trigger_to_image_delay_us == 6_000
+    assert settings.trigger_out_delay_us == 5_000
 
 
 def test_photo_sequence_stops_on_first_frame_failure_without_retry(

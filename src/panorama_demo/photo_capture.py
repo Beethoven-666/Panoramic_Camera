@@ -13,6 +13,8 @@ from typing import Any, Callable
 
 from .capture_orbbec import (
     COLOR_EXPOSURE_UNIT_US,
+    DEFAULT_TRIGGER_OUT_DELAY_US,
+    DEFAULT_TRIGGER_TO_IMAGE_DELAY_US,
     FramePacket,
     SessionWriter,
     _calibration_to_dict,
@@ -33,7 +35,6 @@ from .config import load_config
 MAX_FORMAL_PHOTO_EXPOSURE_US = 800
 MIN_GATE_SETTLE_MS = 250
 FORMAL_PRIME_ATTEMPTS = 8
-FORMAL_TRIGGER_OUT_DELAY_US = 17_000
 TRIGGER_DELAY_GUARD_US = 2_000
 STALE_DRAIN_LIMIT = 4
 
@@ -51,10 +52,12 @@ class PhotoCaptureSettings:
     output_root: Path
     width: int = 1280
     height: int = 800
+    fps: int | None = None
     color_formats: tuple[str, ...] = ("RGB", "BGR", "YUYV", "MJPG")
+    depth_format: str = "Y16"
     exposure_us: int = MAX_FORMAL_PHOTO_EXPOSURE_US
-    trigger_to_image_delay_us: int = FORMAL_TRIGGER_OUT_DELAY_US
-    trigger_out_delay_us: int = FORMAL_TRIGGER_OUT_DELAY_US
+    trigger_to_image_delay_us: int = DEFAULT_TRIGGER_TO_IMAGE_DELAY_US
+    trigger_out_delay_us: int = DEFAULT_TRIGGER_OUT_DELAY_US
     capture_timeout_ms: int = 8_000
     prime_attempts: int = FORMAL_PRIME_ATTEMPTS
     prime_timeout_ms: int = 1_500
@@ -79,10 +82,18 @@ class PhotoCaptureSettings:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError(f"{name} must be an integer")
+        if self.fps is not None and (
+            isinstance(self.fps, bool)
+            or not isinstance(self.fps, int)
+            or self.fps <= 0
+        ):
+            raise ValueError("fps must be a positive integer when provided")
         if self.width <= 0 or self.height <= 0:
             raise ValueError("photo width and height must be positive")
         if not self.color_formats or any(not str(item).strip() for item in self.color_formats):
             raise ValueError("color_formats must contain at least one format")
+        if not isinstance(self.depth_format, str) or not self.depth_format.strip():
+            raise ValueError("depth_format must be a non-empty string")
         if self.exposure_us <= 0 or self.exposure_us % COLOR_EXPOSURE_UNIT_US:
             raise ValueError(
                 f"exposure_us must use exact {COLOR_EXPOSURE_UNIT_US} us units"
@@ -92,16 +103,10 @@ class PhotoCaptureSettings:
                 "formal photo exposure cannot exceed "
                 f"{MAX_FORMAL_PHOTO_EXPOSURE_US} us"
             )
-        if self.trigger_to_image_delay_us != FORMAL_TRIGGER_OUT_DELAY_US:
-            raise ValueError(
-                "formal photo sequence requires "
-                f"trigger_to_image_delay_us={FORMAL_TRIGGER_OUT_DELAY_US}"
-            )
-        if self.trigger_out_delay_us != FORMAL_TRIGGER_OUT_DELAY_US:
-            raise ValueError(
-                "formal photo sequence requires "
-                f"trigger_out_delay_us={FORMAL_TRIGGER_OUT_DELAY_US}"
-            )
+        if self.trigger_to_image_delay_us < 0:
+            raise ValueError("trigger_to_image_delay_us must be non-negative")
+        if self.trigger_out_delay_us < 0:
+            raise ValueError("trigger_out_delay_us must be non-negative")
         if self.capture_timeout_ms <= 0:
             raise ValueError("capture_timeout_ms must be positive")
         if self.prime_attempts != FORMAL_PRIME_ATTEMPTS:
@@ -136,7 +141,7 @@ class PreparedPhotoCapture:
     depth_format: str
     exposure_us: int
     trigger_out_delay_us: int
-    trigger_to_image_delay_us: int = FORMAL_TRIGGER_OUT_DELAY_US
+    trigger_to_image_delay_us: int = DEFAULT_TRIGGER_TO_IMAGE_DELAY_US
     sync_mode: str = "SOFTWARE_TRIGGERING"
     trigger_out_enable: bool = True
     frames_per_trigger: int = 1
@@ -212,6 +217,8 @@ def select_fastest_rgbd_profiles(
     height: int,
     color_formats: tuple[str, ...],
     sdk: Any,
+    depth_format: str = "Y16",
+    requested_fps: int | None = None,
     trigger_out_delay_us: int = 0,
     trigger_to_image_delay_us: int = 0,
 ) -> tuple[Any, Any]:
@@ -240,13 +247,19 @@ def select_fastest_rgbd_profiles(
             continue
 
     depth_candidates: list[tuple[Any, int]] = []
-    y16 = sdk.OBFormat.Y16
+    depth_format_name = str(depth_format).strip().upper()
+    try:
+        requested_depth_format = getattr(sdk.OBFormat, depth_format_name)
+    except AttributeError as exc:
+        raise PhotoCaptureError(
+            f"Unknown Orbbec depth format {depth_format_name!r}"
+        ) from exc
     for profile in _profile_entries(depth_profile_list):
         try:
             if (
                 int(profile.get_width()) == width
                 and int(profile.get_height()) == height
-                and profile.get_format() == y16
+                and profile.get_format() == requested_depth_format
             ):
                 depth_candidates.append((profile, int(profile.get_fps())))
         except Exception:
@@ -259,7 +272,7 @@ def select_fastest_rgbd_profiles(
     )
     if not common_fps:
         raise PhotoCaptureError(
-            f"No common color/Y16 depth FPS for {width}x{height}. "
+            f"No common color/{depth_format_name} depth FPS for {width}x{height}. "
             f"Color profiles: {_available_video_profiles(color_profile_list)}; "
             f"depth profiles: {_available_video_profiles(depth_profile_list)}"
         )
@@ -275,19 +288,37 @@ def select_fastest_rgbd_profiles(
     ]
     if not compatible_fps:
         raise PhotoCaptureError(
-            f"No common color/Y16 depth FPS for {width}x{height} can safely "
+            f"No common color/{depth_format_name} depth FPS for "
+            f"{width}x{height} can safely "
             "accommodate "
             f"trigger_out_delay_us={trigger_out_delay_us} and "
             f"trigger_to_image_delay_us={trigger_to_image_delay_us}. "
             f"Common FPS: {common_fps}"
         )
-    fastest = compatible_fps[0]
+    if requested_fps is not None:
+        if requested_fps not in common_fps:
+            raise PhotoCaptureError(
+                f"No exact common color/{depth_format_name} profile for "
+                f"{width}x{height}@{requested_fps}. Common FPS: {common_fps}"
+            )
+        if requested_fps not in compatible_fps:
+            maximum_delay = max(
+                0,
+                round(1_000_000 / requested_fps) - TRIGGER_DELAY_GUARD_US,
+            )
+            raise PhotoCaptureError(
+                f"Configured delays must each be <= {maximum_delay} at "
+                f"{requested_fps} FPS"
+            )
+        selected_fps = requested_fps
+    else:
+        selected_fps = compatible_fps[0]
     color_profile = min(
-        (item for item in color_candidates if item[2] == fastest),
+        (item for item in color_candidates if item[2] == selected_fps),
         key=lambda item: format_rank[item[1]],
     )[0]
     depth_profile = next(
-        profile for profile, fps in depth_candidates if fps == fastest
+        profile for profile, fps in depth_candidates if fps == selected_fps
     )
     return color_profile, depth_profile
 
@@ -895,6 +926,8 @@ class SoftwareTriggeredRGBDPhotoController:
             height=self.settings.height,
             color_formats=self.settings.color_formats,
             sdk=sdk,
+            depth_format=self.settings.depth_format,
+            requested_fps=self.settings.fps,
             trigger_out_delay_us=self.settings.trigger_out_delay_us,
             trigger_to_image_delay_us=self.settings.trigger_to_image_delay_us,
         )
@@ -1151,12 +1184,17 @@ class SoftwareTriggeredRGBDPhotoController:
                     "session_state": "open",
                     "no_video_preview": True,
                     "one_formal_trigger_per_capture": True,
-                    "sequence_rate_policy": "fastest_unthrottled",
+                    "sequence_rate_policy": (
+                        "explicit_fps"
+                        if self.settings.fps is not None
+                        else "fastest_unthrottled"
+                    ),
                     "capture_options": {
                         "width": self.settings.width,
                         "height": self.settings.height,
                         "fps": int(color_profile.get_fps()),
                         "color_formats": list(self.settings.color_formats),
+                        "depth_format": self.settings.depth_format,
                         "align": "software",
                         "frame_sync": True,
                         "color_auto_exposure": False,
@@ -1721,7 +1759,11 @@ class SoftwareTriggeredRGBDPhotoController:
                             "frames": self._received,
                             "elapsed_seconds": elapsed_seconds,
                             "achieved_fps": achieved_fps,
-                            "rate_policy": "fastest_unthrottled",
+                            "rate_policy": (
+                                "explicit_fps"
+                                if self.settings.fps is not None
+                                else "fastest_unthrottled"
+                            ),
                             "stop_reason": self._stop_reason,
                         },
                     }
@@ -1758,6 +1800,11 @@ def photo_settings_from_config(
     *,
     width: int | None = None,
     height: int | None = None,
+    fps: int | None = None,
+    color_format: str | None = None,
+    depth_format: str | None = None,
+    trigger_to_image_delay_us: int | None = None,
+    trigger_out_delay_us: int | None = None,
 ) -> PhotoCaptureSettings:
     config = load_config(config_path)
     capture = config.get("capture")
@@ -1775,10 +1822,33 @@ def photo_settings_from_config(
             output_root=Path(output_root),
             width=int(width if width is not None else capture["width"]),
             height=int(height if height is not None else capture["height"]),
-            color_formats=tuple(str(item) for item in capture["color_formats"]),
+            fps=int(fps) if fps is not None else None,
+            color_formats=(
+                (str(color_format).upper(),)
+                if color_format is not None
+                else tuple(str(item) for item in capture["color_formats"])
+            ),
+            depth_format=str(
+                depth_format
+                if depth_format is not None
+                else capture.get("depth_format", "Y16")
+            ).upper(),
             exposure_us=int(photo["exposure_us"]),
-            trigger_to_image_delay_us=int(photo["trigger_to_image_delay_us"]),
-            trigger_out_delay_us=int(photo["trigger_out_delay_us"]),
+            trigger_to_image_delay_us=int(
+                trigger_to_image_delay_us
+                if trigger_to_image_delay_us is not None
+                else photo.get(
+                    "trigger_to_image_delay_us",
+                    DEFAULT_TRIGGER_TO_IMAGE_DELAY_US,
+                )
+            ),
+            trigger_out_delay_us=int(
+                trigger_out_delay_us
+                if trigger_out_delay_us is not None
+                else photo.get(
+                    "trigger_out_delay_us", DEFAULT_TRIGGER_OUT_DELAY_US
+                )
+            ),
             capture_timeout_ms=int(photo["capture_timeout_ms"]),
             prime_attempts=int(photo["prime_attempts"]),
             prime_timeout_ms=int(photo["prime_timeout_ms"]),
@@ -1794,7 +1864,6 @@ def photo_settings_from_config(
 def _validate_photo_sequence_args(args: Any) -> None:
     incompatible: list[str] = []
     for name in (
-        "fps",
         "warmup_frames",
         "queue_size",
         "exposure_us",
@@ -1832,7 +1901,7 @@ def run_photo_sequence(
     clock: Callable[[], float] = time.monotonic,
     output: Callable[[str], None] = print,
 ) -> Path:
-    """Capture a fastest-unthrottled, low-frame-rate RGB-D photo sequence."""
+    """Capture a selected-rate or fastest-compatible RGB-D photo sequence."""
 
     _validate_photo_sequence_args(args)
     settings = photo_settings_from_config(
@@ -1840,6 +1909,13 @@ def run_photo_sequence(
         Path(getattr(args, "output", Path("data/captures"))),
         width=getattr(args, "width", None),
         height=getattr(args, "height", None),
+        fps=getattr(args, "fps", None),
+        color_format=getattr(args, "color_format", None),
+        depth_format=getattr(args, "depth_format", None),
+        trigger_to_image_delay_us=getattr(
+            args, "trigger_to_image_delay_us", None
+        ),
+        trigger_out_delay_us=getattr(args, "trigger_out_delay_us", None),
     )
     controller = controller_factory(settings)
     prepared: PreparedPhotoCapture | None = None
