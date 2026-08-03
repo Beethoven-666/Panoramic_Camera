@@ -24,17 +24,7 @@ COLOR_EXPOSURE_UNIT_US = 100
 MAX_FORMAL_COLOR_EXPOSURE_US = 800
 DEFAULT_TRIGGER_TO_IMAGE_DELAY_US = 8_000
 DEFAULT_TRIGGER_OUT_DELAY_US = 7_000
-GEMINI305_COLOR_FORMATS = (
-    "BGR",
-    "BGRA",
-    "MJPG",
-    "RGB",
-    "RGBA",
-    "Y16",
-    "Y8",
-    "YUYV",
-)
-GEMINI305_DEPTH_FORMATS = ("Y16",)
+GEMINI305_COLOR_FORMAT_PRIORITY = ("RGB", "BGR", "YUYV", "MJPG")
 GEMINI305_FRAME_RATES = (5, 10, 15, 20, 30, 60)
 
 
@@ -1380,6 +1370,8 @@ def _video_capture_options(capture: dict[str, Any]) -> dict[str, Any]:
     options.update(video)
     options.pop("video_mode", None)
     options.pop("photo_mode", None)
+    options["color_formats"] = list(GEMINI305_COLOR_FORMAT_PRIORITY)
+    options.pop("depth_format", None)
     required = {
         "color_auto_exposure": True,
         "color_exposure_us": None,
@@ -1459,12 +1451,6 @@ def run_capture(args: argparse.Namespace) -> Path:
         value = getattr(args, name, None)
         if value is not None:
             options[name] = value
-    color_format = getattr(args, "color_format", None)
-    if color_format is not None:
-        options["color_formats"] = [str(color_format).upper()]
-    depth_format = getattr(args, "depth_format", None)
-    if depth_format is not None:
-        options["depth_format"] = str(depth_format).upper()
     for argument, option in (
         ("trigger_to_image_delay_us", "trigger_to_image_delay_us"),
         ("trigger_out_delay_us", "trigger_out_delay_us"),
@@ -1582,13 +1568,6 @@ def run_capture(args: argparse.Namespace) -> Path:
         color_formats = [getattr(sdk.OBFormat, name) for name in options["color_formats"]]
     except AttributeError as exc:
         raise ValueError(f"Unknown Orbbec color format in {options['color_formats']!r}") from exc
-    depth_format_name = str(options.get("depth_format", "Y16")).upper()
-    try:
-        depth_format = getattr(sdk.OBFormat, depth_format_name)
-    except AttributeError as exc:
-        raise ValueError(
-            f"Unknown Orbbec depth format {depth_format_name!r}"
-        ) from exc
     color_profile = _choose_profile(
         color_list, options["width"], options["height"], options["fps"], color_formats, "color"
     )
@@ -1597,7 +1576,7 @@ def run_capture(args: argparse.Namespace) -> Path:
         options["width"],
         options["height"],
         options["fps"],
-        [depth_format],
+        [sdk.OBFormat.Y16],
         "depth",
     )
     stream_config.enable_stream(color_profile)
@@ -1929,18 +1908,6 @@ def build_parser() -> argparse.ArgumentParser:
             "Exact RGB-D frame rate; photo mode otherwise chooses the fastest "
             "compatible rate, video mode uses configuration"
         ),
-    )
-    parser.add_argument(
-        "--color-format",
-        type=str.upper,
-        choices=GEMINI305_COLOR_FORMATS,
-        help="Exact SDK color stream format",
-    )
-    parser.add_argument(
-        "--depth-format",
-        type=str.upper,
-        choices=GEMINI305_DEPTH_FORMATS,
-        help="Exact SDK depth stream format",
     )
     parser.add_argument(
         "--image-delay-us",

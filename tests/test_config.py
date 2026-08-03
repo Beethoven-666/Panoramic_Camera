@@ -32,7 +32,8 @@ def test_default_video_capture_uses_capped_auto_exposure_and_locked_awb() -> Non
     assert config["capture"]["frame_sync"] is True
     assert config["capture"]["external_sync_output"] is True
     assert config["capture"]["fps"] == 30
-    assert config["capture"]["depth_format"] == "Y16"
+    assert "color_formats" not in config["capture"]
+    assert "depth_format" not in config["capture"]
     assert config["stitch"]["max_canvas_megapixels"] == 200
     assert config["stitch"]["diagnostic_force"] is False
     assert config["stitch"]["handoff_fallback_policy"] == {

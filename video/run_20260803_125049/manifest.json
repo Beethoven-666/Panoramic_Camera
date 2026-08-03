@@ -1,0 +1,93 @@
+{
+  "schema": "panorama-demo-session/v2",
+  "started_utc": "2026-08-03T04:50:49.514723+00:00",
+  "clean_shutdown": false,
+  "capture_mode": "continuous_rgbd_video_fixed_exposure",
+  "diagnostic_only": true,
+  "formal_stitch_allowed": false,
+  "product_eligibility": {
+    "photo_panorama": false,
+    "video_panorama": false
+  },
+  "capture_options": {
+    "width": 1280,
+    "height": 800,
+    "fps": 60,
+    "color_formats": [
+      "RGB"
+    ],
+    "depth_format": "Y16",
+    "align": "software",
+    "frame_sync": true,
+    "external_sync_output": true,
+    "warmup_frames": 30,
+    "warmup_timeout_seconds": 15,
+    "frame_timeout_seconds": 5,
+    "queue_size": 64,
+    "color_anti_flicker": true,
+    "jpeg_quality": 95,
+    "depth_png_compression": 1,
+    "save_raw_depth": false,
+    "enabled": true,
+    "trigger_out_delay_us": 7000,
+    "trigger_to_image_delay_us": 8000,
+    "color_auto_exposure": false,
+    "color_exposure_us": 600,
+    "color_ae_max_exposure_us": 800,
+    "diagnostic_unrestricted_auto_exposure": false,
+    "color_gain": null,
+    "color_auto_white_balance": true,
+    "color_white_balance": null,
+    "lock_color_controls_after_warmup": false,
+    "require_locked_control_metadata": false,
+    "lock_white_balance_after_warmup": true,
+    "require_locked_white_balance_metadata": true,
+    "post_lock_verified_frames": 2,
+    "preview": true
+  },
+  "device": {
+    "name": "Orbbec Gemini 305",
+    "serial_number": "CV27561000GL",
+    "firmware_version": "1.0.70",
+    "hardware_version": "0.1",
+    "connection_type": "USB3.2",
+    "vid": 11205,
+    "pid": 2112
+  },
+  "sdk_version": "2.8.6",
+  "python_wrapper_version": "2.1.1",
+  "applied_color_properties": {
+    "auto_exposure": false,
+    "exposure": 6,
+    "exposure_us": 600,
+    "auto_white_balance": true,
+    "anti_flicker": true
+  },
+  "color_exposure_control": {
+    "requested_mode": "manual",
+    "effective_mode": "manual",
+    "requested_exposure_us": 600,
+    "requested_auto_cap_us": null,
+    "applied_exposure_us": 600,
+    "applied_auto_cap_us": null,
+    "replaced_motion_safe_cap_us": null,
+    "requested_device_max_auto_cap_us": null,
+    "device_clamped_auto_cap": null,
+    "auto_exposure_policy": "manual",
+    "diagnostic_only": false
+  },
+  "external_sync_output": {
+    "mode": "PRIMARY",
+    "trigger_out_enable": true,
+    "color_delay_us": 0,
+    "depth_delay_us": 0,
+    "trigger_to_image_delay_us": 8000,
+    "trigger_out_delay_us": 7000,
+    "frames_per_trigger": 1,
+    "enabled": true,
+    "readback_verified": true,
+    "per_frame_readback_verified_frames": 0,
+    "expected_frequency_hz": 60,
+    "frequency_source": "capture_fps"
+  }
+}

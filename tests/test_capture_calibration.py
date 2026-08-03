@@ -876,16 +876,12 @@ def test_default_cli_keeps_configured_auto_exposure_mode() -> None:
     assert args.exposure_us is None
 
 
-def test_capture_cli_accepts_profile_and_sync_timing_overrides() -> None:
+def test_capture_cli_accepts_fps_and_sync_timing_overrides() -> None:
     args = capture.build_parser().parse_args(
         [
             "--photo-mode",
             "--fps",
             "20",
-            "--color-format",
-            "rgba",
-            "--depth-format",
-            "y16",
             "--image-delay-us",
             "6000",
             "--trigger-out-delay-us",
@@ -894,13 +890,11 @@ def test_capture_cli_accepts_profile_and_sync_timing_overrides() -> None:
     )
 
     assert args.fps == 20
-    assert args.color_format == "RGBA"
-    assert args.depth_format == "Y16"
     assert args.trigger_to_image_delay_us == 6_000
     assert args.trigger_out_delay_us == 5_000
 
 
-def test_capture_cli_rejects_unknown_profile_values() -> None:
+def test_capture_cli_does_not_expose_stream_format_overrides() -> None:
     with pytest.raises(SystemExit):
         capture.build_parser().parse_args(["--color-format", "H264"])
     with pytest.raises(SystemExit):
@@ -992,7 +986,7 @@ def test_diagnostic_capture_manifest_is_marked_before_camera_discovery(
     assert manifest["capture_options"]["diagnostic_unrestricted_auto_exposure"] is False
 
 
-def test_video_cli_profile_and_delay_overrides_reach_capture_options(
+def test_video_cli_fps_and_delay_overrides_reach_capture_options(
     tmp_path, monkeypatch
 ) -> None:
     output = tmp_path / "captures"
@@ -1013,10 +1007,6 @@ def test_video_cli_profile_and_delay_overrides_reach_capture_options(
             "480",
             "--fps",
             "20",
-            "--color-format",
-            "bgra",
-            "--depth-format",
-            "y16",
             "--image-delay-us",
             "6000",
             "--trigger-out-delay-us",
@@ -1034,8 +1024,8 @@ def test_video_cli_profile_and_delay_overrides_reach_capture_options(
     assert options["width"] == 848
     assert options["height"] == 480
     assert options["fps"] == 20
-    assert options["color_formats"] == ["BGRA"]
-    assert options["depth_format"] == "Y16"
+    assert options["color_formats"] == ["RGB", "BGR", "YUYV", "MJPG"]
+    assert "depth_format" not in options
     assert options["trigger_to_image_delay_us"] == 6_000
     assert options["trigger_out_delay_us"] == 5_000
 

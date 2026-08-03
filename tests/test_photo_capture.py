@@ -439,7 +439,6 @@ def _settings(tmp_path: Path, **overrides: object) -> PhotoCaptureSettings:
         "width": 4,
         "height": 3,
         "color_formats": ("RGB", "MJPG"),
-        "depth_format": "Y16",
         "exposure_us": 800,
         "trigger_to_image_delay_us": 8000,
         "trigger_out_delay_us": 7000,
@@ -548,8 +547,6 @@ def _photo_args(tmp_path: Path, **overrides: object) -> SimpleNamespace:
         "width": None,
         "height": None,
         "fps": None,
-        "color_format": None,
-        "depth_format": None,
         "trigger_to_image_delay_us": None,
         "trigger_out_delay_us": None,
         "warmup_frames": None,
@@ -634,7 +631,6 @@ def test_photo_profile_selection_honors_exact_cli_fps_and_format() -> None:
         width=4,
         height=3,
         color_formats=("RGB",),
-        depth_format="Y16",
         requested_fps=30,
         sdk=sdk,
         trigger_to_image_delay_us=8_000,
@@ -658,7 +654,6 @@ def test_photo_profile_selection_rejects_missing_exact_cli_profile() -> None:
             width=4,
             height=3,
             color_formats=("RGB",),
-            depth_format="Y16",
             requested_fps=30,
             sdk=sdk,
         )
@@ -1206,7 +1201,7 @@ def test_photo_sequence_stops_after_q_without_an_extra_capture(
     assert controllers[0].stop_reason == "console_key"
 
 
-def test_photo_sequence_accepts_cli_profile_and_delay_overrides(
+def test_photo_sequence_accepts_cli_fps_and_delay_overrides(
     tmp_path: Path,
 ) -> None:
     controllers: list[_SequenceController] = []
@@ -1220,8 +1215,6 @@ def test_photo_sequence_accepts_cli_profile_and_delay_overrides(
         _photo_args(
             tmp_path,
             fps=30,
-            color_format="MJPG",
-            depth_format="Y16",
             trigger_to_image_delay_us=6_000,
             trigger_out_delay_us=5_000,
             max_frames=1,
@@ -1233,8 +1226,7 @@ def test_photo_sequence_accepts_cli_profile_and_delay_overrides(
 
     settings = controllers[0].settings
     assert settings.fps == 30
-    assert settings.color_formats == ("MJPG",)
-    assert settings.depth_format == "Y16"
+    assert settings.color_formats == ("RGB", "BGR", "YUYV", "MJPG")
     assert settings.trigger_to_image_delay_us == 6_000
     assert settings.trigger_out_delay_us == 5_000
 

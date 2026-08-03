@@ -2,8 +2,6 @@ capture:
   width: 1280
   height: 800
   fps: 30
-  color_formats: [RGB, BGR, YUYV, MJPG]
-  depth_format: Y16
   align: software
   frame_sync: true
   # PRIMARY mode emits one external synchronization pulse per RGB-D frame.

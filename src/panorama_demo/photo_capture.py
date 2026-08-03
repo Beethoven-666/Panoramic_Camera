@@ -16,6 +16,7 @@ from .capture_orbbec import (
     DEFAULT_TRIGGER_OUT_DELAY_US,
     DEFAULT_TRIGGER_TO_IMAGE_DELAY_US,
     FramePacket,
+    GEMINI305_COLOR_FORMAT_PRIORITY,
     SessionWriter,
     _calibration_to_dict,
     _color_control_metadata,
@@ -53,8 +54,7 @@ class PhotoCaptureSettings:
     width: int = 1280
     height: int = 800
     fps: int | None = None
-    color_formats: tuple[str, ...] = ("RGB", "BGR", "YUYV", "MJPG")
-    depth_format: str = "Y16"
+    color_formats: tuple[str, ...] = GEMINI305_COLOR_FORMAT_PRIORITY
     exposure_us: int = MAX_FORMAL_PHOTO_EXPOSURE_US
     trigger_to_image_delay_us: int = DEFAULT_TRIGGER_TO_IMAGE_DELAY_US
     trigger_out_delay_us: int = DEFAULT_TRIGGER_OUT_DELAY_US
@@ -92,8 +92,6 @@ class PhotoCaptureSettings:
             raise ValueError("photo width and height must be positive")
         if not self.color_formats or any(not str(item).strip() for item in self.color_formats):
             raise ValueError("color_formats must contain at least one format")
-        if not isinstance(self.depth_format, str) or not self.depth_format.strip():
-            raise ValueError("depth_format must be a non-empty string")
         if self.exposure_us <= 0 or self.exposure_us % COLOR_EXPOSURE_UNIT_US:
             raise ValueError(
                 f"exposure_us must use exact {COLOR_EXPOSURE_UNIT_US} us units"
@@ -217,7 +215,6 @@ def select_fastest_rgbd_profiles(
     height: int,
     color_formats: tuple[str, ...],
     sdk: Any,
-    depth_format: str = "Y16",
     requested_fps: int | None = None,
     trigger_out_delay_us: int = 0,
     trigger_to_image_delay_us: int = 0,
@@ -247,13 +244,8 @@ def select_fastest_rgbd_profiles(
             continue
 
     depth_candidates: list[tuple[Any, int]] = []
-    depth_format_name = str(depth_format).strip().upper()
-    try:
-        requested_depth_format = getattr(sdk.OBFormat, depth_format_name)
-    except AttributeError as exc:
-        raise PhotoCaptureError(
-            f"Unknown Orbbec depth format {depth_format_name!r}"
-        ) from exc
+    depth_format_name = "Y16"
+    requested_depth_format = sdk.OBFormat.Y16
     for profile in _profile_entries(depth_profile_list):
         try:
             if (
@@ -926,7 +918,6 @@ class SoftwareTriggeredRGBDPhotoController:
             height=self.settings.height,
             color_formats=self.settings.color_formats,
             sdk=sdk,
-            depth_format=self.settings.depth_format,
             requested_fps=self.settings.fps,
             trigger_out_delay_us=self.settings.trigger_out_delay_us,
             trigger_to_image_delay_us=self.settings.trigger_to_image_delay_us,
@@ -1194,7 +1185,7 @@ class SoftwareTriggeredRGBDPhotoController:
                         "height": self.settings.height,
                         "fps": int(color_profile.get_fps()),
                         "color_formats": list(self.settings.color_formats),
-                        "depth_format": self.settings.depth_format,
+                        "depth_format": "Y16",
                         "align": "software",
                         "frame_sync": True,
                         "color_auto_exposure": False,
@@ -1801,8 +1792,6 @@ def photo_settings_from_config(
     width: int | None = None,
     height: int | None = None,
     fps: int | None = None,
-    color_format: str | None = None,
-    depth_format: str | None = None,
     trigger_to_image_delay_us: int | None = None,
     trigger_out_delay_us: int | None = None,
 ) -> PhotoCaptureSettings:
@@ -1823,16 +1812,7 @@ def photo_settings_from_config(
             width=int(width if width is not None else capture["width"]),
             height=int(height if height is not None else capture["height"]),
             fps=int(fps) if fps is not None else None,
-            color_formats=(
-                (str(color_format).upper(),)
-                if color_format is not None
-                else tuple(str(item) for item in capture["color_formats"])
-            ),
-            depth_format=str(
-                depth_format
-                if depth_format is not None
-                else capture.get("depth_format", "Y16")
-            ).upper(),
+            color_formats=GEMINI305_COLOR_FORMAT_PRIORITY,
             exposure_us=int(photo["exposure_us"]),
             trigger_to_image_delay_us=int(
                 trigger_to_image_delay_us
@@ -1910,8 +1890,6 @@ def run_photo_sequence(
         width=getattr(args, "width", None),
         height=getattr(args, "height", None),
         fps=getattr(args, "fps", None),
-        color_format=getattr(args, "color_format", None),
-        depth_format=getattr(args, "depth_format", None),
         trigger_to_image_delay_us=getattr(
             args, "trigger_to_image_delay_us", None
         ),

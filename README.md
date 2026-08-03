@@ -78,20 +78,21 @@ Gemini 305 采集需要 `pyorbbecsdk2`。正式全景还需要：
 
 采集时保持相机连续、单向、近似水平侧移。照片模式不显示视频；未指定 `--fps` 时不添加人为帧率限制。它会在每张 RGB-D 照片完整接收、对齐和写盘后再触发下一张。
 
-格式、帧率和同步延时可直接覆盖。例如：
+帧率和同步延时可直接覆盖。例如：
 
 ```powershell
 & 'D:\Panoramic_Camera\.conda\Scripts\g305-capture.exe' `
   --photo-mode `
   --width 848 --height 480 --fps 30 `
-  --color-format MJPG --depth-format Y16 `
   --image-delay-us 8000 --trigger-out-delay-us 7000 `
   --max-frames 120 `
   --output 'D:\central_strip_Panoramic_Camera\data\captures'
 ```
 
-省略 `--fps` 时照片模式选择满足分辨率、格式和同步延时条件的最高共同 FPS；指定后则要求
-SDK 存在完全一致的彩色与深度 profile，不会自动换分辨率、格式或帧率。
+彩色流不需要用户指定格式，始终按 `RGB → BGR → YUYV → MJPG` 依次尝试并选择指定
+分辨率/FPS 下第一个受支持的格式；深度流固定为单通道 16 位 `Y16`。省略 `--fps` 时照片
+模式选择满足分辨率、默认格式策略和同步延时条件的最高共同 FPS；指定后要求 SDK 存在精确
+的彩色/`Y16` 共同 profile，不会自动换分辨率或帧率。
 
 成功后会得到类似目录：
 
@@ -123,7 +124,6 @@ data/captures/run_YYYYMMDD_HHMMSS/
   --duration 3 `
   --video-exposure-us 600 `
   --width 1280 --height 800 --fps 30 `
-  --color-format RGB --depth-format Y16 `
   --image-delay-us 8000 --trigger-out-delay-us 7000 `
   --output 'D:\central_strip_Panoramic_Camera\data\captures\video'
 ```
@@ -182,10 +182,10 @@ RGB-D 帧进入写盘前再次回读完整同步配置。任一帧读到的模�
 
 本程序要求彩色和深度使用相同分辨率与 FPS，因此 RGB-D 可选共同分辨率为 `640×480`、
 `848×480`、`848×530`、`1280×720`、`1280×800`。其中 `640×480` 和 `848×480` 可达
-`60 FPS`；其余共同分辨率的深度流最高为 `30 FPS`。`--color-format` 可选上述八种彩色
-格式，`--depth-format` 当前只能选 `Y16`，`--fps` 可选 `5/10/15/20/30/60`，但最终组合
-必须在两张表中同时存在。所有彩色源格式都会转换为 BGR 后保存为会话 JPEG；CLI 选择的是
-相机输入 stream 格式，不会改变会话文件扩展名。
+`60 FPS`；其余共同分辨率的深度流最高为 `30 FPS`。程序不暴露彩色或深度格式命令行选项：
+彩色固定按 `RGB → BGR → YUYV → MJPG` 优先级自动选择，深度固定为 `Y16`。`--fps` 可选
+`5/10/15/20/30/60`，但最终组合必须在两张表中同时存在。彩色源格式会转换为 BGR 后保存为
+会话 JPEG，相机输入格式不会改变会话文件扩展名。
 
 ### 2.3 生成独立视频全景与三维附件
 
@@ -322,7 +322,7 @@ cd $G305Output
 - 触发到图像采集延时默认 `trigger_to_image_delay_us=8000 µs`，可由 `--image-delay-us` 覆盖；
 - Trigger Out 延时默认 `7000 µs`，可由 `--trigger-out-delay-us` 覆盖；
 - 彩色曝光不超过 `800 µs`；
-- 彩色格式使用 `--color-format`、深度格式使用 `--depth-format`、精确帧率使用 `--fps`；未指定 FPS 时才自动选择共同支持且能容纳两种延时的最高 FPS；
+- 彩色格式按 `RGB → BGR → YUYV → MJPG` 自动选择，深度固定为 `Y16`，无需且不允许用户通过 CLI 设定；精确帧率使用 `--fps`，未指定时才自动选择共同支持且能容纳两种延时的最高 FPS；
 - 不允许偷偷降低采集分辨率；
 - 每个正式帧只调用一次 `device.trigger_capture()`；
 - 每帧返回后都重新读取同步配置，确认图像延时和 Trigger Out 延时仍为设定值；
@@ -673,8 +673,9 @@ Trigger Out 边沿的延时。它们分别写入并分别回读，不会用一�
 | `local_apap_flow` | 默认关闭 |
 | TSDF | 必需、只读、不得反馈 RGB 全景 |
 
-采集格式、FPS 和同步延时允许使用上述 CLI 显式选择，但必须通过 SDK 精确 profile、帧周期和逐帧
-回读检查。算法质量阈值仍只能等于或收紧安全默认值；需要放宽的实验应进入隔离诊断。
+采集 FPS 和同步延时允许使用上述 CLI 显式选择，但必须通过 SDK 精确 profile、帧周期和逐帧
+回读检查；彩色格式使用固定优先级自动选择，深度固定为 `Y16`。算法质量阈值仍只能等于或
+收紧安全默认值；需要放宽的实验应进入隔离诊断。
 
 ## 测试
 
