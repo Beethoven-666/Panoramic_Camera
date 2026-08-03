@@ -1161,6 +1161,26 @@ def _configure_external_sync_output(
     frame_rate_hz = int(options["fps"])
     if frame_rate_hz <= 0:
         raise ValueError("fps must be positive when external_sync_output is enabled")
+    image_delay_us = options.get("trigger_to_image_delay_us", 0)
+    trigger_out_delay_us = options.get("trigger_out_delay_us", 0)
+    if (
+        isinstance(image_delay_us, bool)
+        or not isinstance(image_delay_us, int)
+        or image_delay_us < 0
+    ):
+        raise ValueError("trigger_to_image_delay_us must be a non-negative integer")
+    if (
+        isinstance(trigger_out_delay_us, bool)
+        or not isinstance(trigger_out_delay_us, int)
+        or trigger_out_delay_us < 0
+    ):
+        raise ValueError("trigger_out_delay_us must be a non-negative integer")
+    frame_period_us = round(1_000_000 / frame_rate_hz)
+    if max(image_delay_us, trigger_out_delay_us) >= frame_period_us:
+        raise ValueError(
+            "trigger_to_image_delay_us and trigger_out_delay_us must each be "
+            f"below the {frame_period_us} us frame period at {frame_rate_hz} FPS"
+        )
     try:
         primary_mode = sdk.OBMultiDeviceSyncMode.PRIMARY
         get_sync_config = device.get_multi_device_sync_config
@@ -1174,14 +1194,53 @@ def _configure_external_sync_output(
         requested = get_sync_config()
         requested.mode = primary_mode
         requested.trigger_out_enable = True
-        # PRIMARY mode normally forces this delay to zero. Set it explicitly so
-        # the edge is deterministic even if firmware leaves it configurable.
-        requested.trigger_out_delay_us = 0
+        requested.trigger_to_image_delay_us = image_delay_us
+        requested.trigger_out_delay_us = trigger_out_delay_us
         set_sync_config(requested)
-        applied = get_sync_config()
     except Exception as exc:
         raise RuntimeError(
             "The camera did not apply the external sync output configuration"
+        ) from exc
+
+    result = _verify_external_sync_output(device, sdk, options)
+    result.update(
+        {
+            "per_frame_readback_verified_frames": 0,
+            "expected_frequency_hz": frame_rate_hz,
+            "frequency_source": "capture_fps",
+        }
+    )
+    return result
+
+
+def _verify_external_sync_output(
+    device: Any, sdk: Any, options: dict[str, Any]
+) -> dict[str, Any]:
+    """Read back the continuous-video sync timing without rewriting it."""
+
+    enabled = bool(options.get("external_sync_output", True))
+    if not enabled:
+        return {"enabled": False}
+    image_delay_us = options.get("trigger_to_image_delay_us", 0)
+    trigger_out_delay_us = options.get("trigger_out_delay_us", 0)
+    if (
+        isinstance(image_delay_us, bool)
+        or not isinstance(image_delay_us, int)
+        or image_delay_us < 0
+    ):
+        raise ValueError("trigger_to_image_delay_us must be a non-negative integer")
+    if (
+        isinstance(trigger_out_delay_us, bool)
+        or not isinstance(trigger_out_delay_us, int)
+        or trigger_out_delay_us < 0
+    ):
+        raise ValueError("trigger_out_delay_us must be a non-negative integer")
+    try:
+        primary_mode = sdk.OBMultiDeviceSyncMode.PRIMARY
+        applied = device.get_multi_device_sync_config()
+    except Exception as exc:
+        raise RuntimeError(
+            "The camera did not return the external sync output configuration"
         ) from exc
 
     applied_mode = getattr(applied, "mode", None)
@@ -1192,16 +1251,24 @@ def _configure_external_sync_output(
         )
     if not bool(getattr(applied, "trigger_out_enable", False)):
         raise RuntimeError("The camera did not enable its external sync trigger output")
-    if getattr(applied, "trigger_out_delay_us", None) != 0:
-        raise RuntimeError("The camera did not apply zero external sync output delay")
+    if getattr(applied, "trigger_out_delay_us", None) != trigger_out_delay_us:
+        raise RuntimeError(
+            "The camera did not apply Trigger Out delay: "
+            f"read {getattr(applied, 'trigger_out_delay_us', None)!r}, "
+            f"expected {trigger_out_delay_us}"
+        )
+    if getattr(applied, "trigger_to_image_delay_us", None) != image_delay_us:
+        raise RuntimeError(
+            "The camera did not apply trigger-to-image delay: "
+            f"read {getattr(applied, 'trigger_to_image_delay_us', None)!r}, "
+            f"expected {image_delay_us}"
+        )
 
     result = _sync_config_to_dict(applied)
     result.update(
         {
             "enabled": True,
             "readback_verified": True,
-            "expected_frequency_hz": frame_rate_hz,
-            "frequency_source": "capture_fps",
         }
     )
     return result
@@ -1295,6 +1362,16 @@ def _video_capture_options(capture: dict[str, Any]) -> dict[str, Any]:
                 "Continuous video requires automatic exposure/gain and a "
                 "post-warmup white-balance lock: "
                 f"{name} must be {expected!r}"
+            )
+    for name in ("trigger_out_delay_us", "trigger_to_image_delay_us"):
+        delay_us = options.get(name)
+        if (
+            isinstance(delay_us, bool)
+            or not isinstance(delay_us, int)
+            or delay_us < 0
+        ):
+            raise ValueError(
+                f"capture.video_mode.{name} must be a non-negative integer"
             )
     return options
 
@@ -1668,6 +1745,9 @@ def run_capture(args: argparse.Namespace) -> Path:
             if aligned_color is None or aligned_depth_frame is None:
                 continue
 
+            if external_sync_output.get("enabled") is True:
+                _verify_external_sync_output(device, sdk, options)
+
             color_image = _frame_to_bgr(aligned_color, sdk).copy()
             aligned_depth = _depth_array(aligned_depth_frame)
             raw_depth_array = _depth_array(raw_depth) if options["save_raw_depth"] else None
@@ -1703,6 +1783,8 @@ def run_capture(args: argparse.Namespace) -> Path:
                 FramePacket(received, color_image, aligned_depth, raw_depth_array, packet_metadata)
             )
             received += 1
+            if external_sync_output.get("enabled") is True:
+                external_sync_output["per_frame_readback_verified_frames"] += 1
 
             if options["preview"]:
                 key = _preview(color_image, aligned_depth, depth_scale)

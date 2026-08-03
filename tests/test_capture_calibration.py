@@ -947,19 +947,27 @@ def test_external_sync_output_uses_primary_mode_and_capture_fps() -> None:
     )
 
     result = capture._configure_external_sync_output(
-        device, sdk, {"external_sync_output": True, "fps": 30}
+        device,
+        sdk,
+        {
+            "external_sync_output": True,
+            "fps": 30,
+            "trigger_out_delay_us": 17_000,
+            "trigger_to_image_delay_us": 17_000,
+        },
     )
 
     assert applied == [config]
     assert config.mode is primary_mode
     assert config.trigger_out_enable is True
-    assert config.trigger_out_delay_us == 0
+    assert config.trigger_out_delay_us == 17000
     assert config.color_delay_us == 11
     assert config.depth_delay_us == 12
-    assert config.trigger_to_image_delay_us == 13
+    assert config.trigger_to_image_delay_us == 17000
     assert config.frames_per_trigger == 2
     assert result["enabled"] is True
     assert result["readback_verified"] is True
+    assert result["per_frame_readback_verified_frames"] == 0
     assert result["mode"] == "PRIMARY"
     assert result["expected_frequency_hz"] == 30
     assert result["frequency_source"] == "capture_fps"
@@ -1020,7 +1028,7 @@ def test_external_sync_output_rejects_disabled_trigger_readback() -> None:
         )
 
 
-def test_external_sync_output_rejects_nonzero_output_delay_readback() -> None:
+def test_external_sync_output_rejects_wrong_output_delay_readback() -> None:
     primary_mode = SimpleNamespace(name="PRIMARY")
     requested = SimpleNamespace(
         mode=SimpleNamespace(name="STANDALONE"),
@@ -1041,9 +1049,45 @@ def test_external_sync_output_rejects_nonzero_output_delay_readback() -> None:
         OBMultiDeviceSyncMode=SimpleNamespace(PRIMARY=primary_mode)
     )
 
-    with pytest.raises(RuntimeError, match="zero external sync output delay"):
+    with pytest.raises(RuntimeError, match="did not apply Trigger Out delay"):
         capture._configure_external_sync_output(
             device, sdk, {"external_sync_output": True, "fps": 30}
+        )
+
+
+def test_external_sync_output_rejects_wrong_image_delay_readback() -> None:
+    primary_mode = SimpleNamespace(name="PRIMARY")
+    requested = SimpleNamespace(
+        mode=SimpleNamespace(name="STANDALONE"),
+        trigger_out_enable=False,
+        trigger_out_delay_us=0,
+        trigger_to_image_delay_us=0,
+    )
+    applied = SimpleNamespace(
+        mode=primary_mode,
+        trigger_out_enable=True,
+        trigger_out_delay_us=17_000,
+        trigger_to_image_delay_us=16_000,
+    )
+    reads = iter((requested, applied))
+    device = SimpleNamespace(
+        get_multi_device_sync_config=lambda: next(reads),
+        set_multi_device_sync_config=lambda _value: None,
+    )
+    sdk = SimpleNamespace(
+        OBMultiDeviceSyncMode=SimpleNamespace(PRIMARY=primary_mode)
+    )
+
+    with pytest.raises(RuntimeError, match="did not apply trigger-to-image delay"):
+        capture._configure_external_sync_output(
+            device,
+            sdk,
+            {
+                "external_sync_output": True,
+                "fps": 30,
+                "trigger_out_delay_us": 17_000,
+                "trigger_to_image_delay_us": 17_000,
+            },
         )
 
 

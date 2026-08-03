@@ -114,6 +114,12 @@ data/captures/run_YYYYMMDD_HHMMSS/
 `g305-video-panorama`。默认始终启用相机自动曝光（快门时间随 AE 自动调节）、自动增益和自动白平衡；不会在预热后锁定控制值。需要固定视频曝光时使用
 `--video-exposure-us 800`（不能与 `--photo-mode` 同用）；此时仍保持自动增益和自动白平衡。
 
+默认视频同步配置将 `trigger_to_image_delay_us`（触发到图像采集延时）和
+`trigger_out_delay_us` 都设为 `17000 µs`。程序在启动写入后立即回读，并在每个完整对齐
+RGB-D 帧进入写盘前再次回读完整同步配置。任一帧读到的模式、Trigger Out gate、图像延时
+或 Trigger Out 延时与配置不符，采集会立即失败，最终 `manifest.json` 不会标记为干净关闭。
+成功会话在 `external_sync_output.per_frame_readback_verified_frames` 记录逐帧回读通过数。
+
 视频会话会写入 `capture_mode="continuous_rgbd_video_auto"` 或
 `continuous_rgbd_video_fixed_exposure`，并保留 `diagnostic_only=true`、
 `formal_stitch_allowed=false` 以拒绝照片流程。v2 会话在安全关闭且没有写盘错误时还会写入
@@ -251,11 +257,13 @@ cd $G305Output
 - 使用 `SOFTWARE_TRIGGERING`；
 - `frames_per_trigger=1`；
 - `Trigger Out Enable=true`；
+- 触发到图像采集延时 `trigger_to_image_delay_us=17000 µs`；
 - Trigger Out 延时固定为 `17000 µs`；
 - 彩色曝光不超过 `800 µs`；
-- 在指定分辨率下自动选择彩色与 Y16 深度共同支持、且能容纳 Trigger Out 延时的最高 FPS；
+- 在指定分辨率下自动选择彩色与 Y16 深度共同支持、且能同时容纳图像延时和 Trigger Out 延时的最高 FPS；
 - 不允许偷偷降低采集分辨率；
 - 每个正式帧只调用一次 `device.trigger_capture()`；
+- 每帧返回后都重新读取同步配置，确认图像延时和 Trigger Out 延时仍为设定值；
 - 上一帧必须完整收取、COLOR_STREAM 对齐并写盘成功后，才能触发下一帧；
 - 正式失败路径不重触发。
 
@@ -561,6 +569,22 @@ failure.json
 
 正式默认配置位于 [configs/demo.yaml](configs/demo.yaml)。普通用户通常不需要传 `--config`。
 
+同步延时使用 SDK 的微秒字段配置。照片模式是正式硬约束，两项都必须保持 `17000`；视频模式
+也默认使用相同值，并允许在站点配置中显式设定，但两项都必须是非负整数且小于当前帧周期：
+
+```yaml
+capture:
+  video_mode:
+    trigger_out_delay_us: 17000
+    trigger_to_image_delay_us: 17000
+  photo_mode:
+    trigger_out_delay_us: 17000
+    trigger_to_image_delay_us: 17000
+```
+
+`trigger_to_image_delay_us` 是触发到图像采集的延时，`trigger_out_delay_us` 是触发到外部
+Trigger Out 边沿的延时。它们分别写入并分别回读；默认设为相同值不代表程序用一个字段冒充另一个。
+
 重要固定值：
 
 | 项目 | 默认/硬限制 |
@@ -568,6 +592,7 @@ failure.json
 | 正式主采集 | 照片模式驱动的低帧率同步 RGB-D 序列 |
 | 照片曝光上限 | `800 µs` |
 | 输入曝光绝对上限 | `1200 µs` |
+| 触发到图像采集延时 | 照片/视频默认 `17000 µs`，逐帧回读确认 |
 | Trigger Out 延时 | `17000 µs` |
 | 照片预热触发 | 最多 8 次，gate-off |
 | 全局 pose | 完整 ORB-SLAM3 RGB-D |

@@ -53,6 +53,7 @@ class PhotoCaptureSettings:
     height: int = 800
     color_formats: tuple[str, ...] = ("RGB", "BGR", "YUYV", "MJPG")
     exposure_us: int = MAX_FORMAL_PHOTO_EXPOSURE_US
+    trigger_to_image_delay_us: int = FORMAL_TRIGGER_OUT_DELAY_US
     trigger_out_delay_us: int = FORMAL_TRIGGER_OUT_DELAY_US
     capture_timeout_ms: int = 8_000
     prime_attempts: int = FORMAL_PRIME_ATTEMPTS
@@ -66,6 +67,7 @@ class PhotoCaptureSettings:
             "width",
             "height",
             "exposure_us",
+            "trigger_to_image_delay_us",
             "trigger_out_delay_us",
             "capture_timeout_ms",
             "prime_attempts",
@@ -89,6 +91,11 @@ class PhotoCaptureSettings:
             raise ValueError(
                 "formal photo exposure cannot exceed "
                 f"{MAX_FORMAL_PHOTO_EXPOSURE_US} us"
+            )
+        if self.trigger_to_image_delay_us != FORMAL_TRIGGER_OUT_DELAY_US:
+            raise ValueError(
+                "formal photo sequence requires "
+                f"trigger_to_image_delay_us={FORMAL_TRIGGER_OUT_DELAY_US}"
             )
         if self.trigger_out_delay_us != FORMAL_TRIGGER_OUT_DELAY_US:
             raise ValueError(
@@ -129,6 +136,7 @@ class PreparedPhotoCapture:
     depth_format: str
     exposure_us: int
     trigger_out_delay_us: int
+    trigger_to_image_delay_us: int = FORMAL_TRIGGER_OUT_DELAY_US
     sync_mode: str = "SOFTWARE_TRIGGERING"
     trigger_out_enable: bool = True
     frames_per_trigger: int = 1
@@ -205,13 +213,14 @@ def select_fastest_rgbd_profiles(
     color_formats: tuple[str, ...],
     sdk: Any,
     trigger_out_delay_us: int = 0,
+    trigger_to_image_delay_us: int = 0,
 ) -> tuple[Any, Any]:
-    """Select the fastest common RGB-D FPS compatible with Trigger Out.
+    """Select the fastest common RGB-D FPS compatible with sync delays.
 
     Color format order only breaks ties at the selected common frame rate. No
     resolution fallback is permitted because it would invalidate calibration
     and the formal RGB-D session contract. A higher FPS is skipped when its
-    frame period cannot contain the configured Trigger Out delay plus guard.
+    frame period cannot contain either configured delay plus guard.
     """
 
     format_rank = {
@@ -254,16 +263,22 @@ def select_fastest_rgbd_profiles(
             f"Color profiles: {_available_video_profiles(color_profile_list)}; "
             f"depth profiles: {_available_video_profiles(depth_profile_list)}"
         )
+    maximum_sync_delay_us = max(
+        trigger_out_delay_us,
+        trigger_to_image_delay_us,
+    )
     compatible_fps = [
         fps
         for fps in common_fps
-        if trigger_out_delay_us
+        if maximum_sync_delay_us
         <= max(0, round(1_000_000 / fps) - TRIGGER_DELAY_GUARD_US)
     ]
     if not compatible_fps:
         raise PhotoCaptureError(
             f"No common color/Y16 depth FPS for {width}x{height} can safely "
-            f"accommodate trigger_out_delay_us={trigger_out_delay_us}. "
+            "accommodate "
+            f"trigger_out_delay_us={trigger_out_delay_us} and "
+            f"trigger_to_image_delay_us={trigger_to_image_delay_us}. "
             f"Common FPS: {common_fps}"
         )
     fastest = compatible_fps[0]
@@ -322,6 +337,7 @@ class SoftwareTriggeredRGBDPhotoController:
         self._color_control_lock: dict[str, Any] | None = None
         self._gate_off_priming_attempts = 0
         self._gate_off_priming_complete_frame_sets = 0
+        self._sync_readback_verified_frames = 0
 
     @property
     def prepared(self) -> bool:
@@ -616,7 +632,9 @@ class SoftwareTriggeredRGBDPhotoController:
             config.mode = mode
             config.depth_delay_us = 0
             config.color_delay_us = 0
-            config.trigger_to_image_delay_us = 0
+            config.trigger_to_image_delay_us = (
+                self.settings.trigger_to_image_delay_us
+            )
             config.trigger_out_enable = True
             config.trigger_out_delay_us = self.settings.trigger_out_delay_us
             config.frames_per_trigger = 1
@@ -643,7 +661,7 @@ class SoftwareTriggeredRGBDPhotoController:
             "color_delay_us": (int(applied.color_delay_us), 0),
             "trigger_to_image_delay_us": (
                 int(applied.trigger_to_image_delay_us),
-                0,
+                self.settings.trigger_to_image_delay_us,
             ),
             "trigger_out_enable": (bool(applied.trigger_out_enable), True),
             "trigger_out_delay_us": (
@@ -667,7 +685,7 @@ class SoftwareTriggeredRGBDPhotoController:
             "frames_per_trigger": 1,
             "depth_delay_us": 0,
             "color_delay_us": 0,
-            "trigger_to_image_delay_us": 0,
+            "trigger_to_image_delay_us": self.settings.trigger_to_image_delay_us,
             "trigger_out_delay_us": self.settings.trigger_out_delay_us,
         }
 
@@ -878,12 +896,18 @@ class SoftwareTriggeredRGBDPhotoController:
             color_formats=self.settings.color_formats,
             sdk=sdk,
             trigger_out_delay_us=self.settings.trigger_out_delay_us,
+            trigger_to_image_delay_us=self.settings.trigger_to_image_delay_us,
         )
         fps = int(color.get_fps())
         maximum_delay = max(0, round(1_000_000 / fps) - TRIGGER_DELAY_GUARD_US)
-        if self.settings.trigger_out_delay_us > maximum_delay:
+        configured_delay = max(
+            self.settings.trigger_out_delay_us,
+            self.settings.trigger_to_image_delay_us,
+        )
+        if configured_delay > maximum_delay:
             raise PhotoCaptureError(
-                f"trigger_out_delay_us must be <= {maximum_delay} at {fps} FPS"
+                "trigger_out_delay_us and trigger_to_image_delay_us must each "
+                f"be <= {maximum_delay} at {fps} FPS"
             )
         return (
             color,
@@ -997,7 +1021,10 @@ class SoftwareTriggeredRGBDPhotoController:
                 max(baseline[1], indices[1]),
             )
 
-        guard_us = self.settings.trigger_out_delay_us + TRIGGER_DELAY_GUARD_US
+        guard_us = max(
+            self.settings.trigger_out_delay_us,
+            self.settings.trigger_to_image_delay_us,
+        ) + TRIGGER_DELAY_GUARD_US
         if guard_us:
             self._sleep(guard_us / 1_000_000)
         self._verify_runtime(expected_gate=False)
@@ -1134,6 +1161,10 @@ class SoftwareTriggeredRGBDPhotoController:
                         "frame_sync": True,
                         "color_auto_exposure": False,
                         "color_exposure_us": self.settings.exposure_us,
+                        "trigger_to_image_delay_us": (
+                            self.settings.trigger_to_image_delay_us
+                        ),
+                        "trigger_out_delay_us": self.settings.trigger_out_delay_us,
                         "color_auto_white_balance": False,
                         "lock_color_controls_after_warmup": True,
                         "save_raw_depth": False,
@@ -1185,6 +1216,9 @@ class SoftwareTriggeredRGBDPhotoController:
                     depth_format=_enum_name(depth_profile.get_format()),
                     exposure_us=self.settings.exposure_us,
                     trigger_out_delay_us=self.settings.trigger_out_delay_us,
+                    trigger_to_image_delay_us=(
+                        self.settings.trigger_to_image_delay_us
+                    ),
                 )
                 return self._prepared
             except BaseException as exc:
@@ -1465,6 +1499,11 @@ class SoftwareTriggeredRGBDPhotoController:
                 "timestamp_regressions": self._timestamp_regressions,
             }
         )
+        software_trigger = self._manifest.get("software_trigger")
+        if isinstance(software_trigger, dict):
+            software_trigger["per_frame_readback_verified_frames"] = (
+                self._sync_readback_verified_frames
+            )
         _write_manifest(self._session_root, self._manifest)
 
     def _record_capture_error(self, exc: BaseException) -> None:
@@ -1518,6 +1557,12 @@ class SoftwareTriggeredRGBDPhotoController:
                     ) from exc
 
                 frames = self._wait_for_fresh_frames(baseline)
+                # Accept a frame only after a fresh, read-only SDK readback
+                # proves that both configured delays are still applied.
+                # Rewriting the sync mode while streaming could disturb the
+                # timing that this audit is intended to protect.
+                self._verify_sync_config()
+                self._sync_readback_verified_frames += 1
                 frame_id = self._received
                 packet = self._packet_from_frames(frames, frame_id)
                 write_errors_before = self._writer.stats.write_errors
@@ -1732,6 +1777,7 @@ def photo_settings_from_config(
             height=int(height if height is not None else capture["height"]),
             color_formats=tuple(str(item) for item in capture["color_formats"]),
             exposure_us=int(photo["exposure_us"]),
+            trigger_to_image_delay_us=int(photo["trigger_to_image_delay_us"]),
             trigger_out_delay_us=int(photo["trigger_out_delay_us"]),
             capture_timeout_ms=int(photo["capture_timeout_ms"]),
             prime_attempts=int(photo["prime_attempts"]),

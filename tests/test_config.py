@@ -27,6 +27,8 @@ def test_default_video_capture_uses_capped_auto_exposure_and_locked_awb() -> Non
     assert video["lock_white_balance_after_warmup"] is True
     assert video["require_locked_white_balance_metadata"] is True
     assert video["post_lock_verified_frames"] == 2
+    assert video["trigger_out_delay_us"] == 17000
+    assert video["trigger_to_image_delay_us"] == 17000
     assert config["capture"]["frame_sync"] is True
     assert config["capture"]["external_sync_output"] is True
     assert config["capture"]["fps"] == 30
@@ -236,6 +238,7 @@ def test_default_rgbd_photo_mode_preserves_single_trigger_safety_contract() -> N
         "enabled": True,
         "fastest_common_fps": True,
         "exposure_us": 800,
+        "trigger_to_image_delay_us": 17000,
         "trigger_out_delay_us": 17000,
         "capture_timeout_ms": 8000,
         "prime_attempts": 8,

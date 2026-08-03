@@ -312,6 +312,7 @@ class _Device:
         self.gate_off_timeouts_remaining = 0
         self.sync_config_reopens_gate = True
         self.force_frames_per_trigger: int | None = None
+        self.trigger_to_image_delay_after_trigger: int | None = None
         self.bool_write_failures: dict[str, int] = {}
         self.property_writes: list[tuple[str, bool | int]] = []
 
@@ -358,6 +359,10 @@ class _Device:
 
     def trigger_capture(self) -> None:
         self.trigger_count += 1
+        if self.trigger_to_image_delay_after_trigger is not None:
+            self.sync.trigger_to_image_delay_us = (
+                self.trigger_to_image_delay_after_trigger
+            )
         if self.bool_properties["output_gate"]:
             self.external_pulse_count += 1
 
@@ -435,6 +440,7 @@ def _settings(tmp_path: Path, **overrides: object) -> PhotoCaptureSettings:
         "height": 3,
         "color_formats": ("RGB", "MJPG"),
         "exposure_us": 800,
+        "trigger_to_image_delay_us": 17000,
         "trigger_out_delay_us": 17000,
         "capture_timeout_ms": 30,
         "prime_attempts": 8,
@@ -504,6 +510,7 @@ class _SequenceController:
             depth_format="Y16",
             exposure_us=self.settings.exposure_us,
             trigger_out_delay_us=self.settings.trigger_out_delay_us,
+            trigger_to_image_delay_us=self.settings.trigger_to_image_delay_us,
         )
 
     def capture_once(self) -> object:
@@ -639,6 +646,7 @@ def test_prepare_primes_with_gate_off_and_applies_exact_trigger_contract(
     assert sdk.device.sync.mode == "SOFTWARE_TRIGGERING"
     assert sdk.device.sync.trigger_out_enable is True
     assert sdk.device.sync.frames_per_trigger == 1
+    assert sdk.device.sync.trigger_to_image_delay_us == 17000
     assert sdk.device.sync.trigger_out_delay_us == 17000
     assert sdk.device.bool_properties["output_gate"] is True
     assert sdk.device.bool_properties["auto_capture"] is False
@@ -770,6 +778,10 @@ def test_one_capture_issues_one_external_pulse_and_writes_formal_rgbd_session(
     assert manifest["one_formal_trigger_per_capture"] is True
     assert manifest["photo_sequence"]["frames"] == 1
     assert (
+        manifest["software_trigger"]["per_frame_readback_verified_frames"]
+        == 1
+    )
+    assert (
         manifest["color_control_lock"]["formal_frame_metadata_verified_frames"]
         == 1
     )
@@ -788,6 +800,31 @@ def test_locked_control_runtime_drift_fails_before_a_formal_trigger(
         controller.capture_once()
 
     assert sdk.device.trigger_count == triggers_before
+    controller.close()
+
+
+def test_image_delay_drift_after_trigger_rejects_frame_without_retry(
+    tmp_path: Path,
+) -> None:
+    sdk = _SDK()
+    controller = _controller(tmp_path, sdk)
+    prepared = controller.prepare()
+    sdk.device.trigger_to_image_delay_after_trigger = 16_000
+    triggers_before = sdk.device.trigger_count
+
+    with pytest.raises(PhotoCaptureError, match="trigger_to_image_delay_us"):
+        controller.capture_once()
+
+    assert sdk.device.trigger_count - triggers_before == 1
+    manifest = json.loads(
+        (prepared.session_root / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert (
+        manifest["software_trigger"]["per_frame_readback_verified_frames"]
+        == 0
+    )
+    with pytest.raises(PhotoCaptureError, match="sequence is uncertain"):
+        controller.capture_once()
     controller.close()
 
 
@@ -1030,6 +1067,13 @@ def test_formal_photo_sequence_requires_17000_us_trigger_out_delay(
 ) -> None:
     with pytest.raises(ValueError, match="trigger_out_delay_us=17000"):
         _settings(tmp_path, trigger_out_delay_us=0).validated()
+
+
+def test_formal_photo_sequence_requires_matching_17000_us_image_delay(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="trigger_to_image_delay_us=17000"):
+        _settings(tmp_path, trigger_to_image_delay_us=0).validated()
 
 
 def test_formal_photo_sequence_locks_bounded_priming_attempts(
