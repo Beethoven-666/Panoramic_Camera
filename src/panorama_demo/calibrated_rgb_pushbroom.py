@@ -19,8 +19,11 @@ camera-centre displacement* estimate, not an estimated 2-D camera trajectory.
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import pickle
+import shutil
 import tempfile
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -8026,6 +8029,133 @@ def _load_contribution(path: Path) -> PushbroomContribution:
         )
 
 
+def _stage_central_strip_images(
+    strip_paths: Sequence[Path], output_directory: Path
+) -> dict[str, object]:
+    """Export the already-remapped, gain-corrected source strips as BGRA PNGs.
+
+    Alpha is the calibrated valid mask: RGB black remains valid image content,
+    while remap-invalid pixels are explicitly transparent.  This is an export
+    of the existing source strips, never another RGB remap or composition pass.
+    """
+
+    if output_directory.exists():
+        raise RuntimeError("Central-strip staging directory already exists")
+    output_directory.mkdir(parents=True)
+    images: list[dict[str, object]] = []
+    try:
+        for index, path in enumerate(strip_paths):
+            contribution = _load_contribution(path)
+            alpha = np.where(contribution.valid_mask, 255, 0).astype(np.uint8)
+            bgra = np.dstack((contribution.rgb, alpha))
+            filename = (
+                f"central_strip_{index:04d}_frame_{contribution.frame_id:06d}.png"
+            )
+            pending = output_directory / f".{filename}.pending.png"
+            if not cv2.imwrite(str(pending), bgra):
+                raise RuntimeError(f"Could not write central strip image {filename}")
+            os.replace(pending, output_directory / filename)
+            images.append(
+                {
+                    "filename": filename,
+                    "source_index": int(contribution.source_index),
+                    "frame_id": int(contribution.frame_id),
+                    "canvas_x0": int(contribution.x0),
+                    "width": int(contribution.rgb.shape[1]),
+                    "height": int(contribution.rgb.shape[0]),
+                    "valid_pixel_count": int(np.count_nonzero(contribution.valid_mask)),
+                }
+            )
+        (output_directory / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema": "unified-calibrated-central-strips/v1",
+                    "image_encoding": "PNG BGRA",
+                    "alpha_semantics": "255=valid_calibrated_rgb_sample; 0=invalid_remap_sample",
+                    "images": images,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        shutil.rmtree(output_directory, ignore_errors=True)
+        raise
+    return {
+        "schema": "unified-calibrated-central-strips/v1",
+        "image_count": len(images),
+        "image_encoding": "PNG BGRA",
+        "alpha_semantics": "255=valid_calibrated_rgb_sample; 0=invalid_remap_sample",
+    }
+
+
+def _stage_owner_only_central_strip_images(
+    panorama: np.ndarray,
+    owner_frame_id: np.ndarray,
+    frame_ids: Sequence[int],
+    output_directory: Path,
+) -> dict[str, object]:
+    """Export each source's final, owner-only contribution from the panorama."""
+
+    if output_directory.exists():
+        raise RuntimeError("Owner-only central-strip staging directory already exists")
+    if panorama.shape[:2] != owner_frame_id.shape:
+        raise ValueError("Owner-only central strips require the final owner map")
+    output_directory.mkdir(parents=True)
+    images: list[dict[str, object]] = []
+    try:
+        for source_index, frame_id in enumerate(frame_ids):
+            mask = owner_frame_id == int(frame_id)
+            occupied_columns = np.flatnonzero(np.any(mask, axis=0))
+            empty = occupied_columns.size == 0
+            if empty:
+                x0, x1 = 0, 1
+                rgb = np.zeros((1, 1, 3), dtype=np.uint8)
+                alpha = np.zeros((1, 1), dtype=np.uint8)
+            else:
+                x0, x1 = int(occupied_columns[0]), int(occupied_columns[-1]) + 1
+                rgb = panorama[:, x0:x1]
+                alpha = np.where(mask[:, x0:x1], 255, 0).astype(np.uint8)
+            filename = f"central_strip_{source_index:04d}_frame_{int(frame_id):06d}.png"
+            pending = output_directory / f".{filename}.pending.png"
+            if not cv2.imwrite(str(pending), np.dstack((rgb, alpha))):
+                raise RuntimeError(f"Could not write owner-only central strip {filename}")
+            os.replace(pending, output_directory / filename)
+            images.append(
+                {
+                    "filename": filename,
+                    "source_index": int(source_index),
+                    "frame_id": int(frame_id),
+                    "panorama_x0": x0,
+                    "width": int(rgb.shape[1]),
+                    "height": int(rgb.shape[0]),
+                    "owner_pixel_count": int(np.count_nonzero(mask)),
+                    "empty_owner": empty,
+                }
+            )
+        (output_directory / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema": "unified-calibrated-central-strips-owner-only/v1",
+                    "image_encoding": "PNG BGRA",
+                    "alpha_semantics": "255=final_owner_pixel; 0=not_owned_by_this_source",
+                    "images": images,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        shutil.rmtree(output_directory, ignore_errors=True)
+        raise
+    return {
+        "schema": "unified-calibrated-central-strips-owner-only/v1",
+        "image_count": len(images),
+        "image_encoding": "PNG BGRA",
+        "alpha_semantics": "255=final_owner_pixel; 0=not_owned_by_this_source",
+    }
+
+
 def _save_preview(path: Path, contribution: PreviewContribution) -> None:
     """Spool analysis-only preview evidence; never publish it with a delivery."""
 
@@ -10532,6 +10662,8 @@ def render_calibrated_rgb_pushbroom(
     motion_pixels_to_full_resolution: float = 1.0,
     multiband_levels: int = 3,
     quality_gate: bool = True,
+    central_strip_output_dir: Path | None = None,
+    central_strip_owner_only_output_dir: Path | None = None,
     foreground_deformation_diagnostic_pair_index: int | None = None,
     foreground_deformation_diagnostic_pair_indices: Sequence[int] | None = None,
     foreground_deformation_diagnostic_callback: Callable[..., None] | None = None,
@@ -13617,6 +13749,19 @@ def render_calibrated_rgb_pushbroom(
             "pairs": pair_metadata,
             "quality_metrics": quality_metrics,
         }
+        if central_strip_output_dir is not None:
+            metadata["central_strip_export"] = _stage_central_strip_images(
+                strip_paths, Path(central_strip_output_dir)
+            )
+        if central_strip_owner_only_output_dir is not None:
+            metadata["central_strip_owner_only_export"] = (
+                _stage_owner_only_central_strip_images(
+                    panorama,
+                    cropped_owner_frame_id,
+                    frame_id_lookup,
+                    Path(central_strip_owner_only_output_dir),
+                )
+            )
         return CalibratedRGBPushbroomResult(
             panorama=panorama,
             metadata=metadata,

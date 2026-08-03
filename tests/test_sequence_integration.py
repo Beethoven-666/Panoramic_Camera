@@ -466,6 +466,24 @@ def test_zero_parameter_rgbd_sequence_publishes_unified_central_strip_delivery(
     assert delivery["unified_render_invariant_audit"]["deprecated_renderer_call_count"] == 0
     assert (output / "panorama.jpg").is_file()
     assert (output / "pixel_provenance.npz").is_file()
+    central_strips = output / "central_strips"
+    assert central_strips.is_dir()
+    strip_manifest = json.loads((central_strips / "manifest.json").read_text(encoding="utf-8"))
+    assert strip_manifest["schema"] == "unified-calibrated-central-strips/v1"
+    assert len(strip_manifest["images"]) == report["render"]["source_count"]
+    assert all((central_strips / item["filename"]).is_file() for item in strip_manifest["images"])
+    assert delivery["central_strip_export"]["path"] == str(central_strips)
+    owner_only_strips = output / "central_strips_owner_only"
+    owner_only_manifest = json.loads(
+        (owner_only_strips / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert owner_only_manifest["schema"] == "unified-calibrated-central-strips-owner-only/v1"
+    assert len(owner_only_manifest["images"]) == report["render"]["source_count"]
+    assert all(
+        (owner_only_strips / item["filename"]).is_file()
+        for item in owner_only_manifest["images"]
+    )
+    assert delivery["central_strip_owner_only_export"]["path"] == str(owner_only_strips)
     assert not (output / "mosaic_inspection.png").exists()
     assert not (output / "mosaic_metric.png").exists()
 

@@ -135,6 +135,9 @@ def test_failure_report_removes_stale_deliverables(tmp_path: Path) -> None:
     staging = tmp_path / ".orbslam3_rgbd"
     staging.mkdir()
     (staging / "sensitive-staged-rgb.png").write_bytes(b"stale")
+    central_strips = tmp_path / "central_strips"
+    central_strips.mkdir()
+    (central_strips / "central_strip_0000_frame_000000.png").write_bytes(b"stale")
 
     sequence._write_failure_report(
         tmp_path, tmp_path / "input", RuntimeError("bad GraphCut seam")
@@ -145,6 +148,7 @@ def test_failure_report_removes_stale_deliverables(tmp_path: Path) -> None:
     assert not (tmp_path / "diagnostic_panorama.jpg").exists()
     assert not (tmp_path / "diagnostic_report.json").exists()
     assert not staging.exists()
+    assert not central_strips.exists()
     for legacy_artifact in (
         "foreground_mask.png",
         "background_exclusion_mask.png",

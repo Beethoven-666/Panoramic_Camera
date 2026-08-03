@@ -54,7 +54,9 @@ Open3D RGB-D 边审计 → 共享 `render_calibrated_rgb_pushbroom()` → 独立
 - 自动曝光、曝光超过 `1200 µs` 或严格质量未过的结构完整视频发布为 C：
   `video_delivery.json` 的 `delivery_state=published_degraded`，且必须人工复核。
 - 2-D 文件为 `video_panorama.jpg`、`video_panorama.png`、
-  `video_pixel_provenance.npz`、`video_report.json` 和最后写入的
+  `video_pixel_provenance.npz`、`central_strips/`（每个真实源的已标定、
+  已光度校正 BGRA 条带及 manifest）、`central_strips_owner_only/`（每个真实
+  源在最终全景中的 owner-only BGRA 条带及 manifest）、`video_report.json` 和最后写入的
   `video_delivery.json`。3-D 文件为 `video_tsdf_mesh.glb`、
   `video_tsdf_mesh_mobile.glb`、`video_tsdf_mesh_viewer.html` 和
   `video_3d_delivery.json`；3-D 失败只写 `video_3d_failure.json`，不得撤销已发布的

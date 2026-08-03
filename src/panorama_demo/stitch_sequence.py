@@ -96,6 +96,10 @@ if TYPE_CHECKING:
 _DELIVERY_FILES = (
     # The success marker must be invalidated before every other cleanup.
     "delivery.json",
+    "central_strips",
+    ".central_strips.pending",
+    "central_strips_owner_only",
+    ".central_strips_owner_only.pending",
     "panorama.png",
     "panorama.jpg",
     *dual_output_final_names(),
@@ -205,7 +209,11 @@ def _capture_manifest_summary(
 def _clear_delivery_files(output: Path) -> None:
     _invalidate_delivery_marker(output)
     for name in _DELIVERY_FILES[1:]:
-        (output / name).unlink(missing_ok=True)
+        path = output / name
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+        elif path.is_dir():
+            shutil.rmtree(path)
     for pending in output.glob(".*.pending.*"):
         if pending.is_file():
             pending.unlink()
@@ -3747,6 +3755,8 @@ def _publish_unified_r1_delivery(
     intrinsics: CameraIntrinsics,
     tsdf_visualization_config: Mapping[str, object],
     started: float,
+    pending_central_strips: Path,
+    pending_central_strips_owner_only: Path,
 ) -> dict[str, Any]:
     """Atomically publish the R1 unified RGB product without legacy panels.
 
@@ -3761,6 +3771,22 @@ def _publish_unified_r1_delivery(
         raise RuntimeError("Unified formal delivery lacks its invariant audit")
     if owner_frame_id is None:
         raise RuntimeError("Unified formal delivery lacks owner provenance")
+    central_strip_export = render_metadata.get("central_strip_export")
+    if not isinstance(central_strip_export, Mapping) or not pending_central_strips.is_dir():
+        raise RuntimeError("Unified formal delivery lacks staged central-strip images")
+    central_strip_export = {
+        **dict(central_strip_export),
+        "path": str(output / "central_strips"),
+    }
+    render_metadata["central_strip_export"] = central_strip_export
+    owner_only_export = render_metadata.get("central_strip_owner_only_export")
+    if not isinstance(owner_only_export, Mapping) or not pending_central_strips_owner_only.is_dir():
+        raise RuntimeError("Unified formal delivery lacks staged owner-only central-strip images")
+    owner_only_export = {
+        **dict(owner_only_export),
+        "path": str(output / "central_strips_owner_only"),
+    }
+    render_metadata["central_strip_owner_only_export"] = owner_only_export
     assessment = _assess_publication(
         capture_quality,
         pose_quality,
@@ -3841,6 +3867,8 @@ def _publish_unified_r1_delivery(
         "handoff_outcomes": [dict(value) for value in assessment.handoff_outcomes],
         "manual_review_required": assessment.manual_review_required,
         "tsdf_visualization": tsdf_visualization,
+        "central_strip_export": central_strip_export,
+        "central_strip_owner_only_export": owner_only_export,
         "elapsed_seconds": time.perf_counter() - started,
         "stage_elapsed_seconds": dict(stage_elapsed_seconds),
     }
@@ -3870,6 +3898,8 @@ def _publish_unified_r1_delivery(
         },
         "tsdf_visualization": tsdf_visualization,
         "panorama": str(output / "panorama.jpg"),
+        "central_strip_export": central_strip_export,
+        "central_strip_owner_only_export": owner_only_export,
         "report": str(output / "report.json"),
     }
     pending_panorama = _write_bgr(output / ".panorama.pending.jpg", panorama)
@@ -3894,6 +3924,8 @@ def _publish_unified_r1_delivery(
     os.replace(pending_transforms, output / "transforms.json")
     os.replace(pending_render_transforms, output / "render_transforms.json")
     os.replace(pending_provenance, output / "pixel_provenance.npz")
+    os.replace(pending_central_strips, output / "central_strips")
+    os.replace(pending_central_strips_owner_only, output / "central_strips_owner_only")
     os.replace(pending_mesh, output / "tsdf_mesh.glb")
     os.replace(pending_mobile_mesh, output / "tsdf_mesh_mobile.glb")
     os.replace(pending_mesh_viewer, output / "tsdf_mesh_viewer.html")
@@ -6220,6 +6252,8 @@ def _run_pipeline(
     local_apap_flow_config["enabled"] = local_apap_flow_enabled
     pushbroom_config["local_apap_flow"] = local_apap_flow_config
     formal_unified = bool(pushbroom_config.get("unified_content_mode", False)) and not diagnostic_force
+    pending_central_strips = output / ".central_strips.pending"
+    pending_central_strips_owner_only = output / ".central_strips_owner_only.pending"
     inspection_result = None
     render_stage_started = time.perf_counter()
     if diagnostic_force or formal_unified:
@@ -6234,6 +6268,10 @@ def _run_pipeline(
             ),
             multiband_levels=int(seam_config.get("multiband_levels", 3)),
             quality_gate=False,
+            central_strip_output_dir=(pending_central_strips if formal_unified else None),
+            central_strip_owner_only_output_dir=(
+                pending_central_strips_owner_only if formal_unified else None
+            ),
         )
         panorama = pushbroom_result.panorama
         render_metadata = dict(pushbroom_result.metadata)
@@ -6289,6 +6327,8 @@ def _run_pipeline(
                     stitch_config.get("tsdf_visualization", {})
                 ),
                 started=started,
+                pending_central_strips=pending_central_strips,
+                pending_central_strips_owner_only=pending_central_strips_owner_only,
             )
         photometric_calibration = render_metadata.get(
             "photometric_calibration"

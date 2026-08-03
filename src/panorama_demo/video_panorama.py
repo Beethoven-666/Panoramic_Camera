@@ -78,6 +78,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             motion_pixels_to_full_resolution=video.rgbd.calibration.width / float(stitch.get("analysis_width", 320)),
             multiband_levels=int(dict(stitch.get("scan_seam", {})).get("multiband_levels", 3)),
             quality_gate=False,
+            central_strip_output_dir=output / ".central_strips.pending",
+            central_strip_owner_only_output_dir=(
+                output / ".central_strips_owner_only.pending"
+            ),
         )
         capture_quality = assess_capture_quality(
             qualities[first:last + 1], [frame.color_exposure_raw for frame in sources],
@@ -108,7 +112,24 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "open3d_edges": [edge.as_dict() for edge in edges],
             "renderer": dict(push.metadata), "elapsed_seconds": time.perf_counter() - started,
         }
-        published = publish_video_2d(output, push.panorama, push.owner_frame_id, report)
+        central_strip_export = push.metadata.get("central_strip_export")
+        if not isinstance(central_strip_export, dict):
+            raise RuntimeError("Video renderer did not stage central-strip images")
+        report["central_strip_export"] = dict(central_strip_export)
+        owner_only_export = push.metadata.get("central_strip_owner_only_export")
+        if not isinstance(owner_only_export, dict):
+            raise RuntimeError("Video renderer did not stage owner-only central-strip images")
+        report["central_strip_owner_only_export"] = dict(owner_only_export)
+        published = publish_video_2d(
+            output,
+            push.panorama,
+            push.owner_frame_id,
+            report,
+            pending_central_strips=output / ".central_strips.pending",
+            pending_central_strips_owner_only=(
+                output / ".central_strips_owner_only.pending"
+            ),
+        )
         two_d_published = True
         if not args.defer_3d:
             # This is deliberately an independent post-publication delivery:
