@@ -94,7 +94,9 @@ stitch:
     # Paths are resolved inside WSL.  Override root in a site-specific config
     # when ORB-SLAM3 is installed elsewhere.
     root: ~/Projects/ORB_SLAM3_WS/ORB_SLAM3
-    executable: Examples/RGB-D/rgbd_tum
+    # This non-interactive runner retains the upstream rgbd_tum binary for
+    # manual diagnostics but does not create Pangolin/WSLg Viewer threads.
+    executable: Examples/RGB-D/rgbd_tum_headless
     vocabulary: Vocabulary/ORBvoc.txt
     timeout_seconds: 600.0
     # The renderer never interpolates an untracked frame, so every dense pose

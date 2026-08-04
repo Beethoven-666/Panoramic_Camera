@@ -74,7 +74,10 @@ class ORBSLAM3Config:
     enabled: bool = True
     wsl_executable: str = "wsl.exe"
     root: str = "~/Projects/ORB_SLAM3_WS/ORB_SLAM3"
-    executable: str = "Examples/RGB-D/rgbd_tum"
+    # Production runs are non-interactive. The headless runner is built from
+    # the upstream RGB-D example with only bUseViewer=false; it still produces
+    # the same real ORB-SLAM3 RGB-D trajectory.
+    executable: str = "Examples/RGB-D/rgbd_tum_headless"
     vocabulary: str = "Vocabulary/ORBvoc.txt"
     timeout_seconds: float = 600.0
     minimum_tracked_fraction: float = 0.95
@@ -408,7 +411,7 @@ def _run_checked(
             f"{label} exceeded {timeout_seconds:.0f} seconds"
         ) from exc
     if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "no process output").strip()
+        detail = _native_process_detail(completed)
         raise ORBSLAM3Error(f"{label} failed ({completed.returncode}): {detail[-1200:]}")
     return completed
 
@@ -650,6 +653,21 @@ def _attempt_audit_row(
     }
 
 
+def _native_process_detail(completed: subprocess.CompletedProcess[str]) -> str:
+    """Return a bounded diagnostic that never hides stdout behind stderr.
+
+    ORB-SLAM3 prints startup and last-tracked-frame progress to stdout, while
+    Settings warnings use stderr. Keeping both streams makes a native fault
+    actionable without retaining private staged RGB-D inputs.
+    """
+
+    stdout = (completed.stdout or "").strip()
+    stderr = (completed.stderr or "").strip()
+    if stdout and stderr:
+        return f"stdout:\n{stdout[-1200:]}\nstderr:\n{stderr[-1200:]}"
+    return stdout or stderr or "no process output"
+
+
 def prepare_orbslam3_rgbd(
     frames: Sequence[RGBDFrame],
     intrinsics: CameraIntrinsics,
@@ -719,9 +737,9 @@ def run_prepared_orbslam3_rgbd(prepared: PreparedORBSLAM3RGBD) -> ORBSLAM3Trajec
         elapsed_seconds=elapsed_seconds, accepted=False, retry_reason=retry_reason,
     )]
     if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "no process output").strip()
+        detail = _native_process_detail(completed)
         raise ORBSLAM3Error(
-            f"ORB-SLAM3 RGB-D failed ({completed.returncode}): {detail[-1200:]}",
+            f"ORB-SLAM3 RGB-D failed ({completed.returncode}): {detail[-2400:]}",
             attempt_audit=attempt_audit,
             retryable_native_failure=retry_reason is not None,
         )

@@ -34,7 +34,19 @@ def invalidate_video_delivery(output: Path) -> None:
 def write_video_failure(output: Path, input_path: Path, exc: Exception) -> None:
     invalidate_video_delivery(output)
     pending = output / ".video_failure.pending.json"
-    pending.write_text(json.dumps({"schema": "gemini305-video-panorama-failure/v1", "input": str(input_path), "error_type": type(exc).__name__, "message": str(exc), "deliverable_published": False}, indent=2), encoding="utf-8")
+    payload: dict[str, Any] = {
+        "schema": "gemini305-video-panorama-failure/v1",
+        "input": str(input_path),
+        "error_type": type(exc).__name__,
+        "message": str(exc),
+        "deliverable_published": False,
+    }
+    attempts = getattr(exc, "attempt_audit", ())
+    if isinstance(attempts, (list, tuple)):
+        compact_attempts = [dict(row) for row in attempts if isinstance(row, dict)]
+        if compact_attempts:
+            payload["orbslam3_execution_attempts"] = compact_attempts
+    pending.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     os.replace(pending, output / "video_failure.json")
 
 

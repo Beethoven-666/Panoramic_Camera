@@ -4,7 +4,8 @@ import json
 
 import numpy as np
 
-from panorama_demo.video_delivery import publish_video_2d
+from panorama_demo.orbslam3_bridge import ORBSLAM3Error
+from panorama_demo.video_delivery import publish_video_2d, write_video_failure
 from panorama_demo.video_3d import _offline_glb_viewer
 
 
@@ -17,6 +18,27 @@ def test_video_delivery_is_published_last(tmp_path):
     assert report["schema"] == "gemini305-video-panorama-report/v1"
     delivery = json.loads((tmp_path / "video_delivery.json").read_text(encoding="utf-8"))
     assert delivery["quality_grade"] == "C"
+
+
+def test_video_failure_records_native_attempt_audit(tmp_path):
+    error = ORBSLAM3Error(
+        "ORB-SLAM3 RGB-D failed (139)",
+        attempt_audit=(
+            {
+                "attempt_index": 1,
+                "returncode": 139,
+                "signal": 11,
+                "elapsed_seconds": 0.5,
+                "accepted": False,
+                "retry_reason": None,
+            },
+        ),
+    )
+
+    write_video_failure(tmp_path, tmp_path / "input", error)
+
+    failure = json.loads((tmp_path / "video_failure.json").read_text(encoding="utf-8"))
+    assert failure["orbslam3_execution_attempts"][0]["signal"] == 11
 
 
 def test_video_delivery_publishes_staged_central_strips(tmp_path):

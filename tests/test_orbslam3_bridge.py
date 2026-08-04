@@ -72,10 +72,10 @@ def test_staged_settings_explicitly_disable_orbslam3_far_point_filter(
     assert "System.thFarPoints: 0.0" in settings_path.read_text(encoding="utf-8")
 
 
-def test_staged_command_keeps_orbslam3_viewer_visible(
+def test_default_orbslam3_runner_is_headless(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Do not override Pangolin's normal visible Viewer backend from the bridge."""
+    """Production staging must select the runner without a Pangolin Viewer."""
 
     session = _session(tmp_path)
     _patch_wsl_runtime(monkeypatch)
@@ -83,11 +83,19 @@ def test_staged_command_keeps_orbslam3_viewer_visible(
         session.frames, session.calibration, tmp_path / "orb-work"
     )
 
-    assert "env" not in prepared.staged.command
-    assert not any(
-        item.startswith("PANGOLIN_WINDOW_URI=")
-        for item in prepared.staged.command
+    assert prepared.config.executable.endswith("rgbd_tum_headless")
+    assert prepared.staged.command[4].endswith("rgbd_tum_headless")
+
+
+def test_native_failure_detail_keeps_stdout_and_stderr() -> None:
+    completed = subprocess.CompletedProcess(
+        ["rgbd_tum_headless"], 139, stdout="last tracked frame", stderr="settings warning"
     )
+
+    detail = bridge._native_process_detail(completed)
+
+    assert "last tracked frame" in detail
+    assert "settings warning" in detail
 
 
 def test_sigsegv_139_retries_once_with_a_fresh_stage(

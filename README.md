@@ -196,7 +196,7 @@ RGB-D 帧进入写盘前再次回读完整同步配置。任一帧读到的模�
 
 ```powershell
 & 'D:\Panoramic_Camera\.conda\Scripts\g305-video-panorama.exe' `
-  'D:\central_strip_Panoramic_Camera\data\captures\run_YYYYMMDD_HHMMSS' `
+  'D:\central_strip_Panoramic_Camera\data\captures\video\run_YYYYMMDD_HHMMSS' `
   --output 'D:\central_strip_Panoramic_Camera\outputs\video_sequence'
 ```
 
@@ -236,10 +236,20 @@ $env:G305_CUDA = 'required'
 
 ```powershell
 wsl.exe -e bash -lc `
-  'test -f ~/Projects/ORB_SLAM3_WS/ORB_SLAM3/Examples/RGB-D/rgbd_tum && echo orb-executable-ok'
+  'test -f ~/Projects/ORB_SLAM3_WS/ORB_SLAM3/Examples/RGB-D/rgbd_tum_headless && echo orb-headless-executable-ok'
 
 wsl.exe -e bash -lc `
   'test -f ~/Projects/ORB_SLAM3_WS/ORB_SLAM3/Vocabulary/ORBvoc.txt && echo vocabulary-ok'
+```
+
+批处理全景必须使用 `rgbd_tum_headless`：它与 upstream `rgbd_tum` 使用相同的
+RGB-D tracking 和轨迹导出，只禁用不参与交付的 Pangolin Viewer，以避免 WSLg/OpenGL
+线程造成的原生偶发崩溃。保留 `rgbd_tum` 供手动可视化诊断；首次配置 headless runner
+后运行：
+
+```powershell
+wsl.exe -e cmake -S ~/Projects/ORB_SLAM3_WS/ORB_SLAM3 -B ~/Projects/ORB_SLAM3_WS/ORB_SLAM3/build
+wsl.exe -e cmake --build ~/Projects/ORB_SLAM3_WS/ORB_SLAM3/build --target rgbd_tum_headless --parallel 4
 ```
 
 ### 4. 运行正式全景
