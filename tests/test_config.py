@@ -29,12 +29,34 @@ def test_default_video_capture_uses_capped_auto_exposure_and_locked_awb() -> Non
     assert video["post_lock_verified_frames"] == 2
     assert video["trigger_out_delay_us"] == 7000
     assert video["trigger_to_image_delay_us"] == 8000
+    assert video["width"] == 848
+    assert video["height"] == 480
+    assert video["fps"] == 60
+    assert video["jpeg_quality"] == 98
+    assert video["depth_png_compression"] == 0
     assert config["capture"]["frame_sync"] is True
     assert config["capture"]["external_sync_output"] is True
     assert config["capture"]["fps"] == 30
     assert "color_formats" not in config["capture"]
     assert "depth_format" not in config["capture"]
     assert config["stitch"]["max_canvas_megapixels"] == 200
+    assert config["stitch"]["video_panorama"] == {
+        "default_preset": "fast",
+        "fast_orb_target_fps": 20.0,
+        "motion_backend": "dis",
+        "maximum_post_seconds": 60.0,
+        "fast_odometry_prepare_workers": 4,
+        "fast_publish_auxiliary_exports": False,
+        "fast_enable_geometry_assist": False,
+        "fast_renderer": "visual_seam",
+        "motion_resampling": {
+            "minimum_step_pixels": 3.0,
+            "normal_target_step_pixels": 16.0,
+            "risk_target_step_pixels": 8.0,
+            "maximum_step_pixels": 24.0,
+            "emergency_step_pixels": 30.0,
+        },
+    }
     assert config["stitch"]["diagnostic_force"] is False
     assert config["stitch"]["handoff_fallback_policy"] == {
         "publish_degraded": True,
@@ -131,7 +153,7 @@ def test_default_video_capture_uses_capped_auto_exposure_and_locked_awb() -> Non
             "backend": "se3_epipolar_hierarchical_rgb",
             "analysis_width": 640,
             "maximum_preview_megapixels": 2.0,
-            "maximum_evidence_megapixels": 3.0,
+            "maximum_evidence_megapixels": 10.0,
             "held_out_fraction": 0.20,
             "owner_track_consistency": True,
             "background_model": "identity",
@@ -385,7 +407,7 @@ def test_explicit_auto_exposure_mode_is_not_overridden(tmp_path: Path) -> None:
                 "residual_alignment",
                 "maximum_evidence_megapixels",
             ),
-            3.1,
+            10.1,
             "residual_alignment",
         ),
         (

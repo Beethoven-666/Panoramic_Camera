@@ -85,9 +85,17 @@ def publish_video_3d(output: str | Path, *, input_path: str | Path, config: dict
         report = _load_2d_report(root)
         session = load_video_session(source)
         expected = report.get("input_sha256")
-        actual = {"manifest": _sha256(session.rgbd.root / "manifest.json"), "calibration": _sha256(session.rgbd.root / "calibration.json")}
-        if expected != actual:
-            raise ValueError("Video source manifest/calibration no longer match its published 2-D delivery")
+        actual = {
+            "manifest": _sha256(session.rgbd.root / "manifest.json"),
+            "calibration": _sha256(session.rgbd.root / "calibration.json"),
+            "frames_csv": _sha256(session.rgbd.root / "frames.csv"),
+        }
+        if not isinstance(expected, dict) or set(expected) - set(actual) or any(
+            expected.get(key) != actual[key]
+            for key in expected
+            if key in actual
+        ) or not {"manifest", "calibration"}.issubset(expected):
+            raise ValueError("Video source input hashes no longer match its published 2-D delivery")
         ids = report.get("source_frame_ids")
         orb = report.get("orbslam3", {})
         if not isinstance(ids, list) or not isinstance(orb, dict):

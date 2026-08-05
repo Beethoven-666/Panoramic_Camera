@@ -127,6 +127,45 @@ def undistort_depth_with_validity(
     return result, valid
 
 
+def _project_rational_brown_conrady_8(
+    points: np.ndarray,
+    matrix: np.ndarray,
+    distortion: np.ndarray,
+) -> np.ndarray | None:
+    """Vectorise OpenCV's eight-coefficient rational Brown--Conrady model.
+
+    Gemini 305 colour calibration uses exactly ``k1, k2, p1, p2, k3, k4,
+    k5, k6``.  This is algebraically the same projection used by
+    :func:`cv2.projectPoints`, but avoids one Python/OpenCV dispatch for every
+    narrow strip.  A non-finite or near-zero rational denominator returns
+    ``None`` so the caller uses OpenCV's conservative implementation instead.
+    """
+
+    if distortion.shape != (8,):
+        return None
+    x = points[:, 0] / points[:, 2]
+    y = points[:, 1] / points[:, 2]
+    r2 = x * x + y * y
+    r4 = r2 * r2
+    r6 = r4 * r2
+    k1, k2, p1, p2, k3, k4, k5, k6 = distortion
+    denominator = 1.0 + k4 * r2 + k5 * r4 + k6 * r6
+    if not np.isfinite(denominator).all() or np.any(
+        np.abs(denominator) <= np.finfo(np.float64).eps
+    ):
+        return None
+    radial = (1.0 + k1 * r2 + k2 * r4 + k3 * r6) / denominator
+    x_distorted = x * radial + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x)
+    y_distorted = y * radial + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y
+    projected = np.column_stack(
+        (
+            matrix[0, 0] * x_distorted + matrix[0, 2],
+            matrix[1, 1] * y_distorted + matrix[1, 2],
+        )
+    )
+    return projected if np.isfinite(projected).all() else None
+
+
 def camera_points_to_source_pixels(
     camera_points_mm: np.ndarray,
     intrinsics: CalibratedIntrinsics,
@@ -161,14 +200,18 @@ def camera_points_to_source_pixels(
             )
             projected = np.stack((source_x, source_y), axis=1)
         else:
-            projected, _ = cv2.projectPoints(
-                usable.reshape(-1, 1, 3),
-                np.zeros((3, 1), dtype=np.float64),
-                np.zeros((3, 1), dtype=np.float64),
-                matrix,
-                distortion,
+            projected = _project_rational_brown_conrady_8(
+                usable, matrix, distortion
             )
-            projected = projected.reshape(-1, 2)
+            if projected is None:
+                projected, _ = cv2.projectPoints(
+                    usable.reshape(-1, 1, 3),
+                    np.zeros((3, 1), dtype=np.float64),
+                    np.zeros((3, 1), dtype=np.float64),
+                    matrix,
+                    distortion,
+                )
+                projected = projected.reshape(-1, 2)
         map_x[finite_positive] = projected[:, 0].astype(np.float32)
         map_y[finite_positive] = projected[:, 1].astype(np.float32)
     shape = points.shape[:-1]

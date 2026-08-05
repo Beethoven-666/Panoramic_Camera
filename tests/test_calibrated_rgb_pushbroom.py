@@ -124,6 +124,52 @@ def _reliable_adjacent_rgb_motions(frame_count: int) -> list[dict[str, object]]:
     return [{"dx": 16.0, "reliable": True} for _ in range(frame_count - 1)]
 
 
+def test_fast_hard_owner_keeps_one_calibrated_remap_and_complete_owner_map(
+    tmp_path: Path,
+) -> None:
+    session, poses = _make_rgb_pushbroom_input(tmp_path, seed=83)
+
+    result = render_calibrated_rgb_pushbroom(
+        session.frames,
+        poses,
+        session.calibration,
+        rgb_motions=_reliable_adjacent_rgb_motions(len(session.frames)),
+        fast_hard_owner=True,
+        central_strip_output_dir=tmp_path / "strips",
+        central_strip_owner_only_output_dir=tmp_path / "owner_only",
+    )
+
+    metrics = result.metadata["quality_metrics"]
+    assert metrics["quality_pass"] is False
+    assert metrics["source_remap_count"] == len(session.frames)
+    assert metrics["analysis_preview_remap_count"] == 0
+    assert metrics["strict_owner_partition"] is True
+    assert result.owner_frame_id is not None
+    assert result.owner_frame_id.shape == result.panorama.shape[:2]
+    assert np.all(result.owner_frame_id >= 0)
+    assert result.metadata["central_strip_export"]["image_count"] == len(session.frames)
+
+
+def test_fast_visual_owner_can_skip_depth_when_motion_risk_is_clear(
+    tmp_path: Path,
+) -> None:
+    session, poses = _make_rgb_pushbroom_input(tmp_path, seed=89)
+
+    result = render_calibrated_rgb_pushbroom(
+        session.frames,
+        poses,
+        session.calibration,
+        rgb_motions=_reliable_adjacent_rgb_motions(len(session.frames)),
+        fast_visual_owner=True,
+        fast_visual_use_depth=False,
+    )
+
+    assert result.metadata["backend"] == "calibrated_rgb_pushbroom_fast_visual_owner"
+    assert result.metadata["depth_used_for_local_geometry"] is False
+    assert result.metadata["quality_metrics"]["strict_owner_partition"] is True
+    assert result.metadata["quality_metrics"]["photometric_flow_evidence_complete"] is True
+
+
 def test_unlimited_pose_admission_keeps_more_than_160_real_nodes(tmp_path: Path) -> None:
     """A null total limit is not silently converted back to the old 160 cap."""
 

@@ -197,8 +197,29 @@ RGB-D 帧进入写盘前再次回读完整同步配置。任一帧读到的模�
 ```powershell
 & 'D:\Panoramic_Camera\.conda\Scripts\g305-video-panorama.exe' `
   'D:\central_strip_Panoramic_Camera\data\captures\video\run_YYYYMMDD_HHMMSS' `
+  --preset fast `
+  --maximum-post-seconds 60 `
   --output 'D:\central_strip_Panoramic_Camera\outputs\video_sequence'
 ```
+
+`fast` uses low-resolution DIS motion to choose a smaller chronological set of
+real RGB-D render sources.  It still runs the complete real ORB-SLAM3 scan
+chain and audits every adjacent selected source with Open3D; no source pose is
+interpolated.  A prior complete trajectory may be reused only when both the
+manifest and calibration SHA-256 values match exactly:
+
+```powershell
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-panorama.exe' SESSION `
+  --preset fast `
+  --trajectory-cache PREVIOUS_VIDEO_REPORT.json `
+  --defer-3d `
+  --output OUTPUT
+```
+
+`video_report.json` records the selected source IDs, per-stage post-capture
+time, and whether `--maximum-post-seconds` was met.  An over-budget result is
+published as C with manual review required; it is never silently labelled as
+an SLA success.
 
 默认在 2-D 发布后生成 GLB；若要延后：
 

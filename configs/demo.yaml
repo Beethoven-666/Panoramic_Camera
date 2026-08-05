@@ -23,6 +23,13 @@ capture:
   # capped at 800 us for the moving-camera safety contract.
   video_mode:
     enabled: true
+    # Video has its own real-time profile; photo mode retains the root capture
+    # resolution and cadence above.
+    width: 848
+    height: 480
+    fps: 60
+    jpeg_quality: 98
+    depth_png_compression: 0
     # Both requested values are read back for every accepted frame. The image
     # delay is applied to depth_delay_us, color_delay_us, and
     # trigger_to_image_delay_us, matching the D:\Flash timing contract.
@@ -67,6 +74,33 @@ capture:
     gate_settle_ms: 250
 
 stitch:
+  # Independent video delivery planning.  The selector only chooses actual
+  # RGB-D frames after the complete ORB-SLAM3 trajectory is available; it
+  # never fabricates a pose or replaces the calibrated formal renderer.
+  video_panorama:
+    default_preset: fast
+    fast_orb_target_fps: 20.0
+    motion_backend: dis
+    maximum_post_seconds: 60.0
+    fast_odometry_prepare_workers: 4
+    # Fast publishes only the primary panorama/provenance/report. Strip
+    # archives are audit artifacts and may be requested by setting this true.
+    fast_publish_auxiliary_exports: false
+    # The full RGB-D mesh validator is retained for ``quality`` and ``audit``.
+    # Fast starts from a hard-owner/GraphCut-safe visual path; enable this only
+    # when a scan-risk monitor has flagged geometry-critical corridors.
+    fast_enable_geometry_assist: false
+    # Fast uses the unified depth-aware curved visual seam.  It is fail-closed:
+    # contaminated depth evidence becomes an RGB-only hard owner rather than
+    # a forced, visually torn foreground. ``audited_visual`` is the slower
+    # full GraphCut/MultiBand review path; hard-owner remains diagnostic-only.
+    fast_renderer: visual_seam
+    motion_resampling:
+      minimum_step_pixels: 3.0
+      normal_target_step_pixels: 16.0
+      risk_target_step_pixels: 8.0
+      maximum_step_pixels: 24.0
+      emergency_step_pixels: 30.0
   # Open3D measures every short RGB-D edge; ORB-SLAM3 RGB-D uses the complete
   # short-baseline sequence to stabilise the global camera trajectory.
   pose_backend: hybrid_orbslam3_rgbd
@@ -97,6 +131,7 @@ stitch:
     # This non-interactive runner retains the upstream rgbd_tum binary for
     # manual diagnostics but does not create Pangolin/WSLg Viewer threads.
     executable: Examples/RGB-D/rgbd_tum_headless
+    stream_executable: Examples/RGB-D/rgbd_g305_stream_headless
     vocabulary: Vocabulary/ORBvoc.txt
     timeout_seconds: 600.0
     # The renderer never interpolates an untracked frame, so every dense pose
@@ -360,7 +395,7 @@ stitch:
       # Analysis has an independent hard cap: only adjacent previews are kept
       # and the aggregate dense evidence cannot exceed this RGB-only budget.
       maximum_preview_megapixels: 2.0
-      maximum_evidence_megapixels: 3.0
+      maximum_evidence_megapixels: 10.0
       held_out_fraction: 0.20
       owner_track_consistency: true
       # The verified RGB-D camera_to_world SE(3) chain is the sole global

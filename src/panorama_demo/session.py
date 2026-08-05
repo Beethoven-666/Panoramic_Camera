@@ -306,7 +306,9 @@ def _parse_optional_int(
         raise ValueError(f"frames.csv row {row_number} has invalid {key}") from exc
 
 
-def load_rgbd_session(input_path: str | Path) -> RGBDSession:
+def load_rgbd_session(
+    input_path: str | Path, *, validate_frame_files: bool = True
+) -> RGBDSession:
     """Load and fully validate a formal color-aligned RGB-D capture session.
 
     Unlike :func:`discover_frames`, this entry point never accepts RGB-only
@@ -453,7 +455,8 @@ def load_rgbd_session(input_path: str | Path) -> RGBDSession:
                 raise ValueError(
                     f"frames.csv row {row_number} reuses a color or aligned-depth file"
                 )
-            _validate_frame_files(frame, calibration, row_number=row_number)
+            if validate_frame_files:
+                _validate_frame_files(frame, calibration, row_number=row_number)
             frame_ids.add(frame_id)
             color_paths.add(color_path)
             depth_paths.add(aligned_depth_path)

@@ -5,7 +5,7 @@ import json
 import numpy as np
 
 from panorama_demo.orbslam3_bridge import ORBSLAM3Error
-from panorama_demo.video_delivery import publish_video_2d, write_video_failure
+from panorama_demo.video_delivery import invalidate_video_delivery, publish_video_2d, write_video_failure
 from panorama_demo.video_3d import _offline_glb_viewer
 
 
@@ -18,6 +18,34 @@ def test_video_delivery_is_published_last(tmp_path):
     assert report["schema"] == "gemini305-video-panorama-report/v1"
     delivery = json.loads((tmp_path / "video_delivery.json").read_text(encoding="utf-8"))
     assert delivery["quality_grade"] == "C"
+
+
+def test_video_delivery_carries_fast_sla_and_invalidates_old_3d(tmp_path):
+    (tmp_path / "video_tsdf_mesh.glb").write_bytes(b"old")
+    invalidate_video_delivery(tmp_path)
+    image = np.full((12, 24, 3), 80, dtype=np.uint8)
+    owner = np.zeros((12, 24), dtype=np.int32)
+    report = publish_video_2d(
+        tmp_path,
+        image,
+        owner,
+        {
+            "delivery_state": "published_degraded",
+            "quality_grade": "C",
+            "manual_review_required": True,
+            "preset": "fast",
+            "performance": {
+                "post_capture_seconds": 8.5,
+                "maximum_post_seconds": 8.0,
+                "within_post_capture_budget": False,
+            },
+        },
+    )
+    delivery = json.loads((tmp_path / "video_delivery.json").read_text(encoding="utf-8"))
+    assert delivery["preset"] == "fast"
+    assert delivery["within_post_capture_budget"] is False
+    assert not (tmp_path / "video_tsdf_mesh.glb").exists()
+    assert report["performance"]["post_capture_seconds"] == 8.5
 
 
 def test_video_failure_records_native_attempt_audit(tmp_path):

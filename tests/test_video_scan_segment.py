@@ -17,4 +17,7 @@ def test_video_scan_selects_contiguous_real_sources(tmp_path):
     qualities, motions, segment = analyse_video_scan(session.rgbd.frames)
     assert len(qualities) == 7
     assert len(motions) == 6
+    assert {motion.method for motion in motions} <= {
+        "dis_ultrafast", "dis_unreliable", "features", "phase"
+    }
     assert 0 <= int(segment["start_index"]) < int(segment["end_index"]) < 7

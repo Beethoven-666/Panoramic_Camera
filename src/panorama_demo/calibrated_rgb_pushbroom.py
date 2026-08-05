@@ -29,7 +29,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from itertools import product
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 import cv2
 import numpy as np
@@ -83,6 +83,17 @@ from .rgb_residual_alignment import (
     preflight_sequence_owners,
 )
 from .session import CameraIntrinsics, RGBDFrame, read_aligned_depth_mm
+from .video_photometric import (
+    AdjacentBGRAOverlap,
+    apply_video_photometric_correction,
+    solve_video_global_photometric,
+)
+from .video_visual_renderer import (
+    VideoVisualSeamConfig,
+    VideoVisualSource,
+    render_video_visual_sources,
+    video_flow_correspondence_evidence,
+)
 
 
 _HARD_MAX_CANVAS_MEGAPIXELS = 200.0
@@ -8094,6 +8105,8 @@ def _stage_owner_only_central_strip_images(
     owner_frame_id: np.ndarray,
     frame_ids: Sequence[int],
     output_directory: Path,
+    *,
+    png_compression: int = 3,
 ) -> dict[str, object]:
     """Export each source's final, owner-only contribution from the panorama."""
 
@@ -8101,6 +8114,8 @@ def _stage_owner_only_central_strip_images(
         raise RuntimeError("Owner-only central-strip staging directory already exists")
     if panorama.shape[:2] != owner_frame_id.shape:
         raise ValueError("Owner-only central strips require the final owner map")
+    if not 0 <= int(png_compression) <= 9:
+        raise ValueError("Owner-only central strip PNG compression must be in [0, 9]")
     output_directory.mkdir(parents=True)
     images: list[dict[str, object]] = []
     try:
@@ -8118,7 +8133,11 @@ def _stage_owner_only_central_strip_images(
                 alpha = np.where(mask[:, x0:x1], 255, 0).astype(np.uint8)
             filename = f"central_strip_{source_index:04d}_frame_{int(frame_id):06d}.png"
             pending = output_directory / f".{filename}.pending.png"
-            if not cv2.imwrite(str(pending), np.dstack((rgb, alpha))):
+            if not cv2.imwrite(
+                str(pending),
+                np.dstack((rgb, alpha)),
+                [cv2.IMWRITE_PNG_COMPRESSION, int(png_compression)],
+            ):
                 raise RuntimeError(f"Could not write owner-only central strip {filename}")
             os.replace(pending, output_directory / filename)
             images.append(
@@ -10652,6 +10671,431 @@ def _rewrite_redundant_pose_node_owners(
     return results
 
 
+def _stage_central_strip_contributions(
+    contributions: Sequence[PushbroomContribution],
+    output_directory: Path,
+    *,
+    png_compression: int = 3,
+) -> dict[str, object]:
+    """Export already-remapped fast strips without temporary NPZ round-trips."""
+
+    if output_directory.exists():
+        raise RuntimeError("Central-strip staging directory already exists")
+    if not 0 <= int(png_compression) <= 9:
+        raise ValueError("Central strip PNG compression must be in [0, 9]")
+    output_directory.mkdir(parents=True)
+    images: list[dict[str, object]] = []
+    try:
+        for index, contribution in enumerate(contributions):
+            alpha = np.where(contribution.valid_mask, 255, 0).astype(np.uint8)
+            bgra = np.dstack((contribution.rgb, alpha))
+            filename = f"central_strip_{index:04d}_frame_{contribution.frame_id:06d}.png"
+            pending = output_directory / f".{filename}.pending.png"
+            if not cv2.imwrite(
+                str(pending),
+                bgra,
+                [cv2.IMWRITE_PNG_COMPRESSION, int(png_compression)],
+            ):
+                raise RuntimeError(f"Could not write central strip image {filename}")
+            os.replace(pending, output_directory / filename)
+            images.append(
+                {
+                    "filename": filename,
+                    "source_index": int(contribution.source_index),
+                    "frame_id": int(contribution.frame_id),
+                    "canvas_x0": int(contribution.x0),
+                    "width": int(contribution.rgb.shape[1]),
+                    "height": int(contribution.rgb.shape[0]),
+                    "valid_pixel_count": int(np.count_nonzero(contribution.valid_mask)),
+                }
+            )
+        (output_directory / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema": "unified-calibrated-central-strips/v1",
+                    "image_encoding": "PNG BGRA",
+                    "alpha_semantics": "255=valid_calibrated_rgb_sample; 0=invalid_remap_sample",
+                    "images": images,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        shutil.rmtree(output_directory, ignore_errors=True)
+        raise
+    return {
+        "schema": "unified-calibrated-central-strips/v1",
+        "image_count": len(images),
+        "image_encoding": "PNG BGRA",
+        "alpha_semantics": "255=valid_calibrated_rgb_sample; 0=invalid_remap_sample",
+    }
+
+
+def _render_calibrated_rgb_pushbroom_fast_hard_owner(
+    frames: Sequence[RGBDFrame],
+    poses: Sequence[np.ndarray],
+    calibration: CameraIntrinsics,
+    *,
+    settings: CalibratedRGBPushbroomConfig,
+    rgb_motions: Sequence[object] | None,
+    motion_pixels_to_full_resolution: float,
+    central_strip_output_dir: Path | None,
+    central_strip_owner_only_output_dir: Path | None,
+    visual_seams: bool = False,
+    visual_use_depth: bool = True,
+    visual_photometric: bool = True,
+) -> CalibratedRGBPushbroomResult:
+    """Render one calibrated remap per source with a monotone hard owner map.
+
+    This bounded fast path is deliberately C-grade: it performs no RGB preview,
+    photometric fitting, GraphCut, or MultiBand blend.  The video visual-owner
+    variant reads aligned depth solely through the exact calibrated inverse map
+    to protect depth edges and assign true nearer-layer conflicts.  It retains
+    every structural invariant that makes a degraded video delivery honest:
+    real SE(3), one calibrated inverse remap per real source, one canvas,
+    valid-mask/owner-map consistency, and a chronological hard owner.
+    """
+
+    if len(frames) != len(poses) or len(frames) < 2:
+        raise ValueError("Calibrated RGB pushbroom requires at least two aligned frames/poses")
+    if settings.max_pose_count is not None and len(frames) > int(settings.max_pose_count):
+        raise ValueError("Calibrated RGB pushbroom exceeds configured total pose-node limit")
+    checked_poses = [validate_camera_to_world(pose) for pose in poses]
+    scale = estimate_rgb_motion_pixels_per_mm(
+        frames,
+        checked_poses,
+        calibration,
+        settings,
+        rgb_motions=rgb_motions,
+        motion_pixels_to_full_resolution=motion_pixels_to_full_resolution,
+    )
+    layout = build_calibrated_rgb_pushbroom_layout(
+        [frame.frame_id for frame in frames], checked_poses, calibration, scale, settings
+    )
+    renderer = CalibratedRGBPushbroomRenderer(layout, calibration, checked_poses)
+    contributions = tuple(
+        renderer.render_frame(frame, index) for index, frame in enumerate(frames)
+    )
+    visual_audits: list[dict[str, object]] = []
+    visual_photometric_audit: dict[str, object] | None = None
+    visual_photometric_accepted = False
+    photometric_flow_audits: list[dict[str, object]] = []
+    if visual_seams:
+        overlaps: list[AdjacentBGRAOverlap] = []
+        for source_index, (first, second) in enumerate(
+            zip(contributions[:-1], contributions[1:], strict=True)
+        ):
+            left = max(first.x0, second.x0)
+            right = min(
+                first.x0 + first.rgb.shape[1],
+                second.x0 + second.rgb.shape[1],
+            )
+            if right <= left:
+                raise RuntimeError("Adjacent video render sources have no calibrated overlap")
+            first_slice = slice(left - first.x0, right - first.x0)
+            second_slice = slice(left - second.x0, right - second.x0)
+            first_alpha = np.where(first.valid_mask[:, first_slice], 255, 0).astype(np.uint8)
+            second_alpha = np.where(second.valid_mask[:, second_slice], 255, 0).astype(np.uint8)
+            first_rgb = first.rgb[:, first_slice]
+            second_rgb = second.rgb[:, second_slice]
+            first_bgra = np.dstack((first_rgb, first_alpha))
+            second_bgra = np.dstack((second_rgb, second_alpha))
+            raw_overlap = (
+                np.asarray(first.valid_mask[:, first_slice], dtype=bool)
+                & np.asarray(second.valid_mask[:, second_slice], dtype=bool)
+            )
+            flow_evidence = video_flow_correspondence_evidence(
+                first_bgra,
+                second_bgra,
+                raw_overlap,
+            )
+            if flow_evidence is None:
+                flow_residual = None
+                flow_reliable = raw_overlap
+                matched_second_bgra = second_bgra
+            else:
+                flow_residual, flow_reliable, matched_second_bgra = flow_evidence
+            # Select photometric observations only from bidirectionally
+            # consistent DIS correspondence in this one adjacent corridor.
+            # The flow-warped right image is evidence only: it never reaches
+            # the RGB compositor, which retains a strict source owner map.
+            raw_disagreement = np.max(
+                np.abs(
+                    first_rgb.astype(np.int16)
+                    - matched_second_bgra[..., :3].astype(np.int16)
+                ),
+                axis=2,
+            ) > 24
+            unsafe = cv2.dilate(
+                raw_disagreement.astype(np.uint8),
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            ) > 0
+            if flow_residual is not None:
+                unsafe |= flow_residual > 24.0
+            first_safe = raw_overlap & flow_reliable & ~unsafe
+            second_safe = (
+                raw_overlap
+                & flow_reliable
+                & (matched_second_bgra[..., 3] > 0)
+                & ~unsafe
+            )
+            photometric_flow_audits.append(
+                {
+                    "pair_index": source_index,
+                    "overlap_pixel_count": int(raw_overlap.sum()),
+                    "reliable_flow_fraction": (
+                        None
+                        if flow_evidence is None
+                        else float(flow_reliable[raw_overlap].mean())
+                    ),
+                    "safe_evidence_pixel_count": int(first_safe.sum()),
+                }
+            )
+            overlaps.append(
+                AdjacentBGRAOverlap(
+                    source_index,
+                    source_index + 1,
+                    first_bgra,
+                    matched_second_bgra,
+                    first_safe,
+                    second_safe,
+                )
+            )
+        photometric = solve_video_global_photometric(
+            len(contributions), overlaps
+        ) if visual_photometric else None
+        visual_photometric_accepted = bool(photometric is not None and photometric.accepted)
+        visual_photometric_audit = (
+            dict(photometric.audit)
+            if photometric is not None
+            else {
+                "schema": "g305-video-global-photometric/v1",
+                "accepted": False,
+                "rejection_reason": "disabled",
+            }
+        )
+
+        def _visual_sources() -> Iterable[VideoVisualSource]:
+            # This generator holds only the two live full-canvas sources that
+            # the compositor needs.  RGB has already been remapped exactly
+            # once by ``render_frame``; the nearest-neighbour depth sample is
+            # geometry evidence, never an RGB output sample.
+            for source_index, contribution in enumerate(contributions):
+                placed = np.zeros(
+                    (layout.canvas_height, layout.canvas_width, 4), dtype=np.uint8
+                )
+                placed_depth = (
+                    np.zeros((layout.canvas_height, layout.canvas_width), dtype=np.float32)
+                    if visual_use_depth
+                    else None
+                )
+                right = contribution.x0 + contribution.rgb.shape[1]
+                alpha = np.where(contribution.valid_mask, 255, 0).astype(np.uint8)
+                source_bgra = np.dstack((contribution.rgb, alpha))
+                if visual_photometric_accepted:
+                    assert photometric is not None
+                    source_bgra = apply_video_photometric_correction(
+                        source_bgra, photometric.corrections[source_index]
+                    )
+                placed[:, contribution.x0:right] = source_bgra
+                if placed_depth is not None:
+                    geometry = renderer.render_local_geometry_map(
+                        frames[source_index],
+                        source_index,
+                        x0=contribution.x0,
+                        x1=right,
+                    )
+                    sampled_depth = accelerated_remap(
+                        read_aligned_depth_mm(frames[source_index]),
+                        geometry.source_map_x,
+                        geometry.source_map_y,
+                        cv2.INTER_NEAREST,
+                        borderMode=cv2.BORDER_CONSTANT,
+                        borderValue=0,
+                    )
+                    sampled_depth = np.asarray(sampled_depth, dtype=np.float32)
+                    sampled_depth[~np.asarray(geometry.valid_mask, dtype=bool)] = 0.0
+                    placed_depth[:, contribution.x0:right] = sampled_depth
+                yield VideoVisualSource(
+                    frame_id=contribution.frame_id,
+                    bgra=placed,
+                    depth_mm=placed_depth,
+                )
+        visual = render_video_visual_sources(
+            # DIS improves the pair-local hard seam but never warps or blends
+            # RGB output samples, poses, or source provenance.
+            _visual_sources(), config=VideoVisualSeamConfig(flow_enabled=True)
+        )
+        canvas = np.ascontiguousarray(visual.bgra[..., :3])
+        valid_canvas = np.asarray(visual.valid_mask, dtype=bool)
+        owner_frame_canvas = np.asarray(visual.owner_frame_id, dtype=np.int64)
+        owner_canvas = np.full(owner_frame_canvas.shape, -1, dtype=np.int64)
+        for source_index, frame in enumerate(frames):
+            owner_canvas[owner_frame_canvas == int(frame.frame_id)] = source_index
+        for audit in visual.seams:
+            visual_audits.append(
+                {
+                    "incoming_frame_id": audit.incoming_frame_id,
+                    "overlap_pixel_count": audit.overlap_pixel_count,
+                    "reliable_flow_fraction": audit.reliable_flow_fraction,
+                    "protected_pixel_count": audit.protected_pixel_count,
+                    "forced_nearer_owner_pixel_count": audit.forced_nearer_owner_pixel_count,
+                    "curved_seam": audit.curved_seam,
+                    "seam_x_min": min(audit.seam_x_by_row) if audit.seam_x_by_row else None,
+                    "seam_x_max": max(audit.seam_x_by_row) if audit.seam_x_by_row else None,
+                    "method": audit.method,
+                }
+            )
+    else:
+        canvas = np.zeros((layout.canvas_height, layout.canvas_width, 3), dtype=np.uint8)
+        valid_canvas = np.zeros((layout.canvas_height, layout.canvas_width), dtype=bool)
+        owner_canvas = np.full((layout.canvas_height, layout.canvas_width), -1, dtype=np.int64)
+        for index, contribution in enumerate(contributions):
+            _write_owner_core(
+                canvas,
+                valid_canvas,
+                owner_canvas,
+                contribution,
+                contribution.rgb,
+                layout.owner_left_x[index],
+                layout.owner_right_x[index],
+            )
+    if np.any(valid_canvas & (owner_canvas < 0)):
+        raise RuntimeError("Fast RGB pushbroom valid output contains an unowned pixel")
+    if not np.any(valid_canvas):
+        raise RuntimeError("Fast calibrated RGB pushbroom produced no valid RGB pixels")
+    crop = largest_valid_rectangle(valid_canvas)
+    panorama = np.ascontiguousarray(
+        canvas[crop.y : crop.y + crop.height, crop.x : crop.x + crop.width]
+    )
+    cropped_owner = owner_canvas[
+        crop.y : crop.y + crop.height, crop.x : crop.x + crop.width
+    ]
+    frame_id_lookup = np.asarray([int(frame.frame_id) for frame in frames], dtype=np.int64)
+    owner_frame_id = np.full(cropped_owner.shape, -1, dtype=np.int64)
+    owned = cropped_owner >= 0
+    owner_frame_id[owned] = frame_id_lookup[cropped_owner[owned]]
+    presentation_horizontal_flip = bool(layout.temporal_to_virtual_x_sign < 0.0)
+    if presentation_horizontal_flip:
+        panorama = np.ascontiguousarray(panorama[:, ::-1])
+        owner_frame_id = np.ascontiguousarray(owner_frame_id[:, ::-1])
+    source_owner_pixel_counts = [
+        int(np.count_nonzero(cropped_owner == source_index))
+        for source_index in range(len(frames))
+    ]
+    expected_visual_pair_count = len(frames) - 1
+    photometric_flow_complete = bool(
+        visual_seams
+        and len(photometric_flow_audits) == expected_visual_pair_count
+        and all(
+            audit["reliable_flow_fraction"] is not None
+            and float(audit["reliable_flow_fraction"]) >= 0.50
+            and int(audit["safe_evidence_pixel_count"]) >= 192
+            for audit in photometric_flow_audits
+        )
+    )
+    seam_flow_complete = bool(
+        visual_seams
+        and len(visual_audits) == expected_visual_pair_count
+        and all(
+            audit["reliable_flow_fraction"] is not None
+            and float(audit["reliable_flow_fraction"]) >= 0.25
+            and bool(audit["curved_seam"])
+            for audit in visual_audits
+        )
+    )
+    fast_visual_quality_pass = bool(
+        visual_seams
+        and visual_photometric_accepted
+        and renderer.remap_count == len(frames)
+        and photometric_flow_complete
+        and seam_flow_complete
+    )
+    fast_visual_failure_reasons: list[str] = []
+    if not visual_seams:
+        fast_visual_failure_reasons.append("video_fast_hard_owner")
+    elif not visual_photometric_accepted:
+        fast_visual_failure_reasons.append("video_fast_visual_photometric_rejected")
+    if visual_seams and not photometric_flow_complete:
+        fast_visual_failure_reasons.append("video_fast_photometric_flow_evidence_incomplete")
+    if visual_seams and not seam_flow_complete:
+        fast_visual_failure_reasons.append("video_fast_seam_flow_evidence_incomplete")
+    if renderer.remap_count != len(frames):
+        fast_visual_failure_reasons.append("video_fast_source_remap_count_mismatch")
+    metadata: dict[str, object] = {
+        "backend": (
+            "calibrated_rgb_pushbroom_fast_visual_owner"
+            if visual_seams
+            else "calibrated_rgb_pushbroom_fast_hard_owner"
+        ),
+        "acceleration": cuda_metadata(),
+        "mosaicing_method": {
+            "name_en": (
+                "Trajectory-Constrained Calibrated RGB Curved Hard-Owner Pushbroom"
+                if visual_seams
+                else "Trajectory-Constrained Calibrated RGB Hard-Owner Pushbroom"
+            ),
+            "trajectory_source": "orbslam3_rgbd_camera_to_world",
+            "real_pose_nodes_preserved": True,
+            "pose_interpolation_applied": False,
+            "foreground_policy": (
+                "single_rgb_owner_curved_hard_seam"
+                if visual_seams
+                else "single_rgb_owner_hard_cut_degraded"
+            ),
+            "unified_content_mode": True,
+        },
+        "pixel_source": "calibrated_rgb_source_samples",
+        "depth_used_for_output_pixels": False,
+        "depth_used_for_local_geometry": bool(visual_seams and visual_use_depth),
+        "video_global_photometric": visual_photometric_audit,
+        "video_photometric_flow_evidence": photometric_flow_audits,
+        "single_inverse_remap_per_source": True,
+        "interpolated_pose_count": 0,
+        "layout": layout.as_dict(),
+        "rgb_motion_scale": scale.as_dict(),
+        "quality_metrics": {
+            "quality_pass": fast_visual_quality_pass,
+            "strict_owner_partition": True,
+            "hard_cut_pair_count": 0 if visual_seams else len(frames) - 1,
+            "graphcut_pair_count": 0,
+            "curved_hard_owner_pair_count": sum(
+                bool(audit["curved_seam"]) for audit in visual_audits
+            ),
+            "video_visual_seam_audits": visual_audits,
+            "photometric_flow_evidence_complete": photometric_flow_complete,
+            "seam_flow_evidence_complete": seam_flow_complete,
+            "blend_pixel_count": 0,
+            "deformation_pixel_count": 0,
+            "source_remap_count": renderer.remap_count,
+            "full_resolution_output_remap_count": renderer.full_resolution_output_remap_count,
+            "analysis_preview_remap_count": 0,
+            "geometry_trigger_preview_remap_count": 0,
+            "all_real_pose_nodes_rendered": True,
+            "source_owner_pixel_counts": source_owner_pixel_counts,
+            "strict_failure_reasons": fast_visual_failure_reasons,
+        },
+    }
+    if central_strip_output_dir is not None:
+        metadata["central_strip_export"] = _stage_central_strip_contributions(
+            contributions, Path(central_strip_output_dir), png_compression=0
+        )
+    if central_strip_owner_only_output_dir is not None:
+        metadata["central_strip_owner_only_export"] = _stage_owner_only_central_strip_images(
+            panorama,
+            owner_frame_id,
+            frame_id_lookup,
+            Path(central_strip_owner_only_output_dir),
+            png_compression=0,
+        )
+    return CalibratedRGBPushbroomResult(
+        panorama=panorama,
+        metadata=metadata,
+        owner_frame_id=np.ascontiguousarray(owner_frame_id),
+    )
+
+
 def render_calibrated_rgb_pushbroom(
     frames: Sequence[RGBDFrame],
     poses: Sequence[np.ndarray],
@@ -10664,6 +11108,10 @@ def render_calibrated_rgb_pushbroom(
     quality_gate: bool = True,
     central_strip_output_dir: Path | None = None,
     central_strip_owner_only_output_dir: Path | None = None,
+    fast_hard_owner: bool = False,
+    fast_visual_owner: bool = False,
+    fast_visual_use_depth: bool = True,
+    fast_visual_photometric: bool = True,
     foreground_deformation_diagnostic_pair_index: int | None = None,
     foreground_deformation_diagnostic_pair_indices: Sequence[int] | None = None,
     foreground_deformation_diagnostic_callback: Callable[..., None] | None = None,
@@ -10681,6 +11129,26 @@ def render_calibrated_rgb_pushbroom(
         if isinstance(config, CalibratedRGBPushbroomConfig)
         else CalibratedRGBPushbroomConfig.from_mapping(config)
     )
+    if fast_hard_owner or fast_visual_owner:
+        if (
+            foreground_deformation_diagnostic_pair_index is not None
+            or foreground_deformation_diagnostic_pair_indices is not None
+            or foreground_deformation_diagnostic_callback is not None
+        ):
+            raise ValueError("fast owner rendering cannot run foreground diagnostics")
+        return _render_calibrated_rgb_pushbroom_fast_hard_owner(
+            frames,
+            poses,
+            calibration,
+            settings=settings,
+            rgb_motions=rgb_motions,
+            motion_pixels_to_full_resolution=motion_pixels_to_full_resolution,
+            central_strip_output_dir=central_strip_output_dir,
+            central_strip_owner_only_output_dir=central_strip_owner_only_output_dir,
+            visual_seams=fast_visual_owner,
+            visual_use_depth=fast_visual_use_depth,
+            visual_photometric=fast_visual_photometric,
+        )
     diagnostic_pair_indices: tuple[int, ...] = ()
     if foreground_deformation_diagnostic_callback is None:
         if (

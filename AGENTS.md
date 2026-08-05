@@ -41,7 +41,8 @@
 照片模式的 `g305-panorama` 契约保持不变。连续 RGB-D 视频通过独立入口
 `g305-video-panorama` 处理，绝不能传给 `g305-panorama`，也不能复用照片的
 `delivery.json`。视频产品当前流程为：严格视频 session 验证 → 最长连续单向扫描段
-分析 → 该段完整 ORB-SLAM3 RGB-D 真实 `camera_to_world` → 所有实际渲染源的相邻
+分析 → fast 以 60 FPS 全帧运动分析选择约 20 FPS 的真实 ORB 跟踪/渲染扫描帧 →
+该真实扫描帧完整 ORB-SLAM3 RGB-D `camera_to_world` → 所有实际渲染源的相邻
 Open3D RGB-D 边审计 → 共享 `render_calibrated_rgb_pushbroom()` → 独立 2-D 发布 →
 可独立重试的 TSDF/GLB 发布。
 
@@ -49,8 +50,10 @@ Open3D RGB-D 边审计 → 共享 `render_calibrated_rgb_pushbroom()` → 独立
   `continuous_rgbd_video_fixed_exposure`，并接受旧的 v1 auto 会话用于 C 级兼容。
   v2 会话还必须有 `product_eligibility.photo_panorama=false` 和
   `product_eligibility.video_panorama=true`。
-- 视频也不得插值、伪造或用 Open3D/二维运动替代缺失 ORB pose；所有渲染源必须有真实
-  ORB pose，所有相邻渲染源边必须经 Open3D 审计。
+- 视频 fast 可从 60 FPS 连续会话中按严格时间顺序选择约 20 FPS 的真实 ORB 跟踪帧；
+  未跟踪的 60 FPS 帧只用于运动/风险分析，绝不可渲染、拥有像素、形成 pose 或被插值。
+  视频也不得插值、伪造或用 Open3D/二维运动替代任一渲染源缺失的 ORB pose；所有
+  渲染源必须有真实 ORB pose，所有相邻渲染源边必须经 Open3D 审计。
 - 自动曝光、曝光超过 `1200 µs` 或严格质量未过的结构完整视频发布为 C：
   `video_delivery.json` 的 `delivery_state=published_degraded`，且必须人工复核。
 - 2-D 文件为 `video_panorama.jpg`、`video_panorama.png`、
@@ -63,6 +66,28 @@ Open3D RGB-D 边审计 → 共享 `render_calibrated_rgb_pushbroom()` → 独立
   2-D 交付。
 - 视频 Viewer 必须离线可用，不得依赖 CDN。GLB 的节点已将 Open3D `+Y-down` 转为
   glTF `+Y-up`；自定义 Viewer 必须同样应用 180° X 轴转换，不得将上下显示颠倒。
+
+### 1.3 视频视觉 renderer（用户授权的正式例外）
+
+本节只适用于独立的 `g305-video-panorama`；照片 `g305-panorama` 及其 unified
+renderer 继续受 1.1 与第 7 节的全部限制。为实现视频 fast/quality 产品，允许一个
+独立的风险分级视频视觉 renderer 使用下列操作，但仍不得生成、插值或替代真实源帧和
+真实 ORB pose：
+
+- 相邻真实渲染源的低成本 DIS optical flow；仅在 RGB/深度风险走廊允许局部、受限的
+  forward/backward-flow 审计和深度分层 mesh。任何未通过一致性、边界、正 Jacobian、
+  尺度或遮挡保护审计的 cell 必须回退为单一 hard owner。
+- 相邻真实源的二维可弯曲 seam / graph-cut 或等价的单调 label 优化；有效像素必须恰有
+  一个 provenance owner，前景与深度边缘保持 owner-only，禁止全景级 flow、全局单应
+  或把 flow 用作 pose。
+- 只由共同可见、安全背景样本估计的全局线性 RGB gain/bias；必须记录训练/held-out
+  误差，超过配置界限则回退单位校正。
+- 安全背景可用局部 MultiBand；风险、遮挡、深度边缘、对象锁定区不参与融合。fast
+  可使用块化 CPU/OpenCV 实现；仅在实际被调用时才能报告 CUDA。
+
+视频报告必须逐 pair 记录风险、flow/mesh、owner、seam、photometric 与退化原因。
+`video_panorama` 的主结果仍需在 60 秒 SLA 内原子发布；central-strip/audit 导出可在
+主结果发布后异步或按 audit 模式生成。
 
 ## 2. 开始工作
 

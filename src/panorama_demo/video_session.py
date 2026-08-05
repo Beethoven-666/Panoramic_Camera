@@ -23,7 +23,9 @@ class VideoSession:
     product_eligible: bool
 
 
-def load_video_session(input_path: str | Path) -> VideoSession:
+def load_video_session(
+    input_path: str | Path, *, validate_frame_files: bool = True
+) -> VideoSession:
     """Load a complete colour-aligned video session without admitting photo input.
 
     v1 auto-exposure captures predate the product-eligibility marker and are
@@ -31,7 +33,7 @@ def load_video_session(input_path: str | Path) -> VideoSession:
     by the photo pipeline because this module is never imported there.
     """
 
-    rgbd = load_rgbd_session(input_path)
+    rgbd = load_rgbd_session(input_path, validate_frame_files=validate_frame_files)
     manifest: dict[str, Any] = rgbd.manifest or {}
     mode = manifest.get("capture_mode")
     if not isinstance(mode, str) or mode not in _VIDEO_CAPTURE_MODES:

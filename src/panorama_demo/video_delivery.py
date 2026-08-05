@@ -23,6 +23,11 @@ def invalidate_video_delivery(output: Path) -> None:
         "video_panorama.jpg", "video_panorama.png", "video_pixel_provenance.npz",
         "central_strips", ".central_strips.pending",
         "central_strips_owner_only", ".central_strips_owner_only.pending",
+        # A fresh 2-D delivery must not appear to be paired with a mesh made
+        # from a previous source session or prior video rendering run.
+        "video_3d_delivery.json", "video_3d_failure.json",
+        "video_tsdf_mesh.glb", "video_tsdf_mesh_mobile.glb",
+        "video_tsdf_mesh_viewer.html",
     ):
         path = output / name
         if path.is_symlink() or path.is_file():
@@ -86,6 +91,17 @@ def publish_video_2d(
     report_path = output / ".video_report.pending.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     delivery = {"schema": VIDEO_DELIVERY_SCHEMA, "delivery_state": report["delivery_state"], "quality_grade": report["quality_grade"], "manual_review_required": report["manual_review_required"], "report": "video_report.json"}
+    if isinstance(report.get("preset"), str):
+        delivery["preset"] = report["preset"]
+    performance = report.get("performance")
+    if isinstance(performance, dict):
+        for key in (
+            "post_capture_seconds",
+            "maximum_post_seconds",
+            "within_post_capture_budget",
+        ):
+            if key in performance:
+                delivery[key] = performance[key]
     if pending_central_strips is not None:
         delivery["central_strip_export"] = report["central_strip_export"]
     if pending_central_strips_owner_only is not None:

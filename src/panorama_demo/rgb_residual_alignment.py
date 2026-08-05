@@ -56,7 +56,7 @@ class ResidualAlignmentConfig:
     backend: str = "se3_epipolar_hierarchical_rgb"
     analysis_width: int = 640
     maximum_preview_megapixels: float = 2.0
-    maximum_evidence_megapixels: float = 3.0
+    maximum_evidence_megapixels: float = 10.0
     held_out_fraction: float = 0.20
     held_out_seed: int = 20301117
     owner_track_consistency: bool = True
@@ -123,7 +123,7 @@ class ResidualAlignmentConfig:
             raise ValueError("residual_alignment.analysis_width must be in [40, 640]")
         for name, ceiling in (
             ("maximum_preview_megapixels", 2.0),
-            ("maximum_evidence_megapixels", 3.0),
+            ("maximum_evidence_megapixels", 10.0),
         ):
             value = _finite_float(getattr(self, name), name)
             if not 0.0 < value <= ceiling:

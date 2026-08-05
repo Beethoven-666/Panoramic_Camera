@@ -78,6 +78,10 @@ class ORBSLAM3Config:
     # the upstream RGB-D example with only bUseViewer=false; it still produces
     # the same real ORB-SLAM3 RGB-D trajectory.
     executable: str = "Examples/RGB-D/rgbd_tum_headless"
+    # Persistent stdin-driven runner built beside the batch example.  It may
+    # report progress online, but only its post-Shutdown trajectory is valid
+    # for formal camera_to_world publication.
+    stream_executable: str = "Examples/RGB-D/rgbd_g305_stream_headless"
     vocabulary: str = "Vocabulary/ORBvoc.txt"
     timeout_seconds: float = 600.0
     minimum_tracked_fraction: float = 0.95

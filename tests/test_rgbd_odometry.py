@@ -15,8 +15,10 @@ from panorama_demo.rgbd_odometry import (
     PoseGraphError,
     PoseGraphResult,
     PoseQualityThresholds,
+    estimate_prepared_pair_rgbd_odometry,
     estimate_pair_rgbd_odometry,
     optimize_rgbd_pose_graph,
+    prepare_rgbd_odometry_frame,
     validate_pose_trajectory,
 )
 
@@ -188,6 +190,39 @@ def test_pair_estimation_uses_source_to_reference_and_public_mm_units() -> None:
     payload = edge.as_dict()
     assert payload["translation_unit"] == "mm"
     assert payload["translation_mm"] == pytest.approx([125.0, 2.0, -3.0])
+
+
+def test_prepared_frame_pair_audit_reuses_the_same_calibrated_inputs() -> None:
+    source_to_reference = _pose(50.0)
+    backend = _PairBackend(
+        {
+            "converged": True,
+            "source_to_reference": source_to_reference,
+            "information": np.eye(6, dtype=np.float64),
+            "fitness": 0.9,
+            "rmse_mm": 5.0,
+        }
+    )
+    settings = odometry.RGBDOdometryConfig()
+    reference, reference_intrinsics = prepare_rgbd_odometry_frame(
+        _frame(40), _intrinsics(), config=settings
+    )
+    source, source_intrinsics = prepare_rgbd_odometry_frame(
+        _frame(41), _intrinsics(), config=settings
+    )
+
+    assert source_intrinsics == reference_intrinsics
+    edge = estimate_prepared_pair_rgbd_odometry(
+        reference,
+        source,
+        reference_intrinsics,
+        config=settings,
+        backend=backend,
+    )
+
+    assert edge.reference_node_id == 40
+    assert edge.source_node_id == 41
+    np.testing.assert_allclose(edge.source_to_reference, source_to_reference)
 
 
 def test_pair_estimation_passes_a_valid_mm_se3_initial_guess_to_backend() -> None:

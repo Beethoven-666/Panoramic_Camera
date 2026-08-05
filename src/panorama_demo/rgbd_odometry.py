@@ -694,6 +694,34 @@ def _prepare_frame(
     return prepared, working_intrinsics
 
 
+def prepare_rgbd_odometry_frame(
+    frame: Any,
+    intrinsics: Any,
+    *,
+    config: RGBDOdometryConfig | Mapping[str, Any] | None = None,
+    fallback_id: int = 0,
+) -> tuple[PreparedRGBDFrame, _Intrinsics]:
+    """Decode and prepare one frame for one or more Open3D edge audits.
+
+    A video render source participates in at most two adjacent audit edges.
+    Preparing it once retains precisely the same calibrated undistortion,
+    depth gates, and working resolution as :func:`estimate_pair_rgbd_odometry`
+    while avoiding duplicate source-file decoding.
+    """
+
+    odometry_config = (
+        config
+        if isinstance(config, RGBDOdometryConfig)
+        else RGBDOdometryConfig.from_mapping(config)
+    )
+    return _prepare_frame(
+        frame,
+        _coerce_intrinsics(intrinsics),
+        odometry_config,
+        fallback_id=fallback_id,
+    )
+
+
 def _import_open3d() -> Any:
     try:
         return importlib.import_module("open3d")
@@ -1086,6 +1114,18 @@ class _Open3DBackend:
         return [_pose_m_to_mm(node.pose) for node in graph.nodes]
 
 
+def create_open3d_rgbd_odometry_backend() -> RGBDOdometryBackend:
+    """Create one reusable Open3D RGB-D edge backend for a serial batch.
+
+    Backend construction probes CUDA/Open3D capabilities.  Repeating that
+    probe for every adjacent video source pair adds avoidable post-capture
+    latency while changing neither the actual edge measurement nor its
+    backend audit.  Callers must keep this instance on one serial worker.
+    """
+
+    return _Open3DBackend()
+
+
 def _measurement_value(measurement: Any, name: str, default: Any = None) -> Any:
     if isinstance(measurement, Mapping):
         return measurement.get(name, default)
@@ -1134,40 +1174,20 @@ def _edge_quality_reasons(
     return tuple(reasons)
 
 
-def estimate_pair_rgbd_odometry(
-    reference: Any,
-    source: Any,
-    intrinsics: Any,
+def estimate_prepared_pair_rgbd_odometry(
+    reference: PreparedRGBDFrame,
+    source: PreparedRGBDFrame,
+    working_intrinsics: _Intrinsics,
     *,
-    config: RGBDOdometryConfig | Mapping[str, Any] | None = None,
+    config: RGBDOdometryConfig,
     backend: RGBDOdometryBackend | Any | None = None,
     reference_node_id: int | None = None,
     source_node_id: int | None = None,
     uncertain: bool = False,
     initial_source_to_reference: Any | None = None,
 ) -> PoseEdge:
-    """Estimate one source-to-reference RGB-D edge.
+    """Run a single edge audit on already validated, decoded RGB-D inputs."""
 
-    ``source_to_reference`` follows ``p_reference = T @ p_source``. Input depth,
-    returned translation, returned RMSE, and an optional rigid initial guess
-    are millimetres; Open3D receives metres explicitly. No feature or 2-D
-    fallback is attempted when Open3D is unavailable or odometry fails.
-    """
-
-    odometry_config = (
-        config
-        if isinstance(config, RGBDOdometryConfig)
-        else RGBDOdometryConfig.from_mapping(config)
-    )
-    calibrated = _coerce_intrinsics(intrinsics)
-    prepared_reference, working_intrinsics = _prepare_frame(
-        reference, calibrated, odometry_config, fallback_id=0
-    )
-    prepared_source, source_intrinsics = _prepare_frame(
-        source, calibrated, odometry_config, fallback_id=1
-    )
-    if source_intrinsics != working_intrinsics:
-        raise ValueError("Reference and source RGB-D odometry intrinsics differ")
     initial_transform: np.ndarray | None = None
     if initial_source_to_reference is not None:
         initial_transform = np.asarray(
@@ -1179,20 +1199,20 @@ def estimate_pair_rgbd_odometry(
                 "rigid SE(3) in millimetres"
             )
     reference_id = (
-        prepared_reference.frame_id
+        reference.frame_id
         if reference_node_id is None
         else int(reference_node_id)
     )
     source_id = (
-        prepared_source.frame_id if source_node_id is None else int(source_node_id)
+        source.frame_id if source_node_id is None else int(source_node_id)
     )
     selected_backend = _Open3DBackend() if backend is None else backend
     estimator = getattr(selected_backend, "estimate_pair", selected_backend)
     estimator_kwargs: dict[str, Any] = {
-        "reference": prepared_reference,
-        "source": prepared_source,
+        "reference": reference,
+        "source": source,
         "intrinsics": working_intrinsics,
-        "config": odometry_config,
+        "config": config,
     }
     if initial_transform is not None:
         estimator_kwargs["initial_source_to_reference"] = initial_transform
@@ -1239,9 +1259,9 @@ def estimate_pair_rgbd_odometry(
         information=information,
         fitness=fitness,
         rmse_mm=rmse_mm,
-        reference_valid_depth_ratio=prepared_reference.valid_depth_ratio,
-        source_valid_depth_ratio=prepared_source.valid_depth_ratio,
-        config=odometry_config,
+        reference_valid_depth_ratio=reference.valid_depth_ratio,
+        source_valid_depth_ratio=source.valid_depth_ratio,
+        config=config,
     )
     reasons = tuple(dict.fromkeys((*backend_reasons, *quality_reasons)))
     return PoseEdge(
@@ -1252,11 +1272,58 @@ def estimate_pair_rgbd_odometry(
         fitness=fitness,
         rmse_mm=rmse_mm,
         information=information,
-        reference_valid_depth_ratio=prepared_reference.valid_depth_ratio,
-        source_valid_depth_ratio=prepared_source.valid_depth_ratio,
+        reference_valid_depth_ratio=reference.valid_depth_ratio,
+        source_valid_depth_ratio=source.valid_depth_ratio,
         uncertain=uncertain,
         backend=backend_name,
         failure_reasons=reasons,
+    )
+
+
+def estimate_pair_rgbd_odometry(
+    reference: Any,
+    source: Any,
+    intrinsics: Any,
+    *,
+    config: RGBDOdometryConfig | Mapping[str, Any] | None = None,
+    backend: RGBDOdometryBackend | Any | None = None,
+    reference_node_id: int | None = None,
+    source_node_id: int | None = None,
+    uncertain: bool = False,
+    initial_source_to_reference: Any | None = None,
+) -> PoseEdge:
+    """Estimate one source-to-reference RGB-D edge.
+
+    ``source_to_reference`` follows ``p_reference = T @ p_source``. Input depth,
+    returned translation, returned RMSE, and an optional rigid initial guess
+    are millimetres; Open3D receives metres explicitly. No feature or 2-D
+    fallback is attempted when Open3D is unavailable or odometry fails.
+    """
+
+    odometry_config = (
+        config
+        if isinstance(config, RGBDOdometryConfig)
+        else RGBDOdometryConfig.from_mapping(config)
+    )
+    calibrated = _coerce_intrinsics(intrinsics)
+    prepared_reference, working_intrinsics = _prepare_frame(
+        reference, calibrated, odometry_config, fallback_id=0
+    )
+    prepared_source, source_intrinsics = _prepare_frame(
+        source, calibrated, odometry_config, fallback_id=1
+    )
+    if source_intrinsics != working_intrinsics:
+        raise ValueError("Reference and source RGB-D odometry intrinsics differ")
+    return estimate_prepared_pair_rgbd_odometry(
+        prepared_reference,
+        prepared_source,
+        working_intrinsics,
+        config=odometry_config,
+        backend=backend,
+        reference_node_id=reference_node_id,
+        source_node_id=source_node_id,
+        uncertain=uncertain,
+        initial_source_to_reference=initial_source_to_reference,
     )
 
 
@@ -1660,7 +1727,10 @@ __all__ = [
     "PoseQualityThresholds",
     "PreparedRGBDFrame",
     "RGBDOdometryConfig",
+    "create_open3d_rgbd_odometry_backend",
+    "estimate_prepared_pair_rgbd_odometry",
     "estimate_pair_rgbd_odometry",
+    "prepare_rgbd_odometry_frame",
     "optimize_rgbd_pose_graph",
     "validate_pose_trajectory",
 ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import queue
@@ -12,12 +13,19 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib import metadata as importlib_metadata
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
 
 from .config import load_config
+from .session import CameraIntrinsics, RGBDFrame
+from .video_online_state import (
+    CAPTURE_FRAME_VALIDATION_SCHEMA,
+    OnlineScanAccumulator,
+    write_online_state,
+)
+from .video_online_orb import OnlineORBSource, OnlineORBTracker
 
 
 COLOR_EXPOSURE_UNIT_US = 100
@@ -75,16 +83,75 @@ class WriterStats:
     errors: list[str] = field(default_factory=list)
 
 
-def _atomic_encode(path: Path, extension: str, image: np.ndarray, params: list[int]) -> None:
+def _atomic_encode(
+    path: Path,
+    extension: str,
+    image: np.ndarray,
+    params: list[int],
+    *,
+    durable: bool = True,
+) -> str:
     ok, encoded = cv2.imencode(extension, image, params)
     if not ok:
         raise IOError(f"OpenCV could not encode {path}")
+    payload = encoded.tobytes()
     temporary = path.with_suffix(path.suffix + ".partial")
     with temporary.open("wb") as handle:
-        handle.write(encoded.tobytes())
+        handle.write(payload)
         handle.flush()
-        os.fsync(handle.fileno())
+        if durable:
+            os.fsync(handle.fileno())
     os.replace(temporary, path)
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_suffix(path.suffix + ".partial")
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _parse_color_intrinsics_for_online_orb(calibration: dict[str, Any]) -> CameraIntrinsics:
+    """Read the just-written capture calibration without trusting a later reload."""
+
+    intrinsic = calibration.get("color_intrinsic")
+    distortion = calibration.get("color_distortion")
+    if not isinstance(intrinsic, dict) or not isinstance(distortion, dict):
+        raise ValueError("capture calibration lacks color intrinsic/distortion")
+    keys = ("width", "height", "fx", "fy", "cx", "cy")
+    if any(key not in intrinsic for key in keys):
+        raise ValueError("capture color intrinsic is incomplete")
+    values = {key: float(intrinsic[key]) for key in keys}
+    if not np.isfinite(list(values.values())).all() or values["width"] <= 0 or values["height"] <= 0:
+        raise ValueError("capture color intrinsic is non-finite")
+    coefficients = tuple(float(distortion.get(key, 0.0)) for key in ("k1", "k2", "p1", "p2", "k3", "k4", "k5", "k6"))
+    if not np.isfinite(coefficients).all():
+        raise ValueError("capture color distortion is non-finite")
+    return CameraIntrinsics(
+        int(values["width"]), int(values["height"]), values["fx"], values["fy"],
+        values["cx"], values["cy"], coefficients,
+    )
+
+
+@dataclass(frozen=True)
+class WrittenRGBDFrame:
+    """Exact source-file digests produced by the single writer thread."""
+
+    frame_id: int
+    color_path: Path
+    aligned_depth_path: Path
+    color_sha256: str
+    aligned_depth_sha256: str
+    timestamp_us: int
+    depth_scale_mm_per_unit: float
 
 
 class SessionWriter:
@@ -95,6 +162,9 @@ class SessionWriter:
         jpeg_quality: int,
         depth_png_compression: int,
         save_raw_depth: bool,
+        durable_per_frame: bool = True,
+        csv_flush_interval: int = 1,
+        on_written: Callable[[WrittenRGBDFrame], None] | None = None,
     ) -> None:
         self.root = root
         self.color_dir = root / "color"
@@ -107,8 +177,14 @@ class SessionWriter:
         self.save_raw_depth = save_raw_depth
         self.jpeg_quality = int(np.clip(jpeg_quality, 1, 100))
         self.depth_png_compression = int(np.clip(depth_png_compression, 0, 9))
+        self.durable_per_frame = bool(durable_per_frame)
+        self.csv_flush_interval = int(csv_flush_interval)
+        self.on_written = on_written
+        if self.csv_flush_interval < 1:
+            raise ValueError("csv_flush_interval must be positive")
         self.queue: queue.Queue[FramePacket | None] = queue.Queue(maxsize=queue_size)
         self.stats = WriterStats()
+        self.written_rgbd_frames: list[WrittenRGBDFrame] = []
         self._thread = threading.Thread(target=self._run, name="rgbd-writer", daemon=False)
         self._thread.start()
 
@@ -141,17 +217,19 @@ class SessionWriter:
                     color_relative = Path("color") / f"{stem}.jpg"
                     aligned_relative = Path("depth_aligned") / f"{stem}.png"
                     raw_relative = Path("depth_raw") / f"{stem}.png"
-                    _atomic_encode(
+                    color_sha256 = _atomic_encode(
                         self.root / color_relative,
                         ".jpg",
                         packet.color_bgr,
                         [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality],
+                        durable=self.durable_per_frame,
                     )
-                    _atomic_encode(
+                    aligned_depth_sha256 = _atomic_encode(
                         self.root / aligned_relative,
                         ".png",
                         packet.aligned_depth,
                         [cv2.IMWRITE_PNG_COMPRESSION, self.depth_png_compression],
+                        durable=self.durable_per_frame,
                     )
                     raw_value = ""
                     if self.save_raw_depth and packet.raw_depth is not None:
@@ -160,6 +238,7 @@ class SessionWriter:
                             ".png",
                             packet.raw_depth,
                             [cv2.IMWRITE_PNG_COMPRESSION, self.depth_png_compression],
+                            durable=self.durable_per_frame,
                         )
                         raw_value = raw_relative.as_posix()
                     row = {key: packet.metadata.get(key, "") for key in CSV_FIELDS}
@@ -173,7 +252,23 @@ class SessionWriter:
                         }
                     )
                     writer.writerow(row)
-                    handle.flush()
+                    if (self.stats.written + 1) % self.csv_flush_interval == 0:
+                        handle.flush()
+                    written_frame = WrittenRGBDFrame(
+                            frame_id=packet.frame_id,
+                            color_path=self.root / color_relative,
+                            aligned_depth_path=self.root / aligned_relative,
+                            color_sha256=color_sha256,
+                            aligned_depth_sha256=aligned_depth_sha256,
+                            timestamp_us=int(packet.metadata.get("color_device_timestamp_us", packet.frame_id)),
+                            depth_scale_mm_per_unit=float(packet.metadata.get("depth_scale_mm_per_unit", 1.0)),
+                        )
+                    self.written_rgbd_frames.append(written_frame)
+                    # Keep expensive downstream processing off this writer
+                    # thread: the callback is limited to a bounded enqueue of
+                    # immutable, already committed source-file facts.
+                    if self.on_written is not None:
+                        self.on_written(written_frame)
                     self.stats.written += 1
                 except Exception as exc:  # keep capture alive, but report every failure
                     self.stats.write_errors += 1
@@ -182,6 +277,9 @@ class SessionWriter:
                     print(f"\nWriter error: {message}", file=sys.stderr)
                 finally:
                     self.queue.task_done()
+            handle.flush()
+            if self.durable_per_frame:
+                os.fsync(handle.fileno())
 
 
 def _frame_to_bgr(frame: Any, sdk: Any) -> np.ndarray:
@@ -1452,12 +1550,22 @@ def run_capture(args: argparse.Namespace) -> Path:
     capture_config = config_file.get("capture", {})
     if not isinstance(capture_config, dict):
         raise ValueError("Configuration is missing capture settings")
+    stitch_config = config_file.get("stitch", {})
+    if not isinstance(stitch_config, dict):
+        raise ValueError("Configuration stitch section must be a mapping")
+    video_panorama_config = stitch_config.get("video_panorama", {})
+    if not isinstance(video_panorama_config, dict):
+        raise ValueError("stitch.video_panorama must be a mapping")
     fixed_video_exposure = getattr(args, "video_exposure_us", None)
     if fixed_video_exposure is None:
         _validate_video_auto_control_args(args)
     elif bool(getattr(args, "photo_mode", False)):
         raise ValueError("--video-exposure-us cannot be used with --photo-mode")
     options = _video_capture_options(capture_config)
+    online_scan = OnlineScanAccumulator(
+        analysis_width=int(stitch_config.get("analysis_width", 320)),
+        motion_backend=str(video_panorama_config.get("motion_backend", "dis")),
+    )
     if fixed_video_exposure is not None:
         options["color_auto_exposure"] = False
         options["color_exposure_us"] = int(fixed_video_exposure)
@@ -1614,15 +1722,42 @@ def run_capture(args: argparse.Namespace) -> Path:
             manifest["frame_sync"] = False
             manifest["frame_sync_warning"] = str(exc)
     align_filter = sdk.AlignFilter(align_to_stream=sdk.OBStreamType.COLOR_STREAM)
+    online_orb_tracker: OnlineORBTracker | None = None
+
+    def _enqueue_online_orb(item: WrittenRGBDFrame) -> None:
+        tracker = online_orb_tracker
+        if tracker is None:
+            return
+        tracker.submit_committed(
+            OnlineORBSource(
+                frame=RGBDFrame(
+                    frame_id=item.frame_id,
+                    color_path=item.color_path,
+                    aligned_depth_path=item.aligned_depth_path,
+                    depth_scale_mm_per_unit=item.depth_scale_mm_per_unit,
+                    timestamp_us=item.timestamp_us,
+                ),
+                color_sha256=item.color_sha256,
+                aligned_depth_sha256=item.aligned_depth_sha256,
+            )
+        )
+
     writer = SessionWriter(
         session_root,
         queue_size=int(options["queue_size"]),
         jpeg_quality=int(options["jpeg_quality"]),
         depth_png_compression=int(options["depth_png_compression"]),
         save_raw_depth=bool(options["save_raw_depth"]),
+        # Continuous video is append-only and published only after its final
+        # clean-shutdown manifest.  Avoid two fsync calls per 60-FPS frame;
+        # the writer flushes the CSV in bounded batches and on close.
+        durable_per_frame=False,
+        csv_flush_interval=30,
+        on_written=_enqueue_online_orb,
     )
 
     received = 0
+    online_scan_error: str | None = None
     timestamp_regressions = 0
     previous_color_timestamp: int | None = None
     started_monotonic = 0.0
@@ -1718,6 +1853,27 @@ def run_capture(args: argparse.Namespace) -> Path:
         (session_root / "calibration.json").write_text(
             json.dumps(manifest["calibration"], indent=2), encoding="utf-8"
         )
+        try:
+            calibration = _parse_color_intrinsics_for_online_orb(manifest["calibration"])
+            online_orb_tracker = OnlineORBTracker(
+                intrinsics=calibration,
+                tracking_fps=float(video_panorama_config.get("fast_orb_target_fps", 20.0)),
+                work_dir=session_root / ".online_orbslam3_work",
+                config=dict(stitch_config.get("orbslam3_rgbd", {})),
+            )
+            manifest["online_orbslam3_trajectory"] = {
+                "state": "tracking",
+                "path": "online_orbslam3_trajectory.json",
+                "source_selection": "real_timestamp_spaced_capture_frames_only",
+            }
+        except Exception as exc:
+            # Continuous capture and its independently useful RGB-D session
+            # remain valid; video assembly will use the batch bridge if an
+            # online tracker cannot start on this host.
+            manifest["online_orbslam3_trajectory"] = {
+                "state": "unavailable",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
 
         while True:
             frames = pipeline.wait_for_frames(1000)
@@ -1832,9 +1988,29 @@ def run_capture(args: argparse.Namespace) -> Path:
                 ),
                 "depth_scale_mm_per_unit": depth_scale,
             }
-            writer.submit(
+            accepted_for_write = writer.submit(
                 FramePacket(received, color_image, aligned_depth, raw_depth_array, packet_metadata)
             )
+            if accepted_for_write and online_scan_error is None:
+                if (
+                    color_image.dtype != np.uint8
+                    or color_image.shape != (int(options["height"]), int(options["width"]), 3)
+                    or aligned_depth.dtype != np.uint16
+                    or aligned_depth.shape != color_image.shape[:2]
+                    or not np.any(aligned_depth > 0)
+                ):
+                    raise RuntimeError(
+                        "Continuous video writer received an invalid aligned RGB-D frame"
+                    )
+                # This is deliberately capture-time work: it consumes the
+                # already aligned colour buffer before the next frame arrives.
+                try:
+                    online_scan.add(received, color_image)
+                except Exception as exc:
+                    # The capture itself remains usable and will fall back to
+                    # the offline analyzer, but never publishes a partial
+                    # online state as though it were complete.
+                    online_scan_error = f"{type(exc).__name__}: {exc}"
             received += 1
             if external_sync_output.get("enabled") is True:
                 external_sync_output["per_frame_readback_verified_frames"] += 1
@@ -1864,6 +2040,7 @@ def run_capture(args: argparse.Namespace) -> Path:
         if pipeline_started:
             pipeline.stop()
         writer.close()
+        online_orb_result = online_orb_tracker.close() if online_orb_tracker is not None else None
         cv2.destroyAllWindows()
         print()
 
@@ -1889,12 +2066,121 @@ def run_capture(args: argparse.Namespace) -> Path:
             and writer.stats.errors == []
         ),
     }
+    if online_orb_tracker is not None:
+        if online_orb_result is not None and online_orb_tracker.error is None:
+            manifest["online_orbslam3_trajectory"] = {
+                "state": "available",
+                "path": "online_orbslam3_trajectory.json",
+                "schema": online_orb_result["schema"],
+                "tracked_frames": len(online_orb_result["tracked_frame_ids"]),
+                "source_selection": "real_timestamp_spaced_capture_frames_only",
+            }
+        else:
+            manifest["online_orbslam3_trajectory"] = {
+                "state": "unavailable",
+                "reason": online_orb_tracker.error or "no online ORB sources were committed",
+            }
+    online_state_inputs: tuple[
+        list[RGBDFrame], list[dict[str, object]], list[Any], list[Any], dict[str, object]
+    ] | None = None
+    if (
+        capture_exception is None
+        and writer.stats.write_errors == 0
+        and writer.stats.errors == []
+        and online_scan_error is None
+    ):
+        try:
+            qualities, motions, segment = online_scan.finish()
+            written = list(writer.written_rgbd_frames)
+            if list(online_scan.frame_ids) != [item.frame_id for item in written]:
+                raise RuntimeError("online scan and disk writer accepted different frame sets")
+            frames_for_state = [
+                RGBDFrame(
+                    frame_id=item.frame_id,
+                    color_path=item.color_path,
+                    aligned_depth_path=item.aligned_depth_path,
+                    depth_scale_mm_per_unit=1.0,
+                )
+                for item in written
+            ]
+            file_hashes = [
+                {
+                    "frame_id": item.frame_id,
+                    "color_sha256": item.color_sha256,
+                    "aligned_depth_sha256": item.aligned_depth_sha256,
+                }
+                for item in written
+            ]
+            online_state_inputs = (
+                frames_for_state,
+                file_hashes,
+                qualities,
+                motions,
+                segment,
+            )
+            manifest["online_video_state"] = {
+                "schema": "gemini305-video-online-state/v1",
+                "path": "online_video_state.json",
+                "origin": "capture",
+                "state": "available",
+                "analysis_input": "aligned_capture_bgr_before_jpeg_encode",
+                "frames": len(frames_for_state),
+            }
+        except Exception as exc:
+            online_scan_error = f"{type(exc).__name__}: {exc}"
+    if online_state_inputs is None:
+        manifest["online_video_state"] = {
+            "state": "unavailable",
+            "reason": online_scan_error or "capture_or_writer_failed",
+        }
     if capture_exception is not None:
         manifest["capture_error"] = {
             "type": type(capture_exception).__name__,
             "message": str(capture_exception),
         }
     _write_manifest(session_root, manifest)
+    if online_orb_result is not None and online_orb_tracker is not None and online_orb_tracker.error is None:
+        try:
+            online_orb_result["input_sha256"] = {
+                "manifest": _sha256_file(session_root / "manifest.json"),
+                "calibration": _sha256_file(session_root / "calibration.json"),
+                "frames_csv": _sha256_file(session_root / "frames.csv"),
+            }
+            _write_json_atomic(session_root / "online_orbslam3_trajectory.json", online_orb_result)
+        except Exception as exc:
+            manifest["online_orbslam3_trajectory"] = {
+                "state": "unavailable",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+            _write_manifest(session_root, manifest)
+    if online_state_inputs is not None:
+        frames_for_state, file_hashes, qualities, motions, segment = online_state_inputs
+        try:
+            write_online_state(
+                session_root / "online_video_state.json",
+                root=session_root,
+                frames=frames_for_state,
+                qualities=qualities,
+                motions=motions,
+                segment=segment,
+                origin="capture",
+                frame_file_sha256=file_hashes,
+                capture_frame_validation={
+                    "schema": CAPTURE_FRAME_VALIDATION_SCHEMA,
+                    "frame_count": len(frames_for_state),
+                    "color_dtype": "uint8",
+                    "aligned_depth_dtype": "uint16",
+                    "color_shape": [int(options["height"]), int(options["width"]), 3],
+                    "aligned_depth_shape": [int(options["height"]), int(options["width"])],
+                    "source_hash_provenance": "writer_encoded_bytes_before_atomic_replace",
+                },
+            )
+        except Exception as exc:
+            manifest["online_video_state"] = {
+                "state": "unavailable",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+            _write_manifest(session_root, manifest)
     if capture_exception is not None:
         raise capture_exception
     print(f"Session saved to: {session_root}")
