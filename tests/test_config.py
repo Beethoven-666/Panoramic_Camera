@@ -42,16 +42,29 @@ def test_default_video_capture_uses_capped_auto_exposure_and_locked_awb() -> Non
     assert config["stitch"]["max_canvas_megapixels"] == 200
     assert config["stitch"]["video_panorama"] == {
         "default_preset": "fast",
-        "fast_orb_target_fps": 20.0,
+        "fast_orb_target_fps": 8.0,
+        "fast_orbslam3_rgbd": {
+            "feature_count": 1000,
+            "staging_workers": 4,
+            "staging_color_extension": ".jpg",
+            "staging_jpeg_quality": 95,
+            "staging_width": 424,
+        },
+        "fast_rgbd_odometry": {
+            "working_width": 384,
+            "iteration_number_per_pyramid_level": [16, 8, 4],
+        },
         "motion_backend": "dis",
         "maximum_post_seconds": 60.0,
         "fast_odometry_prepare_workers": 4,
+        "fast_session_validation_workers": 4,
+        "fast_scan_analysis_workers": 4,
         "fast_publish_auxiliary_exports": False,
         "fast_enable_geometry_assist": False,
         "fast_renderer": "visual_seam",
         "motion_resampling": {
             "minimum_step_pixels": 3.0,
-            "normal_target_step_pixels": 16.0,
+            "normal_target_step_pixels": 20.0,
             "risk_target_step_pixels": 8.0,
             "maximum_step_pixels": 24.0,
             "emergency_step_pixels": 30.0,

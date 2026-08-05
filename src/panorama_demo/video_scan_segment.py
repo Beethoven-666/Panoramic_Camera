@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 
 from .quality import FrameQuality, MotionEstimate, analyze_frame_quality, estimate_translation, resize_for_analysis, select_primary_scan_segment
 from .session import RGBDFrame
@@ -60,22 +61,39 @@ def analyse_video_scan(
     *,
     analysis_width: int = 320,
     motion_backend: str = "dis",
+    workers: int = 1,
 ) -> tuple[list[FrameQuality], list[MotionEstimate], dict[str, object]]:
     if len(frames) < 2:
         raise ValueError("Video panorama requires at least two RGB-D frames")
-    previews = []
-    qualities = []
-    for frame in frames:
+    if isinstance(workers, bool) or int(workers) < 1:
+        raise ValueError("video scan workers must be a positive integer")
+
+    def _decode_preview(frame: RGBDFrame) -> tuple[np.ndarray, FrameQuality]:
         image = cv2.imread(str(frame.color_path), cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError(f"Could not read video colour frame: {frame.color_path}")
         preview = resize_for_analysis(image, analysis_width)
-        previews.append(preview)
-        qualities.append(analyze_frame_quality(preview))
-    motions = [
-        estimate_video_motion(left, right, motion_backend=motion_backend)
-        for left, right in zip(previews, previews[1:])
-    ]
+        return preview, analyze_frame_quality(preview)
+
+    if int(workers) == 1:
+        decoded = [_decode_preview(frame) for frame in frames]
+    else:
+        with ThreadPoolExecutor(max_workers=int(workers)) as executor:
+            decoded = list(executor.map(_decode_preview, frames))
+    previews = [item[0] for item in decoded]
+    qualities = [item[1] for item in decoded]
+    pairs = list(zip(previews, previews[1:]))
+    if int(workers) == 1:
+        motions = [
+            estimate_video_motion(left, right, motion_backend=motion_backend)
+            for left, right in pairs
+        ]
+    else:
+        def _estimate_pair(pair: tuple[np.ndarray, np.ndarray]) -> MotionEstimate:
+            return estimate_video_motion(pair[0], pair[1], motion_backend=motion_backend)
+
+        with ThreadPoolExecutor(max_workers=int(workers)) as executor:
+            motions = list(executor.map(_estimate_pair, pairs))
     try:
         segment = select_primary_scan_segment(motions, image_width=previews[0].shape[1])
     except RuntimeError:

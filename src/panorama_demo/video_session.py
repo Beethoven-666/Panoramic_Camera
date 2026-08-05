@@ -24,7 +24,10 @@ class VideoSession:
 
 
 def load_video_session(
-    input_path: str | Path, *, validate_frame_files: bool = True
+    input_path: str | Path,
+    *,
+    validate_frame_files: bool = True,
+    validation_workers: int = 1,
 ) -> VideoSession:
     """Load a complete colour-aligned video session without admitting photo input.
 
@@ -33,7 +36,11 @@ def load_video_session(
     by the photo pipeline because this module is never imported there.
     """
 
-    rgbd = load_rgbd_session(input_path, validate_frame_files=validate_frame_files)
+    rgbd = load_rgbd_session(
+        input_path,
+        validate_frame_files=validate_frame_files,
+        validation_workers=validation_workers,
+    )
     manifest: dict[str, Any] = rgbd.manifest or {}
     mode = manifest.get("capture_mode")
     if not isinstance(mode, str) or mode not in _VIDEO_CAPTURE_MODES:

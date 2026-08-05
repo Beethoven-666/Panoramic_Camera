@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -307,7 +308,10 @@ def _parse_optional_int(
 
 
 def load_rgbd_session(
-    input_path: str | Path, *, validate_frame_files: bool = True
+    input_path: str | Path,
+    *,
+    validate_frame_files: bool = True,
+    validation_workers: int = 1,
 ) -> RGBDSession:
     """Load and fully validate a formal color-aligned RGB-D capture session.
 
@@ -316,6 +320,8 @@ def load_rgbd_session(
     This contract is intentionally not bypassable by diagnostic quality flags.
     """
 
+    if isinstance(validation_workers, bool) or int(validation_workers) < 1:
+        raise ValueError("validation_workers must be a positive integer")
     root, csv_path = _session_root_and_csv(input_path)
     calibration_payload = _read_json_object(
         root / "calibration.json", "calibration.json"
@@ -341,6 +347,7 @@ def load_rgbd_session(
     frame_ids: set[int] = set()
     color_paths: set[Path] = set()
     depth_paths: set[Path] = set()
+    pending_file_validation: list[tuple[RGBDFrame, int]] = []
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         fieldnames = set(reader.fieldnames or ())
@@ -456,11 +463,27 @@ def load_rgbd_session(
                     f"frames.csv row {row_number} reuses a color or aligned-depth file"
                 )
             if validate_frame_files:
-                _validate_frame_files(frame, calibration, row_number=row_number)
+                pending_file_validation.append((frame, row_number))
             frame_ids.add(frame_id)
             color_paths.add(color_path)
             depth_paths.add(aligned_depth_path)
             frames.append(frame)
+
+    # Decoder/shape/depth checks touch distinct, immutable frame files.  The
+    # video fast path may overlap bounded I/O/decompression workers here; the
+    # exact strict validation and deterministic first-error ordering remain
+    # identical to the serial formal-session contract.
+    if validate_frame_files:
+        def _validate_item(item: tuple[RGBDFrame, int]) -> None:
+            frame, row_number = item
+            _validate_frame_files(frame, calibration, row_number=row_number)
+
+        if int(validation_workers) == 1:
+            for item in pending_file_validation:
+                _validate_item(item)
+        else:
+            with ThreadPoolExecutor(max_workers=int(validation_workers)) as executor:
+                list(executor.map(_validate_item, pending_file_validation))
 
     if not frames:
         raise ValueError("Formal RGB-D session contains no frames")

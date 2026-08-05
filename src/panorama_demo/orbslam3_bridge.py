@@ -21,6 +21,7 @@ import shlex
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -88,6 +89,10 @@ class ORBSLAM3Config:
     feature_count: int = 1800
     fast_threshold: int = 12
     minimum_fast_threshold: int = 5
+    staging_workers: int = 1
+    staging_color_extension: str = ".png"
+    staging_jpeg_quality: int = 98
+    staging_width: int = 0
 
     @classmethod
     def from_mapping(
@@ -111,6 +116,14 @@ class ORBSLAM3Config:
             raise ValueError("ORB-SLAM3 feature_count must be at least 500")
         if not 1 <= config.minimum_fast_threshold <= config.fast_threshold <= 255:
             raise ValueError("ORB-SLAM3 FAST thresholds are invalid")
+        if not 1 <= config.staging_workers <= 16:
+            raise ValueError("ORB-SLAM3 staging_workers must be within 1..16")
+        if config.staging_color_extension not in {".png", ".jpg", ".jpeg"}:
+            raise ValueError("ORB-SLAM3 staging_color_extension must be PNG or JPEG")
+        if not 1 <= config.staging_jpeg_quality <= 100:
+            raise ValueError("ORB-SLAM3 staging_jpeg_quality must be within 1..100")
+        if config.staging_width != 0 and config.staging_width < 64:
+            raise ValueError("ORB-SLAM3 staging_width must be zero or at least 64")
         return config
 
 
@@ -219,11 +232,16 @@ class ORBSLAM3PoseGraphOptimizer:
         )
 
 
-def _encode_image(path: Path, image: np.ndarray) -> None:
+def _encode_image(
+    path: Path,
+    image: np.ndarray,
+    *,
+    params: Sequence[int] | None = None,
+) -> None:
     suffix = path.suffix.lower() or ".png"
     if image.dtype != np.uint8 and not (image.dtype == np.uint16 and image.ndim == 2):
         raise ValueError(f"Unsupported ORB-SLAM3 staging image type: {image.dtype}")
-    success, encoded = cv2.imencode(suffix, image)
+    success, encoded = cv2.imencode(suffix, image, list(params or ()))
     if not success:
         raise OSError(f"Could not encode ORB-SLAM3 staging image: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -238,16 +256,51 @@ def _decode_image(path: Path, flags: int, *, label: str) -> np.ndarray:
     return image
 
 
-def _undistortion_maps(intrinsics: CameraIntrinsics) -> tuple[np.ndarray, np.ndarray] | None:
+def _scaled_staging_intrinsics(
+    intrinsics: CameraIntrinsics, *, target_width: int
+) -> CameraIntrinsics:
+    """Return the pinhole model of a calibrated staging image."""
+
+    width = min(max(1, int(target_width)), intrinsics.width)
+    if width == intrinsics.width:
+        return CameraIntrinsics(
+            intrinsics.width,
+            intrinsics.height,
+            intrinsics.fx,
+            intrinsics.fy,
+            intrinsics.cx,
+            intrinsics.cy,
+            (),
+        )
+    scale_x = width / float(intrinsics.width)
+    height = max(1, int(round(intrinsics.height * scale_x)))
+    scale_y = height / float(intrinsics.height)
+    return CameraIntrinsics(
+        width,
+        height,
+        intrinsics.fx * scale_x,
+        intrinsics.fy * scale_y,
+        intrinsics.cx * scale_x,
+        intrinsics.cy * scale_y,
+        (),
+    )
+
+
+def _undistortion_maps(
+    intrinsics: CameraIntrinsics,
+    *,
+    staged_intrinsics: CameraIntrinsics | None = None,
+) -> tuple[np.ndarray, np.ndarray] | None:
     distortion = np.asarray(intrinsics.distortion, dtype=np.float64)
     if distortion.size == 0 or not np.any(distortion):
         return None
+    target = staged_intrinsics or intrinsics
     return cv2.initUndistortRectifyMap(
         intrinsics.matrix,
         distortion,
         None,
-        intrinsics.matrix,
-        (intrinsics.width, intrinsics.height),
+        target.matrix,
+        (target.width, target.height),
         cv2.CV_32FC1,
     )
 
@@ -256,12 +309,25 @@ def _stage_rgbd_sequence(
     frames: Sequence[RGBDFrame],
     intrinsics: CameraIntrinsics,
     stage_dir: Path,
+    *,
+    config: ORBSLAM3Config,
 ) -> Path:
     """Write calibrated undistorted PNG inputs for ORB-SLAM3's pinhole model."""
 
     sequence_dir = stage_dir / "sequence"
-    maps = _undistortion_maps(intrinsics)
-    for frame in frames:
+    staging_width = intrinsics.width if config.staging_width == 0 else config.staging_width
+    staged_intrinsics = _scaled_staging_intrinsics(
+        intrinsics, target_width=staging_width
+    )
+    maps = _undistortion_maps(intrinsics, staged_intrinsics=staged_intrinsics)
+    color_suffix = config.staging_color_extension
+    color_params: tuple[int, ...] = (
+        (cv2.IMWRITE_JPEG_QUALITY, config.staging_jpeg_quality)
+        if color_suffix in {".jpg", ".jpeg"}
+        else ()
+    )
+
+    def _stage_frame(frame: RGBDFrame) -> None:
         color = _decode_image(frame.color_path, cv2.IMREAD_COLOR, label="colour image")
         depth = _decode_image(
             frame.aligned_depth_path, cv2.IMREAD_UNCHANGED, label="aligned depth image"
@@ -276,24 +342,65 @@ def _stage_rgbd_sequence(
             )
         if maps is not None:
             map_x, map_y = maps
-            color = accelerated_remap(
+            if config.staging_workers > 1:
+                # Each staging item is independent.  OpenCV CPU remap avoids
+                # interleaving temporary CUDA upload buffers across workers;
+                # the resulting calibrated pinhole pixels are the same data
+                # supplied to the real ORB process.
+                color = cv2.remap(
+                    color, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT
+                )
+                depth = cv2.remap(
+                    depth,
+                    map_x,
+                    map_y,
+                    cv2.INTER_NEAREST,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=0,
+                )
+            else:
+                color = accelerated_remap(
+                    color,
+                    map_x,
+                    map_y,
+                    cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_CONSTANT,
+                )
+                depth = accelerated_remap(
+                    depth,
+                    map_x,
+                    map_y,
+                    cv2.INTER_NEAREST,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=0,
+                )
+        elif (color.shape[1], color.shape[0]) != (
+            staged_intrinsics.width,
+            staged_intrinsics.height,
+        ):
+            color = cv2.resize(
                 color,
-                map_x,
-                map_y,
-                cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_CONSTANT,
+                (staged_intrinsics.width, staged_intrinsics.height),
+                interpolation=cv2.INTER_AREA,
             )
-            depth = accelerated_remap(
+            depth = cv2.resize(
                 depth,
-                map_x,
-                map_y,
-                cv2.INTER_NEAREST,
-                borderMode=cv2.BORDER_CONSTANT,
-                borderValue=0,
+                (staged_intrinsics.width, staged_intrinsics.height),
+                interpolation=cv2.INTER_NEAREST,
             )
         stem = f"{frame.frame_id:08d}.png"
-        _encode_image(sequence_dir / "color" / stem, color)
+        _encode_image(
+            sequence_dir / "color" / f"{frame.frame_id:08d}{color_suffix}",
+            color,
+            params=color_params,
+        )
         _encode_image(sequence_dir / "depth" / stem, depth)
+    if config.staging_workers == 1:
+        for frame in frames:
+            _stage_frame(frame)
+    else:
+        with ThreadPoolExecutor(max_workers=config.staging_workers) as executor:
+            list(executor.map(_stage_frame, frames))
     return sequence_dir
 
 
@@ -310,10 +417,12 @@ def _timestamps_seconds(frames: Sequence[RGBDFrame]) -> list[float]:
     return values
 
 
-def _write_association(frames: Sequence[RGBDFrame], path: Path) -> list[float]:
+def _write_association(
+    frames: Sequence[RGBDFrame], path: Path, *, color_suffix: str = ".png"
+) -> list[float]:
     timestamps = _timestamps_seconds(frames)
     lines = [
-        f"{timestamp:.6f} color/{frame.frame_id:08d}.png "
+        f"{timestamp:.6f} color/{frame.frame_id:08d}{color_suffix} "
         f"{timestamp:.6f} depth/{frame.frame_id:08d}.png"
         for timestamp, frame in zip(timestamps, frames, strict=True)
     ]
@@ -570,11 +679,19 @@ def _stage_orbslam3_attempt(
     stage_dir = Path(
         tempfile.mkdtemp(prefix=".orbslam3_rgbd-attempt-", dir=str(work_dir))
     )
-    sequence_dir = _stage_rgbd_sequence(frames, intrinsics, stage_dir)
+    staging_width = intrinsics.width if config.staging_width == 0 else config.staging_width
+    staged_intrinsics = _scaled_staging_intrinsics(
+        intrinsics, target_width=staging_width
+    )
+    sequence_dir = _stage_rgbd_sequence(frames, intrinsics, stage_dir, config=config)
     association_path = stage_dir / "association.txt"
-    timestamps = tuple(_write_association(frames, association_path))
+    timestamps = tuple(
+        _write_association(
+            frames, association_path, color_suffix=config.staging_color_extension
+        )
+    )
     settings_path = stage_dir / "gemini305_rgbd.yaml"
-    _write_settings(frames, intrinsics, settings_path, config)
+    _write_settings(frames, staged_intrinsics, settings_path, config)
     trajectory_path = stage_dir / "CameraTrajectory.txt"
 
     stage_wsl = _windows_path_to_wsl(config, stage_dir)

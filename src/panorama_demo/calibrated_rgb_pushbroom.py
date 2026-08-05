@@ -98,6 +98,7 @@ from .video_visual_renderer import (
 
 _HARD_MAX_CANVAS_MEGAPIXELS = 200.0
 _HARD_MAX_RESIDENT_STRIPS = 5
+_FAST_PHOTOMETRIC_MIN_RELIABLE_FLOW_FRACTION = 0.30
 _MINIMUM_SHARED_SOURCE_SIGNED_OCCLUSION_OVERLAP_PIXELS = 64
 _MINIMUM_SHARED_SOURCE_SIGNED_OCCLUSION_OVERLAP_ROWS = 8
 _MINIMUM_SHARED_SOURCE_SIGNED_OCCLUSION_OVERLAP_FRACTION = 0.20
@@ -10990,7 +10991,15 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
         and len(photometric_flow_audits) == expected_visual_pair_count
         and all(
             audit["reliable_flow_fraction"] is not None
-            and float(audit["reliable_flow_fraction"]) >= 0.50
+            # This is coverage, not correspondence quality: every retained
+            # sample has already passed the per-pixel forward/backward gate,
+            # raw-disagreement guard, support minimum, robust fit and
+            # spatial held-out residual audit.  A 30% corridor coverage keeps
+            # a large same-layer sample set for a partially occluded shelf
+            # pair without rejecting a safe owner-only seam solely because
+            # foreground occupies the rest of the overlap.
+            and float(audit["reliable_flow_fraction"])
+            >= _FAST_PHOTOMETRIC_MIN_RELIABLE_FLOW_FRACTION
             and int(audit["safe_evidence_pixel_count"]) >= 192
             for audit in photometric_flow_audits
         )

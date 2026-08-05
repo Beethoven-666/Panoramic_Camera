@@ -236,6 +236,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             if fast_odometry_prepare_workers < 1:
                 raise ValueError("fast_odometry_prepare_workers must be positive")
+            fast_session_validation_workers = int(
+                video_settings.get("fast_session_validation_workers", 1)
+            )
+            fast_scan_analysis_workers = int(
+                video_settings.get("fast_scan_analysis_workers", 1)
+            )
+            if fast_session_validation_workers < 1 or fast_scan_analysis_workers < 1:
+                raise ValueError("video fast worker counts must be positive")
             requested_online_state = (
                 args.online_state.expanduser().resolve()
                 if args.online_state is not None
@@ -249,7 +257,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 if capture_state.is_file():
                     requested_online_state = capture_state
             video = load_video_session(
-                input_path, validate_frame_files=requested_online_state is None
+                input_path,
+                validate_frame_files=requested_online_state is None,
+                validation_workers=(
+                    fast_session_validation_workers if preset == "fast" else 1
+                ),
             )
             online_state = (
                 load_online_state(
@@ -263,7 +275,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             if online_state is not None and not online_state.certifies_strict_frame_files:
                 # An offline-prepared state may save scan analysis, but it
                 # never replaces the strict per-file RGB/depth decoder audit.
-                video = load_video_session(input_path, validate_frame_files=True)
+                video = load_video_session(
+                    input_path,
+                    validate_frame_files=True,
+                    validation_workers=(
+                        fast_session_validation_workers if preset == "fast" else 1
+                    ),
+                )
             input_hashes = {
                 "manifest": _sha256(video.rgbd.root / "manifest.json"),
                 "calibration": _sha256(video.rgbd.root / "calibration.json"),
@@ -275,6 +293,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     video.rgbd.frames,
                     analysis_width=int(stitch.get("analysis_width", 320)),
                     motion_backend=str(video_settings.get("motion_backend", "dis")),
+                    workers=fast_scan_analysis_workers if preset == "fast" else 1,
                 )
             else:
                 qualities = list(online_state.qualities)
@@ -307,6 +326,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 trajectory_reused = True
             else:
                 trajectory_config = dict(stitch.get("orbslam3_rgbd", {}))
+                if preset == "fast":
+                    fast_orb_config = video_settings.get("fast_orbslam3_rgbd")
+                    if fast_orb_config is not None:
+                        if not isinstance(fast_orb_config, dict):
+                            raise ValueError("video fast_orbslam3_rgbd must be a mapping")
+                        trajectory_config.update(fast_orb_config)
                 # The entire real scan remains the sole ORB-SLAM3 chain.  A
                 # later render subset is provenance-only, never an interpolated pose.
                 trajectory_config["minimum_tracked_fraction"] = 1.0
@@ -351,7 +376,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             selected_motions = compose_selected_motions(tracking_motions, source_indices)
             poses = [poses_by_id[frame.frame_id] for frame in sources]
         with profiler.stage("open3d_render_edge_audit"):
-            odometry_config = RGBDOdometryConfig.from_mapping(stitch.get("rgbd_odometry"))
+            odometry_mapping = stitch.get("rgbd_odometry")
+            if preset == "fast":
+                # Fast does not skip or approximate any required local edge:
+                # it selects a separately validated working resolution and
+                # iteration schedule for the same CUDA Open3D estimator.
+                # Quality/audit and photo routes retain the formal defaults.
+                fast_odometry = video_settings.get("fast_rgbd_odometry")
+                if fast_odometry is not None:
+                    if not isinstance(fast_odometry, dict):
+                        raise ValueError("video fast_rgbd_odometry must be a mapping")
+                    odometry_mapping = {**dict(odometry_mapping or {}), **fast_odometry}
+            odometry_config = RGBDOdometryConfig.from_mapping(odometry_mapping)
             def _prepare_source(source: object):
                 return prepare_rgbd_odometry_frame(
                     source,
@@ -478,6 +514,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     fast_enable_geometry_assist if preset == "fast" else None
                 ),
                 "fast_odometry_prepare_workers": workers,
+                "fast_session_validation_workers": (
+                    fast_session_validation_workers if preset == "fast" else None
+                ),
+                "fast_scan_analysis_workers": (
+                    fast_scan_analysis_workers if preset == "fast" else None
+                ),
                 "online_state": {
                     "reused": online_state is not None,
                     "origin": online_state.origin if online_state is not None else None,
