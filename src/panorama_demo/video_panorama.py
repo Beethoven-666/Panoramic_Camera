@@ -30,7 +30,12 @@ from .rgbd_odometry import (
     estimate_prepared_pair_rgbd_odometry,
     prepare_rgbd_odometry_frame,
 )
-from .video_delivery import invalidate_video_delivery, publish_video_2d, write_video_failure
+from .video_delivery import (
+    invalidate_video_delivery,
+    publish_video_2d,
+    write_invalid_candidate_experiment,
+    write_video_failure,
+)
 from .video_3d import publish_video_3d
 from .video_motion_resampler import (
     MotionResamplingConfig,
@@ -205,6 +210,52 @@ def _resolve_cached_trajectory_path(args: argparse.Namespace, session_root: Path
     return None
 
 
+def _online_cached_tracking_frame_ids(path: Path) -> tuple[int, ...]:
+    """Return the chronological real-frame IDs declared by an online chain.
+
+    This is deliberately only a *planning* read.  The caller must subsequently
+    pass the selected frames to :func:`_cached_trajectory`, which verifies the
+    immutable session lock, capture provenance, source bytes, and rigid poses
+    before any cached pose is used.  Reading these IDs here prevents a locked
+    progress slice from re-phasing a capture-time 8 FPS chain at a different
+    candidate tracking rate.
+    """
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid trajectory cache: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Trajectory cache must contain an object")
+    if (
+        payload.get("schema") != "gemini305-online-orbslam3-trajectory/v1"
+        or payload.get("capture_origin") != "writer_committed_files"
+    ):
+        raise ValueError("Online trajectory lacks capture-time provenance")
+    orb = payload.get("orbslam3", payload)
+    if not isinstance(orb, dict) or not isinstance(orb.get("tracked_frame_ids"), list):
+        raise ValueError("Online trajectory lacks tracked real-frame IDs")
+    try:
+        ids = tuple(int(frame_id) for frame_id in orb["tracked_frame_ids"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Online trajectory has invalid tracked real-frame IDs") from exc
+    if len(ids) < 2 or any(next_id <= frame_id for frame_id, next_id in zip(ids, ids[1:])):
+        raise ValueError("Online trajectory tracked real-frame IDs must be strictly increasing")
+    return ids
+
+
+def _contained_online_tracking_indices(scan_frames: tuple, cached_frame_ids: tuple[int, ...]) -> tuple[int, ...]:
+    """Keep only certified cached anchors fully contained in a real-frame slice."""
+
+    cached = set(cached_frame_ids)
+    indices = tuple(index for index, frame in enumerate(scan_frames) if int(frame.frame_id) in cached)
+    if len(indices) < 2:
+        raise ValueError(
+            "scan_progress_interval contains fewer than two certified online ORB real frames"
+        )
+    return indices
+
+
 def _select_real_orb_tracking_indices(frames, *, target_fps: float) -> tuple[int, ...]:
     """Select chronological real frames for the video ORB chain.
 
@@ -272,6 +323,23 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
             candidate_joint_owner_final_grid = bool(video_settings.get("candidate_joint_owner_final_grid", False))
             candidate_object_first_compositor = bool(video_settings.get("candidate_object_first_compositor", False))
             candidate_object_first_protection_margin_pixels = video_settings.get("candidate_object_first_protection_margin_pixels")
+            candidate_dense_real_frame_layout = video_settings.get("candidate_dense_real_frame_layout")
+            if candidate_dense_real_frame_layout is not None and not isinstance(candidate_dense_real_frame_layout, dict):
+                raise ValueError("candidate_dense_real_frame_layout must be a mapping")
+            candidate_d2_monotonic_depth_layer_warp = video_settings.get(
+                "candidate_d2_monotonic_depth_layer_warp"
+            )
+            if candidate_d2_monotonic_depth_layer_warp is not None and not isinstance(
+                candidate_d2_monotonic_depth_layer_warp, dict
+            ):
+                raise ValueError("candidate_d2_monotonic_depth_layer_warp must be a mapping")
+            candidate_d3_object_first_dense_source_compositor = video_settings.get(
+                "candidate_d3_object_first_dense_source_compositor"
+            )
+            if candidate_d3_object_first_dense_source_compositor is not None and not isinstance(
+                candidate_d3_object_first_dense_source_compositor, dict
+            ):
+                raise ValueError("candidate_d3_object_first_dense_source_compositor must be a mapping")
             if candidate_c1_constrained_owner and legacy_renderer != "hard_owner_diagnostic":
                 raise ValueError(
                     "candidate C1 constrained owner requires the isolated hard-owner renderer"
@@ -381,16 +449,36 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
             )
         )
         full_scan_ids = [frame.frame_id for frame in scan_frames]
-        tracking_indices = _select_real_orb_tracking_indices(
-            scan_frames,
-            target_fps=float(video_settings.get("fast_orb_target_fps", 20.0)),
-        )
+        # An online cache was certified at capture time against a particular
+        # set of real 8 FPS frames.  A candidate-only progress restriction is
+        # allowed to select a contained portion of that chain, but it must not
+        # re-run the time-spacing phase on the shortened slice: doing so picks
+        # different real files and rightly fails the cache source-hash audit.
+        # Caller-provided verified experiment caches retain their historical
+        # behaviour; only capture-provenance online reuse has this exception.
+        cache = _resolve_cached_trajectory_path(args, video.rgbd.root)
+        if cache is not None and cache[1]:
+            cached_frame_ids = _online_cached_tracking_frame_ids(cache[0])
+            tracking_indices = _contained_online_tracking_indices(scan_frames, cached_frame_ids)
+        else:
+            tracking_indices = _select_real_orb_tracking_indices(
+                scan_frames,
+                target_fps=float(video_settings.get("fast_orb_target_fps", 20.0)),
+            )
         tracking_frames = tuple(scan_frames[index] for index in tracking_indices)
-        tracking_motions = compose_selected_motions(scan_motions, tracking_indices)
+        tracking_motions = compose_selected_motions(
+            scan_motions,
+            tracking_indices,
+            # Capture-certified online anchors may be wholly contained in a
+            # development/validation slice without coinciding with its
+            # endpoints.  They are trajectory evidence only, never a render
+            # source selection, so composing their measured interior spans is
+            # valid and must not re-phase the capture-time chain.
+            require_scan_endpoints=not (cache is not None and cache[1]),
+        )
         tracking_qualities = [scan_qualities[index] for index in tracking_indices]
         tracking_ids = [frame.frame_id for frame in tracking_frames]
         with profiler.stage("orbslam3_trajectory"):
-            cache = _resolve_cached_trajectory_path(args, video.rgbd.root)
             if cache is not None:
                 cache_path, capture_provenance = cache
                 poses_by_id, tracked_ids, attempts = _cached_trajectory(
@@ -436,6 +524,36 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
             render_plan = plan.as_dict()
             selected_motions = compose_selected_motions(tracking_motions, source_indices)
             poses = [poses_by_id[frame.frame_id] for frame in sources]
+            dense_layout = None
+            if candidate_dense_real_frame_layout is not None:
+                from .video_dense_pose_prior import DensePosePriorConfig, ORBPoseAnchor
+                from .video_dense_real_frame_layout import (
+                    DenseRealFrameLayoutConfig, build_dense_real_frame_layout,
+                )
+
+                anchors = tuple(
+                    ORBPoseAnchor(int(frame.frame_id), int(frame.timestamp_us), poses_by_id[frame.frame_id])
+                    for frame in tracking_frames
+                )
+                dense_layout = build_dense_real_frame_layout(
+                    scan_frames, anchors, video.rgbd.calibration,
+                    pose_config=DensePosePriorConfig(),
+                    layout_config=DenseRealFrameLayoutConfig(
+                        real_source_fps=float(candidate_dense_real_frame_layout.get("real_source_fps", 24.0)),
+                        minimum_dense_prior_coverage=float(candidate_dense_real_frame_layout.get("minimum_dense_prior_coverage", 0.95)),
+                        minimum_compact_object_support_coverage=float(candidate_dense_real_frame_layout.get("minimum_compact_object_support_coverage", 0.98)),
+                    ),
+                )
+                sources = dense_layout.frames
+                poses = list(dense_layout.camera_to_world)
+                source_indices = tuple(
+                    next(index for index, frame in enumerate(scan_frames) if frame.frame_id == source.frame_id)
+                    for source in sources
+                )
+                selected_motions = compose_selected_motions(
+                    scan_motions, source_indices, require_scan_endpoints=False
+                )
+                render_plan = dense_layout.as_dict()
         with profiler.stage("open3d_render_edge_audit"):
             odometry_mapping = stitch.get("rgbd_odometry")
             # The frozen baseline does not skip or approximate any required
@@ -873,7 +991,27 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                     candidate_safe_multiband=candidate_safe_multiband,
                     candidate_global_photometric=candidate_global_photometric,
                     candidate_multilabel_owner=candidate_multilabel_owner,
-                    candidate_measurement_annotations=getattr(args, "measurement_annotations", None),
+                    candidate_d2_monotonic_depth_layer_warp=candidate_d2_monotonic_depth_layer_warp,
+                    candidate_d3_object_first_dense_source_compositor=candidate_d3_object_first_dense_source_compositor,
+                    # D1's compact-support measurement is deliberately a
+                    # separate full-support audit; it must not activate the
+                    # older C1-only annotation renderer branch.
+                    candidate_measurement_annotations=(
+                        None if candidate_dense_real_frame_layout is not None
+                        else getattr(args, "measurement_annotations", None)
+                    ),
+                    candidate_full_support_annotation_frame_ids=(
+                        tuple(sorted({
+                            int(entry["frame_id"])
+                            for entry in getattr(args, "measurement_annotations", {}).get("objects", [])
+                            if isinstance(entry, dict)
+                            and entry.get("role") == "compact_foreground_single_owner"
+                            and isinstance(entry.get("frame_id"), int)
+                        }))
+                        if candidate_dense_real_frame_layout is not None
+                        and isinstance(getattr(args, "measurement_annotations", None), dict)
+                        else ()
+                    ),
                 )
             if v2_cuda_mode is not None and publish_auxiliary_exports:
                 # The v2 archive is a strictly post-render, read-only export
@@ -885,15 +1023,39 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                 audit_context = getattr(push, "audit_export_context", None)
                 if audit_context is None:
                     raise RuntimeError("v2 CUDA renderer did not provide its required audit export context")
-                source_export, owner_export = stage_v2_cuda_audit_exports(
-                    audit_context,
-                    panorama_bgr=push.panorama,
-                    owner_frame_id=push.owner_frame_id,
-                    central_strip_output_dir=central_strip_output_dir,
-                    owner_only_output_dir=central_strip_owner_only_output_dir,
-                )
+                # Archive generation is read-only evidence.  It is nested in
+                # the renderer stage for lifecycle simplicity, but explicitly
+                # excluded from the primary delivery SLA.
+                with profiler.audit_export():
+                    source_export, owner_export = stage_v2_cuda_audit_exports(
+                        audit_context,
+                        panorama_bgr=push.panorama,
+                        owner_frame_id=push.owner_frame_id,
+                        central_strip_output_dir=central_strip_output_dir,
+                        owner_only_output_dir=central_strip_owner_only_output_dir,
+                    )
                 push.metadata["central_strip_export"] = source_export
                 push.metadata["central_strip_owner_only_export"] = owner_export
+        d1_measurement_payload = None
+        d1_measurement_masks = None
+        d1_compact_support_masks = None
+        if candidate_dense_real_frame_layout is not None:
+            from .video_candidate_annotation_projection import build_candidate_annotation_projection
+            from .video_dense_real_frame_layout import compact_support_masks_from_projection
+
+            annotations = getattr(args, "measurement_annotations", None)
+            sources_for_measurement = push.measurement_full_support_sources
+            if not isinstance(annotations, dict) or not sources_for_measurement:
+                raise RuntimeError("D1 requires M2 full-support compact annotation measurement context")
+            d1_measurement_payload, d1_measurement_masks = build_candidate_annotation_projection(
+                annotations, sources=sources_for_measurement,
+                final_owner_frame_id=push.owner_frame_id,
+                crop_xywh=(0, 0, int(push.panorama.shape[1]), int(push.panorama.shape[0])),
+                horizontal_flip=bool(push.metadata.get("orientation", {}).get("horizontal_flip", False)),
+            )
+            d1_compact_support_masks = compact_support_masks_from_projection(
+                annotations, d1_measurement_payload, d1_measurement_masks
+            )
         with profiler.stage("quality_and_report"):
             capture_quality = assess_capture_quality(
                 scan_qualities,
@@ -902,6 +1064,96 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                 maximum_exposure_us=float(stitch.get("maximum_motion_exposure_us", 1200.0)),
             )
             renderer_quality = dict(push.metadata.get("quality_metrics", {}))
+            dense_owner_observability = None
+            if candidate_dense_real_frame_layout is not None:
+                from .video_dense_real_frame_layout import (
+                    DenseRealFrameLayoutConfig, verify_dense_owner_observability,
+                )
+                if push.owner_frame_id is None:
+                    raise RuntimeError("D1 renderer omitted its required hard-owner provenance map")
+                dense_owner_observability = verify_dense_owner_observability(
+                    push.owner_frame_id,
+                    compact_support_masks=d1_compact_support_masks or {},
+                    config=DenseRealFrameLayoutConfig(
+                        real_source_fps=float(candidate_dense_real_frame_layout.get("real_source_fps", 24.0)),
+                        minimum_dense_prior_coverage=float(candidate_dense_real_frame_layout.get("minimum_dense_prior_coverage", 0.95)),
+                        minimum_compact_object_support_coverage=float(candidate_dense_real_frame_layout.get("minimum_compact_object_support_coverage", 0.98)),
+                    ),
+                )
+                # D1's contract records two evidence-only gates and one
+                # actual output component.  These records describe the
+                # already-rendered real-frame layout; they do not feed back
+                # into source selection, poses, or owner pixels.
+                applied = int(np.count_nonzero(push.owner_frame_id >= 0))
+                push.metadata["component_evidence"] = {
+                    "orb_anchor_trajectory": {
+                        "valid": True, "sample_count": len(tracking_frames), "audit_passed": True,
+                    },
+                    "dense_real_frame_pose_audit": {
+                        "valid": bool(dense_layout.audit["dense_prior_coverage"] >= dense_layout.audit["dense_prior_coverage_gate"]),
+                        "sample_count": len(dense_layout.frames), "audit_passed": True,
+                    },
+                }
+                if candidate_d2_monotonic_depth_layer_warp is None:
+                    push.metadata["component_execution"] = {
+                        "d1_dense_real_frame_hard_owner": {
+                            "required": True, "initialized": True, "applied_to_output": applied > 0,
+                            "applied_output_pixel_count": applied,
+                        }
+                    }
+                    push.metadata["executed_candidate_components"] = {
+                        "d1_dense_real_frame_hard_owner": applied > 0,
+                    }
+                    push.metadata["candidate_run_state"] = "completed"
+                    push.metadata["selection_eligible"] = True
+                else:
+                    d2_audit = push.metadata.get("d2_monotonic_depth_layer_warp")
+                    if not isinstance(d2_audit, dict):
+                        raise RuntimeError("D2 renderer omitted its required depth-layer warp audit")
+                    d2_pixels = d2_audit.get("actual_output_warp_pixel_count")
+                    if not isinstance(d2_pixels, int) or d2_pixels <= 0:
+                        raise RuntimeError("D2 renderer did not apply a real output warp")
+                    execution = {
+                        "d2_monotonic_depth_layer_warp": {
+                            "required": True, "initialized": True,
+                            "applied_to_output": True, "applied_output_pixel_count": d2_pixels,
+                        }
+                    }
+                    executed = {
+                        "d2_monotonic_depth_layer_warp": True,
+                    }
+                    if candidate_d3_object_first_dense_source_compositor is not None:
+                        d3_audit = push.metadata.get("d3_object_first_dense_source_compositor")
+                        if not isinstance(d3_audit, dict):
+                            raise RuntimeError("D3 renderer omitted its required real-source object audit")
+                        d3_pixels = d3_audit.get("actual_output_object_pixel_count")
+                        if not isinstance(d3_pixels, int) or d3_pixels <= 0 or d3_audit.get("object_flow_or_warp") is not False or d3_audit.get("object_multiband") is not False:
+                            raise RuntimeError("D3 renderer did not apply an unblended real-source object owner")
+                        execution["d3_object_first_dense_source_compositor"] = {
+                            "required": True, "initialized": True,
+                            "applied_to_output": True, "applied_output_pixel_count": d3_pixels,
+                        }
+                        executed["d3_object_first_dense_source_compositor"] = True
+                    push.metadata["component_execution"] = execution
+                    push.metadata["executed_candidate_components"] = executed
+                    push.metadata["component_evidence"]["depth_visibility_evidence"] = {
+                        "valid": True, "sample_count": int(d2_audit.get("observed_depth_pixel_count", 0)),
+                        "audit_passed": True,
+                    }
+                    raft_line = d2_audit.get("training_raft_line_evidence")
+                    if not isinstance(raft_line, dict):
+                        raise RuntimeError("D2 renderer omitted required RAFT/automatic-line evidence")
+                    push.metadata["component_evidence"]["raft_correspondence_evidence"] = {
+                        "valid": True,
+                        "sample_count": int(raft_line.get("valid_forward_backward_sample_count", 0)),
+                        "audit_passed": float(raft_line.get("forward_backward_p95_pixels", float("inf"))) <= 1.5,
+                    }
+                    push.metadata["component_evidence"]["automatic_long_line_evidence"] = {
+                        "valid": True, "sample_count": int(raft_line.get("automatic_long_line_count", 0)),
+                        "audit_passed": int(raft_line.get("automatic_long_line_count", 0)) > 0,
+                    }
+                    push.metadata["candidate_run_state"] = "completed"
+                    push.metadata["selection_eligible"] = True
             strict = (
                 bool(capture_quality["quality_pass"])
                 and video.capture_mode == "continuous_rgbd_video_fixed_exposure"
@@ -934,6 +1186,9 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
             component_execution = push.metadata.get("component_execution")
             if isinstance(component_execution, dict):
                 algorithm_report["component_execution"] = dict(component_execution)
+            component_evidence = push.metadata.get("component_evidence")
+            if isinstance(component_evidence, dict):
+                algorithm_report["component_evidence"] = dict(component_evidence)
             candidate_run_state = push.metadata.get("candidate_run_state")
             if isinstance(candidate_run_state, str):
                 algorithm_report["candidate_run_state"] = candidate_run_state
@@ -946,22 +1201,48 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                     "report_level": "summary",
                     "artifact_level": "minimal",
                 }
+            # Development/validation and audit invocations are not a
+            # production 3 m minimal benchmark.  Their wall-clock timing is
+            # retained as diagnostic evidence only (NE), never as a
+            # performance claim that candidate selection could consume.
+            performance_evaluable = (
+                (getattr(args, "evaluation_scope", None) or "exploratory_full_scan")
+                not in {"development_only", "validation_only"}
+                and str(observability.get("artifact_level", "minimal")) != "audit"
+            )
+            performance_grade = (
+                ("A" if not budget_exceeded else "C") if performance_evaluable else "NE"
+            )
+            performance["performance_evaluation"] = (
+                "evaluated_primary_delivery" if performance_evaluable else "not_evaluated_validation_or_audit"
+            )
             overall_grade = "A" if grade == "A" else "C"
+            invalid_component_execution = (
+                algorithm_report.get("role") == "candidate"
+                and algorithm_report.get("candidate_run_state") == "invalid_component_execution"
+            )
+            if invalid_component_execution:
+                strict = False
+                overall_grade = "F"
             report: dict[str, Any] = {
                 "input": str(input_path),
                 "capture_mode": video.capture_mode,
                 "legacy_v1_compatibility": video.legacy_v1,
-                "delivery_state": "published" if grade == "A" else "published_degraded",
+                "delivery_state": (
+                    "experiment_invalid" if invalid_component_execution
+                    else ("published" if grade == "A" else "published_degraded")
+                ),
                 "algorithm": algorithm_report,
                 "observability": dict(observability),
                 "grades": {
                     "structural": "A",
+                    "implementation": "F" if invalid_component_execution else "A",
                     "visual": overall_grade,
-                    "performance": "A" if not budget_exceeded else "C",
+                    "performance": performance_grade,
                     "overall": overall_grade,
                 },
                 "strict_quality_pass": strict,
-                "manual_review_required": grade != "A",
+                "manual_review_required": grade != "A" or invalid_component_execution,
                 "defer_3d": bool(args.defer_3d),
                 "online_state": {
                     "reused": online_state is not None,
@@ -1008,6 +1289,9 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                 "open3d_edges": [edge.as_dict() for edge in edges],
                 "renderer": dict(push.metadata),
             }
+            if dense_layout is not None:
+                report["dense_real_frame_layout"] = dense_layout.as_dict()
+                report["dense_owner_observability"] = dense_owner_observability
             if budget_exceeded:
                 report["performance_degradation_reason"] = "post_capture_sla_exceeded"
             if publish_auxiliary_exports:
@@ -1022,6 +1306,10 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                     "central_strips": "not_published_fast",
                     "central_strips_owner_only": "not_published_fast",
                 }
+        if invalid_component_execution:
+            published = write_invalid_candidate_experiment(output, report)
+            two_d_published = True
+            return published
         with profiler.stage("atomic_2d_delivery"):
             published = publish_video_2d(
                 output,
@@ -1037,8 +1325,14 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
         # their offline visual evaluation available without giving labels any
         # route into RGB, owner, seam, pose, or source selection.
         annotations = getattr(args, "measurement_annotations", None)
-        measurement_payload = push.measurement_projection_payload
-        measurement_masks = push.measurement_projection_masks
+        measurement_payload = (
+            d1_measurement_payload if d1_measurement_payload is not None
+            else push.measurement_projection_payload
+        )
+        measurement_masks = (
+            d1_measurement_masks if d1_measurement_masks is not None
+            else push.measurement_projection_masks
+        )
         if (
             measurement_payload is None
             and measurement_masks is None
@@ -1067,11 +1361,12 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                 write_candidate_annotation_projection_sidecar,
             )
 
-            projection_path, masks_path = write_candidate_annotation_projection_sidecar(
-                output / "video_annotation_projection.json",
-                measurement_payload,
-                measurement_masks,
-            )
+            with profiler.offline_evaluation():
+                projection_path, masks_path = write_candidate_annotation_projection_sidecar(
+                    output / "video_annotation_projection.json",
+                    measurement_payload,
+                    measurement_masks,
+                )
             published["candidate_annotation_projection"] = {
                 "path": str(projection_path),
                 "masks": str(masks_path),
@@ -1089,20 +1384,21 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                         write_offline_evaluation,
                     )
 
-                    projection = load_panorama_annotation_projection(
-                        projection_path,
-                        annotations=annotations,
-                        panorama_shape=push.panorama.shape[:2],
-                    )
-                    evaluation = evaluate_offline_visual_annotations(
-                        push.panorama,
-                        push.owner_frame_id,
-                        annotations=annotations,
-                        projection=projection,
-                    )
-                    evaluation_path = write_offline_evaluation(
-                        output / "visual_metrics.json", evaluation
-                    )
+                    with profiler.offline_evaluation():
+                        projection = load_panorama_annotation_projection(
+                            projection_path,
+                            annotations=annotations,
+                            panorama_shape=push.panorama.shape[:2],
+                        )
+                        evaluation = evaluate_offline_visual_annotations(
+                            push.panorama,
+                            push.owner_frame_id,
+                            annotations=annotations,
+                            projection=projection,
+                        )
+                        evaluation_path = write_offline_evaluation(
+                            output / "visual_metrics.json", evaluation
+                        )
                     published["offline_visual_evaluation"] = {
                         "path": str(evaluation_path),
                         "measurement_only": True,
@@ -1123,31 +1419,52 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                 write_or_verify_source_progress_evidence,
             )
 
-            evidence_path = output / "video_source_progress_evidence.json"
-            evidence = write_or_verify_source_progress_evidence(
-                evidence_path, source_progress_evidence
-            )
-            audit = audit_annotation_source_progress(
-                args.measurement_annotations,
-                source_progress_by_frame(evidence),
-            )
-            audit["source_progress_evidence_sha256"] = evidence["content_sha256"]
-            audit["selection_eligible"] = bool(audit["verified"])
-            audit_path = output / "video_annotation_source_progress_audit.json"
-            pending = audit_path.with_name(f".{audit_path.name}.pending")
-            try:
-                pending.write_text(
-                    json.dumps(audit, indent=2, sort_keys=True), encoding="utf-8"
+            with profiler.offline_evaluation():
+                evidence_path = output / "video_source_progress_evidence.json"
+                evidence = write_or_verify_source_progress_evidence(
+                    evidence_path, source_progress_evidence
                 )
-                os.replace(pending, audit_path)
-            finally:
-                pending.unlink(missing_ok=True)
+                audit = audit_annotation_source_progress(
+                    args.measurement_annotations,
+                    source_progress_by_frame(evidence),
+                )
+                audit["source_progress_evidence_sha256"] = evidence["content_sha256"]
+                audit["selection_eligible"] = bool(audit["verified"])
+                audit_path = output / "video_annotation_source_progress_audit.json"
+                pending = audit_path.with_name(f".{audit_path.name}.pending")
+                try:
+                    pending.write_text(
+                        json.dumps(audit, indent=2, sort_keys=True), encoding="utf-8"
+                    )
+                    os.replace(pending, audit_path)
+                finally:
+                    pending.unlink(missing_ok=True)
             published["candidate_annotation_source_progress"] = {
                 "evidence": str(evidence_path),
                 "audit": str(audit_path),
                 "verified": bool(audit["verified"]),
                 "selection_eligible": bool(audit["selection_eligible"]),
             }
+        # ``video_report.json`` is already part of the atomically published
+        # primary delivery.  Persist the final post-publication timing in a
+        # separate audit sidecar rather than mutating that primary report.
+        # Consumers can therefore see all three clocks without mistaking
+        # annotation/audit work for renderer latency.
+        final_timing = profiler.as_dict(maximum_post_seconds=maximum_post_seconds)
+        timing_path = output / "video_timing.json"
+        pending_timing = timing_path.with_name(f".{timing_path.name}.pending")
+        try:
+            pending_timing.write_text(
+                json.dumps(final_timing, indent=2, sort_keys=True), encoding="utf-8"
+            )
+            os.replace(pending_timing, timing_path)
+        finally:
+            pending_timing.unlink(missing_ok=True)
+        published["performance_timing"] = {
+            "path": str(timing_path),
+            **final_timing,
+            "measurement_only": True,
+        }
         if not args.defer_3d:
             try:
                 publish_video_3d(output, input_path=input_path, config=config)

@@ -11,10 +11,13 @@ from typing import Any
 import numpy as np
 
 from .config import load_config
-from .video_dataset_lock import APPROVED_RUN_NAME, verify_dataset_lock, write_dataset_lock
+from .video_dataset_lock import (
+    require_candidate_role_for_diagnostic_session,
+    write_or_verify_experiment_dataset_lock,
+)
 from .video_observability import ObservabilitySpec
 from .video_pipeline import run_video_algorithm
-from .video_split import SPLIT_DEFINITION
+from .video_split import SPLIT_DEFINITION, write_or_verify_split
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -27,6 +30,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--artifact-level", choices=("minimal", "provenance", "audit"), default="minimal")
     parser.add_argument("--maximum-post-seconds", type=float)
     parser.add_argument("--defer-3d", action="store_true")
+    parser.add_argument(
+        "--reuse-online-trajectory",
+        action="store_true",
+        help=(
+            "Candidate-only: reuse the capture-bound, strictly verified online ORB "
+            "trajectory instead of rerunning it."
+        ),
+    )
     parser.add_argument(
         "--trajectory-cache",
         type=Path,
@@ -74,7 +85,9 @@ def _seed() -> dict[str, object]:
 
 
 def _benchmark_root(session: Path) -> Path:
-    return Path("benchmarks") / APPROVED_RUN_NAME
+    """Keep experiment evidence isolated under its immutable source session."""
+
+    return Path("benchmarks") / session.name
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -82,6 +95,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("candidate requires --candidate-config")
     if args.algorithm == "baseline" and args.candidate_config is not None:
         raise ValueError("baseline does not accept --candidate-config")
+    reuse_online_trajectory = bool(getattr(args, "reuse_online_trajectory", False))
+    if reuse_online_trajectory and args.algorithm != "candidate":
+        raise ValueError("--reuse-online-trajectory is candidate-only")
     progress_range = getattr(args, "progress_range", None)
     split = getattr(args, "split", None)
     if (progress_range is None) != (split is None):
@@ -103,14 +119,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     root = args.input.expanduser().resolve()
     root = root if root.is_dir() else root.parent
     benchmark_root = _benchmark_root(root)
+    require_candidate_role_for_diagnostic_session(root, args.algorithm)
+    # The split is frozen independently for every capture.  In particular,
+    # the diagnostic capture cannot inherit or mutate the old run's ledger.
+    write_or_verify_split(benchmark_root / "split_definition.json")
     config = load_config(args.config)
     settings = dict(dict(config.get("stitch", {})).get("video_panorama", {}))
     if bool(settings.get("dataset_lock_required_for_experiments", True)):
-        lock_path = benchmark_root / "dataset_lock.json"
-        if lock_path.is_file():
-            verify_dataset_lock(root, lock_path)
-        else:
-            write_dataset_lock(root, benchmark_root)
+        write_or_verify_experiment_dataset_lock(root, benchmark_root, role=args.algorithm)
     seed_state = _seed()
     report = run_video_algorithm(
         input_path=args.input,
@@ -121,6 +137,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         observability=observe,
         maximum_post_seconds=args.maximum_post_seconds,
         defer_3d=args.defer_3d,
+        reuse_online_trajectory=reuse_online_trajectory,
         trajectory_cache=getattr(args, "trajectory_cache", None),
         scan_progress_interval=(
             (float(progress_range[0]), float(progress_range[1]))

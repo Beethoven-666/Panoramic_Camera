@@ -8,50 +8,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .video_candidate_manifest import (
+    VIDEO_CANDIDATE_MANIFEST_SCHEMA,
+    canonical_candidate_manifest_sha256,
+)
 from .video_recovery import canonical_sha256
 
 
 SELECTION_SCHEMA = "gemini305-video-algorithm-selection/v3"
 EVALUATOR_SCHEMA_V2 = "gemini305-video-offline-visual-evaluation/v2"
+BENCHMARK_SCHEMA = "gemini305-video-benchmark-result/v2"
+PERFORMANCE_BENCHMARK_KIND = "full_3m_summary_minimal"
 
 
 class VideoAlgorithmSelectionError(RuntimeError):
     """Candidate evidence cannot safely establish a production selection."""
-
-
-_V2_COMPONENTS_BY_CANDIDATE: dict[str, tuple[str, ...]] = {
-    "C1_constrained_owner": ("c1_constrained_owner",),
-    "C2_dis_rgb_mesh": ("c1_constrained_owner", "c2_dis_mesh"),
-    "C3_raft_rgb_mesh": ("c1_constrained_owner", "c3_raft_mesh"),
-    "C4_raft_rgbd_layered_mesh": (
-        "c1_constrained_owner", "c3_raft_mesh", "c4_depth_layered_mesh",
-    ),
-    "C5_object_lock": (
-        "c1_constrained_owner", "c3_raft_mesh", "c4_depth_layered_mesh", "c5_object_owner_lock",
-    ),
-    "C6_multiband": (
-        "c1_constrained_owner", "c3_raft_mesh", "c4_depth_layered_mesh", "c5_object_owner_lock", "c6_safe_multiband",
-    ),
-    "C7_photometric_graph": (
-        "c1_constrained_owner", "c3_raft_mesh", "c4_depth_layered_mesh", "c5_object_owner_lock", "c6_safe_multiband", "c7_global_photometric",
-    ),
-    "C8_multilabel_window": (
-        "c1_constrained_owner", "c3_raft_mesh", "c4_depth_layered_mesh", "c5_object_owner_lock", "c6_safe_multiband", "c7_global_photometric", "c8_local_multilabel_owner",
-    ),
-    "C9_positive_jacobian_line_mesh": (
-        "c1_constrained_owner", "c3_raft_mesh", "c4_depth_layered_mesh",
-        "c9_line_preserving_layered_mesh",
-    ),
-    "C10_depth_conditioned_multi_perspective_layout": (
-        "c1_constrained_owner", "c3_raft_mesh", "c4_depth_layered_mesh",
-        "c10_depth_conditioned_layout",
-    ),
-    "C13_robust_photometric_bundle": (
-        "c1_constrained_owner", "c3_raft_mesh", "c4_depth_layered_mesh",
-        "c5_object_owner_lock", "c6_safe_multiband", "c7_global_photometric",
-        "c8_local_multilabel_owner", "c13_robust_photometric_bundle",
-    ),
-}
 
 
 def _read_json(path: Path) -> dict[str, object] | None:
@@ -64,6 +35,112 @@ def _read_json(path: Path) -> dict[str, object] | None:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def _component_names(value: object) -> tuple[str, ...] | None:
+    if not isinstance(value, list) or not value or not all(
+        isinstance(item, str) and item for item in value
+    ) or len(set(value)) != len(value):
+        return None
+    return tuple(value)
+
+
+def _locked_component_contract(
+    algorithm: Mapping[str, Any],
+) -> tuple[tuple[str, ...] | None, tuple[str, ...] | None, list[str]]:
+    """Load the candidate's immutable manifest and compare every identity.
+
+    There is intentionally no candidate-name table here.  A report is only
+    meaningful when its recorded config and manifest still resolve to the
+    exact same locked component declarations.
+    """
+
+    reasons: list[str] = []
+    config_sha = algorithm.get("config_sha256")
+    manifest_sha = algorithm.get("candidate_manifest_sha256")
+    manifest_name = algorithm.get("candidate_manifest_path")
+    candidate_id = algorithm.get("algorithm_id")
+    if not all(isinstance(value, str) and value for value in (
+        config_sha, manifest_sha, manifest_name, candidate_id,
+    )):
+        return None, None, ["candidate_manifest_identity_missing"]
+    manifest = _read_json(Path(manifest_name).expanduser())
+    if manifest is None or manifest.get("schema") != VIDEO_CANDIDATE_MANIFEST_SCHEMA:
+        return None, None, ["candidate_manifest_missing_or_invalid"]
+    claimed_manifest_sha = manifest.get("manifest_sha256")
+    unhashed = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    if (
+        not isinstance(claimed_manifest_sha, str)
+        or claimed_manifest_sha != canonical_candidate_manifest_sha256(unhashed)
+        or claimed_manifest_sha != manifest_sha
+    ):
+        reasons.append("candidate_manifest_sha_mismatch")
+    candidates = manifest.get("candidates")
+    entry = candidates.get(candidate_id) if isinstance(candidates, Mapping) else None
+    if not isinstance(entry, Mapping):
+        return None, None, [*reasons, "candidate_manifest_entry_missing"]
+    if entry.get("config_sha256") != config_sha:
+        reasons.append("candidate_config_sha_mismatch")
+    evidence = _component_names(entry.get("required_evidence_components"))
+    output = _component_names(entry.get("required_output_components"))
+    replacements = entry.get("replaces_output_components", [])
+    if evidence is None or output is None or not isinstance(replacements, list):
+        return None, None, [*reasons, "candidate_manifest_component_contract_invalid"]
+    if set(evidence) & set(output) or set(replacements) & set(output):
+        reasons.append("candidate_manifest_component_contract_invalid")
+    if _component_names(algorithm.get("required_evidence_components")) != evidence:
+        reasons.append("report_evidence_component_lineage_missing_or_mismatched")
+    if _component_names(algorithm.get("required_output_components")) != output:
+        reasons.append("report_output_component_lineage_missing_or_mismatched")
+    # Compatibility field is still emitted by specs, but cannot reinterpret
+    # evidence as a pixel-output obligation.
+    if _component_names(algorithm.get("required_components")) != output:
+        reasons.append("report_required_components_missing_or_mismatched")
+    if algorithm.get("replaces_output_components") != replacements:
+        reasons.append("report_replacement_component_lineage_missing_or_mismatched")
+    return evidence, output, reasons
+
+
+def _component_contract_reasons(
+    algorithm: Mapping[str, Any],
+) -> list[str]:
+    evidence_components, output_components, reasons = _locked_component_contract(algorithm)
+    if evidence_components is None or output_components is None:
+        return reasons
+    evidence = algorithm.get("component_evidence")
+    if not isinstance(evidence, Mapping):
+        reasons.append("candidate_evidence_component_audit_missing")
+    else:
+        for component in evidence_components:
+            record = evidence.get(component)
+            if (
+                not isinstance(record, Mapping)
+                or record.get("valid") is not True
+                or not isinstance(record.get("sample_count"), int)
+                or int(record["sample_count"]) <= 0
+                or record.get("audit_passed") is not True
+            ):
+                reasons.append(f"candidate_evidence_component_not_valid:{component}")
+    execution = algorithm.get("component_execution")
+    if not isinstance(execution, Mapping):
+        reasons.append("candidate_output_component_execution_audit_missing")
+    else:
+        for component in output_components:
+            record = execution.get(component)
+            if (
+                not isinstance(record, Mapping)
+                or record.get("required") is not True
+                or record.get("initialized") is not True
+                or record.get("applied_to_output") is not True
+                or not isinstance(record.get("applied_output_pixel_count"), int)
+                or int(record["applied_output_pixel_count"]) <= 0
+            ):
+                reasons.append(f"candidate_output_component_not_applied:{component}")
+    if algorithm.get("candidate_run_state") == "invalid_component_execution":
+        reasons.append("candidate_run_state_invalid_component_execution")
+    if algorithm.get("component_execution_selection_eligible") is not True:
+        reasons.append("candidate_component_execution_not_selection_eligible")
+    return reasons
 
 
 def _measurement_evidence_reasons(report_path: Path) -> list[str]:
@@ -166,22 +243,60 @@ def _ranking_quality(evaluation: Mapping[str, Any]) -> float:
     return sum(margins) / len(margins) if margins else float("-inf")
 
 
-def _performance_ranking_values(report: Mapping[str, Any]) -> tuple[float, float]:
-    """Find recorded warm time and VRAM without inventing missing evidence."""
+def _performance_benchmark(
+    report_path: Path, algorithm: Mapping[str, Any]
+) -> tuple[Mapping[str, Any] | None, list[str]]:
+    """Load only full 3 m, summary/minimal benchmark performance evidence.
 
-    performance = report.get("performance")
-    if not isinstance(performance, Mapping):
-        performance = {}
-    benchmark = report.get("benchmark")
+    Per-run validation reports deliberately carry performance ``NE``.  They
+    are useful for visual evidence but cannot become a timing shortcut.  This
+    resolver therefore rejects embedded/report-local timing and accepts a
+    benchmark summary only when it explicitly records the report as one of
+    its measured runs.
+    """
+
+    report_resolved = str(report_path.resolve())
+    for parent in (report_path.parent, *report_path.parents):
+        candidate = _read_json(parent / "benchmark.json")
+        if candidate is None:
+            continue
+        if candidate.get("schema") != BENCHMARK_SCHEMA:
+            continue
+        run_paths = {
+            str(Path(str(row.get("video_report", ""))).expanduser().resolve())
+            for row in candidate.get("runs", [])
+            if isinstance(row, Mapping) and isinstance(row.get("video_report"), str)
+        }
+        if report_resolved not in run_paths:
+            continue
+        reasons: list[str] = []
+        if candidate.get("benchmark_kind") != PERFORMANCE_BENCHMARK_KIND:
+            reasons.append("performance_benchmark_is_not_full_3m_summary_minimal")
+        observability = candidate.get("observability")
+        if observability != {"report_level": "summary", "artifact_level": "minimal"}:
+            reasons.append("performance_benchmark_is_not_summary_minimal")
+        if candidate.get("evaluation_scope") != "validation_only":
+            reasons.append("performance_benchmark_not_validation_only")
+        benchmark_algorithm = candidate.get("algorithm")
+        if not isinstance(benchmark_algorithm, Mapping) or (
+            benchmark_algorithm.get("algorithm_id") != algorithm.get("algorithm_id")
+            or benchmark_algorithm.get("config_sha256") != algorithm.get("config_sha256")
+        ):
+            reasons.append("performance_benchmark_algorithm_identity_mismatch")
+        gate = candidate.get("performance_gate")
+        if not isinstance(gate, Mapping) or gate.get("status") != "passed":
+            reasons.append("performance_benchmark_gate_not_passed")
+        return candidate, reasons
+    return None, ["performance_benchmark_missing_or_invalid"]
+
+
+def _performance_ranking_values(benchmark: Mapping[str, Any] | None) -> tuple[float, float]:
+    """Rank only by complete benchmark evidence, never report-local timings."""
+
     if not isinstance(benchmark, Mapping):
-        benchmark = {}
-    warm = _finite_number(benchmark.get("warm_median_seconds"), default=_finite_number(performance.get("warm_median_seconds")))
-    renderer = report.get("renderer")
-    runtime = renderer.get("gpu_runtime") if isinstance(renderer, Mapping) and isinstance(renderer.get("gpu_runtime"), Mapping) else {}
-    peak = _finite_number(
-        benchmark.get("peak_vram_bytes"),
-        default=_finite_number(performance.get("peak_vram_bytes"), default=_finite_number(runtime.get("peak_reserved_bytes"))),
-    )
+        return math.inf, math.inf
+    warm = _finite_number(benchmark.get("warm_median_seconds"))
+    peak = _finite_number(benchmark.get("peak_vram_bytes"))
     return warm, peak
 
 
@@ -241,30 +356,12 @@ def assess_validation_candidate(report_path: str | Path) -> CandidateSelection:
         implementation_reasons.append("fallback_used")
     if algorithm.get("execution_backend") != "video_visual_renderer_v2_cuda":
         implementation_reasons.append("candidate_not_executed_by_v2_cuda_renderer")
-    required_components = _V2_COMPONENTS_BY_CANDIDATE.get(str(algorithm.get("algorithm_id")))
-    if required_components is not None:
-        declared = algorithm.get("required_components")
-        if not isinstance(declared, list) or tuple(declared) != required_components:
-            implementation_reasons.append("v2_required_component_lineage_missing_or_mismatched")
-        component_execution = algorithm.get("component_execution")
-        if not isinstance(component_execution, dict):
-            implementation_reasons.append("v2_component_execution_audit_missing")
-        else:
-            for component in required_components:
-                record = component_execution.get(component)
-                if (
-                    not isinstance(record, dict)
-                    or record.get("required") is not True
-                    or record.get("initialized") is not True
-                    or record.get("applied_to_output") is not True
-                    or not isinstance(record.get("applied_output_pixel_count"), int)
-                    or int(record["applied_output_pixel_count"]) <= 0
-                ):
-                    implementation_reasons.append(f"v2_component_not_applied_to_output:{component}")
-        if algorithm.get("candidate_run_state") == "invalid_component_execution":
-            implementation_reasons.append("candidate_run_state_invalid_component_execution")
-        if algorithm.get("component_execution_selection_eligible") is False:
-            implementation_reasons.append("candidate_component_execution_not_selection_eligible")
+    if algorithm.get("working_tree_dirty") is not False:
+        implementation_reasons.append("candidate_working_tree_dirty_or_unrecorded")
+    source_commit = algorithm.get("source_commit")
+    if not isinstance(source_commit, str) or len(source_commit) != 40:
+        implementation_reasons.append("candidate_runtime_source_commit_missing_or_invalid")
+    implementation_reasons.extend(_component_contract_reasons(algorithm))
     hard_gate_reasons: list[str] = []
     scope = report.get("evaluation_scope")
     if scope != "validation_only":
@@ -274,15 +371,17 @@ def assess_validation_candidate(report_path: str | Path) -> CandidateSelection:
     if not isinstance(grades, dict):
         hard_gate_reasons.append("grades_missing")
     else:
-        for grade in ("structural", "visual", "performance", "overall"):
+        for grade in ("structural", "visual", "overall"):
             if grades.get(grade) != "A":
-                (performance_reasons if grade == "performance" else hard_gate_reasons).append(f"{grade}_grade_not_A")
+                hard_gate_reasons.append(f"{grade}_grade_not_A")
     renderer = report.get("renderer")
     metrics = renderer.get("quality_metrics") if isinstance(renderer, dict) else None
     if isinstance(metrics, dict) and metrics.get("candidate_mesh_evidence_output_warp_applied") is False:
         implementation_reasons.append("mesh_evidence_not_applied_to_output")
     measurement_reasons = _measurement_evidence_reasons(path)
     hard_gate_reasons.extend(_visual_hard_gate_reasons(path))
+    _, benchmark_reasons = _performance_benchmark(path, algorithm)
+    performance_reasons.extend(benchmark_reasons)
     reasons = implementation_reasons + measurement_reasons + hard_gate_reasons + performance_reasons
     return CandidateSelection(
         algorithm_id=algorithm["algorithm_id"],
@@ -310,7 +409,9 @@ def write_validation_selection(
         report = _read_json(item.report_path) or {}
         evaluation = _read_json(item.report_path.parent / "visual_metrics.json") or {}
         quality = _ranking_quality(evaluation)
-        warm, peak = _performance_ranking_values(report)
+        algorithm = report.get("algorithm") if isinstance(report.get("algorithm"), Mapping) else {}
+        benchmark, _ = _performance_benchmark(item.report_path, algorithm)
+        warm, peak = _performance_ranking_values(benchmark)
         required = report.get("algorithm", {}).get("required_components", []) if isinstance(report.get("algorithm"), Mapping) else []
         required_count = len(required) if isinstance(required, list) else math.inf
         score = {"quality_score": quality, "warm_median_seconds": warm, "peak_vram_bytes": peak, "required_component_count": required_count}

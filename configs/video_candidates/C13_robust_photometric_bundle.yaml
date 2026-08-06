@@ -4,12 +4,13 @@ candidate_id: C13_robust_photometric_bundle
 parent_candidate_id: C8_multilabel_window
 algorithm_id: C13_robust_photometric_bundle
 implementation_id: video_visual_renderer_v2
-source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
 model_sha256:
   torchvision_raft_small_C_T_V2: 01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27
 allow_baseline_fallback: false
 changed_components: [robust_time_regularised_photometric_graph, safe_low_frequency_illumination_field]
-required_components: [c1_constrained_owner, c3_raft_mesh, c4_depth_layered_mesh, c5_object_owner_lock, c6_safe_multiband, c7_global_photometric, c8_local_multilabel_owner, c13_robust_photometric_bundle]
+required_evidence_components: [c3_raft_mesh]
+required_output_components: [c1_constrained_owner, c4_depth_layered_mesh, c5_object_owner_lock, c6_safe_multiband, c7_global_photometric, c8_local_multilabel_owner, c13_robust_photometric_bundle]
+replaces_output_components: [c3_raft_mesh]
 components:
   photometric_bundle:
     graph_edges: [genuine_adjacent, genuine_skip_one_overlap]
@@ -26,4 +27,4 @@ components:
     model: blockwise_low_frequency_bilinear
     reject_identity_or_zero_actual_output_pixels: true
   annotations: {renderer_input: false, post_publication_evaluation_only: true}
-config_sha256: 29bf03788475c39741af0f041137f2cebb705f5d6f23ac9cdbafc52bf8c382bf
+config_sha256: 538b245a89401287ec544b919c3184016253b51f18c28fab83bc42b9d40b8710

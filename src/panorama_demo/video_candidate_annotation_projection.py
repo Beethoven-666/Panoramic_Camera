@@ -256,6 +256,97 @@ def build_v2_c1_calibrated_inverse_sources(
     return tuple(sources)
 
 
+def build_v2_full_support_measurement_sources(
+    *,
+    strips: Sequence[object],
+    source_shapes: Mapping[int, tuple[int, int]],
+    canvas_shape: tuple[int, int],
+    calibration: Mapping[str, object],
+    annotation_frame_ids: Sequence[int],
+    final_grid_updates: Sequence[Mapping[str, object]] = (),
+) -> tuple[CandidateInverseMapSource, ...]:
+    """Build post-publication, full-support inverse maps for fixed labels.
+
+    Unlike :func:`build_v2_c1_calibrated_inverse_sources`, this adapter does
+    not restrict an annotated source to its final owner strip or a seam
+    corridor.  Each annotated real source is represented over the entire
+    final canvas and the calibrated inverse map itself supplies the only
+    support mask.  Consequently an object such as a fan or cable remains
+    measurable even when a later hard-owner decision assigns its projected
+    pixels to another source.
+
+    ``strips`` is still required as immutable layout evidence: it binds each
+    real source centre to the final canvas.  ``final_grid_updates`` are the
+    renderer's already-audited local inverse-grid replacements and are
+    applied only after the nominal calibrated map is built.  This function is
+    measurement-only; it neither reads RGB nor uses owner provenance.
+    """
+
+    height, canvas_width = (int(value) for value in canvas_shape)
+    if height < 2 or canvas_width < 2:
+        raise ValueError("v2 full-support projection canvas shape must be at least 2x2")
+    geometry = tuple(_coerce_v2_strip(strip) for strip in strips)
+    if not geometry:
+        raise ValueError("v2 full-support projection requires selected source layout")
+    ids = tuple(item[0] for item in geometry)
+    if len(set(ids)) != len(ids) or tuple(sorted(ids)) != ids:
+        raise ValueError("v2 full-support projection strips must have unique chronological frame ids")
+    if geometry[0][1] != 0 or geometry[-1][1] + geometry[-1][3] != canvas_width:
+        raise ValueError("v2 full-support projection strips do not cover the rendered canvas")
+    for (_, left, _, width, _), (_, right, _, _, _) in zip(geometry[:-1], geometry[1:], strict=True):
+        if left + width != right:
+            raise ValueError("v2 full-support projection strips are not contiguous")
+    try:
+        fx, fy = float(calibration["fx"]), float(calibration["fy"])
+        raw_cx, raw_cy = float(calibration["cx"]), float(calibration["cy"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("v2 full-support projection calibration is incomplete") from exc
+    distortion_raw = calibration.get("distortion", ())
+    if not isinstance(distortion_raw, Sequence) or isinstance(distortion_raw, (str, bytes)):
+        raise ValueError("v2 full-support projection distortion must be a numeric sequence")
+    try:
+        distortion = tuple(float(value) for value in distortion_raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("v2 full-support projection distortion must be numeric") from exc
+    annotation_ids = {int(frame_id) for frame_id in annotation_frame_ids}
+    sources: list[CandidateInverseMapSource] = []
+    for frame_id, _, _, _, centre in geometry:
+        if frame_id not in annotation_ids:
+            continue
+        try:
+            raw_height, raw_width = (int(value) for value in source_shapes[frame_id])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("v2 full-support projection lacks a raw shape for a selected source") from exc
+        if raw_height != height or raw_width < 2:
+            raise ValueError("v2 full-support source shape differs from the rendered real source")
+        map_x, map_y, valid = _brown_conrady_inverse_map(
+            canvas_x0=0,
+            width=canvas_width,
+            height=height,
+            source_width=raw_width,
+            source_height=raw_height,
+            source_centre_x=centre,
+            fx=fx,
+            fy=fy,
+            raw_cx=raw_cx,
+            raw_cy=raw_cy,
+            distortion=distortion,
+        )
+        sources.append(
+            CandidateInverseMapSource(
+                frame_id=frame_id,
+                canvas_x0=0,
+                source_map_x=map_x,
+                source_map_y=map_y,
+                valid_mask=valid,
+                raw_shape=(raw_height, raw_width),
+            )
+        )
+    if not sources and annotation_ids:
+        raise ValueError("v2 full-support projection has no annotated selected real source")
+    return apply_final_grid_updates(tuple(sources), final_grid_updates)
+
+
 def apply_final_grid_updates(
     sources: Sequence[CandidateInverseMapSource],
     updates: Sequence[Mapping[str, object]],
@@ -439,9 +530,23 @@ def _consensus_masks(masks: Sequence[np.ndarray]) -> tuple[bool, np.ndarray | No
     """
     if not masks:
         return False, None, {"measurement_state": "projection_missing"}
+    geometry = []
+    for index, mask in enumerate(masks):
+        centroid, area = _mask_geometry(mask)
+        geometry.append(
+            {
+                "source_projection_index": int(index),
+                "area_pixels": int(area),
+                "centroid_xy": [float(centroid[0]), float(centroid[1])],
+            }
+        )
     if len(masks) == 1:
         return True, masks[0], {
             "measurement_state": "evaluated", "strategy": "single_source", "source_projection_count": 1,
+            "source_projection_geometry": geometry,
+            "consensus_area_pixels": int(np.count_nonzero(masks[0])),
+            "consensus_coverage_of_union": 1.0,
+            "consensus_coverage_of_smaller_projection": 1.0,
         }
     kernel = np.ones((3, 3), dtype=np.uint8)
     dilated = [cv2.dilate(item.astype(np.uint8), kernel, iterations=1).astype(bool) for item in masks]
@@ -453,19 +558,53 @@ def _consensus_masks(masks: Sequence[np.ndarray]) -> tuple[bool, np.ndarray | No
     centre_distance = max(float(np.linalg.norm(first - second)) for index, first in enumerate(centres) for second in centres[index + 1 :])
     min_area, max_area = min(areas), max(areas)
     area_ratio = float(min_area / max_area) if max_area else 0.0
+    pairwise: list[dict[str, Any]] = []
+    for first_index, first in enumerate(dilated):
+        for second_index, second in enumerate(dilated[first_index + 1 :], start=first_index + 1):
+            pair_intersection = int(np.count_nonzero(first & second))
+            pair_union = int(np.count_nonzero(first | second))
+            first_area = int(areas[first_index])
+            second_area = int(areas[second_index])
+            pairwise.append(
+                {
+                    "first_source_projection_index": int(first_index),
+                    "second_source_projection_index": int(second_index),
+                    "dilated_intersection_area_pixels": pair_intersection,
+                    "dilated_union_area_pixels": pair_union,
+                    "dilated_iou": float(pair_intersection / pair_union) if pair_union else 0.0,
+                    "centroid_distance_px": float(np.linalg.norm(centres[first_index] - centres[second_index])),
+                    "area_ratio": float(min(first_area, second_area) / max(first_area, second_area)) if max(first_area, second_area) else 0.0,
+                }
+            )
     consistent = bool(iou >= 0.70 or (centre_distance <= 3.0 and 0.80 <= area_ratio <= 1.25))
     audit: dict[str, Any] = {
         "measurement_state": "evaluated" if consistent else "projection_inconsistent",
         "source_projection_count": len(masks), "dilated_iou": iou,
         "maximum_center_distance_px": centre_distance, "area_ratio": area_ratio,
+        "dilated_intersection_area_pixels": intersection_area,
+        "dilated_union_area_pixels": union_area,
+        "intersection_coverage_of_smaller_projection": float(intersection_area / min_area) if min_area else 0.0,
+        "intersection_coverage_of_union": float(intersection_area / union_area) if union_area else 0.0,
+        "source_projection_geometry": geometry,
+        "pairwise_projection_agreement": pairwise,
     }
     if not consistent:
         return False, None, audit
     coverage = float(intersection_area / min_area) if min_area else 0.0
     if intersection_area and coverage >= 0.50:
-        audit.update({"strategy": "dilate_1px_intersection", "coverage_of_smaller_projection": coverage})
+        audit.update({
+            "strategy": "dilate_1px_intersection",
+            "coverage_of_smaller_projection": coverage,
+            "consensus_area_pixels": intersection_area,
+            "consensus_coverage_of_union": float(intersection_area / union_area) if union_area else 0.0,
+        })
         return True, intersection, audit
-    audit.update({"strategy": "geometrically_consistent_union", "coverage_of_smaller_projection": coverage})
+    audit.update({
+        "strategy": "geometrically_consistent_union",
+        "coverage_of_smaller_projection": coverage,
+        "consensus_area_pixels": union_area,
+        "consensus_coverage_of_union": 1.0,
+    })
     return True, union, audit
 
 
@@ -529,7 +668,12 @@ def build_candidate_annotation_projection(
             grouped.setdefault(key, []).append((entry, source, projected))
         for group_id, members in grouped.items():
             accepted, consensus, audit = _consensus_masks([item[2] for item in members])
-            audit.update({"kind": kind, "measurement_group": group_id, "source_annotation_ids": [str(item[0]["id"]) for item in members]})
+            audit.update({
+                "kind": kind,
+                "measurement_group": group_id,
+                "source_annotation_ids": [str(item[0]["id"]) for item in members],
+                "source_projection_frame_ids": [int(item[1].frame_id) for item in members],
+            })
             payload["measurement_groups"].append(audit)
             if not accepted or consensus is None:
                 continue
@@ -584,5 +728,6 @@ __all__ = [
     "build_candidate_annotation_projection",
     "apply_final_grid_updates",
     "build_v2_c1_calibrated_inverse_sources",
+    "build_v2_full_support_measurement_sources",
     "write_candidate_annotation_projection_sidecar",
 ]

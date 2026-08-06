@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from panorama_demo.video_algorithm import canonical_config_sha256
+from panorama_demo.video_algorithm import candidate_runtime_git_identity, canonical_config_sha256
+from panorama_demo.video_candidate_manifest import canonical_candidate_manifest_sha256
 from panorama_demo.video_holdout import (
     VideoHoldoutError,
     complete_first_holdout,
@@ -21,6 +22,7 @@ def _hash(path: Path) -> str:
 
 
 def _candidate_lock(tmp_path: Path, *, role: str = "candidate") -> Path:
+    runtime_head, _ = candidate_runtime_git_identity()
     document: dict[str, object] = {
         "config_schema": "gemini305-video-candidate/v1" if role == "candidate" else "gemini305-video-algorithm/v1",
         "role": role,
@@ -28,21 +30,39 @@ def _candidate_lock(tmp_path: Path, *, role: str = "candidate") -> Path:
         "parent_candidate_id": "C7" if role == "candidate" else None,
         "algorithm_id": "C8",
         "implementation_id": "video_visual_renderer_v2",
-        "source_commit": "a" * 40,
+        "source_commit": runtime_head if role == "candidate" else "a" * 40,
         "model_sha256": {},
         "allow_baseline_fallback": False,
         "changed_components": ["seam"] if role == "candidate" else None,
+        "required_evidence_components": ["orb_anchor_trajectory"] if role == "candidate" else None,
+        "required_output_components": ["final_owner"] if role == "candidate" else None,
+        "replaces_output_components": [] if role == "candidate" else None,
     }
     document = {key: value for key, value in document.items() if value is not None}
     if role == "candidate":
         document["config_sha256"] = canonical_config_sha256(document)
     config = tmp_path / f"{role}.yaml"
     config.write_text(yaml.safe_dump(document, sort_keys=True), encoding="utf-8")
+    if role == "candidate":
+        manifest = {
+            "schema": "gemini305-video-candidate-manifest/v1",
+            "candidates": {
+                "C8": {
+                    "config_sha256": document["config_sha256"],
+                    "required_evidence_components": document["required_evidence_components"],
+                    "required_output_components": document["required_output_components"],
+                    "replaces_output_components": document["replaces_output_components"],
+                }
+            },
+        }
+        manifest["manifest_sha256"] = canonical_candidate_manifest_sha256(manifest)
+        (tmp_path / "candidate_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     lock = tmp_path / f"{role}.lock.json"
     lock.write_text(json.dumps({
         "schema": "gemini305-video-algorithm-lock/v1", "role": role,
         "algorithm_id": "C8", "config_path": config.name,
-        "config_sha256": canonical_config_sha256(document), "source_commit": "a" * 40,
+        "config_sha256": canonical_config_sha256(document),
+        "source_commit": runtime_head if role == "candidate" else "a" * 40,
         "model_sha256": {}, "dataset_lock_sha256": "b" * 64 if role == "production" else None,
     }), encoding="utf-8")
     return lock

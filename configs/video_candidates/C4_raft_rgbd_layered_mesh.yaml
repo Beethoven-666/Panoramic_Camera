@@ -4,15 +4,16 @@ candidate_id: C4_raft_rgbd_layered_mesh
 parent_candidate_id: C3_raft_rgb_mesh
 algorithm_id: C4_raft_rgbd_layered_mesh
 implementation_id: video_visual_renderer_v2
-source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
 model_sha256:
   torchvision_raft_small_C_T_V2: 01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27
 allow_baseline_fallback: false
 changed_components: [depth_confidence, rgbd_layered_mesh, occlusion_protection]
-required_components: [c1_constrained_owner, c3_raft_mesh, c4_depth_layered_mesh]
+required_evidence_components: [c3_raft_mesh]
+required_output_components: [c1_constrained_owner, c4_depth_layered_mesh]
+replaces_output_components: [c3_raft_mesh]
 components:
   residual_mesh: {enabled: true, flow_backend: raft_small, depth_layers: [far, mid, near]}
   depth_confidence: {enabled: true}
   occlusion_protection: {enabled: true}
   object_lock: {enabled: false}
-config_sha256: 963d267808e8c3d9d7d24287a1e58c5d804659aff26d17856efaea847b12bfa5
+config_sha256: 7cd2c090032270284c41167991c44846f6d44bb44ae93869f4d5df6d76968e3d

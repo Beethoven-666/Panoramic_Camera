@@ -72,6 +72,21 @@ def test_motion_resampler_keeps_risky_edges_denser_and_composes_real_motion() ->
     assert all(item.method == "composed_video_motion" for item in combined)
 
 
+def test_motion_composition_allows_only_certified_internal_anchor_spans() -> None:
+    motions = [MotionEstimate(1.0, 0.0, 80, 0.9, 0.7, "dis_ultrafast") for _ in range(6)]
+    try:
+        compose_selected_motions(motions, (1, 3, 5))
+    except ValueError as exc:
+        assert "scan endpoints" in str(exc)
+    else:
+        raise AssertionError("ordinary source selection accepted missing endpoints")
+
+    combined = compose_selected_motions(
+        motions, (1, 3, 5), require_scan_endpoints=False
+    )
+    assert [item.dx for item in combined] == [2.0, 2.0]
+
+
 def test_motion_resampling_config_rejects_relaxed_order() -> None:
     try:
         MotionResamplingConfig.from_mapping({"normal_target_step_pixels": 2.0})

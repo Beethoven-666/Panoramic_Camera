@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from panorama_demo.video_algorithm import canonical_config_sha256
+from panorama_demo.video_algorithm import candidate_runtime_git_identity, canonical_config_sha256
+from panorama_demo.video_candidate_manifest import canonical_candidate_manifest_sha256
 from panorama_demo.video_algorithm_lock import verify_algorithm_lock
 from panorama_demo.video_algorithm_registry import VideoAlgorithmRegistry, VideoAlgorithmRegistryError
 from panorama_demo.video_algorithm_selection import write_validation_selection
@@ -66,9 +67,27 @@ def _write_candidate(path: Path) -> Path:
         "model_sha256": {},
         "allow_baseline_fallback": False,
         "changed_components": ["strict_owner"],
+        "required_evidence_components": ["orb_anchor_trajectory"],
+        "required_output_components": ["final_owner"],
+        "replaces_output_components": [],
     }
     payload["config_sha256"] = canonical_config_sha256(payload)
     path.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
+    manifest = {
+        "schema": "gemini305-video-candidate-manifest/v1",
+        "candidates": {
+            "C_final": {
+                "config_sha256": payload["config_sha256"],
+                "required_evidence_components": payload["required_evidence_components"],
+                "required_output_components": payload["required_output_components"],
+                "replaces_output_components": [],
+            }
+        },
+    }
+    manifest["manifest_sha256"] = canonical_candidate_manifest_sha256(manifest)
+    (path.parent / "candidate_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
     return path
 
 
@@ -130,15 +149,59 @@ def _prepare_selection_and_holdout(tmp_path: Path, *, holdout_grade: str = "A") 
     config = yaml.safe_load(candidate.read_text(encoding="utf-8"))
     validation = _write_report(tmp_path / "validation.json", scope="validation_only")
     report = json.loads(validation.read_text(encoding="utf-8"))
-    report["algorithm"]["config_sha256"] = config["config_sha256"]
-    validation.write_text(json.dumps(report), encoding="utf-8")
+    manifest = json.loads((tmp_path / "candidate_manifest.json").read_text(encoding="utf-8"))
+    runtime_head, _ = candidate_runtime_git_identity()
+    for report_path, report_payload in ((validation, report),):
+        algorithm = report_payload["algorithm"]
+        algorithm.update({
+            "config_sha256": config["config_sha256"],
+            "source_commit": runtime_head,
+            "candidate_manifest_path": str(tmp_path / "candidate_manifest.json"),
+            "candidate_manifest_sha256": manifest["manifest_sha256"],
+            "required_evidence_components": ["orb_anchor_trajectory"],
+            "required_output_components": ["final_owner"],
+            "required_components": ["final_owner"],
+            "replaces_output_components": [],
+            "component_evidence": {"orb_anchor_trajectory": {"valid": True, "sample_count": 1, "audit_passed": True}},
+            "component_execution": {"final_owner": {"required": True, "initialized": True, "applied_to_output": True, "applied_output_pixel_count": 1}},
+            "candidate_run_state": "completed",
+            "component_execution_selection_eligible": True,
+            "working_tree_dirty": False,
+        })
+        report_path.write_text(json.dumps(report_payload), encoding="utf-8")
+    (tmp_path / "benchmark.json").write_text(json.dumps({
+        "schema": "gemini305-video-benchmark-result/v2",
+        "benchmark_kind": "full_3m_summary_minimal",
+        "observability": {"report_level": "summary", "artifact_level": "minimal"},
+        "evaluation_scope": "validation_only",
+        "algorithm": report["algorithm"],
+        "runs": [{"video_report": str(validation)}],
+        "warm_median_seconds": 1.0,
+        "peak_vram_bytes": 1,
+        "performance_gate": {"status": "passed"},
+    }), encoding="utf-8")
     selection = tmp_path / "selection.json"
     write_validation_selection([validation], output=selection)
     holdout_dir = tmp_path / "holdout"
     holdout_dir.mkdir()
     holdout = _write_report(holdout_dir / "report.json", scope="holdout_only", grades=holdout_grade)
     report = json.loads(holdout.read_text(encoding="utf-8"))
-    report["algorithm"]["config_sha256"] = config["config_sha256"]
+    algorithm = report["algorithm"]
+    algorithm.update({
+        "config_sha256": config["config_sha256"],
+        "source_commit": runtime_head,
+        "candidate_manifest_path": str(tmp_path / "candidate_manifest.json"),
+        "candidate_manifest_sha256": manifest["manifest_sha256"],
+        "required_evidence_components": ["orb_anchor_trajectory"],
+        "required_output_components": ["final_owner"],
+        "required_components": ["final_owner"],
+        "replaces_output_components": [],
+        "component_evidence": {"orb_anchor_trajectory": {"valid": True, "sample_count": 1, "audit_passed": True}},
+        "component_execution": {"final_owner": {"required": True, "initialized": True, "applied_to_output": True, "applied_output_pixel_count": 1}},
+        "candidate_run_state": "completed",
+        "component_execution_selection_eligible": True,
+        "working_tree_dirty": False,
+    })
     holdout.write_text(json.dumps(report), encoding="utf-8")
     return candidate, selection, holdout
 
@@ -220,7 +283,7 @@ def test_production_freeze_rejects_candidate_mutated_after_holdout(tmp_path):
     dataset_lock = tmp_path / "dataset_lock.json"
     dataset_lock.write_text(json.dumps({"schema": "gemini305-video-dataset-lock/v1"}), encoding="utf-8")
 
-    with pytest.raises(VideoProductionFreezeError, match="no longer matches first holdout config_sha256"):
+    with pytest.raises(VideoProductionFreezeError, match="Candidate manifest config SHA mismatch"):
         freeze_production(
             validation_selection=selection,
             holdout_state=state_path,

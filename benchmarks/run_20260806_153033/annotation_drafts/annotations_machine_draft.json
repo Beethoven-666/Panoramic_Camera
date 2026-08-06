@@ -1,0 +1,37 @@
+{
+  "schema": "gemini305-video-source-annotations/v2",
+  "annotation_role": "machine_draft_requires_human_confirmation",
+  "human_confirmation": {
+    "source": "Codex visual draft from frames 389 and 391",
+    "confirmed_on": null,
+    "status": "pending_user_confirmation"
+  },
+  "source_frames": {
+    "389": {"color_path": "color/00000389.jpg"},
+    "391": {"color_path": "color/00000391.jpg"}
+  },
+  "objects": [
+    {"id": "yellow_beam_high_risk_389", "frame_id": 389, "measurement_group": "yellow_beam_high_risk", "role": "extended_background_structure", "polygon": [[1,104],[846,104],[846,171],[1,171]]},
+    {"id": "central_carton_389", "frame_id": 389, "measurement_group": "central_carton", "role": "compact_foreground_single_owner", "polygon": [[394,284],[536,299],[543,385],[415,391]]},
+    {"id": "black_fan_389", "frame_id": 389, "measurement_group": "black_fan", "role": "compact_foreground_single_owner", "polygon": [[602,254],[704,254],[704,392],[602,392]]},
+    {"id": "black_cable_389", "frame_id": 389, "measurement_group": "black_cable", "role": "compact_foreground_single_owner", "polygon": [[404,358],[477,358],[477,438],[408,438]]},
+    {"id": "yellow_beam_high_risk_391", "frame_id": 391, "measurement_group": "yellow_beam_high_risk", "role": "extended_background_structure", "polygon": [[1,104],[846,104],[846,171],[1,171]]},
+    {"id": "central_carton_391", "frame_id": 391, "measurement_group": "central_carton", "role": "compact_foreground_single_owner", "polygon": [[392,284],[534,299],[542,385],[413,391]]},
+    {"id": "black_fan_391", "frame_id": 391, "measurement_group": "black_fan", "role": "compact_foreground_single_owner", "polygon": [[601,253],[703,253],[703,391],[601,391]]},
+    {"id": "black_cable_391", "frame_id": 391, "measurement_group": "black_cable", "role": "compact_foreground_single_owner", "polygon": [[403,358],[476,358],[476,438],[407,438]]}
+  ],
+  "lines": [
+    {"id": "yellow_beam_top_389", "frame_id": 389, "measurement_group": "yellow_beam_top", "role": "long_line", "points": [[1,104],[846,104]]},
+    {"id": "yellow_beam_bottom_389", "frame_id": 389, "measurement_group": "yellow_beam_bottom", "role": "long_line", "points": [[1,171],[846,171]]},
+    {"id": "yellow_beam_groove_389", "frame_id": 389, "measurement_group": "yellow_beam_groove", "role": "long_line", "points": [[1,149],[846,149]]},
+    {"id": "table_front_edge_389", "frame_id": 389, "measurement_group": "table_front_edge", "role": "long_line", "points": [[1,454],[846,454]]},
+    {"id": "yellow_beam_top_391", "frame_id": 391, "measurement_group": "yellow_beam_top", "role": "long_line", "points": [[1,104],[846,104]]},
+    {"id": "yellow_beam_bottom_391", "frame_id": 391, "measurement_group": "yellow_beam_bottom", "role": "long_line", "points": [[1,171],[846,171]]},
+    {"id": "yellow_beam_groove_391", "frame_id": 391, "measurement_group": "yellow_beam_groove", "role": "long_line", "points": [[1,149],[846,149]]},
+    {"id": "table_front_edge_391", "frame_id": 391, "measurement_group": "table_front_edge", "role": "long_line", "points": [[1,454],[846,454]]}
+  ],
+  "safe_background": [
+    {"id": "yellow_beam_face_389", "frame_id": 389, "measurement_group": "yellow_beam_face", "role": "safe_background", "polygon": [[80,114],[766,114],[766,136],[80,136]]},
+    {"id": "yellow_beam_face_391", "frame_id": 391, "measurement_group": "yellow_beam_face", "role": "safe_background", "polygon": [[80,114],[766,114],[766,136],[80,136]]}
+  ]
+}

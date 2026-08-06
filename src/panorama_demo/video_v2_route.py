@@ -53,9 +53,8 @@ from .video_visual_renderer_v2 import (
     build_cuda_strips_from_pushbroom_layout,
 )
 from .video_candidate_annotation_projection import (
-    apply_final_grid_updates,
     build_candidate_annotation_projection,
-    build_v2_c1_calibrated_inverse_sources,
+    build_v2_full_support_measurement_sources,
 )
 from .video_v2_audit_export import V2CudaAuditExportContext
 
@@ -375,7 +374,7 @@ def _decode_real_source(
     )
 
 
-def _c1_measurement_projection(
+def _full_support_measurement_projection(
     *,
     annotations: Mapping[str, object] | None,
     strips: Sequence[object],
@@ -383,14 +382,14 @@ def _c1_measurement_projection(
     calibration: CameraIntrinsics,
     canvas_shape: tuple[int, int],
     final_owner_frame_id: np.ndarray,
-    corridor_width_pixels: int,
     final_grid_updates: Sequence[Mapping[str, object]] = (),
 ) -> tuple[dict[str, object] | None, dict[str, np.ndarray] | None]:
-    """Create C1 post-render measurement evidence without touching output.
+    """Create full-support post-render measurement evidence without touching output.
 
     This intentionally runs only after the CUDA renderer has returned the
     final CPU provenance map.  The source maps are reconstructed from the
-    exact C1 layout/grid equations. Projection is owner-independent, so
+    exact calibrated layout/grid equations over every source's full canvas
+    support. Projection is owner-independent, so
     annotations never become an owner/seam or colour input and a later owner
     decision cannot erase the measurement subject.
     """
@@ -407,7 +406,7 @@ def _c1_measurement_projection(
         int(frame.frame_id): (int(calibration.height), int(calibration.width))
         for frame in sources
     }
-    inverse_sources = build_v2_c1_calibrated_inverse_sources(
+    inverse_sources = build_v2_full_support_measurement_sources(
         strips=strips,
         source_shapes=source_shapes,
         canvas_shape=canvas_shape,
@@ -417,9 +416,8 @@ def _c1_measurement_projection(
             "distortion": calibration.distortion,
         },
         annotation_frame_ids=tuple(sorted(frame_ids)),
-        corridor_width_pixels=int(corridor_width_pixels),
+        final_grid_updates=final_grid_updates,
     )
-    inverse_sources = apply_final_grid_updates(inverse_sources, final_grid_updates)
     payload, masks = build_candidate_annotation_projection(
         annotations,
         sources=inverse_sources,
@@ -431,12 +429,13 @@ def _c1_measurement_projection(
     )
     payload = {
         **payload,
-        "projection_method": "v2_cuda_final_inverse_grid_owner_independent_consensus",
+        "projection_method": "v2_cuda_full_support_final_inverse_grid_owner_independent_consensus",
         "v2_grid_reference": (
             "torch_cuda_final_inverse_grid_with_accepted_local_mesh_deltas"
             if final_grid_updates else "torch_cuda_c1_constrained_owner_v2._render_window"
         ),
         "source_map_count": len(inverse_sources),
+        "source_map_support": "full_final_canvas_calibrated_inverse_validity",
         "final_grid_update_count": len(final_grid_updates),
         "final_owner_filter_applied": False,
     }
@@ -453,14 +452,13 @@ def build_v2_post_publication_measurement_projection(
 
     if tuple(int(value) for value in final_owner_frame_id.shape) != tuple(context.canvas_shape):
         raise VideoV2RouteError("post-publication measurement owner shape differs from its frozen v2 canvas")
-    payload, masks = _c1_measurement_projection(
+    payload, masks = _full_support_measurement_projection(
         annotations=annotations,
         strips=context.strips,
         sources=context.sources,
         calibration=context.calibration,
         canvas_shape=context.canvas_shape,
         final_owner_frame_id=final_owner_frame_id,
-        corridor_width_pixels=context.corridor_width_pixels,
         final_grid_updates=context.final_grid_updates,
     )
     if payload is None or masks is None:
@@ -644,7 +642,12 @@ def render_cuda_c1_constrained_owner_v2(
     annotations: Mapping[str, object] | None = None,
     cuda_device: int = 0,
 ) -> V2CudaStripRender:
-    """Run C1's real-source CUDA owner path; it never falls back to C0."""
+    """Run C1's real-source CUDA owner path; it never falls back to C0.
+
+    Fixed annotations are intentionally not read here.  The common
+    publication path builds their full-support measurement maps only after
+    the primary output has been atomically published.
+    """
 
     if len(sources) != len(camera_to_world) or len(sources) < 2:
         raise VideoV2RouteError("v2 CUDA C1 route needs at least two aligned real sources and poses")
@@ -710,37 +713,26 @@ def render_cuda_c1_constrained_owner_v2(
         result = algorithm.render(prepared)
     except (VideoAlgorithmContractError, ValueError) as exc:
         raise VideoV2RouteError(str(exc)) from exc
-    try:
-        projection_payload, projection_masks = _c1_measurement_projection(
-            annotations=annotations,
-            strips=strips,
-            sources=sources,
-            calibration=calibration,
-            canvas_shape=tuple(int(value) for value in result.owner_frame_id.shape),
-            final_owner_frame_id=result.owner_frame_id,
-            corridor_width_pixels=resolved_c1_config.corridor_width_pixels,
-        )
-    except ValueError as exc:
-        # Annotation projection is measurement-only.  It must never change a
-        # successful C1 primary result, but an invalid projection is not
-        # silently represented as usable evidence.
-        raise VideoV2RouteError(f"C1 annotation projection failed: {exc}") from exc
+    # Retain the public call signature for the candidate pipeline, but do
+    # not allow annotations to become an input of the CUDA render lifecycle.
+    del annotations
     metadata: dict[str, object] = {
         **result.algorithm_audit,
         "layout": layout.as_dict(),
         "rgb_motion_scale": scale.as_dict(),
         "quality_metrics": _v2_quality_metrics(result, cuda_c1_owner_route=True),
-        "measurement_projection": (
-            "v2_cuda_c1_calibrated_inverse_grid_owner_independent_consensus"
-            if projection_payload is not None else "not_requested"
-        ),
+        "measurement_projection": "v2_post_publication_full_support_final_grid_context",
     }
     return V2CudaStripRender(
         panorama=np.ascontiguousarray(result.panorama_bgr),
         owner_frame_id=np.ascontiguousarray(result.owner_frame_id),
         metadata=metadata,
-        measurement_projection_payload=projection_payload,
-        measurement_projection_masks=projection_masks,
+        post_publication_measurement_context=_post_publication_measurement_context(
+            sources=sources,
+            strips=strips,
+            calibration=calibration,
+            result=result,
+        ),
         audit_export_context=_v2_audit_export_context(
             sources=sources, strips=strips, calibration=calibration, result=result,
             include_adjacent_corridors=True,

@@ -7,6 +7,7 @@ from panorama_demo.video_candidate_annotation_projection import (
     apply_final_grid_updates,
     build_candidate_annotation_projection,
     build_v2_c1_calibrated_inverse_sources,
+    build_v2_full_support_measurement_sources,
     write_candidate_annotation_projection_sidecar,
 )
 from panorama_demo.video_visual_renderer_v2 import CudaSourceStrip
@@ -160,6 +161,75 @@ def test_v2_c1_projection_uses_actual_c1_windows_and_calibrated_grid_not_owner_g
     assert masks["objects__consensus__box"].shape == owner.shape
     assert np.any(masks["objects__consensus__box"][2:6, 22])
     assert np.any(masks["objects__consensus__box"][:, 20:25])
+
+
+def test_v2_full_support_projection_keeps_fan_and_cable_outside_final_owner_strip():
+    """M2 evidence spans true source support, never just the final owner strip."""
+
+    height, canvas_width = 12, 20
+    strips = (
+        CudaSourceStrip(7, 0, 0, 10, 10.0),
+        CudaSourceStrip(8, 10, 10, 10, 10.0),
+    )
+    maps = build_v2_full_support_measurement_sources(
+        strips=strips,
+        source_shapes={7: (height, 30), 8: (height, 30)},
+        canvas_shape=(height, canvas_width),
+        calibration={"fx": 100.0, "fy": 100.0, "cx": 10.0, "cy": 5.5, "distortion": ()},
+        annotation_frame_ids=(8,),
+    )
+    assert len(maps) == 1
+    source = maps[0]
+    assert source.canvas_x0 == 0
+    assert source.source_map_x.shape == (height, canvas_width)
+    # Source 8 owns [10, 20), but its calibrated full support maps raw x=5
+    # to panorama x=5.  A later owner decision must not erase this evidence.
+    assert source.source_map_x[6, 5] == 5.0
+    annotations = {
+        "objects": [{"id": "fan", "frame_id": 8, "polygon": [[4, 3], [7, 3], [7, 8], [4, 8]]}],
+        "lines": [{"id": "cable", "frame_id": 8, "points": [[3, 2], [8, 9]]}],
+        "safe_background": [],
+    }
+    owner = np.full((height, canvas_width), 7, dtype=np.int32)
+    owner[:, 10:] = 8
+    payload, masks = build_candidate_annotation_projection(
+        annotations,
+        sources=maps,
+        final_owner_frame_id=owner,
+        crop_xywh=(0, 0, canvas_width, height),
+        horizontal_flip=False,
+    )
+    assert any(item["id"] == "fan" for item in payload["objects"])
+    assert any(item["id"] == "cable" for item in payload["lines"])
+    assert np.any(masks["objects__consensus__fan"][:, :10])
+    group = next(item for item in payload["measurement_groups"] if item["measurement_group"] == "fan")
+    assert group["consensus_area_pixels"] > 0
+    assert group["source_projection_geometry"][0]["area_pixels"] > 0
+    assert group["source_projection_geometry"][0]["centroid_xy"][0] < 10.0
+
+
+def test_v2_full_support_applies_final_grid_update_outside_owner_strip():
+    """A final local grid delta remains authoritative outside an owner interval."""
+
+    height, canvas_width = 8, 20
+    maps = build_v2_full_support_measurement_sources(
+        strips=(CudaSourceStrip(7, 0, 0, 10, 10.0), CudaSourceStrip(8, 10, 10, 10, 10.0)),
+        source_shapes={7: (height, 30), 8: (height, 30)},
+        canvas_shape=(height, canvas_width),
+        calibration={"fx": 100.0, "fy": 100.0, "cx": 10.0, "cy": 3.5, "distortion": ()},
+        annotation_frame_ids=(8,),
+        final_grid_updates=({
+            "frame_id": 8,
+            "canvas_x0": 3,
+            "normalized_grid_xy": np.zeros((height, 2, 2), dtype=np.float32),
+            "applied_mask": np.array([[False, False], [False, True], [False, False], [False, False], [False, False], [False, False], [False, False], [False, False]]),
+            "source_shape": [height, 30],
+        },),
+    )
+    # normalized x/y=0 maps to the middle of the 30x8 raw source. The update
+    # lies at canvas x=4, well outside source 8's [10, 20) owner strip.
+    assert np.isclose(maps[0].source_map_x[1, 4], 14.5)
+    assert np.isclose(maps[0].source_map_y[1, 4], 3.5)
 
 
 def test_v2_projection_consensus_survives_changed_owner_and_records_source_masks(tmp_path):

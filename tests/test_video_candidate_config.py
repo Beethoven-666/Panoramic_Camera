@@ -11,6 +11,7 @@ from panorama_demo.video_algorithm import (
     load_algorithm_config,
 )
 from panorama_demo.video_pipeline import _legacy_settings_for
+from panorama_demo.video_candidate_manifest import canonical_candidate_manifest_sha256
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +60,35 @@ def test_c0_reference_remains_runnable_with_disabled_optional_modules():
     )
     settings = _legacy_settings_for(spec)
     assert settings["motion_resampling"]["normal_target_step_pixels"] == 20.0
+
+
+def test_d2_is_a_candidate_only_d1_successor_not_a_c3_c4_mesh_alias():
+    spec = build_algorithm_spec(
+        ROOT / "configs" / "video_candidates" / "D2_monotonic_depth_layer_warp.yaml",
+        expected_role="candidate",
+    )
+    settings = _legacy_settings_for(spec)
+    assert settings["fast_renderer"] == "hard_owner_diagnostic"
+    assert settings["candidate_dense_real_frame_layout"]["real_source_fps"] == 24
+    d2 = settings["candidate_d2_monotonic_depth_layer_warp"]
+    assert d2["layers"] == ["far", "mid", "near"]
+    assert d2["multiband"] is False
+    assert spec.replaces_output_components == (
+        "c3_raft_mesh", "c4_depth_layered_mesh", "d1_dense_real_frame_hard_owner",
+    )
+
+
+def test_d3_is_a_d2_successor_with_a_real_source_owner_only_contract():
+    spec = build_algorithm_spec(
+        ROOT / "configs" / "video_candidates" / "D3_object_first_dense_source_compositor.yaml",
+        expected_role="candidate",
+    )
+    settings = _legacy_settings_for(spec)
+    d3 = settings["candidate_d3_object_first_dense_source_compositor"]
+    assert settings["candidate_d2_monotonic_depth_layer_warp"]["multiband"] is False
+    assert d3["object_flow_or_warp"] is False
+    assert d3["object_multiband"] is False
+    assert d3["source_support_gate"] == 0.98
 
 
 def test_c1_selects_its_real_source_constrained_owner_renderer():
@@ -129,6 +159,11 @@ def test_later_candidate_uses_its_own_cuda_c1_controls_but_inherits_c1_scan_step
     document["config_sha256"] = canonical_config_sha256(document)
     path = tmp_path / "C5_validation.yaml"
     path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    import json
+    manifest = json.loads((ROOT / "configs" / "video_candidates" / "candidate_manifest.json").read_text(encoding="utf-8"))
+    manifest["candidates"]["C5_object_lock"]["config_sha256"] = document["config_sha256"]
+    manifest["manifest_sha256"] = canonical_candidate_manifest_sha256(manifest)
+    (tmp_path / "candidate_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
     settings = _legacy_settings_for(build_algorithm_spec(path, expected_role="candidate"))
 

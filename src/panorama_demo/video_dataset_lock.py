@@ -1,4 +1,4 @@
-"""Immutable-input locking for the single approved video experiment session.
+"""Immutable-input locking for approved and diagnostic video experiment sessions.
 
 The lock deliberately records bytes, not decoded pixels.  This makes an
 accidental re-encode, replacement, or partial capture copy fail before a
@@ -15,6 +15,7 @@ from typing import Any
 
 
 APPROVED_RUN_NAME = "run_20260804_162340"
+DIAGNOSTIC_DEVELOPMENT_RUN_NAME = "run_20260806_153033"
 CONTROL_FILE_SHA256 = {
     "manifest.json": "11e52a86126b7a4445806bb7b8b82abd507d35f90e3c94797e5008d87af89cb0",
     "calibration.json": "9e19b8dc506b27834b4fa0166294deecb1c23d93e3b7bb93184b3aa8c5691330",
@@ -88,6 +89,39 @@ def create_dataset_lock(session: Path) -> DatasetLock:
     )
 
 
+def _create_development_dataset_lock(session: Path) -> DatasetLock:
+    """Lock the explicitly authorised diagnostic capture by bytes.
+
+    This is deliberately a different lock schema and file name from the
+    approved-session lock.  It is valid only for candidate development work;
+    consequently it can neither replace the approved dataset lock nor be
+    consumed by the first-holdout or production paths.
+    """
+
+    root = _session_root(session)
+    if root.name != DIAGNOSTIC_DEVELOPMENT_RUN_NAME:
+        raise ValueError(
+            "Development experiments only accept the diagnostic session "
+            f"{DIAGNOSTIC_DEVELOPMENT_RUN_NAME}"
+        )
+    controls = {
+        name: sha256_file(root / name)
+        for name in ("manifest.json", "calibration.json", "frames.csv")
+    }
+    sources = {
+        path.relative_to(root).as_posix(): sha256_file(path)
+        for path in _source_paths(root)
+    }
+    if not sources:
+        raise ValueError("Diagnostic session has no RGB-D source images to lock")
+    return DatasetLock(
+        schema="gemini305-video-development-dataset-lock/v1",
+        session=str(root),
+        control_sha256=controls,
+        source_sha256=sources,
+    )
+
+
 def write_dataset_lock(session: Path, benchmark_root: Path) -> DatasetLock:
     lock = create_dataset_lock(session)
     benchmark_root.mkdir(parents=True, exist_ok=True)
@@ -95,6 +129,26 @@ def write_dataset_lock(session: Path, benchmark_root: Path) -> DatasetLock:
         json.dumps(lock.as_dict(), indent=2, sort_keys=True), encoding="utf-8"
     )
     (benchmark_root / "source_files_sha256.json").write_text(
+        json.dumps(lock.source_sha256, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return lock
+
+
+def development_dataset_lock_path(benchmark_root: Path) -> Path:
+    """Return the candidate-only lock location for a diagnostic benchmark."""
+
+    return benchmark_root / "development_dataset_lock.json"
+
+
+def write_development_dataset_lock(session: Path, benchmark_root: Path) -> DatasetLock:
+    """Create the separate immutable lock for the authorised diagnostic session."""
+
+    lock = _create_development_dataset_lock(session)
+    benchmark_root.mkdir(parents=True, exist_ok=True)
+    development_dataset_lock_path(benchmark_root).write_text(
+        json.dumps(lock.as_dict(), indent=2, sort_keys=True), encoding="utf-8"
+    )
+    (benchmark_root / "development_source_files_sha256.json").write_text(
         json.dumps(lock.source_sha256, indent=2, sort_keys=True), encoding="utf-8"
     )
     return lock
@@ -109,3 +163,54 @@ def verify_dataset_lock(session: Path, lock_path: Path) -> DatasetLock:
     if saved != current.as_dict():
         raise ValueError("Dataset lock mismatch; experiment input has changed")
     return current
+
+
+def _is_diagnostic_development_session(session: Path) -> bool:
+    return _session_root(session).name == DIAGNOSTIC_DEVELOPMENT_RUN_NAME
+
+
+def require_candidate_role_for_diagnostic_session(session: Path, role: str) -> None:
+    """Prevent the new capture from entering baseline or production workflows."""
+
+    if _is_diagnostic_development_session(session) and role != "candidate":
+        raise ValueError(
+            "The diagnostic development session is candidate-only; it cannot run "
+            f"as {role}"
+        )
+
+
+def write_or_verify_experiment_dataset_lock(
+    session: Path, benchmark_root: Path, *, role: str
+) -> DatasetLock:
+    """Lock an experiment input without broadening the approved-session lock."""
+
+    require_candidate_role_for_diagnostic_session(session, role)
+    if _is_diagnostic_development_session(session):
+        lock_path = development_dataset_lock_path(benchmark_root)
+        if lock_path.is_file():
+            return verify_development_dataset_lock(session, lock_path)
+        return write_development_dataset_lock(session, benchmark_root)
+    lock_path = benchmark_root / "dataset_lock.json"
+    if lock_path.is_file():
+        return verify_dataset_lock(session, lock_path)
+    return write_dataset_lock(session, benchmark_root)
+
+
+def verify_development_dataset_lock(session: Path, lock_path: Path) -> DatasetLock:
+    try:
+        saved = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid development dataset lock: {lock_path}") from exc
+    current = _create_development_dataset_lock(session)
+    if saved != current.as_dict():
+        raise ValueError("Development dataset lock mismatch; experiment input has changed")
+    return current
+
+
+def verify_experiment_dataset_lock(session: Path, benchmark_root: Path, *, role: str) -> DatasetLock:
+    """Verify the correct per-session lock without accepting it as a holdout lock."""
+
+    require_candidate_role_for_diagnostic_session(session, role)
+    if _is_diagnostic_development_session(session):
+        return verify_development_dataset_lock(session, development_dataset_lock_path(benchmark_root))
+    return verify_dataset_lock(session, benchmark_root / "dataset_lock.json")

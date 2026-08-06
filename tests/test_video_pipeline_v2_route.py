@@ -223,7 +223,7 @@ def test_c10_config_is_immutable_candidate_only_and_enters_its_own_cuda_route():
     spec = build_algorithm_spec("configs/video_candidates/C10_depth_conditioned_multi_perspective_layout.yaml")
 
     assert spec.required_components == (
-        "c1_constrained_owner", "c3_raft_mesh", "c4_depth_layered_mesh", "c10_depth_conditioned_layout",
+        "c1_constrained_owner", "c10_depth_conditioned_layout",
     )
     assert is_cuda_c10_depth_conditioned_layout_implementation(
         role="candidate", algorithm_id=spec.algorithm_id, implementation_id=spec.implementation_id,

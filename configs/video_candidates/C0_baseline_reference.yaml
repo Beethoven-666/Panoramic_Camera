@@ -4,10 +4,12 @@ candidate_id: C0_baseline_reference
 parent_candidate_id: null
 algorithm_id: C0_baseline_reference
 implementation_id: legacy_visual_seam
-source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
 model_sha256: {}
 allow_baseline_fallback: false
 changed_components: []
+required_evidence_components: [orb_anchor_trajectory]
+required_output_components: [legacy_visual_seam]
+replaces_output_components: []
 components:
   scan_step: {normal_pixels: 20, risk_pixels: 8}
   motion: {backend: dis_cpu}
@@ -16,4 +18,4 @@ components:
   mesh: {enabled: false}
   object_lock: {enabled: false}
   multiband: {enabled: false}
-config_sha256: 278eacfcff52022f8cca39e3b75f6857404c18e8cf2ed7461f73c97db4fac152
+config_sha256: c553b57b883146d9168ea4dbd8062b1732920958b6534fb291f931c8f7723016

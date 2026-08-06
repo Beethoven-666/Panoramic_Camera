@@ -21,6 +21,7 @@ from .video_algorithm import VideoAlgorithmSpec, load_algorithm_config
 from .video_algorithm_registry import resolve_video_algorithm
 from .video_model_lock import verify_candidate_models
 from .video_annotations import load_source_annotations
+from .video_dataset_lock import require_candidate_role_for_diagnostic_session
 from .video_observability import (
     ObservabilitySpec,
     clear_observability_artifacts,
@@ -95,6 +96,60 @@ def _legacy_settings_for(spec: VideoAlgorithmSpec) -> dict[str, Any]:
         if not isinstance(legacy, dict):
             raise ValueError("Frozen production config does not provide a runnable renderer contract")
         settings.update(legacy)
+        return settings
+    if spec.algorithm_id == "D1_dense_real_frame_scan_layout":
+        dense = document.get("components", {}).get("dense_real_frame_layout")
+        if not isinstance(dense, dict) or dense.get("enabled") is not True:
+            raise ValueError("D1 requires enabled dense_real_frame_layout")
+        if dense.get("orb_anchor_fps") != 8 or dense.get("real_source_fps") not in {20, 24, 25, 30}:
+            raise ValueError("D1 requires 8 fps ORB anchors and a 20--30 fps real-source layout")
+        settings["fast_renderer"] = "hard_owner_diagnostic"
+        settings["fast_orb_target_fps"] = 8.0
+        settings["candidate_dense_real_frame_layout"] = dict(dense)
+        return settings
+    if spec.algorithm_id == "D2_monotonic_depth_layer_warp":
+        # D2 inherits D1's real-frame source/pose gate, but it is explicitly
+        # not a C3/C4 mesh alias.  The renderer must later prove its own
+        # three-layer output warp; this bridge never substitutes a free mesh.
+        d1 = load_algorithm_config(
+            PROJECT_ROOT / "configs/video_candidates/D1_dense_real_frame_scan_layout.yaml"
+        )
+        dense = d1.get("components", {}).get("dense_real_frame_layout")
+        d2 = document.get("components", {}).get("monotonic_depth_layer_warp")
+        if not isinstance(dense, dict) or not isinstance(d2, dict) or d2.get("enabled") is not True:
+            raise ValueError("D2 requires immutable D1 dense layout and enabled monotonic_depth_layer_warp")
+        if d2.get("layers") != ["far", "mid", "near"] or d2.get("multiband") is not False:
+            raise ValueError("D2 requires exactly far/mid/near layers with MultiBand disabled")
+        if d2.get("minimum_jacobian") != 0.05 or d2.get("horizontal_scale") != [0.70, 1.40]:
+            raise ValueError("D2 monotonic geometry bounds are immutable")
+        if d2.get("maximum_vertical_residual_pixels") != 1.5 or d2.get("actual_output_warp_required") is not True:
+            raise ValueError("D2 vertical/output-warp contract is immutable")
+        settings["fast_renderer"] = "hard_owner_diagnostic"
+        settings["fast_orb_target_fps"] = 8.0
+        settings["candidate_dense_real_frame_layout"] = dict(dense)
+        settings["candidate_d2_monotonic_depth_layer_warp"] = dict(d2)
+        return settings
+    if spec.algorithm_id == "D3_object_first_dense_source_compositor":
+        d1 = load_algorithm_config(
+            PROJECT_ROOT / "configs/video_candidates/D1_dense_real_frame_scan_layout.yaml"
+        )
+        d2 = load_algorithm_config(
+            PROJECT_ROOT / "configs/video_candidates/D2_monotonic_depth_layer_warp.yaml"
+        )
+        dense = d1.get("components", {}).get("dense_real_frame_layout")
+        warp = d2.get("components", {}).get("monotonic_depth_layer_warp")
+        d3 = document.get("components", {}).get("object_first_dense_source_compositor")
+        if not all(isinstance(value, dict) for value in (dense, warp, d3)):
+            raise ValueError("D3 requires immutable D1/D2 and object compositor contracts")
+        if d3.get("enabled") is not True or d3.get("object_flow_or_warp") is not False or d3.get("object_multiband") is not False:
+            raise ValueError("D3 object compositor must be enabled, owner-only, and unblended")
+        if d3.get("protection_margin_pixels") not in range(8, 13) or d3.get("maximum_object_handoffs") != 1 or d3.get("source_support_gate") != 0.98:
+            raise ValueError("D3 object protection/source-support contract is immutable")
+        settings["fast_renderer"] = "hard_owner_diagnostic"
+        settings["fast_orb_target_fps"] = 8.0
+        settings["candidate_dense_real_frame_layout"] = dict(dense)
+        settings["candidate_d2_monotonic_depth_layer_warp"] = dict(warp)
+        settings["candidate_d3_object_first_dense_source_compositor"] = dict(d3)
         return settings
     if spec.algorithm_id in {"C1_constrained_owner", "C2_dis_rgb_mesh", "C3_raft_rgb_mesh", "C4_raft_rgbd_layered_mesh", "C5_object_lock", "C6_multiband", "C7_photometric_graph", "C8_multilabel_window", "C9_positive_jacobian_line_mesh", "C10_depth_conditioned_multi_perspective_layout", "C11_object_first_single_view_foreground_compositor", "C12_joint_owner_mesh_window", "C13_robust_photometric_bundle"}:
         # C1 has its own pair-local, second-order hard-owner compositor.  It
@@ -431,6 +486,12 @@ def run_video_algorithm(
 ) -> dict[str, Any]:
     if role not in {"baseline", "candidate", "production"}:
         raise ValueError("algorithm role must be baseline, candidate, or production")
+    session_root = input_path.expanduser().resolve()
+    session_root = session_root if session_root.is_dir() else session_root.parent
+    # The 20260806 capture is a separately locked diagnostic input.  Keep
+    # this boundary in the common facade as well as the experiment CLI so a
+    # direct caller cannot feed it to the public production entry point.
+    require_candidate_role_for_diagnostic_session(session_root, role)
     _, baseline_lock, production_lock = _lock_paths(config_path)
     spec = resolve_video_algorithm(
         role, baseline_lock=baseline_lock, production_lock=production_lock,
@@ -458,9 +519,10 @@ def run_video_algorithm(
     )
     measurement_annotations = None
     if spec.role == "candidate":
-        session_root = input_path.expanduser().resolve()
-        session_root = session_root if session_root.is_dir() else session_root.parent
-        annotation_path = PROJECT_ROOT / "benchmarks" / session_root.name / "annotations" / "objects.json"
+        benchmark_root = PROJECT_ROOT / "benchmarks" / session_root.name
+        annotation_path = benchmark_root / "annotations_v2" / "annotations.json"
+        if not annotation_path.is_file():
+            annotation_path = benchmark_root / "annotations" / "objects.json"
         if annotation_path.is_file():
             # This feeds read-only post-publication measurement only.  It
             # cannot alter source selection, poses, RGB, owner, seam, or any

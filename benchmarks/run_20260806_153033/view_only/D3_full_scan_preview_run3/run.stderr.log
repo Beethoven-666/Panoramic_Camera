@@ -1,0 +1,52 @@
+Traceback (most recent call last):
+  File "D:\central_strip_Panoramic_Camera\scripts\_temporary_d3_full_scan_preview.py", line 13, in <module>
+    report = video_pipeline.run_video_algorithm(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\central_strip_Panoramic_Camera\src\panorama_demo\video_pipeline.py", line 567, in run_video_algorithm
+    published = run_legacy(legacy_args)
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\central_strip_Panoramic_Camera\src\panorama_demo\video_panorama.py", line 967, in run_legacy
+    push = render_calibrated_rgb_pushbroom(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\central_strip_Panoramic_Camera\src\panorama_demo\calibrated_rgb_pushbroom.py", line 11962, in render_calibrated_rgb_pushbroom
+    return _render_calibrated_rgb_pushbroom_fast_hard_owner(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\central_strip_Panoramic_Camera\src\panorama_demo\calibrated_rgb_pushbroom.py", line 11621, in _render_calibrated_rgb_pushbroom_fast_hard_owner
+    panorama, cropped_owner, d3_object_first_dense_source_compositor_audit = _apply_candidate_d3_object_first_dense_source_compositor(
+                                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\central_strip_Panoramic_Camera\src\panorama_demo\calibrated_rgb_pushbroom.py", line 10932, in _apply_candidate_d3_object_first_dense_source_compositor
+    result = compose_d3_persistent_object_tracks(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\central_strip_Panoramic_Camera\src\panorama_demo\video_d3_object_first_compositor.py", line 183, in compose_d3_persistent_object_tracks
+    median = np.nanmedian(filled, axis=0).astype(np.float32)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Panoramic_Camera\.conda\Lib\site-packages\numpy\lib\_nanfunctions_impl.py", line 1215, in nanmedian
+    return fnb._ureduce(a, func=_nanmedian, keepdims=keepdims,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Panoramic_Camera\.conda\Lib\site-packages\numpy\lib\_function_base_impl.py", line 3892, in _ureduce
+    r = func(a, **kwargs)
+        ^^^^^^^^^^^^^^^^^
+  File "D:\Panoramic_Camera\.conda\Lib\site-packages\numpy\lib\_nanfunctions_impl.py", line 1093, in _nanmedian
+    return _nanmedian_small(a, axis, out, overwrite_input)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Panoramic_Camera\.conda\Lib\site-packages\numpy\lib\_nanfunctions_impl.py", line 1108, in _nanmedian_small
+    m = np.ma.median(a, axis=axis, overwrite_input=overwrite_input)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Panoramic_Camera\.conda\Lib\site-packages\numpy\ma\extras.py", line 752, in median
+    return _ureduce(a, func=_median, keepdims=keepdims, axis=axis, out=out,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Panoramic_Camera\.conda\Lib\site-packages\numpy\lib\_function_base_impl.py", line 3892, in _ureduce
+    r = func(a, **kwargs)
+        ^^^^^^^^^^^^^^^^^
+  File "D:\Panoramic_Camera\.conda\Lib\site-packages\numpy\ma\extras.py", line 771, in _median
+    asorted = sort(a, axis=axis, fill_value=fill_value)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Panoramic_Camera\.conda\Lib\site-packages\numpy\ma\core.py", line 7268, in sort
+    a.sort(axis=axis, kind=kind, order=order, endwith=endwith,
+  File "D:\Panoramic_Camera\.conda\Lib\site-packages\numpy\ma\core.py", line 5870, in sort
+    sidx = self.argsort(axis=axis, kind=kind, order=order,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Panoramic_Camera\.conda\Lib\site-packages\numpy\ma\core.py", line 5692, in argsort
+    return filled.argsort(axis=axis, kind=kind, order=order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+numpy._core._exceptions._ArrayMemoryError: Unable to allocate 2.46 GiB for an array with shape (399, 468, 1769) and data type int64

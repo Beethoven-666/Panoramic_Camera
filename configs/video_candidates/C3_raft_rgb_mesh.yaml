@@ -4,13 +4,14 @@ candidate_id: C3_raft_rgb_mesh
 parent_candidate_id: C1_constrained_owner
 algorithm_id: C3_raft_rgb_mesh
 implementation_id: video_visual_renderer_v2
-source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
 model_sha256:
   torchvision_raft_small_C_T_V2: 01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27
 allow_baseline_fallback: false
 changed_components: [raft_rgb_residual_mesh]
-required_components: [c1_constrained_owner, c3_raft_mesh]
+required_evidence_components: [orb_anchor_trajectory]
+required_output_components: [c1_constrained_owner, c3_raft_mesh]
+replaces_output_components: []
 components:
   residual_mesh: {enabled: true, flow_backend: raft_small, depth_layers: false}
   object_lock: {enabled: false}
-config_sha256: 9bdfe650033412b87b5c4a19b94eb623f27646b23ed8db4bde87d16d7a986794
+config_sha256: 7e58b950f6e14952ae85a2d4fada25ccd68792c292732d136ed658258c27844a

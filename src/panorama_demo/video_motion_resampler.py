@@ -188,7 +188,7 @@ def select_render_keyframes(
 
 
 def compose_selected_motions(
-    motions: Sequence[MotionEstimate], source_indices: Sequence[int]
+    motions: Sequence[MotionEstimate], source_indices: Sequence[int], *, require_scan_endpoints: bool = True
 ) -> list[MotionEstimate]:
     """Compose measured intermediate motion for selected real-frame pairs.
 
@@ -199,7 +199,7 @@ def compose_selected_motions(
     indices = tuple(int(index) for index in source_indices)
     if len(indices) < 2 or indices != tuple(sorted(set(indices))):
         raise ValueError("Selected source indices must be unique and increasing")
-    if indices[0] != 0 or indices[-1] != len(motions):
+    if require_scan_endpoints and (indices[0] != 0 or indices[-1] != len(motions)):
         raise ValueError("Selected source indices must retain both scan endpoints")
     combined: list[MotionEstimate] = []
     for first, second in zip(indices, indices[1:]):

@@ -16,7 +16,10 @@ VIDEO_DELIVERY_SCHEMA = "gemini305-video-panorama-delivery/v2"
 VIDEO_REPORT_SCHEMA = "gemini305-video-panorama-report/v2"
 
 _PUBLISHED_STATES = frozenset({"published", "published_degraded"})
-_GRADE_VALUES = frozenset({"A", "B", "C"})
+# ``NE`` is intentionally limited to non-performance-evaluable validation or
+# audit deliveries.  It prevents a read-only evidence run from being reused
+# as a production timing claim.
+_GRADE_VALUES = frozenset({"A", "B", "C", "NE"})
 _ALGORITHM_ROLES = frozenset({"baseline", "candidate", "production"})
 
 
@@ -106,7 +109,7 @@ def invalidate_video_delivery(output: Path) -> None:
         "video_panorama.jpg", "video_panorama.png", "video_pixel_provenance.npz",
         "video_annotation_projection.json", "video_annotation_projection_masks.npz",
         "video_source_progress_evidence.json", "video_annotation_source_progress_audit.json",
-        "visual_metrics.json",
+        "visual_metrics.json", "video_timing.json",
         "central_strips", ".central_strips.pending",
         "central_strips_owner_only", ".central_strips_owner_only.pending",
         # A fresh 2-D delivery must not appear to be paired with a mesh made
@@ -132,6 +135,11 @@ def write_video_failure(output: Path, input_path: Path, exc: Exception) -> None:
         "message": str(exc),
         "deliverable_published": False,
     }
+    diagnostics = getattr(exc, "diagnostics", None)
+    if isinstance(diagnostics, dict) and diagnostics:
+        # Candidate-only gates may expose structured, non-pixel diagnostics
+        # which are indispensable for a fail-closed recovery decision.
+        payload["diagnostics"] = diagnostics
     attempts = getattr(exc, "attempt_audit", ())
     if isinstance(attempts, (list, tuple)):
         compact_attempts = [dict(row) for row in attempts if isinstance(row, dict)]
@@ -139,6 +147,35 @@ def write_video_failure(output: Path, input_path: Path, exc: Exception) -> None:
             payload["orbslam3_execution_attempts"] = compact_attempts
     pending.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     os.replace(pending, output / "video_failure.json")
+
+
+def write_invalid_candidate_experiment(output: Path, report: dict[str, Any]) -> dict[str, Any]:
+    """Persist a fail-closed candidate report without publishing a delivery.
+
+    An output component that never reached a final pixel is an invalid
+    experiment, not a degraded panorama.  Retaining only its report keeps the
+    failure auditable while making it impossible to mistake it for a usable
+    2-D delivery.
+    """
+
+    algorithm = _require_mapping(report.get("algorithm"), "algorithm")
+    grades = _require_mapping(report.get("grades"), "grades")
+    if (
+        report.get("delivery_state") != "experiment_invalid"
+        or algorithm.get("role") != "candidate"
+        or algorithm.get("candidate_run_state") != "invalid_component_execution"
+        or grades.get("implementation") != "F"
+        or grades.get("overall") != "F"
+        or report.get("strict_quality_pass") is not False
+    ):
+        raise ValueError("Invalid candidate report does not satisfy the F experiment contract")
+    output.mkdir(parents=True, exist_ok=True)
+    report = _without_legacy_presets(report)
+    report["schema"] = VIDEO_REPORT_SCHEMA
+    report_path = output / ".video_report.pending.json"
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    os.replace(report_path, output / "video_report.json")
+    return report
 
 
 def publish_video_2d(
@@ -186,7 +223,7 @@ def publish_video_2d(
     performance = report.get("performance")
     if isinstance(performance, dict):
         for key in (
-            "post_capture_seconds",
+            "primary_post_capture_seconds",
             "maximum_post_seconds",
             "within_post_capture_budget",
         ):

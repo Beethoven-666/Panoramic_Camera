@@ -4,14 +4,15 @@ candidate_id: C1_constrained_owner
 parent_candidate_id: C0_baseline_reference
 algorithm_id: C1_constrained_owner
 implementation_id: video_visual_renderer_v2
-source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
 model_sha256: {}
 allow_baseline_fallback: false
 changed_components: [scan_step, pair_risk, seam_corridor, seam_curvature, line_constraints, owner_cleanup]
-required_components: [c1_constrained_owner]
+required_evidence_components: [orb_anchor_trajectory]
+required_output_components: [c1_constrained_owner]
+replaces_output_components: []
 components:
   scan_step: {normal_pixels: 12, risk_pixels: 5}
   pair_risk: {enabled: true}
   seam: {mode: constrained_hard_owner, first_order_curvature: true, second_order_curvature: true, line_constraints: true}
   owner_cleanup: {enabled: true}
-config_sha256: 2c98142202b4845a9e332620e9dc59dfc0ee0b110862f353ec77f1ec890d2f45
+config_sha256: 9c599542218e7b0562a0b6e6a0021cd5a73b0a9400fb3fc7d705084e743fe8f9

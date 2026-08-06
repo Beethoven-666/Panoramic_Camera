@@ -4,12 +4,13 @@ candidate_id: C12_joint_owner_mesh_window
 parent_candidate_id: C10_depth_conditioned_multi_perspective_layout
 algorithm_id: C12_joint_owner_mesh_window
 implementation_id: video_visual_renderer_v2
-source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
 model_sha256:
   torchvision_raft_small_C_T_V2: 01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27
 allow_baseline_fallback: false
 changed_components: [joint_five_to_seven_source_owner_final_grid_renderer]
-required_components: [c1_constrained_owner, c12_joint_owner_final_grid]
+required_evidence_components: [raft_correspondence_evidence, depth_visibility_evidence, orb_anchor_trajectory]
+required_output_components: [c1_constrained_owner, c12_joint_owner_final_grid]
+replaces_output_components: [c3_raft_mesh, c4_depth_layered_mesh]
 components:
   joint_owner_mesh:
     enabled: true
@@ -18,4 +19,4 @@ components:
     constraints: [temporal_monotonicity, seam_protection, line_protection, object_protection, minimum_owner_run]
     output: {final_grids: true, owner_labels: true, renderer_input: true}
     reject_zero_actual_changed_pixels: true
-config_sha256: e22ac4ae120e6a0ac9bb10cb148d21a051cc6d9aa3c9b5b5fe64ed37b968e54c
+config_sha256: ec951832383715e74e598203bc87a332e07a571a983d8363550acd629ae0d32b

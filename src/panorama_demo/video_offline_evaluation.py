@@ -21,7 +21,12 @@ from typing import Any, Mapping, Sequence
 import cv2
 import numpy as np
 
-from .video_annotations import ANNOTATION_SCHEMA, VideoAnnotationError, load_source_annotations
+from .video_annotations import (
+    ANNOTATION_SCHEMA,
+    SUPPORTED_ANNOTATION_SCHEMAS,
+    VideoAnnotationError,
+    load_source_annotations,
+)
 from .video_observability import owner_boundaries
 from .video_visual_metrics import owner_topology_metrics
 
@@ -200,7 +205,12 @@ def _percentile(values: np.ndarray, q: float) -> float | None:
     return float(np.percentile(values, q)) if values.size else None
 
 
-def _object_metrics(owner: np.ndarray, mask: np.ndarray) -> dict[str, Any]:
+def _object_metrics(
+    owner: np.ndarray,
+    mask: np.ndarray,
+    *,
+    role: str = "compact_foreground_single_owner",
+) -> dict[str, Any]:
     valid = mask & (owner >= 0)
     owners = owner[valid]
     if owners.size == 0:
@@ -228,8 +238,12 @@ def _object_metrics(owner: np.ndarray, mask: np.ndarray) -> dict[str, Any]:
     boundary[1:, :] |= vertical
     count, _, _, _ = cv2.connectedComponentsWithStats(boundary.astype(np.uint8), connectivity=8)
     handoffs = [int(np.count_nonzero(row)) for row in horizontal]
+    single_owner_required = role != "extended_background_structure"
+    seam_gate_pass = bool(max(handoffs, default=0) <= 1 and count <= 1)
     return {
         "status": "evaluated",
+        "annotation_role": role,
+        "single_owner_required": single_owner_required,
         "valid_pixel_count": int(owners.size),
         "owner_count": int(ids.size),
         "dominant_owner_frame_id": int(ids[dominant_index]),
@@ -237,8 +251,73 @@ def _object_metrics(owner: np.ndarray, mask: np.ndarray) -> dict[str, Any]:
         "object_internal_seam_count": int(max(count - 1, 0)),
         "object_internal_seam_pixel_count": int(np.count_nonzero(boundary)),
         "maximum_handoffs": int(max(handoffs, default=0)),
-        "hard_gate_pass": bool(ids.size == 1 and max(handoffs, default=0) <= 1 and count <= 1),
+        # Long background structure may have disjoint, separately-owned
+        # portions.  It still cannot contain an internal seam or excessive
+        # handoffs.  Compact foreground remains exactly owner=1.
+        "hard_gate_pass": bool((not single_owner_required or ids.size == 1) and seam_gate_pass),
     }
+
+
+def _line_arclength_samples(
+    points: Sequence[Sequence[float]], *, spacing_px: float = 2.0
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return evenly spaced polyline positions and their local tangents.
+
+    Projection v2 can contain a very dense, curved polyline.  Sampling every
+    input segment makes the metric depend on that serialization density and,
+    more importantly, changes the expected normal at every tiny join.  Work
+    in arc length instead: one sample approximately every two panorama pixels
+    and a tangent estimated from a two-pixel local chord.  The latter is local
+    enough for a curved beam edge while avoiding the unstable one-pixel finite
+    differences of a dense projection.
+    """
+
+    raw = np.asarray(points, dtype=np.float64)
+    if raw.ndim != 2 or raw.shape[0] < 2 or raw.shape[1] != 2 or not np.all(np.isfinite(raw)):
+        raise VideoOfflineEvaluationError("Projected line needs at least two finite points")
+    if not np.isfinite(spacing_px) or spacing_px <= 0.0:
+        raise ValueError("spacing_px must be finite and positive")
+
+    # Consecutive duplicate vertices have no tangent and otherwise make the
+    # cumulative coordinate non-strictly increasing.
+    retained = [raw[0]]
+    for point in raw[1:]:
+        if float(np.hypot(*(point - retained[-1]))) > 1e-6:
+            retained.append(point)
+    vertices = np.asarray(retained, dtype=np.float64)
+    if vertices.shape[0] < 2:
+        return np.empty((0, 2), dtype=np.float64), np.empty((0, 2), dtype=np.float64)
+
+    vectors = np.diff(vertices, axis=0)
+    lengths = np.hypot(vectors[:, 0], vectors[:, 1])
+    cumulative = np.concatenate((np.asarray([0.0]), np.cumsum(lengths)))
+    total = float(cumulative[-1])
+    if total < spacing_px:
+        return np.empty((0, 2), dtype=np.float64), np.empty((0, 2), dtype=np.float64)
+
+    def position_at(distance: np.ndarray) -> np.ndarray:
+        clipped = np.clip(distance, 0.0, total)
+        index = np.searchsorted(cumulative, clipped, side="right") - 1
+        index = np.clip(index, 0, lengths.size - 1)
+        fraction = (clipped - cumulative[index]) / lengths[index]
+        return vertices[index] + fraction[:, None] * vectors[index]
+
+    stations = np.arange(0.0, total, float(spacing_px), dtype=np.float64)
+    if stations.size == 0 or total - stations[-1] > 1e-6:
+        stations = np.append(stations, total)
+    positions = position_at(stations)
+    # Use an arc-length chord centred on each sample (one-sided at endpoints).
+    # The window stays in local geometry even when the overall annotation is a
+    # long curve.
+    half_window = float(spacing_px)
+    before = position_at(np.maximum(0.0, stations - half_window))
+    after = position_at(np.minimum(total, stations + half_window))
+    tangent = after - before
+    tangent_norm = np.hypot(tangent[:, 0], tangent[:, 1])
+    usable = tangent_norm > 1e-6
+    if not np.any(usable):
+        return np.empty((0, 2), dtype=np.float64), np.empty((0, 2), dtype=np.float64)
+    return positions[usable], tangent[usable] / tangent_norm[usable, None]
 
 
 def _line_observations(
@@ -251,11 +330,8 @@ def _line_observations(
     different projected line segments.
     """
 
-    raw_points = np.asarray(points, dtype=np.float64)
-    if raw_points.ndim != 2 or raw_points.shape[0] < 2 or raw_points.shape[1] != 2:
-        raise VideoOfflineEvaluationError("Projected line needs at least two finite points")
-    segments = [(raw_points[index], raw_points[index + 1]) for index in range(raw_points.shape[0] - 1)]
-    if not any(float(np.hypot(*(end - start))) >= 2.0 for start, end in segments):
+    positions, tangents = _line_arclength_samples(points)
+    if positions.size == 0:
         return {
             "status": "not_evaluable", "reason": "projected_line_too_short",
             "sample_count": 0, "offsets": np.empty(0, dtype=np.float64),
@@ -269,48 +345,49 @@ def _line_observations(
     offsets: list[float] = []
     orientation_error: list[float] = []
     sample_count = 0
-    for segment_index, (start, end) in enumerate(segments):
-        vector = end - start
-        length = float(np.hypot(*vector))
-        if length < 2.0:
-            continue
-        unit = vector / length
-        normal = np.asarray([-unit[1], unit[0]])
-        count = max(3, int(np.floor(length)) + 1)
-        # Do not take a false finite difference across a dense-polyline join.
-        t = np.linspace(0.0, 1.0, count)[1:] if segment_index else np.linspace(0.0, 1.0, count)
-        sample_count += int(t.size)
+    observed_station_indices: list[int] = []
+    for station_index, (position, tangent) in enumerate(zip(positions, tangents, strict=True)):
+        normal = np.asarray([-tangent[1], tangent[0]])
+        sample_count += 1
         expected = float(np.degrees(np.arctan2(normal[1], normal[0])))
-        for position in start[None, :] + t[:, None] * vector[None, :]:
-            candidates = position[None, :] + np.arange(-search_radius, search_radius + 1)[:, None] * normal[None, :]
-            xs = np.rint(candidates[:, 0]).astype(np.int32)
-            ys = np.rint(candidates[:, 1]).astype(np.int32)
-            inside = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
-            if not np.any(inside):
-                continue
-            local = magnitude[ys[inside], xs[inside]]
-            local_offsets = np.arange(-search_radius, search_radius + 1)[inside]
-            # A candidate must first be a plausible instance of the expected
-            # normal.  This prevents a nearby vertical edge from masquerading
-            # as a poor horizontal-line measurement.
-            order = np.argsort(local)[::-1]
-            chosen: tuple[int, float] | None = None
-            for peak in order:
-                if float(local[peak]) <= 0.0:
-                    break
-                x, y = int(xs[inside][peak]), int(ys[inside][peak])
-                observed = float(np.degrees(np.arctan2(float(gy[y, x]), float(gx[y, x]))))
-                difference = abs((observed - expected + 90.0) % 180.0 - 90.0)
-                if difference < 30.0:
-                    chosen = (int(peak), difference)
-                    break
-            if chosen is None:
-                continue
-            peak, difference = chosen
-            offsets.append(float(local_offsets[peak]))
-            orientation_error.append(difference)
+        candidate_offsets = np.arange(-search_radius, search_radius + 1, dtype=np.float64)
+        candidates = position[None, :] + candidate_offsets[:, None] * normal[None, :]
+        xs = np.rint(candidates[:, 0]).astype(np.int32)
+        ys = np.rint(candidates[:, 1]).astype(np.int32)
+        inside = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
+        if not np.any(inside):
+            continue
+        local = magnitude[ys[inside], xs[inside]]
+        local_offsets = candidate_offsets[inside]
+        # A candidate must first be a plausible instance of the expected
+        # normal.  This prevents a nearby vertical edge from masquerading as a
+        # poor horizontal-line measurement.  This is deliberately a search
+        # constraint, not a softened orientation gate: the accepted edge is
+        # still measured against the immutable 3 degree hard gate below.
+        order = np.argsort(local)[::-1]
+        chosen: tuple[int, float] | None = None
+        inside_xs, inside_ys = xs[inside], ys[inside]
+        for peak in order:
+            if float(local[peak]) <= 0.0:
+                break
+            x, y = int(inside_xs[peak]), int(inside_ys[peak])
+            observed = float(np.degrees(np.arctan2(float(gy[y, x]), float(gx[y, x]))))
+            difference = abs((observed - expected + 90.0) % 180.0 - 90.0)
+            if difference < 30.0:
+                chosen = (int(peak), difference)
+                break
+        if chosen is None:
+            continue
+        peak, difference = chosen
+        offsets.append(float(local_offsets[peak]))
+        orientation_error.append(difference)
+        observed_station_indices.append(station_index)
     offset_array = np.asarray(offsets, dtype=np.float64)
-    step = np.abs(np.diff(offset_array)) if offset_array.size >= 2 else np.empty(0, dtype=np.float64)
+    # A missed edge candidate must not manufacture a displacement between
+    # distant parts of a line.  Only compare adjoining two-pixel stations.
+    indices = np.asarray(observed_station_indices, dtype=np.int32)
+    adjacent = np.diff(indices) == 1
+    step = np.abs(np.diff(offset_array))[adjacent] if offset_array.size >= 2 else np.empty(0, dtype=np.float64)
     return {
         "status": "evaluated" if offset_array.size >= 3 else "not_evaluable",
         "sample_count": int(sample_count),
@@ -493,6 +570,30 @@ def _measurement_audit(
     }
 
 
+def _measurement_role(
+    *,
+    kind: str,
+    members: Sequence[Mapping[str, Any]],
+    annotation_schema: object,
+) -> str:
+    """Return one immutable role for a measurement group.
+
+    A group mixing role semantics would silently weaken a gate, so v2 rejects
+    it.  v1 carries no role and preserves the historical compact-object rule.
+    """
+
+    if annotation_schema == ANNOTATION_SCHEMA:
+        return {
+            "objects": "compact_foreground_single_owner",
+            "lines": "long_line",
+            "safe_background": "safe_background",
+        }[kind]
+    roles = {entry.get("role") for entry in members}
+    if len(roles) != 1 or not isinstance(next(iter(roles)), str):
+        raise VideoOfflineEvaluationError(f"Measurement group has inconsistent v2 {kind} roles")
+    return str(next(iter(roles)))
+
+
 def evaluate_offline_visual_annotations(
     panorama_bgr: np.ndarray,
     owner: np.ndarray,
@@ -508,7 +609,7 @@ def evaluate_offline_visual_annotations(
     """
 
     panorama, owners = _require_panorama_and_owner(panorama_bgr, owner)
-    if annotations.get("schema") != ANNOTATION_SCHEMA:
+    if annotations.get("schema") not in SUPPORTED_ANNOTATION_SCHEMAS:
         raise VideoOfflineEvaluationError("Unsupported source annotation schema")
     topology = owner_topology_metrics(owners)
     area = int(owners.size)
@@ -550,6 +651,7 @@ def evaluate_offline_visual_annotations(
         for identifier, measurement_group, members, projected_members in _measurement_units(
             kind=kind, source_entries=typed_sources, projected=projected
         ):
+            role = _measurement_role(kind=kind, members=members, annotation_schema=annotations.get("schema"))
             projected_ids = [
                 str(source["id"])
                 for source in members
@@ -565,12 +667,14 @@ def evaluate_offline_visual_annotations(
             if isinstance(declared_state, Mapping) and declared_state.get("measurement_state") == "projection_inconsistent":
                 result[result_key][identifier] = {
                     "status": "not_evaluable", "reason": "projection_inconsistent", **audit,
+                    "annotation_role": role,
                     "projection_consensus": dict(declared_state),
                 }
             elif not projected_members:
                 result[result_key][identifier] = {
                     "status": "not_evaluable",
                     "reason": "no_panorama_projection_for_fixed_source_annotation",
+                    "annotation_role": role,
                     **audit,
                 }
             elif kind == "lines":
@@ -581,16 +685,16 @@ def evaluate_offline_visual_annotations(
                 metrics = _line_metrics_from_observations(observations)
                 if metrics["status"] != "evaluated":
                     metrics["reason"] = "insufficient_edge_samples_in_projected_measurement_group"
-                result[result_key][identifier] = {**audit, **metrics}
+                result[result_key][identifier] = {**audit, "annotation_role": role, **metrics}
             else:
                 masks = [_region_mask(entry, owners.shape) for entry in projected_members]
                 mask = np.logical_or.reduce(masks)
                 metrics = (
-                    _object_metrics(owners, mask)
+                    _object_metrics(owners, mask, role=role)
                     if kind == "objects"
                     else _safe_background_metrics(panorama, owners, mask)
                 )
-                result[result_key][identifier] = {**audit, **metrics}
+                result[result_key][identifier] = {**audit, "annotation_role": role, **metrics}
     return result
 
 

@@ -20,6 +20,19 @@ def test_experiment_cli_supports_only_explicit_verified_trajectory_cache():
 
     help_text = _parser().format_help()
     assert "--trajectory-cache" in help_text
+    assert "--reuse-online-trajectory" in help_text
+
+
+def test_experiment_rejects_online_trajectory_reuse_for_baseline(tmp_path):
+    args = argparse.Namespace(
+        input=Path("data/captures/video/run_20260804_162340"), output=tmp_path,
+        algorithm="baseline", candidate_config=None,
+        report_level="summary", artifact_level="minimal", maximum_post_seconds=None,
+        defer_3d=True, reuse_online_trajectory=True, config=None,
+        progress_range=None, split=None,
+    )
+    with pytest.raises(ValueError, match="candidate-only"):
+        run(args)
 
 
 def test_experiment_requires_a_candidate_config(tmp_path):
