@@ -1,0 +1,36 @@
+{
+  "frame_count": 3,
+  "frames": [
+    {
+      "absolute_difference": 0.0,
+      "declared_scan_progress": 0.0,
+      "frame_id": 63,
+      "matched": true,
+      "observed_scan_progress": 0.0
+    },
+    {
+      "absolute_difference": 0.03560496187449885,
+      "declared_scan_progress": 0.36,
+      "frame_id": 252,
+      "matched": false,
+      "observed_scan_progress": 0.39560496187449884
+    },
+    {
+      "absolute_difference": 0.0386634892148664,
+      "declared_scan_progress": 0.66,
+      "frame_id": 418,
+      "matched": false,
+      "observed_scan_progress": 0.6213365107851336
+    }
+  ],
+  "measurement_only": true,
+  "mismatched_frame_ids": [
+    252,
+    418
+  ],
+  "schema": "gemini305-video-annotation-source-progress-audit/v1",
+  "selection_eligible": false,
+  "source_progress_evidence_sha256": "cd0dde9438b224bd7d12adc58f69a6ebae4d36bd2e076056f73b77904c894ff5",
+  "tolerance": 0.0,
+  "verified": false
+}

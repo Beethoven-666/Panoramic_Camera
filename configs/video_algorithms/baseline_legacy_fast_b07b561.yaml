@@ -1,0 +1,35 @@
+# Frozen legacy baseline.  Do not merge this file with demo.yaml: every setting
+# needed by the historical --preset fast path is owned here.
+config_schema: gemini305-video-algorithm/v1
+role: baseline
+algorithm_id: legacy_fast_b07b561
+implementation_id: legacy_visual_seam
+source_commit: b07b561d03f2ddd85dcf0c3834ded8ec11c777ae
+model_sha256: {}
+allow_baseline_fallback: false
+legacy_video_panorama:
+  default_preset: fast
+  fast_orb_target_fps: 8.0
+  fast_orbslam3_rgbd:
+    feature_count: 1000
+    staging_workers: 4
+    staging_color_extension: .jpg
+    staging_jpeg_quality: 95
+    staging_width: 424
+  fast_rgbd_odometry:
+    working_width: 384
+    iteration_number_per_pyramid_level: [16, 8, 4]
+  motion_backend: dis
+  maximum_post_seconds: 60.0
+  fast_odometry_prepare_workers: 4
+  fast_session_validation_workers: 4
+  fast_scan_analysis_workers: 4
+  fast_publish_auxiliary_exports: false
+  fast_enable_geometry_assist: false
+  fast_renderer: visual_seam
+  motion_resampling:
+    minimum_step_pixels: 3.0
+    normal_target_step_pixels: 20.0
+    risk_target_step_pixels: 8.0
+    maximum_step_pixels: 24.0
+    emergency_step_pixels: 30.0

@@ -1553,9 +1553,9 @@ def run_capture(args: argparse.Namespace) -> Path:
     stitch_config = config_file.get("stitch", {})
     if not isinstance(stitch_config, dict):
         raise ValueError("Configuration stitch section must be a mapping")
-    video_panorama_config = stitch_config.get("video_panorama", {})
-    if not isinstance(video_panorama_config, dict):
-        raise ValueError("stitch.video_panorama must be a mapping")
+    video_runtime_config = stitch_config.get("video_runtime", {})
+    if not isinstance(video_runtime_config, dict):
+        raise ValueError("stitch.video_runtime must be a mapping")
     fixed_video_exposure = getattr(args, "video_exposure_us", None)
     if fixed_video_exposure is None:
         _validate_video_auto_control_args(args)
@@ -1564,7 +1564,7 @@ def run_capture(args: argparse.Namespace) -> Path:
     options = _video_capture_options(capture_config)
     online_scan = OnlineScanAccumulator(
         analysis_width=int(stitch_config.get("analysis_width", 320)),
-        motion_backend=str(video_panorama_config.get("motion_backend", "dis")),
+        motion_backend=str(video_runtime_config.get("motion_backend", "dis")),
     )
     if fixed_video_exposure is not None:
         options["color_auto_exposure"] = False
@@ -1857,7 +1857,7 @@ def run_capture(args: argparse.Namespace) -> Path:
             calibration = _parse_color_intrinsics_for_online_orb(manifest["calibration"])
             online_orb_tracker = OnlineORBTracker(
                 intrinsics=calibration,
-                tracking_fps=float(video_panorama_config.get("fast_orb_target_fps", 20.0)),
+                tracking_fps=float(video_runtime_config.get("tracking_fps", 8.0)),
                 work_dir=session_root / ".online_orbslam3_work",
                 config=dict(stitch_config.get("orbslam3_rgbd", {})),
             )

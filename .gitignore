@@ -23,5 +23,12 @@ new_work/
 new_outputs/
 new_new_outputs/
 
+# The locked source-frame annotation schema is code-reviewed measurement input;
+# generated benchmark outputs remain ignored.
+!benchmarks/
+!benchmarks/run_20260804_162340/
+!benchmarks/run_20260804_162340/annotations/
+!benchmarks/run_20260804_162340/annotations/*.json
+
 *.partial
 *.tmp

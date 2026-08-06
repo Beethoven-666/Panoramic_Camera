@@ -1,0 +1,14 @@
+config_schema: gemini305-video-candidate/v1
+role: candidate
+candidate_id: C2_dis_rgb_mesh
+parent_candidate_id: C1_constrained_owner
+algorithm_id: C2_dis_rgb_mesh
+implementation_id: video_visual_renderer_v2
+source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
+model_sha256: {}
+allow_baseline_fallback: false
+changed_components: [dis_rgb_residual_mesh]
+components:
+  residual_mesh: {enabled: true, flow_backend: dis, depth_layers: false}
+  object_lock: {enabled: false}
+config_sha256: 8878338bfd048427cb766fb274df878078ea8bb37a76ab7912fef7c433b87cba

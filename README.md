@@ -190,38 +190,43 @@ RGB-D 帧进入写盘前再次回读完整同步配置。任一帧读到的模�
 
 ### 2.3 生成独立视频全景与三维附件
 
-视频入口会选择最长连续单向扫描段。默认 `fast` 会先分析该段的全部真实连续帧，再按时间
-选择约 `8 FPS` 的真实 ORB tracking chain；ORB-SLAM3 必须跟踪该 chain 的全部帧，最终渲染源
-只能从已跟踪帧中选择。`audit` 则保留扫描段的全部真实帧。所有实际渲染源都必须经过相邻
+视频入口只运行已冻结的 `production` 算法。它会选择最长连续单向扫描段，分析全部真实
+连续帧，并只从具有真实 ORB-SLAM3 pose 的帧中选择渲染源。所有实际渲染源都必须经过相邻
 Open3D RGB-D 边审计；程序不会插值 pose，也不会使用 Open3D 或二维运动代替缺失 ORB pose。
 
 ```powershell
 & 'D:\Panoramic_Camera\.conda\Scripts\g305-video-panorama.exe' `
   'D:\central_strip_Panoramic_Camera\data\captures\video\run_YYYYMMDD_HHMMSS' `
-  --preset fast `
   --maximum-post-seconds 60 `
   --output 'D:\central_strip_Panoramic_Camera\outputs\video_sequence'
 ```
 
-`fast` 使用低分辨率 DIS 对全部连续帧做运动分析，然后选择约 `8 FPS` 的真实、按时间排序的
-ORB tracking 帧，并从其中再选择真实 RGB-D 渲染源。默认 ORB 暂存使用 `424 px` 标定 pinhole
-RGB-D、JPEG 质量 `95`、`1000` 个特征和 4 个 workers；Open3D 仍以真正的 CUDA RGB-D
-estimator 审计每条相邻渲染源边（`384 px`、`[16, 8, 4]` 迭代）。这些优化不生成帧或 pose，
-也不改变最终 RGB 的全分辨率标定 remap。先前轨迹仅在 manifest 与 calibration 的 SHA-256
-均精确一致时才可复用：
+生产锁规定其运行参数、模型哈希和允许的 fallback。研发使用独立的
+`g305-video-experiment`（baseline/candidate）与 `g305-video-benchmark`；审计通过
+`--report-level full --artifact-level audit` 生成，且不会改变全景或 owner map。研发复现只能
+复用由已发布 v2 报告原子冻结的真实完整 ORB-SLAM3 链；冻结器会校验 session 的
+manifest、calibration 与 frames.csv 哈希、真实帧顺序和刚性 `camera_to_world`，不能把普通
+报告 JSON 当作 trajectory cache：
+
+```powershell
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-freeze-trajectory.exe' SESSION `
+  --report PREVIOUS_PUBLISHED_OUTPUT `
+  --output trajectory.lock.json
+```
+
+然后才可复用该锁：
 
 ```powershell
 & 'D:\Panoramic_Camera\.conda\Scripts\g305-video-panorama.exe' SESSION `
-  --preset fast `
-  --trajectory-cache PREVIOUS_VIDEO_REPORT.json `
+  --trajectory-cache trajectory.lock.json `
   --defer-3d `
   --output OUTPUT
 ```
 
-`video_report.json` records the selected source IDs, per-stage post-capture
-time, and whether `--maximum-post-seconds` was met.  An over-budget result is
-published as C with manual review required; it is never silently labelled as
-an SLA success.
+`video_report.json` v2 records the selected source IDs, algorithm lock,
+observability level, three quality grades and per-stage post-capture time. An
+over-budget result is published as C with manual review required; it is never
+silently labelled as an SLA success.
 
 连续采集成功时会在会话目录写入 `online_video_state.json`。视频命令会自动发现它（也可用
 `--online-state PATH` 指定），并在 manifest、calibration、`frames.csv` 及每个 RGB/depth
@@ -239,9 +244,8 @@ an SLA success.
 自动曝光、超过 `1200 µs` 的曝光、严格质量未过或超过 post-capture SLA 但结构完整的视频会
 发布为 C 级：`video_delivery.json` 的 `delivery_state` 为 `published_degraded`，并要求人工
 复核。2-D 主交付包含 `video_panorama.jpg/png`、`video_pixel_provenance.npz`、
-`video_report.json` 和最后写入的 `video_delivery.json`。默认 fast 不发布条带审计归档；只在
-`--preset audit` 或配置 `stitch.video_panorama.fast_publish_auxiliary_exports=true` 时，才额外
-包含 `central_strips/` 和 `central_strips_owner_only/`。三维发布是独立的：`video_tsdf_mesh.glb`、mobile GLB、离线
+`video_report.json` 和最后写入的 `video_delivery.json`。研发中的 `artifact-level=audit` 才额外
+包含 `central_strips/` 和 `central_strips_owner_only/`；它不改变主图算法。三维发布是独立的：`video_tsdf_mesh.glb`、mobile GLB、离线
 `video_tsdf_mesh_viewer.html` 及 `video_3d_delivery.json`；3-D 失败只写
 `video_3d_failure.json`，不会撤销已经发布的 2-D 交付。
 

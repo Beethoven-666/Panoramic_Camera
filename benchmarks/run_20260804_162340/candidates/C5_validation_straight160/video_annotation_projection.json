@@ -1,0 +1,127 @@
+{
+  "final_owner_filter_applied": true,
+  "lines": [],
+  "mask_artifact": "video_annotation_projection_masks.npz",
+  "measurement_only": true,
+  "objects": [],
+  "omitted": [
+    {
+      "frame_id": 249,
+      "id": "yellow_beam_high_risk_249",
+      "kind": "objects",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 249,
+      "id": "central_carton_249",
+      "kind": "objects",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 249,
+      "id": "black_fan_249",
+      "kind": "objects",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 249,
+      "id": "black_cable_249",
+      "kind": "objects",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 257,
+      "id": "yellow_beam_high_risk_257",
+      "kind": "objects",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 257,
+      "id": "central_carton_257",
+      "kind": "objects",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 257,
+      "id": "black_fan_257",
+      "kind": "objects",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 257,
+      "id": "black_cable_257",
+      "kind": "objects",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 249,
+      "id": "yellow_beam_top_249",
+      "kind": "lines",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 249,
+      "id": "yellow_beam_bottom_249",
+      "kind": "lines",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 249,
+      "id": "yellow_beam_groove_249",
+      "kind": "lines",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 249,
+      "id": "table_front_edge_249",
+      "kind": "lines",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 257,
+      "id": "yellow_beam_top_257",
+      "kind": "lines",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 257,
+      "id": "yellow_beam_bottom_257",
+      "kind": "lines",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 257,
+      "id": "yellow_beam_groove_257",
+      "kind": "lines",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 257,
+      "id": "table_front_edge_257",
+      "kind": "lines",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 249,
+      "id": "yellow_beam_face_249",
+      "kind": "safe_background",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 257,
+      "id": "yellow_beam_face_257",
+      "kind": "safe_background",
+      "reason": "no_final_owned_projection_pixels"
+    }
+  ],
+  "panorama_shape": [
+    480,
+    1028
+  ],
+  "projection_method": "v2_cuda_c1_calibrated_inverse_grid_owner_filtered",
+  "projection_timing": "post_atomic_primary_delivery",
+  "safe_background": [],
+  "schema": "gemini305-video-panorama-annotation-projection/v1",
+  "source_map_count": 2,
+  "v2_grid_reference": "torch_cuda_c1_constrained_owner_v2._render_window"
+}

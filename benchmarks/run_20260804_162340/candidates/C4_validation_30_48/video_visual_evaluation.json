@@ -1,0 +1,111 @@
+{
+  "automatic_grade_promotion_allowed": false,
+  "line_continuity": {
+    "right_pillar_edge": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 418,
+      "status": "not_evaluable"
+    },
+    "table_front_edge": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 252,
+      "status": "not_evaluable"
+    },
+    "top_shelf_bar": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 418,
+      "status": "not_evaluable"
+    },
+    "yellow_beam_bottom": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 252,
+      "status": "not_evaluable"
+    },
+    "yellow_beam_groove": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 252,
+      "status": "not_evaluable"
+    },
+    "yellow_beam_top": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 252,
+      "status": "not_evaluable"
+    }
+  },
+  "measurement_only": true,
+  "object_integrity": {
+    "black_cable": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 252,
+      "status": "not_evaluable"
+    },
+    "black_fan": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 252,
+      "status": "not_evaluable"
+    },
+    "central_carton": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 252,
+      "status": "not_evaluable"
+    },
+    "left_white_device": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 63,
+      "status": "not_evaluable"
+    },
+    "red_bottle": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 418,
+      "status": "not_evaluable"
+    },
+    "right_black_pillar": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 418,
+      "status": "not_evaluable"
+    },
+    "right_carton_and_tools": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 418,
+      "status": "not_evaluable"
+    },
+    "yellow_beam_high_risk": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 252,
+      "status": "not_evaluable"
+    }
+  },
+  "owner_topology": {
+    "active_owner_count": 12,
+    "horizontal_owner_transitions": 3702,
+    "owner_components": 27,
+    "owner_small_fragments": 10,
+    "small_fragment_area_limit_pixels": 230.376,
+    "small_owner_source_count": 1,
+    "unowned_pixel_count": 0,
+    "valid_pixel_count": 460752
+  },
+  "panorama_shape": [
+    464,
+    993
+  ],
+  "projection_available": false,
+  "safe_background": {
+    "white_wall_left": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 63,
+      "status": "not_evaluable"
+    },
+    "white_wall_right": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 418,
+      "status": "not_evaluable"
+    },
+    "yellow_beam_face": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 252,
+      "status": "not_evaluable"
+    }
+  },
+  "schema": "gemini305-video-offline-visual-evaluation/v1"
+}

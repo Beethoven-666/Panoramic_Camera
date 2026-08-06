@@ -1,0 +1,131 @@
+{
+  "candidates": [
+    {
+      "algorithm_id": "C1_constrained_owner",
+      "eligible": false,
+      "reasons": [
+        "candidate_not_executed_by_v2_cuda_renderer",
+        "v2_executed_component_audit_missing",
+        "visual_grade_not_A",
+        "overall_grade_not_A",
+        "mesh_evidence_not_applied_to_output",
+        "annotation_source_progress_not_verified",
+        "object_integrity_hard_gate_not_passed",
+        "line_continuity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\candidates\\C1_validation_30_48_current\\video_report.json"
+    },
+    {
+      "algorithm_id": "C2_dis_rgb_mesh",
+      "eligible": false,
+      "reasons": [
+        "candidate_not_executed_by_v2_cuda_renderer",
+        "v2_executed_component_audit_missing",
+        "visual_grade_not_A",
+        "overall_grade_not_A",
+        "annotation_source_progress_not_verified",
+        "object_integrity_hard_gate_not_passed",
+        "line_continuity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\candidates\\C2_validation_30_48_current\\video_report.json"
+    },
+    {
+      "algorithm_id": "C3_raft_rgb_mesh",
+      "eligible": false,
+      "reasons": [
+        "candidate_not_executed_by_v2_cuda_renderer",
+        "v2_executed_component_audit_missing",
+        "visual_grade_not_A",
+        "overall_grade_not_A",
+        "mesh_evidence_not_applied_to_output",
+        "annotation_source_progress_not_verified",
+        "object_integrity_hard_gate_not_passed",
+        "line_continuity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\candidates\\C3_validation_30_48_current\\video_report.json"
+    },
+    {
+      "algorithm_id": "C4_raft_rgbd_layered_mesh",
+      "eligible": false,
+      "reasons": [
+        "candidate_not_executed_by_v2_cuda_renderer",
+        "v2_executed_component_audit_missing",
+        "visual_grade_not_A",
+        "overall_grade_not_A",
+        "annotation_source_progress_not_verified",
+        "object_integrity_hard_gate_not_passed",
+        "line_continuity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\candidates\\C4_validation_30_48_current\\video_report.json"
+    },
+    {
+      "algorithm_id": "C5_object_lock",
+      "eligible": false,
+      "reasons": [
+        "candidate_not_executed_by_v2_cuda_renderer",
+        "v2_executed_component_audit_missing",
+        "visual_grade_not_A",
+        "overall_grade_not_A",
+        "annotation_source_progress_not_verified",
+        "object_integrity_hard_gate_not_passed",
+        "line_continuity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\candidates\\C5_validation_30_48_current\\video_report.json"
+    },
+    {
+      "algorithm_id": "C6_multiband",
+      "eligible": false,
+      "reasons": [
+        "candidate_not_executed_by_v2_cuda_renderer",
+        "v2_executed_component_audit_missing",
+        "visual_grade_not_A",
+        "overall_grade_not_A",
+        "annotation_source_progress_not_verified",
+        "object_integrity_hard_gate_not_passed",
+        "line_continuity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\candidates\\C6_validation_30_48_current\\video_report.json"
+    },
+    {
+      "algorithm_id": "C7_photometric_graph",
+      "eligible": false,
+      "reasons": [
+        "candidate_not_executed_by_v2_cuda_renderer",
+        "v2_executed_component_audit_missing",
+        "visual_grade_not_A",
+        "overall_grade_not_A",
+        "annotation_source_progress_not_verified",
+        "object_integrity_hard_gate_not_passed",
+        "line_continuity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\candidates\\C7_validation_30_48_current\\video_report.json"
+    },
+    {
+      "algorithm_id": "C8_multilabel_window",
+      "eligible": false,
+      "reasons": [
+        "candidate_not_executed_by_v2_cuda_renderer",
+        "v2_executed_component_audit_missing",
+        "visual_grade_not_A",
+        "overall_grade_not_A",
+        "annotation_source_progress_not_verified",
+        "object_integrity_hard_gate_not_passed",
+        "line_continuity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\candidates\\C8_validation_30_48_current\\video_report.json"
+    }
+  ],
+  "holdout_not_run": true,
+  "schema": "gemini305-video-algorithm-selection/v1",
+  "selected_algorithm_id": null,
+  "selection_stage": "validation",
+  "selection_status": "not_selectable"
+}

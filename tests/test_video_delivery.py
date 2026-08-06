@@ -3,21 +3,69 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 
 from panorama_demo.orbslam3_bridge import ORBSLAM3Error
 from panorama_demo.video_delivery import invalidate_video_delivery, publish_video_2d, write_video_failure
-from panorama_demo.video_3d import _offline_glb_viewer
+from panorama_demo.video_3d import _load_2d_report, _offline_glb_viewer
+
+
+def _v2_report(**overrides: object) -> dict[str, object]:
+    report: dict[str, object] = {
+        "delivery_state": "published",
+        "manual_review_required": False,
+        "algorithm": {
+            "role": "production",
+            "algorithm_id": "production_v1",
+            "implementation_id": "video_visual_renderer_v2",
+            "fallback_used": False,
+        },
+        "observability": {
+            "report_level": "summary",
+            "artifact_level": "minimal",
+        },
+        "grades": {
+            "structural": "A",
+            "visual": "A",
+            "performance": "A",
+            "overall": "A",
+        },
+    }
+    report.update(overrides)
+    return report
 
 
 def test_video_delivery_is_published_last(tmp_path):
     image = np.full((12, 24, 3), 80, dtype=np.uint8)
     owner = np.zeros((12, 24), dtype=np.int32)
-    report = publish_video_2d(tmp_path, image, owner, {"delivery_state": "published_degraded", "quality_grade": "C", "manual_review_required": True})
+    report = publish_video_2d(
+        tmp_path,
+        image,
+        owner,
+        _v2_report(
+            delivery_state="published_degraded",
+            manual_review_required=True,
+            grades={"structural": "A", "visual": "C", "performance": "A", "overall": "C"},
+        ),
+    )
     assert (tmp_path / "video_delivery.json").is_file()
     assert (tmp_path / "video_panorama.png").is_file()
-    assert report["schema"] == "gemini305-video-panorama-report/v1"
+    assert report["schema"] == "gemini305-video-panorama-report/v2"
     delivery = json.loads((tmp_path / "video_delivery.json").read_text(encoding="utf-8"))
-    assert delivery["quality_grade"] == "C"
+    assert delivery["schema"] == "gemini305-video-panorama-delivery/v2"
+    assert delivery["overall_grade"] == "C"
+    assert delivery["algorithm_id"] == "production_v1"
+    assert {
+        key: delivery[key]
+        for key in ("structural_grade", "visual_grade", "performance_grade", "overall_grade")
+    } == {
+        "structural_grade": "A",
+        "visual_grade": "C",
+        "performance_grade": "A",
+        "overall_grade": "C",
+    }
+    assert delivery["report_level"] == "summary"
+    assert delivery["artifact_level"] == "minimal"
 
 
 def test_video_delivery_carries_fast_sla_and_invalidates_old_3d(tmp_path):
@@ -29,23 +77,37 @@ def test_video_delivery_carries_fast_sla_and_invalidates_old_3d(tmp_path):
         tmp_path,
         image,
         owner,
-        {
-            "delivery_state": "published_degraded",
-            "quality_grade": "C",
-            "manual_review_required": True,
-            "preset": "fast",
-            "performance": {
+        _v2_report(
+            delivery_state="published_degraded",
+            manual_review_required=True,
+            preset="fast",
+            performance={
                 "post_capture_seconds": 8.5,
                 "maximum_post_seconds": 8.0,
                 "within_post_capture_budget": False,
             },
-        },
+            grades={"structural": "A", "visual": "C", "performance": "A", "overall": "C"},
+        ),
     )
     delivery = json.loads((tmp_path / "video_delivery.json").read_text(encoding="utf-8"))
-    assert delivery["preset"] == "fast"
+    assert "preset" not in delivery
+    assert "preset" not in report
     assert delivery["within_post_capture_budget"] is False
     assert not (tmp_path / "video_tsdf_mesh.glb").exists()
     assert report["performance"]["post_capture_seconds"] == 8.5
+
+
+def test_video_delivery_invalidation_removes_measurement_progress_sidecars(tmp_path):
+    for name in (
+        "video_source_progress_evidence.json",
+        "video_annotation_source_progress_audit.json",
+    ):
+        (tmp_path / name).write_text("stale", encoding="utf-8")
+
+    invalidate_video_delivery(tmp_path)
+
+    assert not (tmp_path / "video_source_progress_evidence.json").exists()
+    assert not (tmp_path / "video_annotation_source_progress_audit.json").exists()
 
 
 def test_video_failure_records_native_attempt_audit(tmp_path):
@@ -69,6 +131,22 @@ def test_video_failure_records_native_attempt_audit(tmp_path):
     assert failure["orbslam3_execution_attempts"][0]["signal"] == 11
 
 
+def test_video_delivery_rejects_fallback_without_grade_c_manual_review(tmp_path):
+    image = np.full((12, 24, 3), 80, dtype=np.uint8)
+    owner = np.zeros((12, 24), dtype=np.int32)
+    report = _v2_report(
+        algorithm={
+            "role": "production",
+            "algorithm_id": "production_v1",
+            "implementation_id": "video_visual_renderer_v2",
+            "fallback_used": True,
+        },
+    )
+
+    with pytest.raises(ValueError, match="must be grade C"):
+        publish_video_2d(tmp_path, image, owner, report)
+
+
 def test_video_delivery_publishes_staged_central_strips(tmp_path):
     image = np.full((12, 24, 3), 80, dtype=np.uint8)
     owner = np.zeros((12, 24), dtype=np.int32)
@@ -82,13 +160,10 @@ def test_video_delivery_publishes_staged_central_strips(tmp_path):
         tmp_path,
         image,
         owner,
-        {
-            "delivery_state": "published",
-            "quality_grade": "A",
-            "manual_review_required": False,
-            "central_strip_export": {"image_count": 1},
-            "central_strip_owner_only_export": {"image_count": 1},
-        },
+        _v2_report(
+            central_strip_export={"image_count": 1},
+            central_strip_owner_only_export={"image_count": 1},
+        ),
         pending_central_strips=pending,
         pending_central_strips_owner_only=pending_owner_only,
     )
@@ -112,3 +187,23 @@ def test_video_3d_viewer_is_offline_and_references_its_sibling_glb():
     assert "=-(pos.data[3*i+2]-cz)/span" in viewer
     assert "model-viewer" not in viewer
     assert "https://" not in viewer
+
+
+@pytest.mark.parametrize("schema", [
+    "gemini305-video-panorama-delivery/v1",
+    "gemini305-video-panorama-delivery/v2",
+])
+def test_video_3d_accepts_published_v1_and_v2_markers_read_only(tmp_path, schema):
+    marker = {
+        "schema": schema,
+        "delivery_state": "published",
+        "report": "video_report.json",
+    }
+    report = {"schema": schema.replace("delivery", "report")}
+    marker_path = tmp_path / "video_delivery.json"
+    report_path = tmp_path / "video_report.json"
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    assert _load_2d_report(tmp_path) == report
+    assert json.loads(marker_path.read_text(encoding="utf-8")) == marker

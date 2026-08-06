@@ -1,0 +1,21 @@
+# Candidate-only first v2 data plane.  This declaration deliberately has no
+# C1--C8 visual component: it is an auditable CUDA calibration + strict owner
+# experiment, not a shortcut that relabels the legacy visual seam as CUDA.
+config_schema: gemini305-video-candidate/v1
+role: candidate
+candidate_id: C0_cuda_strict_strip_owner
+parent_candidate_id: C0_baseline_reference
+algorithm_id: C0_cuda_strict_strip_owner
+implementation_id: torch_cuda_strip_owner_v2
+source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
+model_sha256: {}
+allow_baseline_fallback: false
+changed_components: [cuda_calibration_and_strict_owner_data_plane]
+components:
+  seam: {mode: hard_owner}
+  flow: {backend: none}
+  mesh: {enabled: false}
+  object_lock: {enabled: false}
+  multiband: {enabled: false}
+  photometric: {enabled: false}
+config_sha256: 638d361515582172256b71c5ed18ccdae58a4885ed30b2e3a5bf1944f3ef7e96

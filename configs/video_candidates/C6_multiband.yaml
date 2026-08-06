@@ -1,0 +1,14 @@
+config_schema: gemini305-video-candidate/v1
+role: candidate
+candidate_id: C6_multiband
+parent_candidate_id: C5_object_lock
+algorithm_id: C6_multiband
+implementation_id: video_visual_renderer_v2
+source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
+model_sha256:
+  torchvision_raft_small_C_T_V2: 01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27
+allow_baseline_fallback: false
+changed_components: [safe_background_multiband]
+components:
+  multiband: {enabled: true, ablation_levels: [3, 4, 5], background_band_pixels: [16, 24], object_band_pixels: [0, 2], depth_edges_hard_owner: true}
+config_sha256: 6d556a190a97c18d178f1e3acec357ca3e07860e5d5366df5c4e4cb34096b1bd

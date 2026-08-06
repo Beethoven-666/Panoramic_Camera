@@ -1,0 +1,187 @@
+{
+  "final_owner_filter_applied": true,
+  "lines": [
+    {
+      "frame_id": 249,
+      "id": "yellow_beam_top_249",
+      "points": [
+        [
+          470.0,
+          100.0
+        ],
+        [
+          482.0,
+          100.0
+        ]
+      ]
+    },
+    {
+      "frame_id": 249,
+      "id": "yellow_beam_bottom_249",
+      "points": [
+        [
+          470.0,
+          176.0
+        ],
+        [
+          482.0,
+          176.0
+        ]
+      ]
+    },
+    {
+      "frame_id": 249,
+      "id": "yellow_beam_groove_249",
+      "points": [
+        [
+          470.0,
+          149.0
+        ],
+        [
+          482.0,
+          149.0
+        ]
+      ]
+    },
+    {
+      "frame_id": 249,
+      "id": "table_front_edge_249",
+      "points": [
+        [
+          470.0,
+          451.0
+        ],
+        [
+          482.0,
+          451.0
+        ]
+      ]
+    },
+    {
+      "frame_id": 257,
+      "id": "yellow_beam_top_257",
+      "points": [
+        [
+          483.0,
+          100.0
+        ],
+        [
+          499.0,
+          100.0
+        ]
+      ]
+    },
+    {
+      "frame_id": 257,
+      "id": "yellow_beam_bottom_257",
+      "points": [
+        [
+          483.0,
+          176.0
+        ],
+        [
+          499.0,
+          176.0
+        ]
+      ]
+    },
+    {
+      "frame_id": 257,
+      "id": "yellow_beam_groove_257",
+      "points": [
+        [
+          483.0,
+          149.0
+        ],
+        [
+          499.0,
+          149.0
+        ]
+      ]
+    },
+    {
+      "frame_id": 257,
+      "id": "table_front_edge_257",
+      "points": [
+        [
+          483.0,
+          451.0
+        ],
+        [
+          499.0,
+          451.0
+        ]
+      ]
+    }
+  ],
+  "mask_artifact": "video_annotation_projection_masks.npz",
+  "measurement_only": true,
+  "objects": [
+    {
+      "frame_id": 249,
+      "id": "yellow_beam_high_risk_249",
+      "mask_key": "objects__yellow_beam_high_risk_249"
+    },
+    {
+      "frame_id": 249,
+      "id": "central_carton_249",
+      "mask_key": "objects__central_carton_249"
+    },
+    {
+      "frame_id": 257,
+      "id": "yellow_beam_high_risk_257",
+      "mask_key": "objects__yellow_beam_high_risk_257"
+    },
+    {
+      "frame_id": 257,
+      "id": "central_carton_257",
+      "mask_key": "objects__central_carton_257"
+    }
+  ],
+  "omitted": [
+    {
+      "frame_id": 249,
+      "id": "black_fan_249",
+      "kind": "objects",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 249,
+      "id": "black_cable_249",
+      "kind": "objects",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 257,
+      "id": "black_fan_257",
+      "kind": "objects",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 257,
+      "id": "black_cable_257",
+      "kind": "objects",
+      "reason": "no_final_owned_projection_pixels"
+    }
+  ],
+  "panorama_shape": [
+    480,
+    1027
+  ],
+  "projection_method": "v2_cuda_c1_calibrated_inverse_grid_owner_filtered",
+  "safe_background": [
+    {
+      "frame_id": 249,
+      "id": "yellow_beam_face_249",
+      "mask_key": "safe_background__yellow_beam_face_249"
+    },
+    {
+      "frame_id": 257,
+      "id": "yellow_beam_face_257",
+      "mask_key": "safe_background__yellow_beam_face_257"
+    }
+  ],
+  "schema": "gemini305-video-panorama-annotation-projection/v1",
+  "source_map_count": 2,
+  "v2_grid_reference": "torch_cuda_c1_constrained_owner_v2._render_window"
+}

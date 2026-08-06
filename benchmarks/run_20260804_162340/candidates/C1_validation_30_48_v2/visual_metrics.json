@@ -1,0 +1,184 @@
+{
+  "automatic_grade_promotion_allowed": false,
+  "line_continuity": {
+    "table_front_edge_249": {
+      "edge_sample_count": 13,
+      "hard_gate_pass": false,
+      "line_offset_p95_px": 3.0,
+      "line_orientation_delta_p95_degrees": 5.811447757702691,
+      "line_step_p95_px": 0.0,
+      "sample_count": 13,
+      "source_frame_id": 249,
+      "status": "evaluated"
+    },
+    "table_front_edge_257": {
+      "edge_sample_count": 17,
+      "hard_gate_pass": false,
+      "line_offset_p95_px": 4.0,
+      "line_orientation_delta_p95_degrees": 6.204472619586863,
+      "line_step_p95_px": 0.25,
+      "sample_count": 17,
+      "source_frame_id": 257,
+      "status": "evaluated"
+    },
+    "yellow_beam_bottom_249": {
+      "edge_sample_count": 13,
+      "hard_gate_pass": false,
+      "line_offset_p95_px": 5.0,
+      "line_orientation_delta_p95_degrees": 22.06064317690818,
+      "line_step_p95_px": 1.0,
+      "sample_count": 13,
+      "source_frame_id": 249,
+      "status": "evaluated"
+    },
+    "yellow_beam_bottom_257": {
+      "edge_sample_count": 17,
+      "hard_gate_pass": false,
+      "line_offset_p95_px": 5.0,
+      "line_orientation_delta_p95_degrees": 12.177469845551041,
+      "line_step_p95_px": 0.0,
+      "sample_count": 17,
+      "source_frame_id": 257,
+      "status": "evaluated"
+    },
+    "yellow_beam_groove_249": {
+      "edge_sample_count": 13,
+      "hard_gate_pass": false,
+      "line_offset_p95_px": 4.399999999999999,
+      "line_orientation_delta_p95_degrees": 17.102860289267642,
+      "line_step_p95_px": 0.4499999999999993,
+      "sample_count": 13,
+      "source_frame_id": 249,
+      "status": "evaluated"
+    },
+    "yellow_beam_groove_257": {
+      "edge_sample_count": 17,
+      "hard_gate_pass": false,
+      "line_offset_p95_px": 4.0,
+      "line_orientation_delta_p95_degrees": 10.885252200845514,
+      "line_step_p95_px": 3.0,
+      "sample_count": 17,
+      "source_frame_id": 257,
+      "status": "evaluated"
+    },
+    "yellow_beam_top_249": {
+      "edge_sample_count": 13,
+      "hard_gate_pass": false,
+      "line_offset_p95_px": 5.0,
+      "line_orientation_delta_p95_degrees": 52.72080560070216,
+      "line_step_p95_px": 0.4499999999999993,
+      "sample_count": 13,
+      "source_frame_id": 249,
+      "status": "evaluated"
+    },
+    "yellow_beam_top_257": {
+      "edge_sample_count": 17,
+      "hard_gate_pass": false,
+      "line_offset_p95_px": 5.0,
+      "line_orientation_delta_p95_degrees": 28.527912254065484,
+      "line_step_p95_px": 0.0,
+      "sample_count": 17,
+      "source_frame_id": 257,
+      "status": "evaluated"
+    }
+  },
+  "measurement_only": true,
+  "object_integrity": {
+    "black_cable_249": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 249,
+      "status": "not_evaluable"
+    },
+    "black_cable_257": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 257,
+      "status": "not_evaluable"
+    },
+    "black_fan_249": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 249,
+      "status": "not_evaluable"
+    },
+    "black_fan_257": {
+      "reason": "no_panorama_projection_for_fixed_source_annotation",
+      "source_frame_id": 257,
+      "status": "not_evaluable"
+    },
+    "central_carton_249": {
+      "dominant_owner_fraction": 1.0,
+      "dominant_owner_frame_id": 249,
+      "hard_gate_pass": false,
+      "maximum_handoffs": 0,
+      "object_internal_seam_count": 2,
+      "object_internal_seam_pixel_count": 219,
+      "owner_count": 1,
+      "source_frame_id": 249,
+      "status": "evaluated",
+      "valid_pixel_count": 1424
+    },
+    "central_carton_257": {
+      "dominant_owner_fraction": 1.0,
+      "dominant_owner_frame_id": 257,
+      "hard_gate_pass": false,
+      "maximum_handoffs": 0,
+      "object_internal_seam_count": 2,
+      "object_internal_seam_pixel_count": 217,
+      "owner_count": 1,
+      "source_frame_id": 257,
+      "status": "evaluated",
+      "valid_pixel_count": 1845
+    },
+    "yellow_beam_high_risk_249": {
+      "dominant_owner_fraction": 1.0,
+      "dominant_owner_frame_id": 249,
+      "hard_gate_pass": false,
+      "maximum_handoffs": 0,
+      "object_internal_seam_count": 2,
+      "object_internal_seam_pixel_count": 158,
+      "owner_count": 1,
+      "source_frame_id": 249,
+      "status": "evaluated",
+      "valid_pixel_count": 1027
+    },
+    "yellow_beam_high_risk_257": {
+      "dominant_owner_fraction": 1.0,
+      "dominant_owner_frame_id": 257,
+      "hard_gate_pass": false,
+      "maximum_handoffs": 0,
+      "object_internal_seam_count": 2,
+      "object_internal_seam_pixel_count": 156,
+      "owner_count": 1,
+      "source_frame_id": 257,
+      "status": "evaluated",
+      "valid_pixel_count": 1326
+    }
+  },
+  "owner_topology": {
+    "active_owner_count": 12,
+    "horizontal_owner_transitions": 5263,
+    "owner_components": 13,
+    "owner_small_fragments": 0,
+    "small_fragment_area_limit_pixels": 246.48000000000002,
+    "small_owner_source_count": 0,
+    "unowned_pixel_count": 0,
+    "valid_pixel_count": 492960
+  },
+  "panorama_shape": [
+    480,
+    1027
+  ],
+  "projection_available": true,
+  "safe_background": {
+    "yellow_beam_face_249": {
+      "reason": "no_owner_boundary_in_projected_safe_background",
+      "source_frame_id": 249,
+      "status": "not_evaluable"
+    },
+    "yellow_beam_face_257": {
+      "reason": "no_owner_boundary_in_projected_safe_background",
+      "source_frame_id": 257,
+      "status": "not_evaluable"
+    }
+  },
+  "schema": "gemini305-video-offline-visual-evaluation/v1"
+}

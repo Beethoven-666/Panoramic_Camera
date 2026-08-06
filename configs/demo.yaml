@@ -78,47 +78,28 @@ stitch:
   # RGB-D frames after the complete ORB-SLAM3 trajectory is available; it
   # never fabricates a pose or replaces the calibrated formal renderer.
   video_panorama:
-    default_preset: fast
-    # Fast uses a time-spaced real-frame ORB chain.  The 60 FPS stream stays
-    # available to scan/risk analysis; only actual 8 FPS frames enter ORB and
-    # are eligible for a final source pose.
-    fast_orb_target_fps: 8.0
-    fast_orbslam3_rgbd:
-      feature_count: 1000
-      staging_workers: 4
-      staging_color_extension: .jpg
-      staging_jpeg_quality: 95
-      staging_width: 424
-    # Fast still measures every adjacent render-source edge with the real
-    # CUDA Open3D RGB-D backend.  A 384 px working image and bounded solver
-    # schedule preserve the local SE(3) audit while avoiding a second
-    # full-resolution reconstruction after capture.
-    fast_rgbd_odometry:
-      working_width: 384
-      iteration_number_per_pyramid_level: [16, 8, 4]
-    motion_backend: dis
+    # Baseline/candidate/production algorithms own their renderer settings.
+    # This shared section contains only lifecycle, budget and observability
+    # policy; `g305-video-panorama` reads the production lock only.
+    default_algorithm: baseline
     maximum_post_seconds: 60.0
-    fast_odometry_prepare_workers: 4
-    fast_session_validation_workers: 4
-    fast_scan_analysis_workers: 4
-    # Fast publishes only the primary panorama/provenance/report. Strip
-    # archives are audit artifacts and may be requested by setting this true.
-    fast_publish_auxiliary_exports: false
-    # The full RGB-D mesh validator is retained for ``quality`` and ``audit``.
-    # Fast starts from a hard-owner/GraphCut-safe visual path; enable this only
-    # when a scan-risk monitor has flagged geometry-critical corridors.
-    fast_enable_geometry_assist: false
-    # Fast uses the unified depth-aware curved visual seam.  It is fail-closed:
-    # contaminated depth evidence becomes an RGB-only hard owner rather than
-    # a forced, visually torn foreground. ``audited_visual`` is the slower
-    # full GraphCut/MultiBand review path; hard-owner remains diagnostic-only.
-    fast_renderer: visual_seam
-    motion_resampling:
-      minimum_step_pixels: 3.0
-      normal_target_step_pixels: 20.0
-      risk_target_step_pixels: 8.0
-      maximum_step_pixels: 24.0
-      emergency_step_pixels: 30.0
+    baseline_lock: configs/video_algorithms/baseline_legacy_fast_b07b561.lock.json
+    production_lock: configs/video_algorithms/production.lock.json
+    dataset_lock_required_for_experiments: true
+    observability:
+      report_level: summary
+      artifact_level: minimal
+    fallback:
+      production_to_baseline_on_structural_failure: true
+      fallback_grade: C
+      manual_review_required: true
+  video_runtime:
+    session_validation_workers: 4
+    scan_analysis_workers: 4
+    odometry_prepare_workers: 4
+    tracking_fps: 8.0
+    motion_backend: dis
+    cuda_device: 0
   # Open3D measures every short RGB-D edge; ORB-SLAM3 RGB-D uses the complete
   # short-baseline sequence to stabilise the global camera trajectory.
   pose_backend: hybrid_orbslam3_rgbd

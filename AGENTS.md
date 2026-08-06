@@ -40,34 +40,33 @@
 
 照片模式的 `g305-panorama` 契约保持不变。连续 RGB-D 视频通过独立入口
 `g305-video-panorama` 处理，绝不能传给 `g305-panorama`，也不能复用照片的
-`delivery.json`。视频产品当前流程为：严格视频 session 验证（可复用经哈希绑定的采集期
-scan state）→ 最长连续单向扫描段分析 → fast 对完整连续会话做运动/风险分析，并按时间
-选择约 `8 FPS` 的真实 ORB 跟踪帧 → 该完整真实 tracking chain 的 ORB-SLAM3 RGB-D
-`camera_to_world` → 从已跟踪真实帧中选择渲染源 → 所有实际渲染源的相邻 Open3D RGB-D
-边审计 → 共享 `render_calibrated_rgb_pushbroom()` → 独立 2-D 发布 → 可独立重试的
-TSDF/GLB 发布。`audit` preset 保留扫描段的全部真实帧；任何 preset 都不插值 pose。
+`delivery.json`。公共入口只能读取冻结的 `production.lock.json`；研发只能经
+`g305-video-experiment` 的 `baseline` 或 `candidate` 角色进行。算法审计由
+`report-level` / `artifact-level` 控制，绝不能改变渲染源、pose、owner 或像素输出。
+视频路径始终使用真实源帧和真实 ORB-SLAM3 `camera_to_world` pose，所有渲染源相邻边仍须
+经 Open3D 审计；不得插值、伪造或以二维运动替代缺失 pose。
 
 - 只接受 `continuous_rgbd_video_auto` 与
   `continuous_rgbd_video_fixed_exposure`，并接受旧的 v1 auto 会话用于 C 级兼容。
   v2 会话还必须有 `product_eligibility.photo_panorama=false` 和
   `product_eligibility.video_panorama=true`。
-- 默认 fast 的 `fast_orb_target_fps=8.0`；未进入 tracking chain 的连续会话帧只用于
-  运动/风险分析，绝不可渲染、拥有像素、形成 pose 或被插值。fast 默认以 `424 px`、JPEG
+- 默认运行时 tracking FPS 为 `8.0`；未进入 tracking chain 的连续会话帧只用于
+  运动/风险分析，绝不可渲染、拥有像素、形成 pose 或被插值。冻结算法可使用 `424 px`、JPEG
   质量 `95`、`1000` 个特征和最多 4 个 staging workers 向 ORB-SLAM3 提供经过标定的
   pinhole RGB-D 暂存帧；这只加速 ORB 输入，不改变正式 RGB 的一次全分辨率 remap。
   视频也不得插值、伪造或用 Open3D/二维运动替代任一渲染源缺失的 ORB pose；所有渲染源
-  必须有真实 ORB pose，所有相邻渲染源边必须经 Open3D 审计。fast 以同一 CUDA RGB-D
+  必须有真实 ORB pose，所有相邻渲染源边必须经 Open3D 审计。冻结算法以同一 CUDA RGB-D
   estimator 的 `384 px`、`[16, 8, 4]` 迭代计划审计这些边。
-- fast 默认以 4 个 workers 并行严格帧文件验证、scan 分析和 Open3D 输入准备；每个 worker
+- 运行时默认以 4 个 workers 并行严格帧文件验证、scan 分析和 Open3D 输入准备；每个 worker
   只处理独立、只读的真实 RGB-D 文件。最终 Open3D 边估计仍在单一实际 CUDA backend 上执行。
 - 自动曝光、曝光超过 `1200 µs` 或严格质量未过的结构完整视频发布为 C：
   `video_delivery.json` 的 `delivery_state=published_degraded`，且必须人工复核。
 - 2-D 主交付为 `video_panorama.jpg`、`video_panorama.png`、
   `video_pixel_provenance.npz`、`video_report.json` 和最后写入的
-  `video_delivery.json`。`audit` preset 或显式将 `fast_publish_auxiliary_exports=true`
-  才额外发布 `central_strips/`（每个真实源的已标定、已光度校正 BGRA 条带及 manifest）
-  与 `central_strips_owner_only/`（最终全景中 owner-only 的 BGRA 条带及 manifest）；fast
-  默认不等待这两类审计归档。3-D 文件为 `video_tsdf_mesh.glb`、
+  `video_delivery.json`。只有 `artifact-level=audit` 才额外发布 `central_strips/`
+  （每个真实源的已标定、已光度校正 BGRA 条带及 manifest）与
+  `central_strips_owner_only/`（最终全景中 owner-only 的 BGRA 条带及 manifest）；这些
+  审计归档不得改变 2-D 算法结果。3-D 文件为 `video_tsdf_mesh.glb`、
   `video_tsdf_mesh_mobile.glb`、`video_tsdf_mesh_viewer.html` 和
   `video_3d_delivery.json`；3-D 失败只写 `video_3d_failure.json`，不得撤销已发布的
   2-D 交付。
@@ -77,7 +76,7 @@ TSDF/GLB 发布。`audit` preset 保留扫描段的全部真实帧；任何 pres
 ### 1.3 视频视觉 renderer（用户授权的正式例外）
 
 本节只适用于独立的 `g305-video-panorama`；照片 `g305-panorama` 及其 unified
-renderer 继续受 1.1 与第 7 节的全部限制。为实现视频 fast/quality 产品，允许一个
+renderer 继续受 1.1 与第 7 节的全部限制。为实现视频候选/生产产品，允许一个
 独立的风险分级视频视觉 renderer 使用下列操作，但仍不得生成、插值或替代真实源帧和
 真实 ORB pose：
 
@@ -89,13 +88,13 @@ renderer 继续受 1.1 与第 7 节的全部限制。为实现视频 fast/qualit
   或把 flow 用作 pose。
 - 只由共同可见、安全背景样本估计的全局线性 RGB gain/bias；必须记录训练/held-out
   误差，超过配置界限则回退单位校正。
-- 安全背景可用局部 MultiBand；风险、遮挡、深度边缘、对象锁定区不参与融合。fast
+- 安全背景可用局部 MultiBand；风险、遮挡、深度边缘、对象锁定区不参与融合。候选算法
   可使用块化 CPU/OpenCV 实现；仅在实际被调用时才能报告 CUDA。
 
 视频报告必须逐 pair 记录风险、flow/mesh、owner、seam、photometric 与退化原因。
 `video_panorama` 的主结果按 `maximum_post_seconds=60` 记录 SLA 审计并原子发布；超时仍可
-结构化发布，但必须降为 C 并人工复核。central-strip/audit 导出可在主结果发布后异步或按
-audit 模式生成。
+结构化发布，但必须降为 C 并人工复核。central-strip 审计导出可在主结果发布后异步或按
+artifact-level=audit 生成。
 
 ## 2. 开始工作
 

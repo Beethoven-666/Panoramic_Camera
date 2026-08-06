@@ -170,6 +170,59 @@ def test_fast_visual_owner_can_skip_depth_when_motion_risk_is_clear(
     assert result.metadata["quality_metrics"]["photometric_flow_evidence_complete"] is True
 
 
+def test_fast_candidate_c1_constrained_owner_uses_real_calibrated_sources_only(
+    tmp_path: Path,
+) -> None:
+    """C1 is opt-in, pair-local, and remains a strict real-source owner map."""
+
+    session, poses = _make_rgb_pushbroom_input(tmp_path, seed=97)
+    result = render_calibrated_rgb_pushbroom(
+        session.frames,
+        poses,
+        session.calibration,
+        rgb_motions=_reliable_adjacent_rgb_motions(len(session.frames)),
+        fast_hard_owner=True,
+        candidate_c1_constrained_owner=True,
+        candidate_c1_config={
+            "seam_corridor_width_pixels": 48,
+            "maximum_row_step_pixels": 3,
+        },
+    )
+
+    metrics = result.metadata["quality_metrics"]
+    assert result.metadata["backend"] == (
+        "calibrated_rgb_pushbroom_fast_candidate_c1_constrained_owner"
+    )
+    assert result.metadata["mosaicing_method"]["foreground_policy"] == (
+        "candidate_c1_pair_local_constrained_hard_owner"
+    )
+    assert metrics["candidate_c1_constrained_owner_pair_count"] == len(session.frames) - 1
+    assert len(metrics["candidate_c1_constrained_owner_audits"]) == len(session.frames) - 1
+    assert metrics["hard_cut_pair_count"] == 0
+    assert result.owner_frame_id is not None
+    assert set(np.unique(result.owner_frame_id)) <= {frame.frame_id for frame in session.frames}
+    assert np.all(result.owner_frame_id >= 0)
+
+
+def test_candidate_c1_is_rejected_outside_fast_hard_owner_helper(tmp_path: Path) -> None:
+    session, poses = _make_rgb_pushbroom_input(tmp_path, seed=101)
+    kwargs = {
+        "rgb_motions": _reliable_adjacent_rgb_motions(len(session.frames)),
+        "candidate_c1_constrained_owner": True,
+    }
+    with pytest.raises(ValueError, match="requires fast_hard_owner"):
+        render_calibrated_rgb_pushbroom(
+            session.frames, poses, session.calibration, **kwargs
+        )
+    with pytest.raises(ValueError, match="candidate_c1_config requires"):
+        render_calibrated_rgb_pushbroom(
+            session.frames,
+            poses,
+            session.calibration,
+            candidate_c1_config={"seam_corridor_width_pixels": 48},
+        )
+
+
 def test_unlimited_pose_admission_keeps_more_than_160_real_nodes(tmp_path: Path) -> None:
     """A null total limit is not silently converted back to the old 160 cap."""
 

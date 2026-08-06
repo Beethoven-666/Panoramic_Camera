@@ -12,8 +12,91 @@ import cv2
 import numpy as np
 
 
-VIDEO_DELIVERY_SCHEMA = "gemini305-video-panorama-delivery/v1"
-VIDEO_REPORT_SCHEMA = "gemini305-video-panorama-report/v1"
+VIDEO_DELIVERY_SCHEMA = "gemini305-video-panorama-delivery/v2"
+VIDEO_REPORT_SCHEMA = "gemini305-video-panorama-report/v2"
+
+_PUBLISHED_STATES = frozenset({"published", "published_degraded"})
+_GRADE_VALUES = frozenset({"A", "B", "C"})
+_ALGORITHM_ROLES = frozenset({"baseline", "candidate", "production"})
+
+
+def _require_nonempty_string(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Video report {name} must be a non-empty string")
+    return value
+
+
+def _require_mapping(value: object, name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"Video report {name} must be an object")
+    return value
+
+
+def _without_legacy_presets(value: Any) -> Any:
+    """Copy JSON-compatible report data while removing retired preset metadata."""
+    if isinstance(value, dict):
+        return {
+            str(key): _without_legacy_presets(item)
+            for key, item in value.items()
+            if key != "preset"
+        }
+    if isinstance(value, list):
+        return [_without_legacy_presets(item) for item in value]
+    if isinstance(value, tuple):
+        return [_without_legacy_presets(item) for item in value]
+    return value
+
+
+def _delivery_fields(report: dict[str, Any]) -> dict[str, Any]:
+    """Validate the v2 publication contract and derive its marker fields."""
+    delivery_state = report.get("delivery_state")
+    if delivery_state not in _PUBLISHED_STATES:
+        raise ValueError("Video report delivery_state must be published or published_degraded")
+
+    algorithm = _require_mapping(report.get("algorithm"), "algorithm")
+    role = algorithm.get("role")
+    if role not in _ALGORITHM_ROLES:
+        raise ValueError("Video report algorithm.role is unsupported")
+    algorithm_id = _require_nonempty_string(algorithm.get("algorithm_id"), "algorithm.algorithm_id")
+    _require_nonempty_string(algorithm.get("implementation_id"), "algorithm.implementation_id")
+    fallback_used = algorithm.get("fallback_used")
+    if not isinstance(fallback_used, bool):
+        raise ValueError("Video report algorithm.fallback_used must be a boolean")
+
+    observability = _require_mapping(report.get("observability"), "observability")
+    report_level = _require_nonempty_string(observability.get("report_level"), "observability.report_level")
+    artifact_level = _require_nonempty_string(observability.get("artifact_level"), "observability.artifact_level")
+
+    grades = _require_mapping(report.get("grades"), "grades")
+    grade_names = {
+        "structural": "structural_grade",
+        "visual": "visual_grade",
+        "performance": "performance_grade",
+        "overall": "overall_grade",
+    }
+    delivery_grades: dict[str, str] = {}
+    for source_name, delivery_name in grade_names.items():
+        grade = grades.get(source_name)
+        if grade not in _GRADE_VALUES:
+            raise ValueError(f"Video report grades.{source_name} must be A, B, or C")
+        delivery_grades[delivery_name] = grade
+
+    manual_review = report.get("manual_review_required", False)
+    if not isinstance(manual_review, bool):
+        raise ValueError("Video report manual_review_required must be a boolean")
+    if fallback_used and (delivery_grades["overall_grade"] != "C" or not manual_review):
+        raise ValueError("A video baseline fallback must be grade C and require manual review")
+
+    return {
+        "delivery_state": delivery_state,
+        "algorithm_id": algorithm_id,
+        "algorithm_role": role,
+        "fallback_used": fallback_used,
+        **delivery_grades,
+        "report_level": report_level,
+        "artifact_level": artifact_level,
+        "manual_review_required": manual_review,
+    }
 
 
 def invalidate_video_delivery(output: Path) -> None:
@@ -21,6 +104,9 @@ def invalidate_video_delivery(output: Path) -> None:
     for name in (
         "video_delivery.json", "video_report.json", "video_failure.json",
         "video_panorama.jpg", "video_panorama.png", "video_pixel_provenance.npz",
+        "video_annotation_projection.json", "video_annotation_projection_masks.npz",
+        "video_source_progress_evidence.json", "video_annotation_source_progress_audit.json",
+        "visual_metrics.json",
         "central_strips", ".central_strips.pending",
         "central_strips_owner_only", ".central_strips_owner_only.pending",
         # A fresh 2-D delivery must not appear to be paired with a mesh made
@@ -68,6 +154,8 @@ def publish_video_2d(
         raise ValueError("Video panorama must be an 8-bit BGR image")
     if owner.shape != panorama.shape[:2]:
         raise ValueError("Video owner map shape does not match panorama")
+    report = _without_legacy_presets(report)
+    delivery_fields = _delivery_fields(report)
     if pending_central_strips is not None:
         export = report.get("central_strip_export")
         if not isinstance(export, dict) or not pending_central_strips.is_dir():
@@ -90,9 +178,11 @@ def publish_video_2d(
     report["provenance"] = str(output / "video_pixel_provenance.npz")
     report_path = output / ".video_report.pending.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    delivery = {"schema": VIDEO_DELIVERY_SCHEMA, "delivery_state": report["delivery_state"], "quality_grade": report["quality_grade"], "manual_review_required": report["manual_review_required"], "report": "video_report.json"}
-    if isinstance(report.get("preset"), str):
-        delivery["preset"] = report["preset"]
+    delivery = {
+        "schema": VIDEO_DELIVERY_SCHEMA,
+        **delivery_fields,
+        "report": "video_report.json",
+    }
     performance = report.get("performance")
     if isinstance(performance, dict):
         for key in (

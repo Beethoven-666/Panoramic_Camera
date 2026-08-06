@@ -1,0 +1,21 @@
+config_schema: gemini305-video-candidate/v1
+role: candidate
+candidate_id: C1_constrained_owner
+parent_candidate_id: C0_baseline_reference
+algorithm_id: C1_constrained_owner
+implementation_id: video_visual_renderer_v2
+source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
+model_sha256: {}
+allow_baseline_fallback: false
+changed_components: [scan_step, pair_risk, seam_corridor, seam_curvature, line_constraints, owner_cleanup]
+components:
+  scan_step: {normal_pixels: 12, risk_pixels: 5}
+  pair_risk: {enabled: true}
+  seam: {mode: constrained_hard_owner, first_order_curvature: true, second_order_curvature: true, line_constraints: true}
+  owner_cleanup: {enabled: true}
+  cuda_c1:
+    corridor_width_pixels: 160
+    maximum_row_step_pixels: 1
+    first_order_penalty: 20.0
+    second_order_penalty: 10.0
+config_sha256: 6f4d572d2f91062707229914a3d5f5c60b54072b5aca81f19ed1e13b24d52b54

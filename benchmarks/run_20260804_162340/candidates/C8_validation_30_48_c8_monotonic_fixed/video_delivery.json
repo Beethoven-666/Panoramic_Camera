@@ -1,0 +1,37 @@
+{
+  "schema": "gemini305-video-panorama-delivery/v2",
+  "delivery_state": "published_degraded",
+  "algorithm_id": "C8_multilabel_window",
+  "algorithm_role": "candidate",
+  "fallback_used": false,
+  "structural_grade": "A",
+  "visual_grade": "C",
+  "performance_grade": "A",
+  "overall_grade": "C",
+  "report_level": "full",
+  "artifact_level": "audit",
+  "manual_review_required": true,
+  "report": "video_report.json",
+  "post_capture_seconds": 30.78851500000019,
+  "maximum_post_seconds": 60.0,
+  "within_post_capture_budget": true,
+  "central_strip_export": {
+    "schema": "gemini305-video-v2-cuda-central-strips/v1",
+    "image_count": 12,
+    "image_encoding": "PNG BGRA",
+    "alpha_semantics": "255=valid_calibrated_rgb_sample; 0=invalid_remap_sample",
+    "renderer": "torch_cuda_c8_multilabel_window_v2",
+    "export_mode": "read_only_post_render_exact_v2_grid_reference",
+    "primary_pixels_or_owner_modified": false,
+    "path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\candidates\\C8_validation_30_48_c8_monotonic_fixed\\central_strips"
+  },
+  "central_strip_owner_only_export": {
+    "schema": "gemini305-video-v2-cuda-central-strips-owner-only/v1",
+    "image_count": 12,
+    "image_encoding": "PNG BGRA",
+    "alpha_semantics": "255=final_owner_pixel; 0=not_owned_by_this_source",
+    "renderer": "torch_cuda_c8_multilabel_window_v2",
+    "primary_pixels_or_owner_modified": false,
+    "path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\candidates\\C8_validation_30_48_c8_monotonic_fixed\\central_strips_owner_only"
+  }
+}

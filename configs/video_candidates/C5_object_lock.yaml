@@ -1,0 +1,14 @@
+config_schema: gemini305-video-candidate/v1
+role: candidate
+candidate_id: C5_object_lock
+parent_candidate_id: C4_raft_rgbd_layered_mesh
+algorithm_id: C5_object_lock
+implementation_id: video_visual_renderer_v2
+source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
+model_sha256:
+  torchvision_raft_small_C_T_V2: 01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27
+allow_baseline_fallback: false
+changed_components: [foreground_object_track, object_owner_lock, controlled_object_handoff]
+components:
+  object_lock: {enabled: true, single_owner: true, maximum_handoffs: 1}
+config_sha256: d499a591dbb61504aab93a9749b68f744522aeaee160d4778b9e0ca9ec8fc2f3

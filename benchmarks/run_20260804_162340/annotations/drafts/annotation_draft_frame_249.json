@@ -1,0 +1,256 @@
+{
+  "schema": "gemini305-video-source-annotation-draft/v1",
+  "status": "machine_draft_needs_human_confirmation",
+  "not_valid_for_evaluation_or_locking": true,
+  "source_session": "D:\\central_strip_Panoramic_Camera\\data\\captures\\video\\run_20260804_162340",
+  "target_source_frame": {
+    "frame_id": 249,
+    "color_path": "color/00000249.jpg",
+    "observed_scan_progress": 0.3908519084978398
+  },
+  "derived_from_annotation": {
+    "path": "benchmarks/run_20260804_162340/annotations/objects.json",
+    "frame_id": 252,
+    "note": "The draft is a visual aid only. Do not promote it to fixed measurement input without explicit human review."
+  },
+  "objects": [
+    {
+      "id": "central_carton",
+      "frame_id": 249,
+      "derived_from": {
+        "frame_id": 252,
+        "entry_id": "central_carton",
+        "method": "OpenCV_DIS_local_optical_flow_draft"
+      },
+      "forward_backward_error_px": 0.434,
+      "polygon": [
+        [
+          267.8,
+          280.8
+        ],
+        [
+          424.7,
+          279.6
+        ],
+        [
+          459.5,
+          382.2
+        ],
+        [
+          306.9,
+          395.2
+        ]
+      ]
+    },
+    {
+      "id": "black_fan",
+      "frame_id": 249,
+      "derived_from": {
+        "frame_id": 252,
+        "entry_id": "black_fan",
+        "method": "OpenCV_DIS_local_optical_flow_draft"
+      },
+      "forward_backward_error_px": 0.201,
+      "polygon": [
+        [
+          491.7,
+          254.2
+        ],
+        [
+          577.5,
+          254.4
+        ],
+        [
+          580.8,
+          386.2
+        ],
+        [
+          493.5,
+          386.1
+        ]
+      ]
+    },
+    {
+      "id": "black_cable",
+      "frame_id": 249,
+      "derived_from": {
+        "frame_id": 252,
+        "entry_id": "black_cable",
+        "method": "human_directed_manual_source_region_then_OpenCV_DIS_local_optical_flow_draft"
+      },
+      "forward_backward_error_px": 0.116,
+      "polygon": [
+        [
+          271.9,
+          344.0
+        ],
+        [
+          319.5,
+          344.2
+        ],
+        [
+          328.8,
+          429.8
+        ],
+        [
+          277.2,
+          430.1
+        ]
+      ],
+      "human_direction": "?????????????"
+    },
+    {
+      "id": "yellow_beam_high_risk",
+      "frame_id": 249,
+      "derived_from": {
+        "frame_id": 252,
+        "entry_id": "yellow_beam_high_risk",
+        "method": "OpenCV_DIS_local_optical_flow_draft"
+      },
+      "forward_backward_error_px": 1.62,
+      "polygon": [
+        [
+          5.3,
+          99.3
+        ],
+        [
+          847.0,
+          98.7
+        ],
+        [
+          847.0,
+          177.3
+        ],
+        [
+          3.9,
+          177.3
+        ]
+      ]
+    }
+  ],
+  "lines": [
+    {
+      "id": "yellow_beam_top",
+      "frame_id": 249,
+      "derived_from": {
+        "frame_id": 252,
+        "entry_id": "yellow_beam_top",
+        "method": "OpenCV_DIS_local_optical_flow_draft"
+      },
+      "forward_backward_error_px": 2.204,
+      "points": [
+        [
+          10.2,
+          100.3
+        ],
+        [
+          843.4,
+          99.7
+        ]
+      ]
+    },
+    {
+      "id": "yellow_beam_bottom",
+      "frame_id": 249,
+      "derived_from": {
+        "frame_id": 252,
+        "entry_id": "yellow_beam_bottom",
+        "method": "OpenCV_DIS_local_optical_flow_draft"
+      },
+      "forward_backward_error_px": 0.997,
+      "points": [
+        [
+          9.0,
+          176.3
+        ],
+        [
+          843.4,
+          176.2
+        ]
+      ]
+    },
+    {
+      "id": "yellow_beam_groove",
+      "frame_id": 249,
+      "derived_from": {
+        "frame_id": 252,
+        "entry_id": "yellow_beam_groove",
+        "method": "OpenCV_DIS_local_optical_flow_draft"
+      },
+      "forward_backward_error_px": 1.127,
+      "points": [
+        [
+          7.1,
+          149.5
+        ],
+        [
+          843.1,
+          149.3
+        ]
+      ]
+    },
+    {
+      "id": "table_front_edge",
+      "frame_id": 249,
+      "derived_from": {
+        "frame_id": 252,
+        "entry_id": "table_front_edge",
+        "method": "OpenCV_DIS_local_optical_flow_draft"
+      },
+      "forward_backward_error_px": 1.742,
+      "points": [
+        [
+          14.2,
+          449.9
+        ],
+        [
+          844.7,
+          450.2
+        ]
+      ]
+    }
+  ],
+  "safe_background": [
+    {
+      "id": "yellow_beam_face",
+      "frame_id": 249,
+      "derived_from": {
+        "frame_id": 252,
+        "entry_id": "yellow_beam_face",
+        "method": "OpenCV_DIS_local_optical_flow_draft"
+      },
+      "forward_backward_error_px": 1.977,
+      "polygon": [
+        [
+          83.2,
+          111.6
+        ],
+        [
+          766.3,
+          111.4
+        ],
+        [
+          762.8,
+          136.5
+        ],
+        [
+          79.0,
+          136.3
+        ]
+      ]
+    }
+  ],
+  "review_checklist": [
+    "Red polygons must tightly cover the intended objects.",
+    "Orange lines must follow the intended straight physical edges.",
+    "Green polygon must contain only stable background, not objects, shadows, or occlusions.",
+    "Reject or correct any point that does not visibly match its target frame."
+  ],
+  "revision_history": [
+    {
+      "revision": "black_cable_user_directed_draft/v1",
+      "change": "Moved black_cable to the vertical black cable bundle immediately left of the carton.",
+      "still_requires_human_confirmation": true
+    }
+  ]
+}

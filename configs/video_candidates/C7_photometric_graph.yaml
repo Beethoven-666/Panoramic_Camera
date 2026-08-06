@@ -1,0 +1,14 @@
+config_schema: gemini305-video-candidate/v1
+role: candidate
+candidate_id: C7_photometric_graph
+parent_candidate_id: C6_multiband
+algorithm_id: C7_photometric_graph
+implementation_id: video_visual_renderer_v2
+source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
+model_sha256:
+  torchvision_raft_small_C_T_V2: 01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27
+allow_baseline_fallback: false
+changed_components: [global_photometric_graph]
+components:
+  photometric: {mode: global_graph, anchor: median_exposure, edges: [adjacent, skip_one_overlap], temporal_regularization: [first_order, second_order], block_illumination_optional: true}
+config_sha256: 94b1de36302be49094f94a96040f40a59e593b6fa3a744e838c6f50c2eb64692

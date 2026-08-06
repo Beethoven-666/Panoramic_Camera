@@ -1,0 +1,129 @@
+{
+  "schema": "gemini305-video-v2-cuda-central-strips-owner-only/v1",
+  "image_encoding": "PNG BGRA",
+  "alpha_semantics": "255=final_owner_pixel; 0=not_owned_by_this_source",
+  "renderer": "torch_cuda_c5_object_lock_v2",
+  "primary_pixels_or_owner_modified": false,
+  "images": [
+    {
+      "filename": "central_strip_0000_frame_000205.png",
+      "source_index": 0,
+      "frame_id": 205,
+      "panorama_x0": 0,
+      "width": 374,
+      "height": 480,
+      "owner_pixel_count": 170869,
+      "empty_owner": false
+    },
+    {
+      "filename": "central_strip_0001_frame_000214.png",
+      "source_index": 1,
+      "frame_id": 214,
+      "panorama_x0": 353,
+      "width": 39,
+      "height": 480,
+      "owner_pixel_count": 17291,
+      "empty_owner": false
+    },
+    {
+      "filename": "central_strip_0002_frame_000223.png",
+      "source_index": 2,
+      "frame_id": 223,
+      "panorama_x0": 392,
+      "width": 17,
+      "height": 480,
+      "owner_pixel_count": 8160,
+      "empty_owner": false
+    },
+    {
+      "filename": "central_strip_0003_frame_000231.png",
+      "source_index": 3,
+      "frame_id": 231,
+      "panorama_x0": 409,
+      "width": 15,
+      "height": 480,
+      "owner_pixel_count": 1920,
+      "empty_owner": false
+    },
+    {
+      "filename": "central_strip_0004_frame_000240.png",
+      "source_index": 4,
+      "frame_id": 240,
+      "panorama_x0": 409,
+      "width": 29,
+      "height": 480,
+      "owner_pixel_count": 12000,
+      "empty_owner": false
+    },
+    {
+      "filename": "central_strip_0005_frame_000249.png",
+      "source_index": 5,
+      "frame_id": 249,
+      "panorama_x0": 438,
+      "width": 13,
+      "height": 480,
+      "owner_pixel_count": 6240,
+      "empty_owner": false
+    },
+    {
+      "filename": "central_strip_0006_frame_000257.png",
+      "source_index": 6,
+      "frame_id": 257,
+      "panorama_x0": 451,
+      "width": 18,
+      "height": 480,
+      "owner_pixel_count": 8640,
+      "empty_owner": false
+    },
+    {
+      "filename": "central_strip_0007_frame_000265.png",
+      "source_index": 7,
+      "frame_id": 265,
+      "panorama_x0": 469,
+      "width": 19,
+      "height": 480,
+      "owner_pixel_count": 9120,
+      "empty_owner": false
+    },
+    {
+      "filename": "central_strip_0008_frame_000281.png",
+      "source_index": 8,
+      "frame_id": 281,
+      "panorama_x0": 488,
+      "width": 18,
+      "height": 480,
+      "owner_pixel_count": 3249,
+      "empty_owner": false
+    },
+    {
+      "filename": "central_strip_0009_frame_000290.png",
+      "source_index": 9,
+      "frame_id": 290,
+      "panorama_x0": 488,
+      "width": 32,
+      "height": 480,
+      "owner_pixel_count": 7290,
+      "empty_owner": false
+    },
+    {
+      "filename": "central_strip_0010_frame_000306.png",
+      "source_index": 10,
+      "frame_id": 306,
+      "panorama_x0": 506,
+      "width": 20,
+      "height": 480,
+      "owner_pixel_count": 5041,
+      "empty_owner": false
+    },
+    {
+      "filename": "central_strip_0011_frame_000312.png",
+      "source_index": 11,
+      "frame_id": 312,
+      "panorama_x0": 520,
+      "width": 508,
+      "height": 480,
+      "owner_pixel_count": 243620,
+      "empty_owner": false
+    }
+  ]
+}

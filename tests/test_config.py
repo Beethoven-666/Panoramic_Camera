@@ -41,34 +41,28 @@ def test_default_video_capture_uses_capped_auto_exposure_and_locked_awb() -> Non
     assert "depth_format" not in config["capture"]
     assert config["stitch"]["max_canvas_megapixels"] == 200
     assert config["stitch"]["video_panorama"] == {
-        "default_preset": "fast",
-        "fast_orb_target_fps": 8.0,
-        "fast_orbslam3_rgbd": {
-            "feature_count": 1000,
-            "staging_workers": 4,
-            "staging_color_extension": ".jpg",
-            "staging_jpeg_quality": 95,
-            "staging_width": 424,
-        },
-        "fast_rgbd_odometry": {
-            "working_width": 384,
-            "iteration_number_per_pyramid_level": [16, 8, 4],
-        },
-        "motion_backend": "dis",
+        "default_algorithm": "baseline",
         "maximum_post_seconds": 60.0,
-        "fast_odometry_prepare_workers": 4,
-        "fast_session_validation_workers": 4,
-        "fast_scan_analysis_workers": 4,
-        "fast_publish_auxiliary_exports": False,
-        "fast_enable_geometry_assist": False,
-        "fast_renderer": "visual_seam",
-        "motion_resampling": {
-            "minimum_step_pixels": 3.0,
-            "normal_target_step_pixels": 20.0,
-            "risk_target_step_pixels": 8.0,
-            "maximum_step_pixels": 24.0,
-            "emergency_step_pixels": 30.0,
+        "baseline_lock": "configs/video_algorithms/baseline_legacy_fast_b07b561.lock.json",
+        "production_lock": "configs/video_algorithms/production.lock.json",
+        "dataset_lock_required_for_experiments": True,
+        "observability": {
+            "report_level": "summary",
+            "artifact_level": "minimal",
         },
+        "fallback": {
+            "production_to_baseline_on_structural_failure": True,
+            "fallback_grade": "C",
+            "manual_review_required": True,
+        },
+    }
+    assert config["stitch"]["video_runtime"] == {
+        "session_validation_workers": 4,
+        "scan_analysis_workers": 4,
+        "odometry_prepare_workers": 4,
+        "tracking_fps": 8.0,
+        "motion_backend": "dis",
+        "cuda_device": 0,
     }
     assert config["stitch"]["diagnostic_force"] is False
     assert config["stitch"]["handoff_fallback_policy"] == {

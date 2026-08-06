@@ -1,0 +1,117 @@
+{
+  "lines": [],
+  "mask_artifact": "video_annotation_projection_masks.npz",
+  "measurement_only": true,
+  "objects": [],
+  "omitted": [
+    {
+      "frame_id": 63,
+      "id": "left_white_device",
+      "kind": "objects",
+      "reason": "no_final_owned_projection_pixels"
+    },
+    {
+      "frame_id": 252,
+      "id": "central_carton",
+      "kind": "objects",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 252,
+      "id": "black_fan",
+      "kind": "objects",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 418,
+      "id": "red_bottle",
+      "kind": "objects",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 418,
+      "id": "right_black_pillar",
+      "kind": "objects",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 252,
+      "id": "black_cable",
+      "kind": "objects",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 418,
+      "id": "right_carton_and_tools",
+      "kind": "objects",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 252,
+      "id": "yellow_beam_high_risk",
+      "kind": "objects",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 252,
+      "id": "yellow_beam_top",
+      "kind": "lines",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 252,
+      "id": "yellow_beam_bottom",
+      "kind": "lines",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 252,
+      "id": "yellow_beam_groove",
+      "kind": "lines",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 252,
+      "id": "table_front_edge",
+      "kind": "lines",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 418,
+      "id": "top_shelf_bar",
+      "kind": "lines",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 418,
+      "id": "right_pillar_edge",
+      "kind": "lines",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 252,
+      "id": "yellow_beam_face",
+      "kind": "safe_background",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    },
+    {
+      "frame_id": 418,
+      "id": "white_wall_right",
+      "kind": "safe_background",
+      "reason": "annotated_source_not_a_candidate_render_source"
+    }
+  ],
+  "panorama_shape": [
+    460,
+    1119
+  ],
+  "projection_method": "candidate_calibrated_inverse_map_owner_filtered",
+  "safe_background": [
+    {
+      "frame_id": 63,
+      "id": "white_wall_left",
+      "mask_key": "safe_background__white_wall_left"
+    }
+  ],
+  "schema": "gemini305-video-panorama-annotation-projection/v1"
+}

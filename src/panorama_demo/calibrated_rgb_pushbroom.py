@@ -26,7 +26,7 @@ import pickle
 import shutil
 import tempfile
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from itertools import product
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
@@ -1109,6 +1109,10 @@ class CalibratedRGBPushbroomResult:
     panorama: np.ndarray
     metadata: dict[str, object]
     owner_frame_id: np.ndarray | None = None
+    # Candidate-only, post-publication measurement evidence.  Neither field
+    # participates in RGB sampling, owner optimisation, pose or quality.
+    measurement_projection_payload: dict[str, object] | None = None
+    measurement_projection_masks: dict[str, np.ndarray] | None = None
 
 
 def _unit(vector: np.ndarray, label: str) -> np.ndarray:
@@ -10746,6 +10750,14 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
     visual_seams: bool = False,
     visual_use_depth: bool = True,
     visual_photometric: bool = True,
+    candidate_c1_constrained_owner: bool = False,
+    candidate_c1_config: Mapping[str, object] | None = None,
+    candidate_mesh_evidence: Mapping[str, object] | None = None,
+    candidate_object_owner_lock: bool = False,
+    candidate_safe_multiband: bool = False,
+    candidate_global_photometric: bool = False,
+    candidate_multilabel_owner: bool = False,
+    candidate_measurement_annotations: Mapping[str, object] | None = None,
 ) -> CalibratedRGBPushbroomResult:
     """Render one calibrated remap per source with a monotone hard owner map.
 
@@ -10756,10 +10768,18 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
     every structural invariant that makes a degraded video delivery honest:
     real SE(3), one calibrated inverse remap per real source, one canvas,
     valid-mask/owner-map consistency, and a chronological hard owner.
+
+    ``candidate_c1_constrained_owner`` is intentionally an experiment-only
+    extension of this fast video helper.  It is never selected by the formal
+    photo renderer or a public CLI.  It composes already placed, once-remapped
+    real-source BGRA contributions through C1's pair-local constrained seam;
+    it neither creates a source nor changes a pose or a calibrated RGB sample.
     """
 
     if len(frames) != len(poses) or len(frames) < 2:
         raise ValueError("Calibrated RGB pushbroom requires at least two aligned frames/poses")
+    if candidate_measurement_annotations is not None and not candidate_c1_constrained_owner:
+        raise ValueError("candidate measurement annotations require candidate C1 rendering")
     if settings.max_pose_count is not None and len(frames) > int(settings.max_pose_count):
         raise ValueError("Calibrated RGB pushbroom exceeds configured total pose-node limit")
     checked_poses = [validate_camera_to_world(pose) for pose in poses]
@@ -10778,7 +10798,37 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
     contributions = tuple(
         renderer.render_frame(frame, index) for index, frame in enumerate(frames)
     )
+    if candidate_c1_constrained_owner and visual_seams:
+        raise ValueError(
+            "candidate C1 constrained owner cannot be combined with visual seams"
+        )
+    if candidate_c1_config is not None and not candidate_c1_constrained_owner:
+        raise ValueError(
+            "candidate_c1_config requires candidate_c1_constrained_owner=True"
+        )
+    if candidate_mesh_evidence is not None and not candidate_c1_constrained_owner:
+        raise ValueError("candidate_mesh_evidence requires candidate_c1_constrained_owner=True")
+    if candidate_object_owner_lock and not candidate_c1_constrained_owner:
+        raise ValueError("candidate_object_owner_lock requires candidate_c1_constrained_owner=True")
+    if candidate_safe_multiband and not candidate_c1_constrained_owner:
+        raise ValueError("candidate_safe_multiband requires candidate_c1_constrained_owner=True")
+    if candidate_global_photometric and not candidate_c1_constrained_owner:
+        raise ValueError("candidate_global_photometric requires candidate_c1_constrained_owner=True")
+    if candidate_multilabel_owner and not candidate_c1_constrained_owner:
+        raise ValueError("candidate_multilabel_owner requires candidate_c1_constrained_owner=True")
+    if candidate_measurement_annotations is not None and not candidate_c1_constrained_owner:
+        raise ValueError("candidate measurement annotations require candidate C1 rendering")
     visual_audits: list[dict[str, object]] = []
+    c1_audits: list[dict[str, object]] = []
+    mesh_evidence_audits: list[dict[str, object]] = []
+    mesh_output_pixel_count = 0
+    raft_flow_audits: list[dict[str, object]] = []
+    object_owner_lock_audits: list[dict[str, object]] = []
+    multiband_audits: list[dict[str, object]] = []
+    candidate_photometric = None
+    candidate_photometric_audit: dict[str, object] | None = None
+    multilabel_audits: list[dict[str, object]] = []
+    mesh_sample_canvas: np.ndarray | None = None
     visual_photometric_audit: dict[str, object] | None = None
     visual_photometric_accepted = False
     photometric_flow_audits: list[dict[str, object]] = []
@@ -10948,6 +10998,368 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
                     "method": audit.method,
                 }
             )
+    elif candidate_c1_constrained_owner:
+        # Import only when an explicitly opted-in candidate experiment uses
+        # C1.  Keeping this dependency local prevents the photo renderer from
+        # loading an experimental video compositor during normal operation.
+        from .video_constrained_owner import (
+            ConstrainedOwnerConfig,
+            assert_c1_real_source_owners,
+            render_c1_constrained_hard_owner_pair,
+        )
+
+        c1_settings = ConstrainedOwnerConfig(**dict(candidate_c1_config or {}))
+        if candidate_global_photometric:
+            photometric_overlaps: list[AdjacentBGRAOverlap] = []
+            for source_index, (first_contribution, second_contribution) in enumerate(
+                zip(contributions[:-1], contributions[1:], strict=True)
+            ):
+                left = max(first_contribution.x0, second_contribution.x0)
+                right = min(first_contribution.x1, second_contribution.x1)
+                if right <= left:
+                    raise RuntimeError("C7 adjacent real sources lack calibrated overlap")
+                first_slice = slice(left - first_contribution.x0, right - first_contribution.x0)
+                second_slice = slice(left - second_contribution.x0, right - second_contribution.x0)
+                first_valid = np.asarray(first_contribution.valid_mask[:, first_slice], dtype=bool)
+                second_valid = np.asarray(second_contribution.valid_mask[:, second_slice], dtype=bool)
+                photometric_overlaps.append(
+                    AdjacentBGRAOverlap(
+                        source_index,
+                        source_index + 1,
+                        np.dstack((first_contribution.rgb[:, first_slice], first_valid.astype(np.uint8) * 255)),
+                        np.dstack((second_contribution.rgb[:, second_slice], second_valid.astype(np.uint8) * 255)),
+                        first_valid,
+                        second_valid,
+                    )
+                )
+            candidate_photometric = solve_video_global_photometric(
+                len(contributions), photometric_overlaps
+            )
+            candidate_photometric_audit = dict(candidate_photometric.audit)
+        mesh_settings: object | None = None
+        mesh_flow_estimator: Callable[[VideoVisualSource, VideoVisualSource], np.ndarray] | None = None
+        if candidate_mesh_evidence is not None:
+            from .video_local_mesh_evidence import LocalMeshEvidenceConfig
+
+            evidence = dict(candidate_mesh_evidence)
+            if evidence.get("enabled") is not True:
+                raise ValueError("candidate_mesh_evidence must explicitly set enabled=true")
+            backend = evidence.get("flow_backend")
+            if backend not in {"dis", "raft"}:
+                raise ValueError(
+                    "candidate mesh evidence flow_backend must be DIS or RAFT"
+                )
+            if backend == "raft":
+                model_id = evidence.get("model_id")
+                model_sha256 = evidence.get("model_sha256")
+                if not isinstance(model_id, str) or not isinstance(model_sha256, str):
+                    raise ValueError("RAFT mesh evidence requires a locked model_id and model_sha256")
+                from .video_model_lock import verify_candidate_models
+                from .video_raft_runtime import RAFTSmallRuntimeConfig, TorchvisionRAFTSmallRuntime
+
+                locks = verify_candidate_models({model_id: model_sha256})
+                if len(locks) != 1:
+                    raise RuntimeError("RAFT mesh evidence resolved an unexpected model set")
+                runtime = TorchvisionRAFTSmallRuntime(
+                    RAFTSmallRuntimeConfig(locks[0].path, locks[0].sha256)
+                )
+
+                def _raft_flow(first: VideoVisualSource, second: VideoVisualSource) -> np.ndarray:
+                    first_rgb = np.ascontiguousarray(first.bgra[..., :3][..., ::-1])
+                    second_rgb = np.ascontiguousarray(second.bgra[..., :3][..., ::-1])
+                    result = runtime.estimate_pair(
+                        first_rgb,
+                        second_rgb,
+                        source_frame_id=int(first.frame_id),
+                        target_frame_id=int(second.frame_id),
+                    )
+                    raft_flow_audits.append(result.audit.as_dict())
+                    return result.flow_xy
+
+                mesh_flow_estimator = _raft_flow
+            mesh_settings = LocalMeshEvidenceConfig(
+                flow_backend=str(backend),
+                require_depth_safety=bool(evidence.get("require_depth_safety", False)),
+            )
+        mesh_requires_depth = bool(
+            candidate_mesh_evidence is not None
+            and dict(candidate_mesh_evidence).get("require_depth_safety", False)
+        )
+        requires_depth_evidence = (
+            mesh_requires_depth or candidate_object_owner_lock or candidate_safe_multiband
+        )
+
+        def _pair_sources(
+            first_index: int, second_index: int
+        ) -> tuple[int, int, VideoVisualSource, VideoVisualSource]:
+            """Materialise only an adjacent pair's union support.
+
+            C1's seam is restricted to an adjacent 96px corridor.  Giving it
+            a full panorama canvas would spend most of its work on transparent
+            pixels and make the experimental 12/5 source density needlessly
+            slow.  The crop is a coordinate translation only: both BGRA
+            samples remain the single full-resolution calibrated remap.
+            """
+
+            first = contributions[first_index]
+            second = contributions[second_index]
+            left = min(first.x0, second.x0)
+            right = max(first.x1, second.x1)
+            width = right - left
+            first_bgra = np.zeros((layout.canvas_height, width, 4), dtype=np.uint8)
+            second_bgra = np.zeros_like(first_bgra)
+            depth_images: list[np.ndarray | None] = []
+            for source_index, contribution, target in (
+                (first_index, first, first_bgra),
+                (second_index, second, second_bgra),
+            ):
+                x0 = contribution.x0 - left
+                x1 = x0 + contribution.rgb.shape[1]
+                alpha = np.where(contribution.valid_mask, 255, 0).astype(np.uint8)
+                source_bgra = np.dstack((contribution.rgb, alpha))
+                if candidate_photometric is not None and candidate_photometric.accepted:
+                    source_bgra = apply_video_photometric_correction(
+                        source_bgra, candidate_photometric.corrections[source_index]
+                    )
+                target[:, x0:x1] = source_bgra
+                if requires_depth_evidence:
+                    geometry = renderer.render_local_geometry_map(
+                        frames[source_index], source_index, x0=contribution.x0, x1=contribution.x1
+                    )
+                    sampled = accelerated_remap(
+                        read_aligned_depth_mm(frames[source_index]),
+                        geometry.source_map_x,
+                        geometry.source_map_y,
+                        cv2.INTER_NEAREST,
+                        borderMode=cv2.BORDER_CONSTANT,
+                        borderValue=0,
+                    ).astype(np.float32)
+                    sampled[~geometry.valid_mask] = 0.0
+                    placed_depth = np.zeros((layout.canvas_height, width), dtype=np.float32)
+                    placed_depth[:, x0:x1] = sampled
+                    depth_images.append(placed_depth)
+                else:
+                    depth_images.append(None)
+            return (
+                left,
+                right,
+                VideoVisualSource(frame_id=first.frame_id, bgra=first_bgra, depth_mm=depth_images[0]),
+                VideoVisualSource(frame_id=second.frame_id, bgra=second_bgra, depth_mm=depth_images[1]),
+            )
+
+        first = contributions[0]
+        canvas = np.zeros((layout.canvas_height, layout.canvas_width, 3), dtype=np.uint8)
+        valid_canvas = np.zeros((layout.canvas_height, layout.canvas_width), dtype=bool)
+        owner_canvas = np.full(valid_canvas.shape, -1, dtype=np.int64)
+        multiband_canvas = np.zeros(valid_canvas.shape, dtype=bool)
+        mesh_sample_canvas = np.zeros(valid_canvas.shape, dtype=bool)
+        first_right = first.x1
+        first_valid = np.asarray(first.valid_mask, dtype=bool)
+        canvas[:, first.x0:first_right][first_valid] = first.rgb[first_valid]
+        valid_canvas[:, first.x0:first_right] = first_valid
+        owner_canvas[:, first.x0:first_right][first_valid] = 0
+        for source_index in range(1, len(contributions)):
+            left, right, previous_source, incoming_source = _pair_sources(
+                source_index - 1, source_index
+            )
+            fixed_owner_frame_id = None
+            object_lock = None
+            if candidate_object_owner_lock:
+                from .video_object_owner_lock import (
+                    ObjectOwnerLockConfig,
+                    depth_connected_object_candidates,
+                    plan_object_owner_lock,
+                )
+
+                object_candidates = depth_connected_object_candidates(
+                    previous_source, incoming_source
+                )
+                object_lock = plan_object_owner_lock(
+                    previous_source,
+                    incoming_source,
+                    object_mask=object_candidates.mask,
+                    constraint_mask=(
+                        previous_source.bgra[..., 3] > 0
+                    ) & (incoming_source.bgra[..., 3] > 0),
+                    config=ObjectOwnerLockConfig(maximum_handoffs=1),
+                )
+                object_audit = object_lock.audit.as_dict()
+                object_audit["depth_connected_object_candidates"] = object_candidates.as_dict()
+                object_owner_lock_audits.append(object_audit)
+                if object_lock.accepted:
+                    fixed_owner_frame_id = object_lock.owner_frame_id
+            pair = render_c1_constrained_hard_owner_pair(
+                previous_source,
+                incoming_source,
+                config=c1_settings,
+                fixed_owner_frame_id=fixed_owner_frame_id,
+            )
+            # This assertion proves the pair seam is literal source sampling
+            # before its decision is merged with earlier chronological owners.
+            if candidate_photometric is None or not candidate_photometric.accepted:
+                assert_c1_real_source_owners(pair, (previous_source, incoming_source))
+            if mesh_settings is not None:
+                from .video_local_mesh_evidence import (
+                    assess_candidate_local_mesh_evidence,
+                    sample_accepted_mesh_from_first_source,
+                )
+
+                mesh_result = assess_candidate_local_mesh_evidence(
+                    previous_source,
+                    incoming_source,
+                    config=mesh_settings,
+                    flow_estimator=mesh_flow_estimator,
+                )
+                mesh_audit = mesh_result.audit.as_dict()
+                # Mesh output is only the previous *real owner* in a strictly
+                # accepted same-layer corridor.  It cannot change a C1 label,
+                # claim an older owner, or turn a failed pair into a warp.
+                prior_owner = owner_canvas[:, left:right] == source_index - 1
+                sampled_mesh = sample_accepted_mesh_from_first_source(
+                    previous_source,
+                    mesh_result,
+                    owner_mask=prior_owner,
+                )
+                mesh_mask = sampled_mesh.applied_mask & prior_owner
+                if np.any(mesh_mask):
+                    canvas[:, left:right][mesh_mask] = sampled_mesh.bgr[mesh_mask]
+                    mesh_sample_canvas[:, left:right][mesh_mask] = True
+                    mesh_output_pixel_count += int(np.count_nonzero(mesh_mask))
+                mesh_audit["output_sampling_applied_pixel_count"] = int(
+                    np.count_nonzero(mesh_mask)
+                )
+                mesh_evidence_audits.append(mesh_audit)
+            incoming_id = int(incoming_source.frame_id)
+            incoming_selected = pair.owner_frame_id == incoming_id
+            # A C1 pair may only replace its immediate chronological predecessor.
+            # If three placed strips overlap, the older already-owned source is
+            # retained rather than silently allowing a non-adjacent competition.
+            owner_window = owner_canvas[:, left:right]
+            valid_window = valid_canvas[:, left:right]
+            canvas_window = canvas[:, left:right]
+            replaceable = (owner_window < 0) | (owner_window == source_index - 1)
+            take_incoming = incoming_selected & replaceable
+            incoming_valid = incoming_source.bgra[..., 3] > 0
+            missing_incoming = (owner_window < 0) & incoming_valid
+            take_incoming |= missing_incoming
+            canvas_window[take_incoming] = incoming_source.bgra[..., :3][take_incoming]
+            owner_window[take_incoming] = source_index
+            valid_window |= incoming_valid
+            if candidate_safe_multiband:
+                from .video_safe_multiband import blend_safe_background_multiband
+
+                first_gray = cv2.cvtColor(previous_source.bgra, cv2.COLOR_BGRA2GRAY)
+                second_gray = cv2.cvtColor(incoming_source.bgra, cv2.COLOR_BGRA2GRAY)
+                gradients = np.maximum(
+                    cv2.magnitude(
+                        cv2.Sobel(first_gray, cv2.CV_32F, 1, 0),
+                        cv2.Sobel(first_gray, cv2.CV_32F, 0, 1),
+                    ),
+                    cv2.magnitude(
+                        cv2.Sobel(second_gray, cv2.CV_32F, 1, 0),
+                        cv2.Sobel(second_gray, cv2.CV_32F, 0, 1),
+                    ),
+                )
+                protected = (
+                    object_lock.protected_mask
+                    if object_lock is not None and object_lock.accepted
+                    else np.zeros_like(gradients, dtype=bool)
+                )
+                safe = (gradients < 24.0) & ~protected
+                blended = blend_safe_background_multiband(
+                    previous_source.bgra,
+                    incoming_source.bgra,
+                    pair.owner_frame_id,
+                    first_frame_id=int(previous_source.frame_id),
+                    second_frame_id=incoming_id,
+                    safe_mask=safe,
+                    band_pixels=16,
+                    levels=3,
+                )
+                eligible = blended.blend_mask & replaceable
+                canvas_window[eligible] = blended.bgr[eligible]
+                multiband_canvas[:, left:right][eligible] = True
+                multiband_audits.append(blended.audit)
+            audit = asdict(pair.audit)
+            audit["suppressed_nonadjacent_competition_pixel_count"] = int(
+                np.count_nonzero(incoming_selected & ~replaceable)
+            )
+            c1_audits.append(audit)
+        if candidate_multilabel_owner:
+            from .video_multilabel_owner import optimize_c8_local_multilabel_owner
+
+            # Use disjoint chronological windows with an overlapping boundary.
+            # This keeps optimisation strictly local (<=5 real sources) and
+            # avoids permitting a later window to relabel a non-local owner.
+            for start in range(0, len(contributions) - 1, 4):
+                indices = tuple(range(start, min(start + 5, len(contributions))))
+                if len(indices) < 2:
+                    continue
+                window_left = min(contributions[index].x0 for index in indices)
+                window_right = max(contributions[index].x1 for index in indices)
+                window_width = window_right - window_left
+                local_sources: list[VideoVisualSource] = []
+                for local_index in indices:
+                    contribution = contributions[local_index]
+                    placed = np.zeros(
+                        (layout.canvas_height, window_width, 4), dtype=np.uint8
+                    )
+                    alpha = np.where(contribution.valid_mask, 255, 0).astype(np.uint8)
+                    source_left = contribution.x0 - window_left
+                    source_right = source_left + contribution.rgb.shape[1]
+                    placed[:, source_left:source_right] = np.dstack((contribution.rgb, alpha))
+                    local_sources.append(VideoVisualSource(contribution.frame_id, placed))
+                try:
+                    optimized = optimize_c8_local_multilabel_owner(tuple(local_sources))
+                except ValueError as exc:
+                    # A locally infeasible monotone labelling is an explicit
+                    # hard-owner fallback, never a source reorder or relaxed
+                    # constraint.  Retain the preceding C1 result unchanged.
+                    multilabel_audits.append(
+                        {
+                            "method": "candidate_c8_local_five_frame_multilabel_owner/v1",
+                            "source_frame_ids": [source.frame_id for source in local_sources],
+                            "accepted": False,
+                            "rejection_reason": str(exc),
+                            "hard_owner_fallback": True,
+                        }
+                    )
+                    continue
+                local_indices = np.asarray(indices, dtype=np.int64)
+                owner_window = owner_canvas[:, window_left:window_right]
+                canvas_window = canvas[:, window_left:window_right]
+                local_owned = np.isin(owner_window, local_indices)
+                for local_index, source in zip(indices, local_sources, strict=True):
+                    selected = (optimized.owner_frame_id == int(source.frame_id)) & local_owned
+                    canvas_window[selected] = source.bgra[..., :3][selected]
+                    owner_window[selected] = local_index
+                    multiband_canvas[:, window_left:window_right][selected] = False
+                    mesh_sample_canvas[:, window_left:window_right][selected] = False
+                multilabel_audits.append(optimized.audit.as_dict())
+        # Verify final output provenance directly against each narrow real
+        # contribution without retaining all full-canvas BGRA sources.
+        for source_index, contribution in enumerate(contributions):
+            selected = owner_canvas == source_index
+            if not np.any(selected):
+                continue
+            rows, columns = np.nonzero(selected)
+            local_columns = columns - int(contribution.x0)
+            verbatim = ~(multiband_canvas[rows, columns] | mesh_sample_canvas[rows, columns])
+            if (
+                np.any(local_columns < 0)
+                or np.any(local_columns >= contribution.rgb.shape[1])
+                or not np.all(contribution.valid_mask[rows, local_columns])
+                or (
+                    (candidate_photometric is None or not candidate_photometric.accepted)
+                    and not np.array_equal(
+                    canvas[rows[verbatim], columns[verbatim]],
+                    contribution.rgb[rows[verbatim], local_columns[verbatim]],
+                    )
+                )
+            ):
+                raise RuntimeError(
+                    "candidate C1 output is not a verbatim calibrated real-source sample"
+                )
     else:
         canvas = np.zeros((layout.canvas_height, layout.canvas_width, 3), dtype=np.uint8)
         valid_canvas = np.zeros((layout.canvas_height, layout.canvas_width), dtype=bool)
@@ -10981,6 +11393,60 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
     if presentation_horizontal_flip:
         panorama = np.ascontiguousarray(panorama[:, ::-1])
         owner_frame_id = np.ascontiguousarray(owner_frame_id[:, ::-1])
+    measurement_projection_payload: dict[str, object] | None = None
+    measurement_projection_masks: dict[str, np.ndarray] | None = None
+    if candidate_measurement_annotations is not None:
+        # Measurement uses the existing calibrated inverse maps only after all
+        # owner decisions are final.  Mesh-sampled pixels have a local inverse
+        # correction that is not represented by this nominal source map, so
+        # they are conservatively omitted rather than measured inaccurately.
+        from .video_candidate_annotation_projection import (
+            CandidateInverseMapSource,
+            build_candidate_annotation_projection,
+        )
+
+        annotation_ids = {
+            int(entry["frame_id"])
+            for kind in ("objects", "lines", "safe_background")
+            for entry in candidate_measurement_annotations.get(kind, [])
+            if isinstance(entry, Mapping) and isinstance(entry.get("frame_id"), int)
+        }
+        measurement_owner = np.asarray(owner_frame_id, dtype=np.int64).copy()
+        if mesh_sample_canvas is not None:
+            excluded = mesh_sample_canvas[
+                crop.y : crop.y + crop.height, crop.x : crop.x + crop.width
+            ]
+            if presentation_horizontal_flip:
+                excluded = excluded[:, ::-1]
+            measurement_owner[excluded] = -1
+        measurement_sources: list[CandidateInverseMapSource] = []
+        for source_index, contribution in enumerate(contributions):
+            if int(contribution.frame_id) not in annotation_ids:
+                continue
+            source_map_x, source_map_y, source_valid = renderer._inverse_map(
+                source_index,
+                np.arange(contribution.x0, contribution.x1, dtype=np.float64),
+                np.arange(layout.canvas_height, dtype=np.float64),
+            )
+            measurement_sources.append(
+                CandidateInverseMapSource(
+                    frame_id=int(contribution.frame_id),
+                    canvas_x0=int(contribution.x0),
+                    source_map_x=np.ascontiguousarray(source_map_x),
+                    source_map_y=np.ascontiguousarray(source_map_y),
+                    valid_mask=np.ascontiguousarray(source_valid),
+                    raw_shape=(int(calibration.height), int(calibration.width)),
+                )
+            )
+        measurement_projection_payload, measurement_projection_masks = (
+            build_candidate_annotation_projection(
+                candidate_measurement_annotations,
+                sources=measurement_sources,
+                final_owner_frame_id=measurement_owner,
+                crop_xywh=(int(crop.x), int(crop.y), int(crop.width), int(crop.height)),
+                horizontal_flip=presentation_horizontal_flip,
+            )
+        )
     source_owner_pixel_counts = [
         int(np.count_nonzero(cropped_owner == source_index))
         for source_index in range(len(frames))
@@ -11022,7 +11488,11 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
         and seam_flow_complete
     )
     fast_visual_failure_reasons: list[str] = []
-    if not visual_seams:
+    if candidate_c1_constrained_owner:
+        fast_visual_failure_reasons.append("candidate_c1_experimental")
+    if candidate_mesh_evidence is not None and mesh_output_pixel_count == 0:
+        fast_visual_failure_reasons.append("candidate_mesh_evidence_not_output_warp")
+    elif not visual_seams:
         fast_visual_failure_reasons.append("video_fast_hard_owner")
     elif not visual_photometric_accepted:
         fast_visual_failure_reasons.append("video_fast_visual_photometric_rejected")
@@ -11034,29 +11504,41 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
         fast_visual_failure_reasons.append("video_fast_source_remap_count_mismatch")
     metadata: dict[str, object] = {
         "backend": (
-            "calibrated_rgb_pushbroom_fast_visual_owner"
-            if visual_seams
-            else "calibrated_rgb_pushbroom_fast_hard_owner"
+            "calibrated_rgb_pushbroom_fast_candidate_c1_constrained_owner"
+            if candidate_c1_constrained_owner
+            else (
+                "calibrated_rgb_pushbroom_fast_visual_owner"
+                if visual_seams
+                else "calibrated_rgb_pushbroom_fast_hard_owner"
+            )
         ),
         "acceleration": cuda_metadata(),
         "mosaicing_method": {
             "name_en": (
-                "Trajectory-Constrained Calibrated RGB Curved Hard-Owner Pushbroom"
-                if visual_seams
-                else "Trajectory-Constrained Calibrated RGB Hard-Owner Pushbroom"
+                "Candidate C1 Constrained Calibrated RGB Hard-Owner Pushbroom"
+                if candidate_c1_constrained_owner
+                else (
+                    "Trajectory-Constrained Calibrated RGB Curved Hard-Owner Pushbroom"
+                    if visual_seams
+                    else "Trajectory-Constrained Calibrated RGB Hard-Owner Pushbroom"
+                )
             ),
             "trajectory_source": "orbslam3_rgbd_camera_to_world",
             "real_pose_nodes_preserved": True,
             "pose_interpolation_applied": False,
             "foreground_policy": (
-                "single_rgb_owner_curved_hard_seam"
-                if visual_seams
-                else "single_rgb_owner_hard_cut_degraded"
+                "candidate_c1_pair_local_constrained_hard_owner"
+                if candidate_c1_constrained_owner
+                else (
+                    "single_rgb_owner_curved_hard_seam"
+                    if visual_seams
+                    else "single_rgb_owner_hard_cut_degraded"
+                )
             ),
             "unified_content_mode": True,
         },
         "pixel_source": "calibrated_rgb_source_samples",
-        "depth_used_for_output_pixels": False,
+        "depth_used_for_output_pixels": bool(mesh_output_pixel_count > 0),
         "depth_used_for_local_geometry": bool(visual_seams and visual_use_depth),
         "video_global_photometric": visual_photometric_audit,
         "video_photometric_flow_evidence": photometric_flow_audits,
@@ -11067,16 +11549,40 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
         "quality_metrics": {
             "quality_pass": fast_visual_quality_pass,
             "strict_owner_partition": True,
-            "hard_cut_pair_count": 0 if visual_seams else len(frames) - 1,
+            "hard_cut_pair_count": (
+                0 if (visual_seams or candidate_c1_constrained_owner) else len(frames) - 1
+            ),
             "graphcut_pair_count": 0,
             "curved_hard_owner_pair_count": sum(
                 bool(audit["curved_seam"]) for audit in visual_audits
             ),
             "video_visual_seam_audits": visual_audits,
+            "candidate_c1_constrained_owner_pair_count": len(c1_audits),
+            "candidate_c1_constrained_owner_audits": c1_audits,
+            "candidate_mesh_evidence_pair_count": len(mesh_evidence_audits),
+            "candidate_mesh_evidence_audits": mesh_evidence_audits,
+            "candidate_mesh_evidence_output_warp_applied": bool(mesh_output_pixel_count > 0),
+            "candidate_mesh_evidence_output_warp_pixel_count": mesh_output_pixel_count,
+            "candidate_mesh_raft_flow_audits": raft_flow_audits,
+            "candidate_object_owner_lock_pair_count": len(object_owner_lock_audits),
+            "candidate_object_owner_lock_audits": object_owner_lock_audits,
+            "candidate_object_owner_lock_mask_source": (
+                "depth_connected_components_plus_depth_edge_and_hole_protection"
+                if candidate_object_owner_lock
+                else "not_enabled"
+            ),
+            "candidate_safe_multiband_pair_count": len(multiband_audits),
+            "candidate_safe_multiband_audits": multiband_audits,
+            "candidate_global_photometric": candidate_photometric_audit,
+            "candidate_global_photometric_applied": bool(
+                candidate_photometric is not None and candidate_photometric.accepted
+            ),
+            "candidate_multilabel_owner_window_count": len(multilabel_audits),
+            "candidate_multilabel_owner_audits": multilabel_audits,
             "photometric_flow_evidence_complete": photometric_flow_complete,
             "seam_flow_evidence_complete": seam_flow_complete,
             "blend_pixel_count": 0,
-            "deformation_pixel_count": 0,
+            "deformation_pixel_count": mesh_output_pixel_count,
             "source_remap_count": renderer.remap_count,
             "full_resolution_output_remap_count": renderer.full_resolution_output_remap_count,
             "analysis_preview_remap_count": 0,
@@ -11102,6 +11608,8 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
         panorama=panorama,
         metadata=metadata,
         owner_frame_id=np.ascontiguousarray(owner_frame_id),
+        measurement_projection_payload=measurement_projection_payload,
+        measurement_projection_masks=measurement_projection_masks,
     )
 
 
@@ -11121,6 +11629,14 @@ def render_calibrated_rgb_pushbroom(
     fast_visual_owner: bool = False,
     fast_visual_use_depth: bool = True,
     fast_visual_photometric: bool = True,
+    candidate_c1_constrained_owner: bool = False,
+    candidate_c1_config: Mapping[str, object] | None = None,
+    candidate_mesh_evidence: Mapping[str, object] | None = None,
+    candidate_object_owner_lock: bool = False,
+    candidate_safe_multiband: bool = False,
+    candidate_global_photometric: bool = False,
+    candidate_multilabel_owner: bool = False,
+    candidate_measurement_annotations: Mapping[str, object] | None = None,
     foreground_deformation_diagnostic_pair_index: int | None = None,
     foreground_deformation_diagnostic_pair_indices: Sequence[int] | None = None,
     foreground_deformation_diagnostic_callback: Callable[..., None] | None = None,
@@ -11138,6 +11654,27 @@ def render_calibrated_rgb_pushbroom(
         if isinstance(config, CalibratedRGBPushbroomConfig)
         else CalibratedRGBPushbroomConfig.from_mapping(config)
     )
+    if candidate_c1_config is not None and not candidate_c1_constrained_owner:
+        raise ValueError(
+            "candidate_c1_config requires candidate_c1_constrained_owner=True"
+        )
+    if candidate_mesh_evidence is not None and not candidate_c1_constrained_owner:
+        raise ValueError("candidate_mesh_evidence requires candidate_c1_constrained_owner=True")
+    if candidate_object_owner_lock and not candidate_c1_constrained_owner:
+        raise ValueError("candidate_object_owner_lock requires candidate_c1_constrained_owner=True")
+    if candidate_safe_multiband and not candidate_c1_constrained_owner:
+        raise ValueError("candidate_safe_multiband requires candidate_c1_constrained_owner=True")
+    if candidate_global_photometric and not candidate_c1_constrained_owner:
+        raise ValueError("candidate_global_photometric requires candidate_c1_constrained_owner=True")
+    if candidate_multilabel_owner and not candidate_c1_constrained_owner:
+        raise ValueError("candidate_multilabel_owner requires candidate_c1_constrained_owner=True")
+    if candidate_c1_constrained_owner and (
+        not fast_hard_owner or fast_visual_owner
+    ):
+        raise ValueError(
+            "candidate C1 constrained owner requires fast_hard_owner=True and "
+            "fast_visual_owner=False"
+        )
     if fast_hard_owner or fast_visual_owner:
         if (
             foreground_deformation_diagnostic_pair_index is not None
@@ -11157,6 +11694,14 @@ def render_calibrated_rgb_pushbroom(
             visual_seams=fast_visual_owner,
             visual_use_depth=fast_visual_use_depth,
             visual_photometric=fast_visual_photometric,
+            candidate_c1_constrained_owner=candidate_c1_constrained_owner,
+            candidate_c1_config=candidate_c1_config,
+            candidate_mesh_evidence=candidate_mesh_evidence,
+            candidate_object_owner_lock=candidate_object_owner_lock,
+            candidate_safe_multiband=candidate_safe_multiband,
+            candidate_global_photometric=candidate_global_photometric,
+            candidate_multilabel_owner=candidate_multilabel_owner,
+            candidate_measurement_annotations=candidate_measurement_annotations,
         )
     diagnostic_pair_indices: tuple[int, ...] = ()
     if foreground_deformation_diagnostic_callback is None:

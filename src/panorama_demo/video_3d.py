@@ -15,6 +15,12 @@ from .rgbd_projection import PinholeIntrinsics
 from .video_session import load_video_session
 
 
+_SUPPORTED_2D_DELIVERY_SCHEMAS = frozenset({
+    "gemini305-video-panorama-delivery/v1",
+    "gemini305-video-panorama-delivery/v2",
+})
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -29,7 +35,7 @@ def _load_2d_report(output: Path) -> dict[str, Any]:
     if not marker.is_file() or not report_path.is_file():
         raise ValueError("g305-video-3d requires an already published video 2-D delivery")
     marker_value = json.loads(marker.read_text(encoding="utf-8"))
-    if marker_value.get("schema") != "gemini305-video-panorama-delivery/v1":
+    if marker_value.get("schema") not in _SUPPORTED_2D_DELIVERY_SCHEMAS:
         raise ValueError("Video 2-D delivery marker has an unsupported schema")
     if marker_value.get("delivery_state") not in {"published", "published_degraded"}:
         raise ValueError("Video 2-D delivery is not published")

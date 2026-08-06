@@ -1,0 +1,12 @@
+{
+  "schema": "gemini305-video-model-lock/v1",
+  "model_id": "torchvision_raft_small_C_T_V2",
+  "file": "models/video_candidates/raft_small_C_T_V2-01064c6d.pth",
+  "sha256": "01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27",
+  "source_url": "https://download.pytorch.org/models/raft_small_C_T_V2-01064c6d.pth",
+  "implementation": "torchvision.models.optical_flow.raft_small",
+  "license": "BSD-3-Clause",
+  "license_url": "https://github.com/pytorch/vision/blob/main/LICENSE",
+  "training": "FlyingChairs + FlyingThings3D",
+  "candidate_only": true
+}

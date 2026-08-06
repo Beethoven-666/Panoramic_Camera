@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -49,36 +51,6 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build an independent C/A/B video panorama")
-    parser.add_argument("input", type=Path)
-    parser.add_argument("--output", type=Path, default=Path("outputs/video_sequence"))
-    parser.add_argument("--config", type=Path)
-    parser.add_argument("--preset", choices=("fast", "quality", "audit"))
-    parser.add_argument(
-        "--reuse-online-trajectory",
-        action="store_true",
-        help="Reuse a validated online_orbslam3_trajectory.json from the session when present",
-    )
-    parser.add_argument(
-        "--trajectory-cache",
-        type=Path,
-        help="Validated prior video report/trajectory cache for exactly this scan",
-    )
-    parser.add_argument(
-        "--online-state",
-        type=Path,
-        help="Integrity-checked capture-time motion/scan state to reuse",
-    )
-    parser.add_argument(
-        "--maximum-post-seconds",
-        type=float,
-        help="Record the post-capture SLA budget in the delivery report",
-    )
-    parser.add_argument("--defer-3d", action="store_true")
-    return parser
-
-
 def _require_pose(value: object, *, frame_id: int) -> np.ndarray:
     pose = np.asarray(value, dtype=np.float64)
     if pose.shape != (4, 4) or not np.isfinite(pose).all():
@@ -91,6 +63,69 @@ def _require_pose(value: object, *, frame_id: int) -> np.ndarray:
     ):
         raise ValueError(f"Trajectory cache pose for frame {frame_id} is not rigid")
     return pose
+
+
+def _restrict_scan_to_progress_interval(
+    frames: tuple,
+    qualities: list,
+    motions: list,
+    interval: tuple[float, float] | None,
+) -> tuple[tuple, list, list, dict[str, object] | None]:
+    """Restrict rendering/tracking to actual sources in a locked motion interval.
+
+    The scan analyser still establishes direction on the complete input, but
+    all downstream decode, ORB tracking, Open3D edge audit and rendering use
+    only the returned contiguous real-source subset.  No endpoint is
+    interpolated and an interval with too little measured motion fails closed.
+    """
+
+    if interval is None:
+        return frames, qualities, motions, None
+    if len(frames) < 2 or len(motions) != len(frames) - 1 or len(qualities) != len(frames):
+        raise ValueError("Progress restriction requires aligned scan frames, qualities, and motions")
+    start, end = (float(interval[0]), float(interval[1]))
+    if not (np.isfinite(start) and np.isfinite(end) and 0.0 <= start < end <= 1.0):
+        raise ValueError("scan_progress_interval must satisfy 0 <= START < END <= 1")
+    # The locked split has one explicit coordinate: cumulative *reliable
+    # horizontal* motion.  Do not substitute Euclidean movement here, because
+    # that could put the same real source in a different split than its fixed
+    # measurement annotation.  The helper also rejects reverse reliable edges
+    # instead of turning them into pseudo-progress.
+    from .video_split import build_source_progress_evidence, source_progress_by_frame
+
+    evidence = build_source_progress_evidence(frames, motions)
+    progress_by_id = source_progress_by_frame(evidence)
+    progress = np.asarray(
+        [
+            progress_by_id[
+                int(frame.frame_id if hasattr(frame, "frame_id") else frame)
+            ]
+            for frame in frames
+        ],
+        dtype=np.float64,
+    )
+    # Nearest *contained* source nodes provide an unambiguous, real-frame
+    # subset.  An interval must contain two sources, otherwise no genuine RGB-D
+    # edge can be audited.
+    selected = np.flatnonzero((progress >= start) & (progress <= end))
+    if selected.size < 2:
+        raise ValueError("scan_progress_interval contains fewer than two real source frames")
+    first, last = int(selected[0]), int(selected[-1])
+    if not np.array_equal(selected, np.arange(first, last + 1)):
+        raise RuntimeError("Progress restriction selected a non-contiguous source sequence")
+    return (
+        frames[first : last + 1],
+        qualities[first : last + 1],
+        motions[first:last],
+        {
+            "requested": [start, end],
+            "selected_source_indices": [first, last],
+            "selected_source_progress": [float(progress[first]), float(progress[last])],
+            "progress_coordinate": "cumulative_reliable_horizontal_motion",
+            "source_progress_evidence_sha256": evidence["content_sha256"],
+            "selection": "real_contiguous_sources_only",
+        },
+    )
 
 
 def _cached_trajectory(
@@ -110,13 +145,12 @@ def _cached_trajectory(
         raise ValueError("Trajectory cache must contain an object")
     frame_ids = [frame.frame_id for frame in frames]
     cached_hashes = payload.get("input_sha256")
-    if require_capture_provenance:
-        hashes_match = cached_hashes == input_sha256
-    else:
-        hashes_match = isinstance(cached_hashes, dict) and all(
-            cached_hashes.get(key) == input_sha256[key]
-            for key in ("manifest", "calibration")
-        )
+    # Both cache forms are valid only for the exact on-disk session contract.
+    # In particular, ``frames.csv`` binds frame ids to the real RGB/depth
+    # files that the cache pose chain was produced from.  Comparing only the
+    # manifest and calibration would permit a changed source sequence to reuse
+    # a trajectory from different real frames.
+    hashes_match = cached_hashes == input_sha256
     if not hashes_match:
         raise ValueError("Trajectory cache input hashes do not match this video session")
     if require_capture_provenance:
@@ -134,6 +168,14 @@ def _cached_trajectory(
             recorded = hash_by_id.get(frame.frame_id)
             if recorded is None or recorded.get("color_sha256") != _sha256(frame.color_path) or recorded.get("aligned_depth_sha256") != _sha256(frame.aligned_depth_path):
                 raise ValueError("Online trajectory source-file hashes do not match this video session")
+    else:
+        # A caller-provided cache is trusted only when it was atomically
+        # materialised from a completed report by the dedicated verifier.  Do
+        # not accept arbitrary report fragments or generic pose JSON here.
+        from .video_trajectory_cache import TRAJECTORY_CACHE_SCHEMA
+
+        if payload.get("schema") != TRAJECTORY_CACHE_SCHEMA:
+            raise ValueError("Trajectory cache is not a verified experiment trajectory cache")
     orb = payload.get("orbslam3", payload)
     if not isinstance(orb, dict):
         raise ValueError("Trajectory cache lacks orbslam3 data")
@@ -163,17 +205,13 @@ def _resolve_cached_trajectory_path(args: argparse.Namespace, session_root: Path
     return None
 
 
-def _select_real_orb_tracking_indices(
-    frames, *, preset: str, target_fps: float
-) -> tuple[int, ...]:
+def _select_real_orb_tracking_indices(frames, *, target_fps: float) -> tuple[int, ...]:
     """Select chronological real frames for the video ORB chain.
 
     Fast video keeps every received frame for motion/risk analysis, but tracks
     only a true time-spaced subset.  No skipped frame is eligible to render.
     """
 
-    if preset == "audit":
-        return tuple(range(len(frames)))
     if not np.isfinite(target_fps) or target_fps <= 0.0:
         raise ValueError("video fast ORB target FPS must be finite and positive")
     interval_us = 1_000_000.0 / target_fps
@@ -192,7 +230,7 @@ def _select_real_orb_tracking_indices(
     return tuple(selected)
 
 
-def run(args: argparse.Namespace) -> dict[str, Any]:
+def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
     output = args.output.expanduser().resolve()
     input_path = args.input.expanduser().resolve()
     invalidate_video_delivery(output)
@@ -203,11 +241,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             config = load_config(args.config)
             stitch = dict(config.get("stitch", {}))
             video_settings = dict(stitch.get("video_panorama", {}))
-            preset = str(args.preset or video_settings.get("default_preset", "fast"))
-            if preset not in {"fast", "quality", "audit"}:
-                raise ValueError("video_panorama.default_preset must be fast, quality, or audit")
-            fast_renderer = str(video_settings.get("fast_renderer", "visual_seam"))
-            if fast_renderer not in {
+            legacy_renderer = str(video_settings.get("fast_renderer", "visual_seam"))
+            if legacy_renderer not in {
                 "audited_visual",
                 "visual_seam",
                 "hard_owner_diagnostic",
@@ -215,6 +250,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 raise ValueError(
                     "video_panorama.fast_renderer must be audited_visual, "
                     "visual_seam, or hard_owner_diagnostic"
+                )
+            candidate_c1_constrained_owner = bool(
+                video_settings.get("candidate_c1_constrained_owner", False)
+            )
+            candidate_c1_config = video_settings.get("candidate_c1_config")
+            if candidate_c1_config is not None and not isinstance(candidate_c1_config, dict):
+                raise ValueError("candidate_c1_config must be a mapping")
+            candidate_mesh_evidence = video_settings.get("candidate_mesh_evidence")
+            if candidate_mesh_evidence is not None and not isinstance(candidate_mesh_evidence, dict):
+                raise ValueError("candidate_mesh_evidence must be a mapping")
+            candidate_object_owner_lock = bool(video_settings.get("candidate_object_owner_lock", False))
+            candidate_safe_multiband = bool(video_settings.get("candidate_safe_multiband", False))
+            candidate_global_photometric = bool(video_settings.get("candidate_global_photometric", False))
+            candidate_multilabel_owner = bool(video_settings.get("candidate_multilabel_owner", False))
+            if candidate_c1_constrained_owner and legacy_renderer != "hard_owner_diagnostic":
+                raise ValueError(
+                    "candidate C1 constrained owner requires the isolated hard-owner renderer"
                 )
             maximum_post_seconds = (
                 args.maximum_post_seconds
@@ -225,9 +277,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 maximum_post_seconds = float(maximum_post_seconds)
                 if not np.isfinite(maximum_post_seconds) or maximum_post_seconds <= 0.0:
                     raise ValueError("maximum_post_seconds must be finite and positive")
-            publish_auxiliary_exports = preset == "audit" or bool(
-                video_settings.get("fast_publish_auxiliary_exports", False)
-            )
+            publish_auxiliary_exports = bool(video_settings.get("fast_publish_auxiliary_exports", False))
             fast_enable_geometry_assist = bool(
                 video_settings.get("fast_enable_geometry_assist", False)
             )
@@ -260,7 +310,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 input_path,
                 validate_frame_files=requested_online_state is None,
                 validation_workers=(
-                    fast_session_validation_workers if preset == "fast" else 1
+                    fast_session_validation_workers
                 ),
             )
             online_state = (
@@ -279,7 +329,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     input_path,
                     validate_frame_files=True,
                     validation_workers=(
-                        fast_session_validation_workers if preset == "fast" else 1
+                        fast_session_validation_workers
                     ),
                 )
             input_hashes = {
@@ -293,7 +343,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     video.rgbd.frames,
                     analysis_width=int(stitch.get("analysis_width", 320)),
                     motion_backend=str(video_settings.get("motion_backend", "dis")),
-                    workers=fast_scan_analysis_workers if preset == "fast" else 1,
+                workers=fast_scan_analysis_workers,
                 )
             else:
                 qualities = list(online_state.qualities)
@@ -303,10 +353,28 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         scan_frames = tuple(video.rgbd.frames[first : last + 1])
         scan_qualities = qualities[first : last + 1]
         scan_motions = motions[first:last]
+        source_progress_evidence: dict[str, object] | None = None
+        if getattr(args, "measurement_annotations", None) is not None:
+            # This uses the complete selected scan before a locked experiment
+            # interval reduces it.  It is measurement provenance only: it
+            # cannot add a render source, infer a pose, or influence the
+            # renderer's source/keyframe selection.
+            from .video_split import build_source_progress_evidence
+
+            source_progress_evidence = build_source_progress_evidence(
+                scan_frames, scan_motions
+            )
+        scan_frames, scan_qualities, scan_motions, progress_restriction = (
+            _restrict_scan_to_progress_interval(
+                scan_frames,
+                scan_qualities,
+                scan_motions,
+                getattr(args, "scan_progress_interval", None),
+            )
+        )
         full_scan_ids = [frame.frame_id for frame in scan_frames]
         tracking_indices = _select_real_orb_tracking_indices(
             scan_frames,
-            preset=preset,
             target_fps=float(video_settings.get("fast_orb_target_fps", 20.0)),
         )
         tracking_frames = tuple(scan_frames[index] for index in tracking_indices)
@@ -326,12 +394,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 trajectory_reused = True
             else:
                 trajectory_config = dict(stitch.get("orbslam3_rgbd", {}))
-                if preset == "fast":
-                    fast_orb_config = video_settings.get("fast_orbslam3_rgbd")
-                    if fast_orb_config is not None:
-                        if not isinstance(fast_orb_config, dict):
-                            raise ValueError("video fast_orbslam3_rgbd must be a mapping")
-                        trajectory_config.update(fast_orb_config)
+                fast_orb_config = video_settings.get("fast_orbslam3_rgbd")
+                if fast_orb_config is not None:
+                    if not isinstance(fast_orb_config, dict):
+                        raise ValueError("legacy baseline ORB settings must be a mapping")
+                    trajectory_config.update(fast_orb_config)
                 # The entire real scan remains the sole ORB-SLAM3 chain.  A
                 # later render subset is provenance-only, never an interpolated pose.
                 trajectory_config["minimum_tracked_fraction"] = 1.0
@@ -346,47 +413,30 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 attempts = list(trajectory.attempt_audit)
                 trajectory_reused = False
         with profiler.stage("render_keyframe_selection"):
-            # Audit preserves every input frame; fast/quality only alter the
-            # density of *real* final renderer sources.
-            if preset == "audit":
-                source_indices = tuple(range(len(tracking_frames)))
-                sources = tracking_frames
-                render_plan = {
-                    "source_frame_ids": tracking_ids,
-                    "source_indices": list(source_indices),
-                    "source_count": len(sources),
-                    "selection": "all_real_scan_frames",
-                    "real_source_frames_only": True,
-                    "interpolated_poses": False,
-                }
-            else:
-                plan = select_render_keyframes(
-                    tracking_frames,
-                    tracking_motions,
-                    full_resolution_scale=video.rgbd.calibration.width
-                    / float(stitch.get("analysis_width", 320)),
-                    frame_width=video.rgbd.calibration.width,
-                    qualities=tracking_qualities,
-                    config=MotionResamplingConfig.from_mapping(
-                        video_settings.get("motion_resampling")
-                    ),
-                )
-                sources, source_indices = plan.frames, plan.source_indices
-                render_plan = plan.as_dict()
+            plan = select_render_keyframes(
+                tracking_frames,
+                tracking_motions,
+                full_resolution_scale=video.rgbd.calibration.width
+                / float(stitch.get("analysis_width", 320)),
+                frame_width=video.rgbd.calibration.width,
+                qualities=tracking_qualities,
+                config=MotionResamplingConfig.from_mapping(
+                    video_settings.get("motion_resampling")
+                ),
+            )
+            sources, source_indices = plan.frames, plan.source_indices
+            render_plan = plan.as_dict()
             selected_motions = compose_selected_motions(tracking_motions, source_indices)
             poses = [poses_by_id[frame.frame_id] for frame in sources]
         with profiler.stage("open3d_render_edge_audit"):
             odometry_mapping = stitch.get("rgbd_odometry")
-            if preset == "fast":
-                # Fast does not skip or approximate any required local edge:
-                # it selects a separately validated working resolution and
-                # iteration schedule for the same CUDA Open3D estimator.
-                # Quality/audit and photo routes retain the formal defaults.
-                fast_odometry = video_settings.get("fast_rgbd_odometry")
-                if fast_odometry is not None:
-                    if not isinstance(fast_odometry, dict):
-                        raise ValueError("video fast_rgbd_odometry must be a mapping")
-                    odometry_mapping = {**dict(odometry_mapping or {}), **fast_odometry}
+            # The frozen baseline does not skip or approximate any required
+            # local edge; it uses its pinned working resolution and solver.
+            fast_odometry = video_settings.get("fast_rgbd_odometry")
+            if fast_odometry is not None:
+                if not isinstance(fast_odometry, dict):
+                    raise ValueError("legacy baseline odometry settings must be a mapping")
+                odometry_mapping = {**dict(odometry_mapping or {}), **fast_odometry}
             odometry_config = RGBDOdometryConfig.from_mapping(odometry_mapping)
             def _prepare_source(source: object):
                 return prepare_rgbd_odometry_frame(
@@ -399,11 +449,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             # Disk-backed RGB/depth decode and calibrated preparation are
             # independent for each real source. Keep final edge estimation
             # serial on its single CUDA backend, but overlap this CPU/I/O work.
-            workers = (
-                min(fast_odometry_prepare_workers, len(sources))
-                if preset == "fast"
-                else 1
-            )
+            workers = min(fast_odometry_prepare_workers, len(sources))
             if workers > 1:
                 with ThreadPoolExecutor(max_workers=workers) as executor:
                     prepared_records = list(executor.map(_prepare_source, sources))
@@ -443,7 +489,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         with profiler.stage("calibrated_render_and_exports"):
             push_config = dict(stitch.get("calibrated_rgb_pushbroom", {}))
             push_config["max_pose_count"] = None
-            if preset == "fast" and not fast_enable_geometry_assist:
+            if not fast_enable_geometry_assist:
                 geometry_settings = dict(push_config.get("geometry_assisted_seam", {}))
                 geometry_settings["enabled"] = False
                 push_config["geometry_assisted_seam"] = geometry_settings
@@ -458,32 +504,279 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 if publish_auxiliary_exports
                 else None
             )
-            push = render_calibrated_rgb_pushbroom(
-                list(sources),
-                poses,
-                video.rgbd.calibration,
-                config=push_config,
-                rgb_motions=selected_motions,
-                motion_pixels_to_full_resolution=video.rgbd.calibration.width
-                / float(stitch.get("analysis_width", 320)),
-                multiband_levels=int(dict(stitch.get("scan_seam", {})).get("multiband_levels", 3)),
-                quality_gate=False,
-                central_strip_output_dir=central_strip_output_dir,
-                central_strip_owner_only_output_dir=central_strip_owner_only_output_dir,
-                fast_hard_owner=(
-                    preset == "fast"
-                    and fast_renderer
-                    == "hard_owner_diagnostic"
-                ),
-                fast_visual_owner=(
-                    preset == "fast"
-                    and fast_renderer
-                    == "visual_seam"
-                ),
-                fast_visual_use_depth=bool(
-                    int(render_plan.get("high_risk_edge_count", 0)) > 0
-                ),
-            )
+            v2_cuda_mode = getattr(args, "v2_cuda_renderer_mode", None)
+            if v2_cuda_mode is None and bool(getattr(args, "v2_cuda_strict_owner", False)):
+                v2_cuda_mode = "strict_owner"
+            if v2_cuda_mode is not None:
+                unsupported_v2_components = any(
+                    (
+                        candidate_mesh_evidence is not None
+                        and v2_cuda_mode not in {
+                            "c2_dis_residual_mesh",
+                            "c3_raft_residual_mesh",
+                            "c4_raft_rgbd_layered_mesh",
+                            "c5_object_lock",
+                            "c6_safe_multiband",
+                            "c7_photometric_graph",
+                            "c8_multilabel_window",
+                        },
+                        candidate_object_owner_lock and v2_cuda_mode not in {"c5_object_lock", "c6_safe_multiband", "c7_photometric_graph", "c8_multilabel_window"},
+                        candidate_safe_multiband and v2_cuda_mode not in {"c6_safe_multiband", "c7_photometric_graph", "c8_multilabel_window"},
+                        candidate_global_photometric and v2_cuda_mode not in {"c7_photometric_graph", "c8_multilabel_window"},
+                        candidate_multilabel_owner and v2_cuda_mode != "c8_multilabel_window",
+                    )
+                )
+                if unsupported_v2_components or (
+                    v2_cuda_mode == "strict_owner" and candidate_c1_constrained_owner
+                ) or (
+                    v2_cuda_mode == "c1_constrained_owner" and not candidate_c1_constrained_owner
+                ) or (
+                    v2_cuda_mode == "c2_dis_residual_mesh"
+                    and (
+                        not candidate_c1_constrained_owner
+                        or not isinstance(candidate_mesh_evidence, dict)
+                        or candidate_mesh_evidence.get("flow_backend") != "dis"
+                        or bool(candidate_mesh_evidence.get("require_depth_safety", True))
+                    )
+                ) or (
+                    v2_cuda_mode == "c3_raft_residual_mesh"
+                    and (
+                        not candidate_c1_constrained_owner
+                        or not isinstance(candidate_mesh_evidence, dict)
+                        or candidate_mesh_evidence.get("flow_backend") != "raft"
+                        or bool(candidate_mesh_evidence.get("require_depth_safety", True))
+                    )
+                ) or (
+                    v2_cuda_mode == "c4_raft_rgbd_layered_mesh"
+                    and (
+                        not candidate_c1_constrained_owner
+                        or not isinstance(candidate_mesh_evidence, dict)
+                        or candidate_mesh_evidence.get("flow_backend") != "raft"
+                        or not bool(candidate_mesh_evidence.get("require_depth_safety", False))
+                    )
+                ) or (
+                    v2_cuda_mode == "c5_object_lock"
+                    and (
+                        not candidate_c1_constrained_owner
+                        or not isinstance(candidate_mesh_evidence, dict)
+                        or candidate_mesh_evidence.get("flow_backend") != "raft"
+                        or not bool(candidate_mesh_evidence.get("require_depth_safety", False))
+                        or not candidate_object_owner_lock
+                    )
+                ) or (
+                    v2_cuda_mode == "c6_safe_multiband"
+                    and (
+                        not candidate_c1_constrained_owner
+                        or not isinstance(candidate_mesh_evidence, dict)
+                        or candidate_mesh_evidence.get("flow_backend") != "raft"
+                        or not bool(candidate_mesh_evidence.get("require_depth_safety", False))
+                        or not candidate_object_owner_lock
+                        or not candidate_safe_multiband
+                    )
+                ) or (
+                    v2_cuda_mode == "c7_photometric_graph"
+                    and (
+                        not candidate_c1_constrained_owner
+                        or not isinstance(candidate_mesh_evidence, dict)
+                        or candidate_mesh_evidence.get("flow_backend") != "raft"
+                        or not bool(candidate_mesh_evidence.get("require_depth_safety", False))
+                        or not candidate_object_owner_lock
+                        or not candidate_safe_multiband
+                        or not candidate_global_photometric
+                    )
+                ) or (
+                    v2_cuda_mode == "c8_multilabel_window"
+                    and (
+                        not candidate_c1_constrained_owner
+                        or not isinstance(candidate_mesh_evidence, dict)
+                        or candidate_mesh_evidence.get("flow_backend") != "raft"
+                        or not bool(candidate_mesh_evidence.get("require_depth_safety", False))
+                        or not candidate_object_owner_lock
+                        or not candidate_safe_multiband
+                        or not candidate_global_photometric
+                        or not candidate_multilabel_owner
+                    )
+                ):
+                    raise RuntimeError(
+                        "v2 CUDA route cannot claim components that are not wired into its selected data plane"
+                    )
+                if v2_cuda_mode == "strict_owner":
+                    from .video_v2_route import render_cuda_strict_owner_v2
+
+                    push = render_cuda_strict_owner_v2(
+                        sources=sources,
+                        camera_to_world=poses,
+                        calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config,
+                        selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width
+                        / float(stitch.get("analysis_width", 320)),
+                        cuda_device=int(video_settings.get("cuda_device", 0)),
+                    )
+                elif v2_cuda_mode == "c1_constrained_owner":
+                    from .video_v2_route import render_cuda_c1_constrained_owner_v2
+
+                    push = render_cuda_c1_constrained_owner_v2(
+                        sources=sources,
+                        camera_to_world=poses,
+                        calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config,
+                        selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width
+                        / float(stitch.get("analysis_width", 320)),
+                        c1_config=candidate_c1_config,
+                        annotations=getattr(args, "measurement_annotations", None),
+                        cuda_device=int(video_settings.get("cuda_device", 0)),
+                    )
+                elif v2_cuda_mode == "c2_dis_residual_mesh":
+                    from .video_v2_route import render_cuda_c2_dis_residual_mesh_v2
+
+                    push = render_cuda_c2_dis_residual_mesh_v2(
+                        sources=sources,
+                        camera_to_world=poses,
+                        calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config,
+                        selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width
+                        / float(stitch.get("analysis_width", 320)),
+                        c1_config=candidate_c1_config,
+                        cuda_device=int(video_settings.get("cuda_device", 0)),
+                    )
+                elif v2_cuda_mode == "c3_raft_residual_mesh":
+                    from .video_v2_route import render_cuda_c3_raft_residual_mesh_v2
+
+                    push = render_cuda_c3_raft_residual_mesh_v2(
+                        sources=sources,
+                        camera_to_world=poses,
+                        calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config,
+                        selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width
+                        / float(stitch.get("analysis_width", 320)),
+                        c1_config=candidate_c1_config,
+                        cuda_device=int(video_settings.get("cuda_device", 0)),
+                    )
+                elif v2_cuda_mode == "c4_raft_rgbd_layered_mesh":
+                    from .video_v2_route import render_cuda_c4_raft_rgbd_layered_mesh_v2
+
+                    push = render_cuda_c4_raft_rgbd_layered_mesh_v2(
+                        sources=sources,
+                        camera_to_world=poses,
+                        calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config,
+                        selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width
+                        / float(stitch.get("analysis_width", 320)),
+                        c1_config=candidate_c1_config,
+                        cuda_device=int(video_settings.get("cuda_device", 0)),
+                    )
+                elif v2_cuda_mode == "c5_object_lock":
+                    from .video_v2_route import render_cuda_c5_object_lock_v2
+
+                    push = render_cuda_c5_object_lock_v2(
+                        sources=sources,
+                        camera_to_world=poses,
+                        calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config,
+                        selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width
+                        / float(stitch.get("analysis_width", 320)),
+                        c1_config=candidate_c1_config,
+                        cuda_device=int(video_settings.get("cuda_device", 0)),
+                    )
+                elif v2_cuda_mode == "c6_safe_multiband":
+                    from .video_v2_route import render_cuda_c6_safe_multiband_v2
+
+                    push = render_cuda_c6_safe_multiband_v2(
+                        sources=sources,
+                        camera_to_world=poses,
+                        calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config,
+                        selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width
+                        / float(stitch.get("analysis_width", 320)),
+                        c1_config=candidate_c1_config,
+                        cuda_device=int(video_settings.get("cuda_device", 0)),
+                    )
+                elif v2_cuda_mode == "c7_photometric_graph":
+                    from .video_v2_route import render_cuda_c7_photometric_graph_v2
+
+                    push = render_cuda_c7_photometric_graph_v2(
+                        sources=sources,
+                        camera_to_world=poses,
+                        calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config,
+                        selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width
+                        / float(stitch.get("analysis_width", 320)),
+                        c1_config=candidate_c1_config,
+                        cuda_device=int(video_settings.get("cuda_device", 0)),
+                    )
+                elif v2_cuda_mode == "c8_multilabel_window":
+                    from .video_v2_route import render_cuda_c8_multilabel_window_v2
+
+                    push = render_cuda_c8_multilabel_window_v2(
+                        sources=sources,
+                        camera_to_world=poses,
+                        calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config,
+                        selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width
+                        / float(stitch.get("analysis_width", 320)),
+                        c1_config=candidate_c1_config,
+                        cuda_device=int(video_settings.get("cuda_device", 0)),
+                    )
+                else:
+                    raise RuntimeError("unknown v2 CUDA renderer mode")
+            else:
+                push = render_calibrated_rgb_pushbroom(
+                    list(sources),
+                    poses,
+                    video.rgbd.calibration,
+                    config=push_config,
+                    rgb_motions=selected_motions,
+                    motion_pixels_to_full_resolution=video.rgbd.calibration.width
+                    / float(stitch.get("analysis_width", 320)),
+                    multiband_levels=int(dict(stitch.get("scan_seam", {})).get("multiband_levels", 3)),
+                    quality_gate=False,
+                    central_strip_output_dir=central_strip_output_dir,
+                    central_strip_owner_only_output_dir=central_strip_owner_only_output_dir,
+                    fast_hard_owner=(
+                        legacy_renderer == "hard_owner_diagnostic"
+                        or candidate_c1_constrained_owner
+                    ),
+                    fast_visual_owner=legacy_renderer == "visual_seam",
+                    fast_visual_use_depth=bool(
+                        int(render_plan.get("high_risk_edge_count", 0)) > 0
+                    ),
+                    candidate_c1_constrained_owner=candidate_c1_constrained_owner,
+                    candidate_c1_config=candidate_c1_config,
+                    candidate_mesh_evidence=candidate_mesh_evidence,
+                    candidate_object_owner_lock=candidate_object_owner_lock,
+                    candidate_safe_multiband=candidate_safe_multiband,
+                    candidate_global_photometric=candidate_global_photometric,
+                    candidate_multilabel_owner=candidate_multilabel_owner,
+                    candidate_measurement_annotations=getattr(args, "measurement_annotations", None),
+                )
+            if v2_cuda_mode is not None and publish_auxiliary_exports:
+                # The v2 archive is a strictly post-render, read-only export
+                # of actual real-source calibrated tiles and final owner
+                # pixels.  It intentionally does not call the historical CPU
+                # renderer or feed RGB/owner data back into the CUDA result.
+                from .video_v2_audit_export import stage_v2_cuda_audit_exports
+
+                audit_context = getattr(push, "audit_export_context", None)
+                if audit_context is None:
+                    raise RuntimeError("v2 CUDA renderer did not provide its required audit export context")
+                source_export, owner_export = stage_v2_cuda_audit_exports(
+                    audit_context,
+                    panorama_bgr=push.panorama,
+                    owner_frame_id=push.owner_frame_id,
+                    central_strip_output_dir=central_strip_output_dir,
+                    owner_only_output_dir=central_strip_owner_only_output_dir,
+                )
+                push.metadata["central_strip_export"] = source_export
+                push.metadata["central_strip_owner_only_export"] = owner_export
         with profiler.stage("quality_and_report"):
             capture_quality = assess_capture_quality(
                 scan_qualities,
@@ -500,26 +793,50 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             performance = profiler.as_dict(maximum_post_seconds=maximum_post_seconds)
             budget_exceeded = performance["within_post_capture_budget"] is False
             grade = "A" if strict and not budget_exceeded else "C"
+            algorithm = getattr(args, "algorithm_spec", None)
+            if isinstance(algorithm, dict):
+                algorithm_report = dict(algorithm)
+            else:
+                # This fallback identity is used only by the isolated legacy
+                # runner.  Public and experiment CLIs always pass a registry
+                # resolved immutable spec.
+                algorithm_report = {
+                    "role": "baseline",
+                    "algorithm_id": "legacy_fast_b07b561",
+                    "implementation_id": "legacy_visual_seam",
+                    "config_sha256": "legacy-unlocked",
+                    "source_commit": "legacy-unlocked",
+                    "model_sha256": {},
+                    "fallback_used": False,
+                }
+            executed_components = push.metadata.get("executed_candidate_components")
+            if isinstance(executed_components, dict):
+                # Renderer-provided evidence is copied verbatim only after
+                # rendering; registry intent alone can never claim C1 ran.
+                algorithm_report["executed_candidate_components"] = dict(executed_components)
+            observability = getattr(args, "observability", None)
+            if not isinstance(observability, dict):
+                observability = {
+                    "report_level": "summary",
+                    "artifact_level": "minimal",
+                }
+            overall_grade = "A" if grade == "A" else "C"
             report: dict[str, Any] = {
                 "input": str(input_path),
                 "capture_mode": video.capture_mode,
                 "legacy_v1_compatibility": video.legacy_v1,
                 "delivery_state": "published" if grade == "A" else "published_degraded",
-                "quality_grade": grade,
+                "algorithm": algorithm_report,
+                "observability": dict(observability),
+                "grades": {
+                    "structural": "A",
+                    "visual": overall_grade,
+                    "performance": "A" if not budget_exceeded else "C",
+                    "overall": overall_grade,
+                },
                 "strict_quality_pass": strict,
                 "manual_review_required": grade != "A",
                 "defer_3d": bool(args.defer_3d),
-                "preset": preset,
-                "fast_enable_geometry_assist": (
-                    fast_enable_geometry_assist if preset == "fast" else None
-                ),
-                "fast_odometry_prepare_workers": workers,
-                "fast_session_validation_workers": (
-                    fast_session_validation_workers if preset == "fast" else None
-                ),
-                "fast_scan_analysis_workers": (
-                    fast_scan_analysis_workers if preset == "fast" else None
-                ),
                 "online_state": {
                     "reused": online_state is not None,
                     "origin": online_state.origin if online_state is not None else None,
@@ -531,6 +848,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     "path": str(requested_online_state) if requested_online_state else None,
                 },
                 "scan_segment": segment,
+                "source_progress_evidence": (
+                    {
+                        "schema": source_progress_evidence["schema"],
+                        "coordinate": source_progress_evidence["coordinate"],
+                        "content_sha256": source_progress_evidence["content_sha256"],
+                        "measurement_only": True,
+                    }
+                    if source_progress_evidence is not None
+                    else None
+                ),
+                "scan_progress_restriction": progress_restriction,
+                "evaluation_scope": (
+                    getattr(args, "evaluation_scope", None) or "exploratory_full_scan"
+                ),
                 "motion_analysis_frame_ids": full_scan_ids,
                 "orb_tracking_frame_ids": tracking_ids,
                 "orb_tracking_source": "real_time_spaced_video_frames_only",
@@ -575,6 +906,122 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 pending_central_strips_owner_only=central_strip_owner_only_output_dir,
             )
         two_d_published = True
+        # C5--C8 retain only immutable calibrated-grid geometry here; fixed
+        # labels are first read after atomic primary publication.  This keeps
+        # their offline visual evaluation available without giving labels any
+        # route into RGB, owner, seam, pose, or source selection.
+        annotations = getattr(args, "measurement_annotations", None)
+        measurement_payload = push.measurement_projection_payload
+        measurement_masks = push.measurement_projection_masks
+        if (
+            measurement_payload is None
+            and measurement_masks is None
+            and isinstance(annotations, dict)
+            and getattr(push, "post_publication_measurement_context", None) is not None
+        ):
+            try:
+                from .video_v2_route import build_v2_post_publication_measurement_projection
+
+                measurement_payload, measurement_masks = build_v2_post_publication_measurement_projection(
+                    context=push.post_publication_measurement_context,
+                    annotations=annotations,
+                    final_owner_frame_id=push.owner_frame_id,
+                )
+            except Exception as exc:
+                # Labels are evaluation evidence only; projection failure must
+                # not revoke the already-published primary artifact.
+                published["offline_visual_evaluation_error"] = str(exc)
+        if (
+            measurement_payload is not None
+            and measurement_masks is not None
+        ):
+            # Projection evidence is explicitly post-publication and
+            # non-primary.  It has no route back to renderer decisions.
+            from .video_candidate_annotation_projection import (
+                write_candidate_annotation_projection_sidecar,
+            )
+
+            projection_path, masks_path = write_candidate_annotation_projection_sidecar(
+                output / "video_annotation_projection.json",
+                measurement_payload,
+                measurement_masks,
+            )
+            published["candidate_annotation_projection"] = {
+                "path": str(projection_path),
+                "masks": str(masks_path),
+                "measurement_only": True,
+            }
+            if isinstance(annotations, dict):
+                # This evidence is deliberately generated *after* the atomic
+                # primary delivery.  It reloads the projection sidecar and
+                # evaluates only published pixels/provenance, so it cannot
+                # influence source selection, poses, owner labels or RGB.
+                try:
+                    from .video_offline_evaluation import (
+                        evaluate_offline_visual_annotations,
+                        load_panorama_annotation_projection,
+                        write_offline_evaluation,
+                    )
+
+                    projection = load_panorama_annotation_projection(
+                        projection_path,
+                        annotations=annotations,
+                        panorama_shape=push.panorama.shape[:2],
+                    )
+                    evaluation = evaluate_offline_visual_annotations(
+                        push.panorama,
+                        push.owner_frame_id,
+                        annotations=annotations,
+                        projection=projection,
+                    )
+                    evaluation_path = write_offline_evaluation(
+                        output / "visual_metrics.json", evaluation
+                    )
+                    published["offline_visual_evaluation"] = {
+                        "path": str(evaluation_path),
+                        "measurement_only": True,
+                    }
+                except Exception as exc:
+                    # Evidence must never revoke an already atomically
+                    # published candidate result.  Absence of this sidecar is
+                    # nevertheless fail-closed for future selection.
+                    published["offline_visual_evaluation_error"] = str(exc)
+        if source_progress_evidence is not None:
+            # Freeze full-scan, real-frame progress after primary publication.
+            # A mismatch with a fixed annotation is reported as an immutable
+            # measurement failure; it never changes RGB, owner, poses, or the
+            # annotations themselves.
+            from .video_annotations import audit_annotation_source_progress
+            from .video_split import (
+                source_progress_by_frame,
+                write_or_verify_source_progress_evidence,
+            )
+
+            evidence_path = output / "video_source_progress_evidence.json"
+            evidence = write_or_verify_source_progress_evidence(
+                evidence_path, source_progress_evidence
+            )
+            audit = audit_annotation_source_progress(
+                args.measurement_annotations,
+                source_progress_by_frame(evidence),
+            )
+            audit["source_progress_evidence_sha256"] = evidence["content_sha256"]
+            audit["selection_eligible"] = bool(audit["verified"])
+            audit_path = output / "video_annotation_source_progress_audit.json"
+            pending = audit_path.with_name(f".{audit_path.name}.pending")
+            try:
+                pending.write_text(
+                    json.dumps(audit, indent=2, sort_keys=True), encoding="utf-8"
+                )
+                os.replace(pending, audit_path)
+            finally:
+                pending.unlink(missing_ok=True)
+            published["candidate_annotation_source_progress"] = {
+                "evidence": str(evidence_path),
+                "audit": str(audit_path),
+                "verified": bool(audit["verified"]),
+                "selection_eligible": bool(audit["selection_eligible"]),
+            }
         if not args.defer_3d:
             try:
                 publish_video_3d(output, input_path=input_path, config=config)
@@ -588,9 +1035,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main() -> None:
-    args = _parser().parse_args()
+    # The public command intentionally exposes only the frozen production
+    # algorithm.  Baseline and candidate work live in video_experiment; the
+    # retained implementation above is called there through video_pipeline.
+    from .video_pipeline import production_parser, run_production
+
+    if "--preset" in sys.argv:
+        raise SystemExit(
+            "ERROR: --preset has been removed. Development uses "
+            "g305-video-experiment baseline/candidate; audit uses "
+            "--report-level full --artifact-level audit."
+        )
+    args = production_parser().parse_args()
     try:
-        report = run(args)
+        report = run_production(args)
     except Exception as exc:
         raise SystemExit(f"ERROR: {exc}") from exc
     print(f"Video panorama: {report['panorama']}")

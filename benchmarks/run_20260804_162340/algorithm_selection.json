@@ -1,0 +1,27 @@
+{
+  "candidates": [
+    {
+      "algorithm_id": "C4_raft_rgbd_layered_mesh",
+      "eligible": false,
+      "reasons": [
+        "visual_grade_not_A",
+        "overall_grade_not_A"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\candidates\\C4_validation_30_48\\video_report.json"
+    },
+    {
+      "algorithm_id": "C8_multilabel_window",
+      "eligible": false,
+      "reasons": [
+        "visual_grade_not_A",
+        "overall_grade_not_A"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\candidates\\C8_validation_30_48\\video_report.json"
+    }
+  ],
+  "holdout_not_run": true,
+  "schema": "gemini305-video-algorithm-selection/v1",
+  "selected_algorithm_id": null,
+  "selection_stage": "validation",
+  "selection_status": "not_selectable"
+}
