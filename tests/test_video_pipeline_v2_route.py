@@ -4,12 +4,14 @@ import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from panorama_demo import video_pipeline
 from panorama_demo import video_v2_route
 from panorama_demo.video_algorithm import VideoAlgorithmSpec
 from panorama_demo.video_algorithm import build_algorithm_spec
 from panorama_demo.video_observability import ObservabilitySpec
 from panorama_demo.video_v2_route import (
+    VideoV2RouteError,
     is_cuda_c1_constrained_owner_implementation,
     is_cuda_c2_dis_residual_mesh_implementation,
     is_cuda_c3_raft_residual_mesh_implementation,
@@ -18,11 +20,17 @@ from panorama_demo.video_v2_route import (
     is_cuda_c6_safe_multiband_implementation,
     is_cuda_c7_photometric_graph_implementation,
     is_cuda_c8_multilabel_window_implementation,
+    is_cuda_c10_depth_conditioned_layout_implementation,
+    is_cuda_c11_object_first_foreground_compositor_implementation,
+    is_cuda_c12_joint_owner_final_grid_implementation,
     is_strict_cuda_strip_owner_implementation,
     render_cuda_c5_object_lock_v2,
     render_cuda_c6_safe_multiband_v2,
     render_cuda_c7_photometric_graph_v2,
     render_cuda_c8_multilabel_window_v2,
+    render_cuda_c10_depth_conditioned_layout_v2,
+    render_cuda_c11_object_first_foreground_compositor_v2,
+    render_cuda_c12_joint_owner_final_grid_v2,
     _post_publication_measurement_context_if_c1_geometry_is_exact,
 )
 
@@ -67,6 +75,9 @@ def test_c5_to_c8_routes_cannot_accept_manual_measurement_annotations():
         render_cuda_c6_safe_multiband_v2,
         render_cuda_c7_photometric_graph_v2,
         render_cuda_c8_multilabel_window_v2,
+        render_cuda_c10_depth_conditioned_layout_v2,
+        render_cuda_c11_object_first_foreground_compositor_v2,
+        render_cuda_c12_joint_owner_final_grid_v2,
     ):
         assert "annotations" not in inspect.signature(route).parameters
 
@@ -206,6 +217,60 @@ def test_c1_to_c8_candidate_identities_enter_only_their_completed_cuda_routes(tm
         role="candidate", algorithm_id="C8_multilabel_window", implementation_id="video_visual_renderer_v2"
     )
     assert video_pipeline._cuda_v2_route_mode(c8) == "c8_multilabel_window"  # noqa: SLF001
+
+
+def test_c10_config_is_immutable_candidate_only_and_enters_its_own_cuda_route():
+    spec = build_algorithm_spec("configs/video_candidates/C10_depth_conditioned_multi_perspective_layout.yaml")
+
+    assert spec.required_components == (
+        "c1_constrained_owner", "c3_raft_mesh", "c4_depth_layered_mesh", "c10_depth_conditioned_layout",
+    )
+    assert is_cuda_c10_depth_conditioned_layout_implementation(
+        role="candidate", algorithm_id=spec.algorithm_id, implementation_id=spec.implementation_id,
+    )
+    assert not is_cuda_c10_depth_conditioned_layout_implementation(
+        role="production", algorithm_id=spec.algorithm_id, implementation_id=spec.implementation_id,
+    )
+    assert video_pipeline._cuda_v2_route_mode(spec) == "c10_depth_conditioned_layout"  # noqa: SLF001
+
+
+def test_c11_config_is_candidate_only_and_requires_a_real_object_compositor_route():
+    spec = build_algorithm_spec("configs/video_candidates/C11_object_first_single_view_foreground_compositor.yaml")
+
+    assert spec.required_components[-2:] == (
+        "c10_depth_conditioned_layout", "c11_object_first_foreground_compositor",
+    )
+    assert is_cuda_c11_object_first_foreground_compositor_implementation(
+        role="candidate", algorithm_id=spec.algorithm_id, implementation_id=spec.implementation_id,
+    )
+    assert not is_cuda_c11_object_first_foreground_compositor_implementation(
+        role="production", algorithm_id=spec.algorithm_id, implementation_id=spec.implementation_id,
+    )
+    assert video_pipeline._cuda_v2_route_mode(spec) == "c11_object_first_foreground_compositor"  # noqa: SLF001
+
+
+def test_c12_config_is_candidate_only_and_requires_the_real_five_to_seven_source_route():
+    spec = build_algorithm_spec("configs/video_candidates/C12_joint_owner_mesh_window.yaml")
+
+    assert spec.required_components == ("c1_constrained_owner", "c12_joint_owner_final_grid")
+    assert is_cuda_c12_joint_owner_final_grid_implementation(
+        role="candidate", algorithm_id=spec.algorithm_id, implementation_id=spec.implementation_id,
+    )
+    assert not is_cuda_c12_joint_owner_final_grid_implementation(
+        role="production", algorithm_id=spec.algorithm_id, implementation_id=spec.implementation_id,
+    )
+    assert video_pipeline._cuda_v2_route_mode(spec) == "c12_joint_owner_final_grid"  # noqa: SLF001
+    settings = video_pipeline._legacy_settings_for(spec)  # noqa: SLF001
+    assert settings["candidate_joint_owner_final_grid"] is True
+    assert settings.get("candidate_depth_conditioned_layout", False) is False
+
+
+def test_c12_route_rejects_a_non_window_source_count_before_any_renderer_fallback():
+    with pytest.raises(VideoV2RouteError, match="5--7 source window"):
+        render_cuda_c12_joint_owner_final_grid_v2(
+            sources=(), camera_to_world=(), calibration=None, pushbroom_config={},
+            selected_motions=(), motion_pixels_to_full_resolution=1.0,
+        )
 
 
 def test_pipeline_passes_dedicated_cuda_route_and_reports_actual_backend(monkeypatch, tmp_path):

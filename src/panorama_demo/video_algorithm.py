@@ -37,6 +37,7 @@ class VideoAlgorithmSpec:
     source_commit: str
     model_sha256: dict[str, str]
     allow_baseline_fallback: bool
+    required_components: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -48,6 +49,7 @@ class VideoAlgorithmSpec:
             "source_commit": self.source_commit,
             "model_sha256": dict(self.model_sha256),
             "allow_baseline_fallback": self.allow_baseline_fallback,
+            "required_components": list(self.required_components),
         }
 
 
@@ -149,6 +151,28 @@ def build_algorithm_spec(path: str | Path, *, expected_role: AlgorithmRole | Non
         changed = config.get("changed_components")
         if not isinstance(changed, list) or not all(isinstance(item, str) and item for item in changed):
             raise VideoAlgorithmConfigurationError("candidate requires changed_components strings")
+        required_components = config.get("required_components", ())
+        if required_components and (
+            not isinstance(required_components, list)
+            or not all(isinstance(item, str) and item for item in required_components)
+            or len(set(required_components)) != len(required_components)
+        ):
+            raise VideoAlgorithmConfigurationError(
+                "candidate required_components must be a unique string list"
+            )
+        # The formal C1--C8 declarations use the stable ``C<N>_`` form.
+        # Keep compact names such as test-only ``C1`` usable by generic lock
+        # tests; they are not an immutable production candidate identity.
+        if (
+            candidate_id.startswith("C")
+            and candidate_id[1:2].isdigit()
+            and 1 <= int(candidate_id[1]) <= 8
+            and candidate_id[2:3] == "_"
+        ):
+            if not isinstance(required_components, list) or not required_components:
+                raise VideoAlgorithmConfigurationError(
+                    "C1--C8 candidates require a non-empty required_components list"
+                )
         declared_hash = _validate_sha256(config.get("config_sha256"), field="config_sha256")
         actual_hash = canonical_config_sha256(config)
         if declared_hash != actual_hash:
@@ -171,4 +195,5 @@ def build_algorithm_spec(path: str | Path, *, expected_role: AlgorithmRole | Non
         source_commit=_require_string(config, "source_commit"),
         model_sha256={str(key): str(value).lower() for key, value in config.get("model_sha256", {}).items()},
         allow_baseline_fallback=allow_fallback,
+        required_components=tuple(config.get("required_components", ())),
     )

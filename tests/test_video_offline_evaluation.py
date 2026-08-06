@@ -14,6 +14,7 @@ from panorama_demo.video_offline_evaluation import (
     load_panorama_annotation_projection,
     write_offline_evaluation,
 )
+from panorama_demo.video_offline_evaluation import _line_metrics_from_observations
 
 
 def _annotations() -> dict[str, object]:
@@ -87,6 +88,20 @@ def test_safe_background_perfect_owner_boundary_passes_zero_difference_gate(tmp_
     assert safe["delta_e00_p95"] == 0.0
     assert safe["brightness_step_p95_percent"] == 0.0
     assert safe["hard_gate_pass"] is True
+
+
+def test_line_metric_keeps_documented_two_pixel_step_and_five_degree_orientation_failures():
+    """v2's dense-line plumbing cannot weaken the immutable line gates."""
+
+    metrics = _line_metrics_from_observations(({
+        "sample_count": 4,
+        "offsets": np.asarray([0.0, 2.0, 0.0, 2.0]),
+        "steps": np.asarray([2.0, 2.0, 2.0]),
+        "orientation_error": np.asarray([5.0, 5.0, 5.0, 5.0]),
+    },))
+    assert metrics["line_step_p95_px"] == 2.0
+    assert metrics["line_orientation_delta_p95_degrees"] == 5.0
+    assert metrics["hard_gate_pass"] is False
 
 
 def test_projection_rejects_wrong_frame_or_out_of_bounds(tmp_path):

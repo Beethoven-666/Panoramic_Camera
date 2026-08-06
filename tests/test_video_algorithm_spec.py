@@ -23,7 +23,7 @@ def test_candidate_spec_exposes_immutable_identity():
 
     assert spec.role == "candidate"
     assert spec.algorithm_id == "C4_raft_rgbd_layered_mesh"
-    assert spec.config_sha256 == "dfee5aa996a2aab9c05eebdb48e8baf745654c824a9cf0ed51e0f0e7b3dba502"
+    assert spec.config_sha256 == "963d267808e8c3d9d7d24287a1e58c5d804659aff26d17856efaea847b12bfa5"
     assert spec.allow_baseline_fallback is False
 
 

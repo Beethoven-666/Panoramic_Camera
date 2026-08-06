@@ -260,10 +260,18 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
             candidate_mesh_evidence = video_settings.get("candidate_mesh_evidence")
             if candidate_mesh_evidence is not None and not isinstance(candidate_mesh_evidence, dict):
                 raise ValueError("candidate_mesh_evidence must be a mapping")
+            candidate_c9_long_line_minimum_length_px = video_settings.get("candidate_c9_long_line_minimum_length_px")
+            if candidate_c9_long_line_minimum_length_px is not None and not isinstance(candidate_c9_long_line_minimum_length_px, int):
+                raise ValueError("candidate_c9_long_line_minimum_length_px must be an integer")
             candidate_object_owner_lock = bool(video_settings.get("candidate_object_owner_lock", False))
             candidate_safe_multiband = bool(video_settings.get("candidate_safe_multiband", False))
             candidate_global_photometric = bool(video_settings.get("candidate_global_photometric", False))
             candidate_multilabel_owner = bool(video_settings.get("candidate_multilabel_owner", False))
+            candidate_robust_photometric_bundle = bool(video_settings.get("candidate_robust_photometric_bundle", False))
+            candidate_depth_conditioned_layout = bool(video_settings.get("candidate_depth_conditioned_layout", False))
+            candidate_joint_owner_final_grid = bool(video_settings.get("candidate_joint_owner_final_grid", False))
+            candidate_object_first_compositor = bool(video_settings.get("candidate_object_first_compositor", False))
+            candidate_object_first_protection_margin_pixels = video_settings.get("candidate_object_first_protection_margin_pixels")
             if candidate_c1_constrained_owner and legacy_renderer != "hard_owner_diagnostic":
                 raise ValueError(
                     "candidate C1 constrained owner requires the isolated hard-owner renderer"
@@ -519,11 +527,20 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                             "c6_safe_multiband",
                             "c7_photometric_graph",
                             "c8_multilabel_window",
+                            "c13_robust_photometric_bundle",
+                            "c10_depth_conditioned_layout",
+                            "c11_object_first_foreground_compositor",
+                            "c12_joint_owner_final_grid",
+                            "c9_positive_jacobian_line_mesh",
                         },
-                        candidate_object_owner_lock and v2_cuda_mode not in {"c5_object_lock", "c6_safe_multiband", "c7_photometric_graph", "c8_multilabel_window"},
-                        candidate_safe_multiband and v2_cuda_mode not in {"c6_safe_multiband", "c7_photometric_graph", "c8_multilabel_window"},
-                        candidate_global_photometric and v2_cuda_mode not in {"c7_photometric_graph", "c8_multilabel_window"},
-                        candidate_multilabel_owner and v2_cuda_mode != "c8_multilabel_window",
+                        candidate_object_owner_lock and v2_cuda_mode not in {"c5_object_lock", "c6_safe_multiband", "c7_photometric_graph", "c8_multilabel_window", "c13_robust_photometric_bundle"},
+                        candidate_safe_multiband and v2_cuda_mode not in {"c6_safe_multiband", "c7_photometric_graph", "c8_multilabel_window", "c13_robust_photometric_bundle"},
+                        candidate_global_photometric and v2_cuda_mode not in {"c7_photometric_graph", "c8_multilabel_window", "c13_robust_photometric_bundle"},
+                        candidate_multilabel_owner and v2_cuda_mode not in {"c8_multilabel_window", "c13_robust_photometric_bundle"},
+                        candidate_robust_photometric_bundle and v2_cuda_mode != "c13_robust_photometric_bundle",
+                        candidate_depth_conditioned_layout and v2_cuda_mode not in {"c10_depth_conditioned_layout", "c11_object_first_foreground_compositor", "c12_joint_owner_final_grid"},
+                        candidate_joint_owner_final_grid and v2_cuda_mode != "c12_joint_owner_final_grid",
+                        candidate_object_first_compositor and v2_cuda_mode != "c11_object_first_foreground_compositor",
                     )
                 )
                 if unsupported_v2_components or (
@@ -553,6 +570,44 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                         or not isinstance(candidate_mesh_evidence, dict)
                         or candidate_mesh_evidence.get("flow_backend") != "raft"
                         or not bool(candidate_mesh_evidence.get("require_depth_safety", False))
+                    )
+                ) or (
+                    v2_cuda_mode == "c10_depth_conditioned_layout"
+                    and (
+                        not candidate_c1_constrained_owner
+                        or not isinstance(candidate_mesh_evidence, dict)
+                        or candidate_mesh_evidence.get("flow_backend") != "raft"
+                        or not bool(candidate_mesh_evidence.get("require_depth_safety", False))
+                        or not candidate_depth_conditioned_layout
+                    )
+                ) or (
+                    v2_cuda_mode == "c11_object_first_foreground_compositor"
+                    and (
+                        not candidate_c1_constrained_owner
+                        or not isinstance(candidate_mesh_evidence, dict)
+                        or candidate_mesh_evidence.get("flow_backend") != "raft"
+                        or not bool(candidate_mesh_evidence.get("require_depth_safety", False))
+                        or not candidate_object_first_compositor
+                        or not isinstance(candidate_object_first_protection_margin_pixels, int)
+                        or not 8 <= candidate_object_first_protection_margin_pixels <= 12
+                    )
+                ) or (
+                    v2_cuda_mode == "c12_joint_owner_final_grid"
+                    and (
+                        not candidate_c1_constrained_owner
+                        or not isinstance(candidate_mesh_evidence, dict)
+                        or candidate_mesh_evidence.get("flow_backend") != "raft"
+                        or not bool(candidate_mesh_evidence.get("require_depth_safety", False))
+                        or not candidate_joint_owner_final_grid
+                    )
+                ) or (
+                    v2_cuda_mode == "c9_positive_jacobian_line_mesh"
+                    and (
+                        not candidate_c1_constrained_owner
+                        or not isinstance(candidate_mesh_evidence, dict)
+                        or candidate_mesh_evidence.get("flow_backend") != "raft"
+                        or not bool(candidate_mesh_evidence.get("require_depth_safety", False))
+                        or not isinstance(candidate_c9_long_line_minimum_length_px, int)
                     )
                 ) or (
                     v2_cuda_mode == "c5_object_lock"
@@ -595,6 +650,19 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                         or not candidate_safe_multiband
                         or not candidate_global_photometric
                         or not candidate_multilabel_owner
+                    )
+                ) or (
+                    v2_cuda_mode == "c13_robust_photometric_bundle"
+                    and (
+                        not candidate_c1_constrained_owner
+                        or not isinstance(candidate_mesh_evidence, dict)
+                        or candidate_mesh_evidence.get("flow_backend") != "raft"
+                        or not bool(candidate_mesh_evidence.get("require_depth_safety", False))
+                        or not candidate_object_owner_lock
+                        or not candidate_safe_multiband
+                        or not candidate_global_photometric
+                        or not candidate_multilabel_owner
+                        or not candidate_robust_photometric_bundle
                     )
                 ):
                     raise RuntimeError(
@@ -670,6 +738,44 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                         c1_config=candidate_c1_config,
                         cuda_device=int(video_settings.get("cuda_device", 0)),
                     )
+                elif v2_cuda_mode == "c9_positive_jacobian_line_mesh":
+                    from .video_v2_route import render_cuda_c9_positive_jacobian_line_mesh_v2
+
+                    push = render_cuda_c9_positive_jacobian_line_mesh_v2(
+                        sources=sources, camera_to_world=poses, calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config, selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width / float(stitch.get("analysis_width", 320)),
+                        c1_config=candidate_c1_config, cuda_device=int(video_settings.get("cuda_device", 0)),
+                        long_line_minimum_length_px=candidate_c9_long_line_minimum_length_px,
+                    )
+                elif v2_cuda_mode == "c10_depth_conditioned_layout":
+                    from .video_v2_route import render_cuda_c10_depth_conditioned_layout_v2
+
+                    push = render_cuda_c10_depth_conditioned_layout_v2(
+                        sources=sources, camera_to_world=poses, calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config, selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width / float(stitch.get("analysis_width", 320)),
+                        c1_config=candidate_c1_config, cuda_device=int(video_settings.get("cuda_device", 0)),
+                    )
+                elif v2_cuda_mode == "c11_object_first_foreground_compositor":
+                    from .video_v2_route import render_cuda_c11_object_first_foreground_compositor_v2
+
+                    push = render_cuda_c11_object_first_foreground_compositor_v2(
+                        sources=sources, camera_to_world=poses, calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config, selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width / float(stitch.get("analysis_width", 320)),
+                        c1_config=candidate_c1_config, cuda_device=int(video_settings.get("cuda_device", 0)),
+                        protection_margin_pixels=candidate_object_first_protection_margin_pixels,
+                    )
+                elif v2_cuda_mode == "c12_joint_owner_final_grid":
+                    from .video_v2_route import render_cuda_c12_joint_owner_final_grid_v2
+
+                    push = render_cuda_c12_joint_owner_final_grid_v2(
+                        sources=sources, camera_to_world=poses, calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config, selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width / float(stitch.get("analysis_width", 320)),
+                        c1_config=candidate_c1_config, cuda_device=int(video_settings.get("cuda_device", 0)),
+                    )
                 elif v2_cuda_mode == "c5_object_lock":
                     from .video_v2_route import render_cuda_c5_object_lock_v2
 
@@ -721,6 +827,17 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                         calibration=video.rgbd.calibration,
                         pushbroom_config=push_config,
                         selected_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width
+                        / float(stitch.get("analysis_width", 320)),
+                        c1_config=candidate_c1_config,
+                        cuda_device=int(video_settings.get("cuda_device", 0)),
+                    )
+                elif v2_cuda_mode == "c13_robust_photometric_bundle":
+                    from .video_v2_route import render_cuda_c13_robust_photometric_bundle_v2
+
+                    push = render_cuda_c13_robust_photometric_bundle_v2(
+                        sources=sources, camera_to_world=poses, calibration=video.rgbd.calibration,
+                        pushbroom_config=push_config, selected_motions=selected_motions,
                         motion_pixels_to_full_resolution=video.rgbd.calibration.width
                         / float(stitch.get("analysis_width", 320)),
                         c1_config=candidate_c1_config,
@@ -814,6 +931,15 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                 # Renderer-provided evidence is copied verbatim only after
                 # rendering; registry intent alone can never claim C1 ran.
                 algorithm_report["executed_candidate_components"] = dict(executed_components)
+            component_execution = push.metadata.get("component_execution")
+            if isinstance(component_execution, dict):
+                algorithm_report["component_execution"] = dict(component_execution)
+            candidate_run_state = push.metadata.get("candidate_run_state")
+            if isinstance(candidate_run_state, str):
+                algorithm_report["candidate_run_state"] = candidate_run_state
+            component_selection_eligible = push.metadata.get("selection_eligible")
+            if isinstance(component_selection_eligible, bool):
+                algorithm_report["component_execution_selection_eligible"] = component_selection_eligible
             observability = getattr(args, "observability", None)
             if not isinstance(observability, dict):
                 observability = {

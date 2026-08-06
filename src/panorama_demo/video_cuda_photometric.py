@@ -46,6 +46,13 @@ class CudaPhotometricConfig:
     maximum_held_out_error_p95: float = 0.035
     maximum_held_out_error_max: float = 0.12
     regularization: float = 1.0e-6
+    # C13 opts into these controls.  C7 keeps the historical zero-valued
+    # temporal terms, so adding this implementation does not silently change
+    # an already recorded candidate.
+    temporal_first_order_regularization: float = 0.0
+    temporal_second_order_regularization: float = 0.0
+    robust_huber_delta: float = 0.0
+    robust_irls_iterations: int = 1
 
     def validated(self) -> "CudaPhotometricConfig":
         if not all(
@@ -77,6 +84,9 @@ class CudaPhotometricConfig:
             self.maximum_held_out_error_p95,
             self.maximum_held_out_error_max,
             self.regularization,
+            self.temporal_first_order_regularization,
+            self.temporal_second_order_regularization,
+            self.robust_huber_delta,
         )
         if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in values):
             raise CudaPhotometricError("C7 floating-point configuration must be finite")
@@ -91,6 +101,18 @@ class CudaPhotometricConfig:
             self.regularization,
         ) <= 0.0:
             raise CudaPhotometricError("C7 positive gates are invalid")
+        if (
+            not isinstance(self.robust_irls_iterations, int)
+            or isinstance(self.robust_irls_iterations, bool)
+            or not 1 <= self.robust_irls_iterations <= 8
+        ):
+            raise CudaPhotometricError("C7 robust_irls_iterations must be in [1, 8]")
+        if min(
+            self.temporal_first_order_regularization,
+            self.temporal_second_order_regularization,
+            self.robust_huber_delta,
+        ) < 0.0:
+            raise CudaPhotometricError("C7 temporal/robust controls cannot be negative")
         if (
             self.maximum_training_error_p95 > self.maximum_training_error_max
             or self.maximum_held_out_error_p95 > self.maximum_held_out_error_max
@@ -380,6 +402,53 @@ def _corrected_pair_error(torch: Any, pair: _PreparedPair, gains: Any, biases: A
     return (left * gains[pair.left_index].view(3, 1) + biases[pair.left_index].view(3, 1) - right * gains[pair.right_index].view(3, 1) - biases[pair.right_index].view(3, 1)).abs().amax(dim=0)
 
 
+def _temporal_regularisation_rows(
+    torch: Any,
+    *,
+    source_count: int,
+    anchor_index: int,
+    source_to_unknown: dict[int, int],
+    unknown_count: int,
+    first_order: float,
+    second_order: float,
+    device: Any,
+) -> tuple[Any | None, Any | None]:
+    """Create anchored first/second temporal constraints for gain and bias.
+
+    Gains are represented directly, not as gain-minus-one, hence a constraint
+    touching the gauge has a target of one times the gauge coefficient.  The
+    rows remain entirely on CUDA and are deliberately an additive fit prior,
+    never a time interpolation or a substitute for a real source frame.
+    """
+    rows: list[Any] = []
+    targets: list[Any] = []
+
+    def add_constraint(coefficients: dict[int, float], weight: float, *, gain: bool) -> None:
+        if weight <= 0.0:
+            return
+        row = torch.zeros(unknown_count, dtype=torch.float32, device=device)
+        target = 0.0
+        for index, coefficient in coefficients.items():
+            if index == anchor_index:
+                if gain:
+                    target -= coefficient
+            else:
+                base = 2 * source_to_unknown[index]
+                row[base if gain else base + 1] = coefficient
+        rows.append(row * math.sqrt(weight))
+        targets.append(torch.tensor(target * math.sqrt(weight), dtype=torch.float32, device=device))
+
+    for index in range(source_count - 1):
+        for gain in (True, False):
+            add_constraint({index: 1.0, index + 1: -1.0}, first_order, gain=gain)
+    for index in range(source_count - 2):
+        for gain in (True, False):
+            add_constraint({index: 1.0, index + 1: -2.0, index + 2: 1.0}, second_order, gain=gain)
+    if not rows:
+        return None, None
+    return torch.stack(rows), torch.stack(targets)
+
+
 def solve_cuda_global_photometric(
     torch: Any,
     *,
@@ -481,6 +550,14 @@ def solve_cuda_global_photometric(
     all_targets: list[Any] = []
     sampled_training_count = 0
     try:
+        temporal_rows, temporal_targets = _temporal_regularisation_rows(
+            torch,
+            source_count=len(ids), anchor_index=anchor_index,
+            source_to_unknown=source_to_unknown, unknown_count=unknown_count,
+            first_order=float(settings.temporal_first_order_regularization),
+            second_order=float(settings.temporal_second_order_regularization),
+            device=device,
+        )
         for channel in range(3):
             channel_rows: list[Any] = []
             channel_targets: list[Any] = []
@@ -510,9 +587,28 @@ def solve_cuda_global_photometric(
         for channel in range(3):
             design = all_rows[channel]
             target = all_targets[channel]
-            normal = design.transpose(0, 1).matmul(design) + regularizer
-            rhs = design.transpose(0, 1).matmul(target)
-            solution = torch.linalg.solve(normal, rhs)
+            if temporal_rows is not None:
+                design = torch.cat((design, temporal_rows), dim=0)
+                target = torch.cat((target, temporal_targets), dim=0)
+            # IRLS is intentionally only a C13 opt-in.  It downweights real
+            # safe-background outliers but never adds a colour sample or a
+            # synthetic source.  The unweighted first pass preserves C7.
+            weights = torch.ones(int(design.shape[0]), dtype=torch.float32, device=device)
+            solution = None
+            for _ in range(int(settings.robust_irls_iterations)):
+                weighted_design = design * weights.sqrt().unsqueeze(1)
+                weighted_target = target * weights.sqrt()
+                normal = weighted_design.transpose(0, 1).matmul(weighted_design) + regularizer
+                rhs = weighted_design.transpose(0, 1).matmul(weighted_target)
+                solution = torch.linalg.solve(normal, rhs)
+                if settings.robust_huber_delta <= 0.0:
+                    break
+                residual = (design.matmul(solution) - target).abs()
+                weights = torch.minimum(
+                    torch.ones_like(residual),
+                    torch.full_like(residual, float(settings.robust_huber_delta)) / residual.clamp_min(1.0e-8),
+                )
+            assert solution is not None
             for source_index, unknown_index in source_to_unknown.items():
                 gains[source_index, channel] = solution[2 * unknown_index]
                 biases[source_index, channel] = solution[2 * unknown_index + 1]
@@ -580,6 +676,13 @@ def solve_cuda_global_photometric(
             "anchor_policy": anchor_policy,
             "graph_edge_count": len(prepared),
             "graph_edge_kinds": sorted({str(pair.audit["edge_kind"]) for pair in prepared}),
+            "robust_time_regularisation": {
+                "method": "huber_irls" if settings.robust_huber_delta > 0.0 else "none",
+                "huber_delta_linear": float(settings.robust_huber_delta),
+                "irls_iterations": int(settings.robust_irls_iterations),
+                "first_order_weight": float(settings.temporal_first_order_regularization),
+                "second_order_weight": float(settings.temporal_second_order_regularization),
+            },
             "unaccepted_solution_gain_min": gain_min,
             "unaccepted_solution_gain_max": gain_max,
             "unaccepted_solution_bias_absolute_max": bias_max,

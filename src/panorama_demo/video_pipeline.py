@@ -32,10 +32,15 @@ from .video_v2_route import (
     is_cuda_c2_dis_residual_mesh_implementation,
     is_cuda_c3_raft_residual_mesh_implementation,
     is_cuda_c4_raft_rgbd_layered_mesh_implementation,
+    is_cuda_c9_positive_jacobian_line_mesh_implementation,
     is_cuda_c5_object_lock_implementation,
     is_cuda_c6_safe_multiband_implementation,
     is_cuda_c7_photometric_graph_implementation,
     is_cuda_c8_multilabel_window_implementation,
+    is_cuda_c13_robust_photometric_bundle_implementation,
+    is_cuda_c10_depth_conditioned_layout_implementation,
+    is_cuda_c11_object_first_foreground_compositor_implementation,
+    is_cuda_c12_joint_owner_final_grid_implementation,
     is_strict_cuda_strip_owner_implementation,
 )
 
@@ -91,7 +96,7 @@ def _legacy_settings_for(spec: VideoAlgorithmSpec) -> dict[str, Any]:
             raise ValueError("Frozen production config does not provide a runnable renderer contract")
         settings.update(legacy)
         return settings
-    if spec.algorithm_id in {"C1_constrained_owner", "C2_dis_rgb_mesh", "C3_raft_rgb_mesh", "C4_raft_rgbd_layered_mesh", "C5_object_lock", "C6_multiband", "C7_photometric_graph", "C8_multilabel_window"}:
+    if spec.algorithm_id in {"C1_constrained_owner", "C2_dis_rgb_mesh", "C3_raft_rgb_mesh", "C4_raft_rgbd_layered_mesh", "C5_object_lock", "C6_multiband", "C7_photometric_graph", "C8_multilabel_window", "C9_positive_jacobian_line_mesh", "C10_depth_conditioned_multi_perspective_layout", "C11_object_first_single_view_foreground_compositor", "C12_joint_owner_mesh_window", "C13_robust_photometric_bundle"}:
         # C1 has its own pair-local, second-order hard-owner compositor.  It
         # is an explicit experiment renderer, never an approximation of the
         # frozen curved visual seam.
@@ -197,6 +202,69 @@ def _legacy_settings_for(spec: VideoAlgorithmSpec) -> dict[str, Any]:
             settings["candidate_safe_multiband"] = True
             settings["candidate_global_photometric"] = True
             settings["candidate_multilabel_owner"] = True
+        if spec.algorithm_id == "C13_robust_photometric_bundle":
+            bundle = candidate_components.get("photometric_bundle") if isinstance(candidate_components, dict) else None
+            field = candidate_components.get("illumination_field") if isinstance(candidate_components, dict) else None
+            if not isinstance(bundle, dict) or not isinstance(field, dict):
+                raise ValueError("C13 candidate requires immutable photometric_bundle and illumination_field mappings")
+            if (
+                bundle.get("anchor") != "median_exposure"
+                or bundle.get("graph_edges") != ["genuine_adjacent", "genuine_skip_one_overlap"]
+                or bundle.get("correction_bounds") != {"gain": [0.75, 1.35], "bias_absolute_maximum": 0.08}
+                or field.get("field_cell_pixels") != [64, 96]
+                or field.get("safe_background_only") is not True
+                or field.get("stage") != "pre_seam_real_source_only"
+            ):
+                raise ValueError("C13 candidate immutable robust photometric bundle contract is invalid")
+            model_id = "torchvision_raft_small_C_T_V2"
+            settings["candidate_mesh_evidence"] = {
+                "enabled": True, "flow_backend": "raft", "require_depth_safety": True,
+                "model_id": model_id, "model_sha256": spec.model_sha256[model_id],
+            }
+            settings["candidate_object_owner_lock"] = True
+            settings["candidate_safe_multiband"] = True
+            settings["candidate_global_photometric"] = True
+            settings["candidate_multilabel_owner"] = True
+            settings["candidate_robust_photometric_bundle"] = True
+        if spec.algorithm_id == "C9_positive_jacobian_line_mesh":
+            model_id = "torchvision_raft_small_C_T_V2"
+            settings["candidate_mesh_evidence"] = {
+                "enabled": True, "flow_backend": "raft", "require_depth_safety": True,
+                "model_id": model_id, "model_sha256": spec.model_sha256[model_id],
+            }
+            c9 = candidate_components.get("long_line_mesh") if isinstance(candidate_components, dict) else None
+            if not isinstance(c9, dict) or not isinstance(c9.get("minimum_length_px"), int):
+                raise ValueError("C9 candidate requires immutable long_line_mesh.minimum_length_px")
+            settings["candidate_c9_long_line_minimum_length_px"] = int(c9["minimum_length_px"])
+        if spec.algorithm_id == "C10_depth_conditioned_multi_perspective_layout":
+            model_id = "torchvision_raft_small_C_T_V2"
+            settings["candidate_mesh_evidence"] = {
+                "enabled": True, "flow_backend": "raft", "require_depth_safety": True,
+                "model_id": model_id, "model_sha256": spec.model_sha256[model_id],
+            }
+            settings["candidate_depth_conditioned_layout"] = True
+        if spec.algorithm_id == "C11_object_first_single_view_foreground_compositor":
+            model_id = "torchvision_raft_small_C_T_V2"
+            settings["candidate_mesh_evidence"] = {
+                "enabled": True, "flow_backend": "raft", "require_depth_safety": True,
+                "model_id": model_id, "model_sha256": spec.model_sha256[model_id],
+            }
+            c11 = candidate_components.get("object_first_compositor") if isinstance(candidate_components, dict) else None
+            if not isinstance(c11, dict) or not isinstance(c11.get("protection_margin_pixels"), int):
+                raise ValueError("C11 candidate requires immutable object_first_compositor.protection_margin_pixels")
+            settings["candidate_object_first_compositor"] = True
+            settings["candidate_object_first_protection_margin_pixels"] = int(c11["protection_margin_pixels"])
+            settings["candidate_depth_conditioned_layout"] = True
+        if spec.algorithm_id == "C12_joint_owner_mesh_window":
+            model_id = "torchvision_raft_small_C_T_V2"
+            c12 = candidate_components.get("joint_owner_mesh") if isinstance(candidate_components, dict) else None
+            if not isinstance(c12, dict) or c12.get("window_frames") != [5, 7] or c12.get("output") != {"final_grids": True, "owner_labels": True, "renderer_input": True}:
+                raise ValueError("C12 candidate requires immutable 5--7 source renderer-input final-grid contract")
+            settings["candidate_mesh_evidence"] = {
+                "enabled": True, "flow_backend": "raft", "require_depth_safety": True,
+                "model_id": model_id, "model_sha256": spec.model_sha256[model_id],
+            }
+            settings["candidate_joint_owner_final_grid"] = True
         return settings
     components = document.get("components", {})
     if not isinstance(components, dict):
@@ -240,6 +308,10 @@ def _spec_report(
         "source_commit": spec.source_commit,
         "model_sha256": dict(spec.model_sha256),
         "fallback_used": fallback_used,
+        # This is immutable candidate intent.  The renderer must later emit
+        # a matching rich final-output ``component_execution`` audit before
+        # the candidate can be considered by selection.
+        "required_components": list(spec.required_components),
         # The immutable algorithm declaration identifies intended component
         # lineage.  This separate field records the renderer that actually
         # produced pixels, preventing the legacy experiment bridge from being
@@ -288,6 +360,22 @@ def _cuda_v2_route_mode(spec: VideoAlgorithmSpec) -> str | None:
         implementation_id=spec.implementation_id,
     ):
         return "c4_raft_rgbd_layered_mesh"
+    if is_cuda_c9_positive_jacobian_line_mesh_implementation(
+        role=spec.role, algorithm_id=spec.algorithm_id, implementation_id=spec.implementation_id,
+    ):
+        return "c9_positive_jacobian_line_mesh"
+    if is_cuda_c10_depth_conditioned_layout_implementation(
+        role=spec.role, algorithm_id=spec.algorithm_id, implementation_id=spec.implementation_id,
+    ):
+        return "c10_depth_conditioned_layout"
+    if is_cuda_c11_object_first_foreground_compositor_implementation(
+        role=spec.role, algorithm_id=spec.algorithm_id, implementation_id=spec.implementation_id,
+    ):
+        return "c11_object_first_foreground_compositor"
+    if is_cuda_c12_joint_owner_final_grid_implementation(
+        role=spec.role, algorithm_id=spec.algorithm_id, implementation_id=spec.implementation_id,
+    ):
+        return "c12_joint_owner_final_grid"
     if is_cuda_c5_object_lock_implementation(
         role=spec.role,
         algorithm_id=spec.algorithm_id,
@@ -312,6 +400,10 @@ def _cuda_v2_route_mode(spec: VideoAlgorithmSpec) -> str | None:
         implementation_id=spec.implementation_id,
     ):
         return "c8_multilabel_window"
+    if is_cuda_c13_robust_photometric_bundle_implementation(
+        role=spec.role, algorithm_id=spec.algorithm_id, implementation_id=spec.implementation_id,
+    ):
+        return "c13_robust_photometric_bundle"
     return None
 
 

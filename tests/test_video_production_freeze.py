@@ -87,7 +87,7 @@ def _write_measurement_sidecars(directory: Path) -> None:
     (directory / "visual_metrics.json").write_text(
         json.dumps(
             {
-                "schema": "gemini305-video-offline-visual-evaluation/v1",
+                "schema": "gemini305-video-offline-visual-evaluation/v2",
                 "measurement_only": True,
                 "automatic_grade_promotion_allowed": False,
                 "projection_available": True,

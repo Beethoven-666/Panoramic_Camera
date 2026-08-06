@@ -26,8 +26,9 @@ from .video_observability import owner_boundaries
 from .video_visual_metrics import owner_topology_metrics
 
 
-OFFLINE_EVALUATION_SCHEMA = "gemini305-video-offline-visual-evaluation/v1"
-PANORAMA_PROJECTION_SCHEMA = "gemini305-video-panorama-annotation-projection/v1"
+OFFLINE_EVALUATION_SCHEMA = "gemini305-video-offline-visual-evaluation/v2"
+PANORAMA_PROJECTION_SCHEMA = "gemini305-video-panorama-annotation-projection/v2"
+_LEGACY_PANORAMA_PROJECTION_SCHEMA = "gemini305-video-panorama-annotation-projection/v1"
 
 
 class VideoOfflineEvaluationError(ValueError):
@@ -80,7 +81,9 @@ def load_panorama_annotation_projection(
         payload = json.loads(projection_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise VideoOfflineEvaluationError(f"Invalid panorama projection: {projection_path}") from exc
-    if not isinstance(payload, Mapping) or payload.get("schema") != PANORAMA_PROJECTION_SCHEMA:
+    if not isinstance(payload, Mapping) or payload.get("schema") not in {
+        PANORAMA_PROJECTION_SCHEMA, _LEGACY_PANORAMA_PROJECTION_SCHEMA,
+    }:
         raise VideoOfflineEvaluationError("Unsupported panorama annotation projection schema")
     if payload.get("measurement_only") is not True:
         raise VideoOfflineEvaluationError("Panorama annotation projection must declare measurement_only=true")
@@ -107,6 +110,24 @@ def load_panorama_annotation_projection(
         except (OSError, ValueError) as exc:
             raise VideoOfflineEvaluationError("Projection mask_artifact is unavailable or malformed") from exc
     result: dict[str, dict[str, dict[str, Any]]] = {kind: {} for kind in source_by_kind}
+    # v2 writes group-level projection consensus separately from the source
+    # entries.  It is measurement metadata, never a rendering control.
+    group_states: dict[str, dict[str, Any]] = {kind: {} for kind in source_by_kind}
+    declared_groups = payload.get("measurement_groups", [])
+    if declared_groups is not None:
+        if not isinstance(declared_groups, list):
+            raise VideoOfflineEvaluationError("Projection measurement_groups must be a list")
+        for item in declared_groups:
+            if not isinstance(item, Mapping):
+                raise VideoOfflineEvaluationError("Projection measurement group must be an object")
+            kind, identifier, state = item.get("kind"), item.get("measurement_group"), item.get("measurement_state")
+            if kind not in group_states or not isinstance(identifier, str) or not identifier:
+                raise VideoOfflineEvaluationError("Projection measurement group is malformed")
+            if state not in {"evaluated", "projection_inconsistent", "projection_missing"}:
+                raise VideoOfflineEvaluationError("Projection measurement group has an invalid state")
+            if identifier in group_states[kind]:
+                raise VideoOfflineEvaluationError("Projection repeats a measurement group")
+            group_states[kind][identifier] = dict(item)
     for kind, known in source_by_kind.items():
         projected_entries = payload.get(kind, [])
         if not isinstance(projected_entries, list):
@@ -153,6 +174,9 @@ def load_panorama_annotation_projection(
                     "points": points,
                     "measurement_group": source_measurement_group,
                 }
+    # Keep metadata out of the three annotation namespaces, preserving the
+    # historical mapping API for callers that only consume source entries.
+    result["__measurement_groups__"] = group_states
     return result
 
 
@@ -227,45 +251,64 @@ def _line_observations(
     different projected line segments.
     """
 
-    start, end = np.asarray(points[0], dtype=np.float64), np.asarray(points[1], dtype=np.float64)
-    vector = end - start
-    length = float(np.hypot(*vector))
-    if length < 2.0:
+    raw_points = np.asarray(points, dtype=np.float64)
+    if raw_points.ndim != 2 or raw_points.shape[0] < 2 or raw_points.shape[1] != 2:
+        raise VideoOfflineEvaluationError("Projected line needs at least two finite points")
+    segments = [(raw_points[index], raw_points[index + 1]) for index in range(raw_points.shape[0] - 1)]
+    if not any(float(np.hypot(*(end - start))) >= 2.0 for start, end in segments):
         return {
             "status": "not_evaluable", "reason": "projected_line_too_short",
             "sample_count": 0, "offsets": np.empty(0, dtype=np.float64),
             "steps": np.empty(0, dtype=np.float64), "orientation_error": np.empty(0, dtype=np.float64),
         }
     height, width = panorama.shape[:2]
-    unit = vector / length
-    normal = np.asarray([-unit[1], unit[0]])
-    sample_count = max(3, int(np.floor(length)) + 1)
-    t = np.linspace(0.0, 1.0, sample_count)
-    positions = start[None, :] + t[:, None] * vector[None, :]
     gray = cv2.cvtColor(panorama, cv2.COLOR_BGR2GRAY)
     gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
     magnitude = cv2.magnitude(gx, gy)
     offsets: list[float] = []
     orientation_error: list[float] = []
-    for position in positions:
-        candidates = position[None, :] + np.arange(-search_radius, search_radius + 1)[:, None] * normal[None, :]
-        xs = np.rint(candidates[:, 0]).astype(np.int32)
-        ys = np.rint(candidates[:, 1]).astype(np.int32)
-        inside = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
-        if not np.any(inside):
+    sample_count = 0
+    for segment_index, (start, end) in enumerate(segments):
+        vector = end - start
+        length = float(np.hypot(*vector))
+        if length < 2.0:
             continue
-        local = magnitude[ys[inside], xs[inside]]
-        local_offsets = np.arange(-search_radius, search_radius + 1)[inside]
-        peak = int(np.argmax(local))
-        if float(local[peak]) <= 0.0:
-            continue
-        x, y = int(xs[inside][peak]), int(ys[inside][peak])
-        offsets.append(float(local_offsets[peak]))
-        observed = float(np.degrees(np.arctan2(float(gy[y, x]), float(gx[y, x]))))
+        unit = vector / length
+        normal = np.asarray([-unit[1], unit[0]])
+        count = max(3, int(np.floor(length)) + 1)
+        # Do not take a false finite difference across a dense-polyline join.
+        t = np.linspace(0.0, 1.0, count)[1:] if segment_index else np.linspace(0.0, 1.0, count)
+        sample_count += int(t.size)
         expected = float(np.degrees(np.arctan2(normal[1], normal[0])))
-        difference = abs((observed - expected + 90.0) % 180.0 - 90.0)
-        orientation_error.append(difference)
+        for position in start[None, :] + t[:, None] * vector[None, :]:
+            candidates = position[None, :] + np.arange(-search_radius, search_radius + 1)[:, None] * normal[None, :]
+            xs = np.rint(candidates[:, 0]).astype(np.int32)
+            ys = np.rint(candidates[:, 1]).astype(np.int32)
+            inside = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
+            if not np.any(inside):
+                continue
+            local = magnitude[ys[inside], xs[inside]]
+            local_offsets = np.arange(-search_radius, search_radius + 1)[inside]
+            # A candidate must first be a plausible instance of the expected
+            # normal.  This prevents a nearby vertical edge from masquerading
+            # as a poor horizontal-line measurement.
+            order = np.argsort(local)[::-1]
+            chosen: tuple[int, float] | None = None
+            for peak in order:
+                if float(local[peak]) <= 0.0:
+                    break
+                x, y = int(xs[inside][peak]), int(ys[inside][peak])
+                observed = float(np.degrees(np.arctan2(float(gy[y, x]), float(gx[y, x]))))
+                difference = abs((observed - expected + 90.0) % 180.0 - 90.0)
+                if difference < 30.0:
+                    chosen = (int(peak), difference)
+                    break
+            if chosen is None:
+                continue
+            peak, difference = chosen
+            offsets.append(float(local_offsets[peak]))
+            orientation_error.append(difference)
     offset_array = np.asarray(offsets, dtype=np.float64)
     step = np.abs(np.diff(offset_array)) if offset_array.size >= 2 else np.empty(0, dtype=np.float64)
     return {
@@ -498,6 +541,7 @@ def evaluate_offline_visual_annotations(
         if not isinstance(source_entries, list):
             raise VideoOfflineEvaluationError(f"Source annotations lack {kind}")
         projected = projection.get(kind, {}) if projection is not None else {}
+        group_states = projection.get("__measurement_groups__", {}).get(kind, {}) if projection is not None else {}
         typed_sources: list[Mapping[str, Any]] = []
         for source in source_entries:
             if not isinstance(source, Mapping):
@@ -517,7 +561,13 @@ def evaluate_offline_visual_annotations(
                 projected_members=projected_members,
                 projected_annotation_ids=projected_ids,
             )
-            if not projected_members:
+            declared_state = group_states.get(identifier if measurement_group is not None else "")
+            if isinstance(declared_state, Mapping) and declared_state.get("measurement_state") == "projection_inconsistent":
+                result[result_key][identifier] = {
+                    "status": "not_evaluable", "reason": "projection_inconsistent", **audit,
+                    "projection_consensus": dict(declared_state),
+                }
+            elif not projected_members:
                 result[result_key][identifier] = {
                     "status": "not_evaluable",
                     "reason": "no_panorama_projection_for_fixed_source_annotation",

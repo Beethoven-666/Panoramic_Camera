@@ -8,9 +8,10 @@ source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
 model_sha256: {}
 allow_baseline_fallback: false
 changed_components: [scan_step, pair_risk, seam_corridor, seam_curvature, line_constraints, owner_cleanup]
+required_components: [c1_constrained_owner]
 components:
   scan_step: {normal_pixels: 12, risk_pixels: 5}
   pair_risk: {enabled: true}
   seam: {mode: constrained_hard_owner, first_order_curvature: true, second_order_curvature: true, line_constraints: true}
   owner_cleanup: {enabled: true}
-config_sha256: f7c8b464e7ea965ea21d90ba673e6f383fb3a4dec312ea466016d0e787d98ea3
+config_sha256: 2c98142202b4845a9e332620e9dc59dfc0ee0b110862f353ec77f1ec890d2f45

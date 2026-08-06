@@ -108,6 +108,10 @@ class VideoAlgorithmResult:
     source_frame_ids: tuple[int, ...]
     algorithm_audit: dict[str, object]
     artifact_sources: object | None = None
+    # Candidate-only, read-only final inverse-grid deltas.  They are emitted
+    # only after rendering and can be consumed solely by post-publication
+    # fixed-annotation measurement; they never feed a renderer decision.
+    measurement_grid_updates: tuple[dict[str, object], ...] = ()
 
     def __post_init__(self) -> None:
         panorama = np.asarray(self.panorama_bgr)
@@ -124,6 +128,8 @@ class VideoAlgorithmResult:
             raise VideoAlgorithmContractError("every valid owner must be a declared real render source")
         if not isinstance(self.algorithm_audit, dict):
             raise VideoAlgorithmContractError("algorithm_audit must be an object")
+        if not isinstance(self.measurement_grid_updates, tuple):
+            raise VideoAlgorithmContractError("measurement_grid_updates must be an immutable tuple")
         if self.algorithm_audit.get("interpolated_pose_count", 0) != 0:
             raise VideoAlgorithmContractError("v2 results cannot contain interpolated poses")
 
