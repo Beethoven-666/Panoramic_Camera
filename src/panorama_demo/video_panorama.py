@@ -42,6 +42,7 @@ from .video_motion_resampler import (
     MotionResamplingConfig,
     compose_selected_motions,
     insert_v6_real_rescue_sources,
+    reroute_v6_failed_pairs_with_real_sources,
     select_render_keyframes,
 )
 from .video_online_state import load_online_state
@@ -1193,6 +1194,133 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                             for record in frontality_records
                         },
                     )
+                    # A rejected true GraphCut is evidence to reroute a real
+                    # source, not permission to synthesize a pose or loosen a
+                    # topology gate.  One bounded replan can replace the
+                    # speculative four rescue slots with midpoint frames in
+                    # the actual failing direct-ORB gaps.  Its result must be
+                    # completely re-audited before it may become final.
+                    initial_expanded = push.metadata.get("expanded_real_owner_pair_frame_ids", ())
+                    failed_pairs = tuple(
+                        (int(pair[0]), int(pair[1]))
+                        for pair in initial_expanded
+                        if isinstance(pair, (tuple, list)) and len(pair) == 2
+                    )
+                    reroute_audit: dict[str, object] = {
+                        "attempted": bool(failed_pairs),
+                        "failed_pair_frame_ids": [list(pair) for pair in failed_pairs],
+                        "accepted": False,
+                    }
+                    if failed_pairs:
+                        rerouted_plan = reroute_v6_failed_pairs_with_real_sources(
+                            tracking_frames, plan,
+                            failed_pair_frame_ids=failed_pairs, maximum_rescues=4,
+                        )
+                        if rerouted_plan.source_indices != plan.source_indices:
+                            rerouted_sources = rerouted_plan.frames
+                            rerouted_indices = rerouted_plan.source_indices
+                            rerouted_motions = compose_selected_motions(
+                                tracking_motions, rerouted_indices,
+                            )
+                            rerouted_steps = np.asarray([
+                                float(rerouted_plan.scan_direction) * float(motion.dx) * frontality_scale
+                                for motion in rerouted_motions
+                            ], dtype=np.float64)
+                            if not np.isfinite(rerouted_steps).all() or np.any(rerouted_steps <= 0.0):
+                                raise RuntimeError("v6 reroute selected a non-monotone real source chain")
+                            rerouted_frontality = assess_video_source_frontality(
+                                rerouted_sources, video.rgbd.calibration,
+                            )
+                            rerouted_owner_plan = plan_frontality_owner_spans(
+                                rerouted_frontality, video.rgbd.calibration,
+                                tuple(float(value) for value in np.concatenate(([0.0], np.cumsum(rerouted_steps)))),
+                            )
+                            rerouted_poses = [poses_by_id[frame.frame_id] for frame in rerouted_sources]
+                            # The reroute has new final adjacency, so each of
+                            # those real RGB-D edges receives a new actual
+                            # Open3D audit before any rerendered pixels exist.
+                            rerouted_records = [_prepare_source(source) for source in rerouted_sources]
+                            rerouted_prepared: list[object] = []
+                            rerouted_intrinsics = None
+                            for prepared, prepared_intrinsics in rerouted_records:
+                                if rerouted_intrinsics is None:
+                                    rerouted_intrinsics = prepared_intrinsics
+                                elif prepared_intrinsics != rerouted_intrinsics:
+                                    raise RuntimeError("v6 reroute Open3D sources have inconsistent intrinsics")
+                                rerouted_prepared.append(prepared)
+                            if rerouted_intrinsics is None:
+                                raise RuntimeError("v6 reroute selected no real sources")
+                            rerouted_backend = create_open3d_rgbd_odometry_backend()
+                            rerouted_edges = [
+                                estimate_prepared_pair_rgbd_odometry(
+                                    left, right, rerouted_intrinsics, config=odometry_config,
+                                    backend=rerouted_backend,
+                                    reference_node_id=source_left.frame_id,
+                                    source_node_id=source_right.frame_id,
+                                )
+                                for left, right, source_left, source_right in zip(
+                                    rerouted_prepared[:-1], rerouted_prepared[1:],
+                                    rerouted_sources[:-1], rerouted_sources[1:], strict=True,
+                                )
+                            ]
+                            if len(rerouted_edges) != len(rerouted_sources) - 1:
+                                raise RuntimeError("v6 reroute Open3D audit did not cover every real source edge")
+                            rerouted_push = render_video_v6_candidate(
+                                tuple(rerouted_sources), tuple(rerouted_poses), video.rgbd.calibration,
+                                pushbroom_config=push_config, rgb_motions=rerouted_motions,
+                                motion_pixels_to_full_resolution=video.rgbd.calibration.width
+                                / float(stitch.get("analysis_width", 320)),
+                                frontality_hard_spans={
+                                    int(record.frame_id): tuple(int(value) for value in record.general_hard_span)
+                                    for record in rerouted_frontality
+                                },
+                            )
+                            def _v6_failure_score(result: object) -> tuple[int, int, int]:
+                                metadata = getattr(result, "metadata", {})
+                                metrics = metadata.get("quality_metrics", {}) if isinstance(metadata, dict) else {}
+                                expanded = metadata.get("expanded_real_owner_pair_frame_ids", ()) if isinstance(metadata, dict) else ()
+                                return (
+                                    len(expanded),
+                                    int(metrics.get("double_edge_count", 0)),
+                                    int(metrics.get("ghost_count", 0)),
+                                )
+                            initial_score = _v6_failure_score(push)
+                            rerouted_score = _v6_failure_score(rerouted_push)
+                            reroute_audit.update({
+                                "rerouted_source_frame_ids": [int(frame.frame_id) for frame in rerouted_sources],
+                                "reroute_rescue_frame_ids": list(rerouted_plan.rescue_source_frame_ids),
+                                "initial_failure_score": list(initial_score),
+                                "rerouted_failure_score": list(rerouted_score),
+                            })
+                            # All three are v6 hard visual/structural gates.
+                            # A reroute must Pareto-improve them: reducing an
+                            # owner expansion cannot buy a worse double edge
+                            # or ghosting result.
+                            reroute_improves = (
+                                all(candidate <= initial for candidate, initial in zip(
+                                    rerouted_score, initial_score, strict=True,
+                                ))
+                                and rerouted_score != initial_score
+                            )
+                            if reroute_improves:
+                                sources, source_indices, selected_motions, poses = (
+                                    rerouted_sources, rerouted_indices, rerouted_motions, rerouted_poses,
+                                )
+                                plan, edges = rerouted_plan, rerouted_edges
+                                frontality_records, frontality_owner_plan = rerouted_frontality, rerouted_owner_plan
+                                render_plan = rerouted_plan.as_dict()
+                                render_plan["frontality"] = {
+                                    "source_records": [record.as_dict() for record in rerouted_frontality],
+                                    "owner_plan": rerouted_owner_plan.as_dict(),
+                                    "source_centre_evidence": "measured_adjacent_rgb_motion_only",
+                                }
+                                push = rerouted_push
+                                reroute_audit["accepted"] = True
+                            else:
+                                reroute_audit["rejection_reason"] = "rerouted_failure_score_not_better"
+                        else:
+                            reroute_audit["rejection_reason"] = "no_new_real_midpoint_source_available"
+                    push.metadata["v6_targeted_real_source_reroute"] = reroute_audit
                 else:
                     push = render_calibrated_rgb_pushbroom(
                     list(sources),
