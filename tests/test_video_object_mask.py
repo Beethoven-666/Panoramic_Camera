@@ -39,3 +39,17 @@ def test_thin_non_rectangle_is_protected_but_cannot_enable_homography() -> None:
     assert result.candidate_mask.any()
     assert result.protected_mask.any()
     assert not result.homography_mask.any()
+
+
+def test_strong_line_crossing_keeps_one_object_component_but_blocks_homography() -> None:
+    protection = np.zeros((80, 96), bool)
+    protection[20:45, 31] = True
+
+    result = build_video_object_masks(_evidence((80, 96)), strong_protection=protection)
+
+    assert result.candidate_mask[30, 30]
+    assert result.candidate_mask[30, 32]
+    assert len(result.components) == 1
+    assert result.components[0].rectangular
+    assert not result.components[0].homography_eligible
+    assert not result.homography_mask.any()

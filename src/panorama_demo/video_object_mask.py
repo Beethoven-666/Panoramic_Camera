@@ -108,7 +108,11 @@ def build_video_object_masks(
         backward.astype(np.uint8), xx + forward_flow[..., 0], yy + forward_flow[..., 1],
         cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT,
     ).astype(bool)
-    candidates = forward & ~protection
+    # First keep the connected high-motion region intact.  Strong Canny/line
+    # and DIS-occlusion evidence is a *classification* constraint: it locks
+    # ownership and makes the region ineligible for homography, but must not
+    # cut a real object into artificial fragments before its collar is built.
+    candidates = forward
     count, labels, stats, _ = cv2.connectedComponentsWithStats(candidates.astype(np.uint8), connectivity=8)
     candidate = np.zeros_like(candidates)
     protected = np.zeros_like(candidates)
