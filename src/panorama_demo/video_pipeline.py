@@ -101,8 +101,14 @@ def _legacy_settings_for(spec: VideoAlgorithmSpec) -> dict[str, Any]:
         components = document.get("components")
         if not isinstance(components, dict) or components.get("v6_rgb_only_graphcut") is not True:
             raise ValueError("V6 candidate requires its immutable v6 RGB-only GraphCut component")
+        scan_step = components.get("scan_step")
+        if not isinstance(scan_step, dict) or scan_step.get("normal_pixels") != 8 or scan_step.get("risk_pixels") != 5:
+            raise ValueError("V6 candidate requires immutable 8/5px direct-ORB source reselection")
         settings["fast_renderer"] = "v6_graphcut_candidate"
         settings["fast_orb_target_fps"] = 8.0
+        resampling = dict(settings.get("motion_resampling", {}))
+        resampling.update({"normal_target_step_pixels": 8.0, "risk_target_step_pixels": 5.0, "maximum_step_pixels": 12.0})
+        settings["motion_resampling"] = resampling
         return settings
     if spec.algorithm_id == "D1_dense_real_frame_scan_layout":
         dense = document.get("components", {}).get("dense_real_frame_layout")

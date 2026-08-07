@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 
 import cv2
 import numpy as np
@@ -16,6 +17,7 @@ from .calibrated_rgb_pushbroom import (
 from .video_final_sampling import VideoSamplingSource, sample_video_sources_once
 from .video_graphcut_seam import VideoGraphCutAudit, solve_video_graphcut_seam
 from .video_hard_guards import audit_guard_owner_intersection, build_video_hard_guards
+from .video_local_alignment import fit_background_alignment
 from .video_near_blend import apply_near_multiband, build_near_blend_eligible_mask
 from .video_rgb_quality import VideoRGBQualityAudit, assess_video_rgb_quality
 from .video_visual_renderer import VideoDISPairEvidence, video_dis_pair_evidence
@@ -73,6 +75,63 @@ def build_v6_sampling_sources(
     return tuple(results)
 
 
+def _preview_bgr(source: VideoSamplingSource, factor: int = 4) -> tuple[np.ndarray, np.ndarray]:
+    """Analysis-only low-resolution calibrated sampling; never output RGB."""
+    map_x = source.inverse_x[::factor, ::factor].astype(np.float32)
+    map_y = source.inverse_y[::factor, ::factor].astype(np.float32)
+    image = cv2.remap(source.raw_bgr, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+    return image, np.asarray(source.valid_mask, bool)[::factor, ::factor]
+
+
+def _apply_output_matrix_to_grid(
+    source: VideoSamplingSource, matrix: np.ndarray, support: np.ndarray,
+) -> VideoSamplingSource:
+    """Compose an audited output transform into an inverse grid before raw sampling."""
+    height, width = source.valid_mask.shape
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    points = np.column_stack((xx.ravel(), yy.ravel(), np.ones(height * width, np.float32)))
+    projected = points @ np.asarray(matrix, np.float64).T
+    target_x = (projected[:, 0] / projected[:, 2]).reshape((height, width)).astype(np.float32)
+    target_y = (projected[:, 1] / projected[:, 2]).reshape((height, width)).astype(np.float32)
+    adjusted_x = cv2.remap(source.inverse_x.astype(np.float32), target_x, target_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=-1.0)
+    adjusted_y = cv2.remap(source.inverse_y.astype(np.float32), target_x, target_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=-1.0)
+    adjusted_valid = cv2.remap(source.valid_mask.astype(np.uint8), target_x, target_y, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT) > 0
+    mask = np.asarray(support, bool)
+    return VideoSamplingSource(
+        source.frame_id, source.raw_bgr,
+        np.where(mask, adjusted_x, source.inverse_x), np.where(mask, adjusted_y, source.inverse_y),
+        np.where(mask, adjusted_valid, source.valid_mask),
+    )
+
+
+def apply_v6_background_alignment_to_grids(sources: tuple[VideoSamplingSource, ...]) -> tuple[VideoSamplingSource, ...]:
+    """Apply only accepted RGB/DIS background models before the final sample."""
+    adjusted = list(sources)
+    scale = 4
+    for index in range(1, len(adjusted)):
+        old_preview, old_valid = _preview_bgr(adjusted[index - 1], scale)
+        new_preview, new_valid = _preview_bgr(adjusted[index], scale)
+        old_bgra = np.dstack((old_preview, old_valid.astype(np.uint8) * 255))
+        new_bgra = np.dstack((new_preview, new_valid.astype(np.uint8) * 255))
+        evidence = video_dis_pair_evidence(old_bgra, new_bgra, old_valid & new_valid)
+        if evidence is None:
+            continue
+        # The model consumes full-resolution pixel limits, so scale geometric
+        # flow evidence from the analysis grid before held-out evaluation.
+        evidence = replace(
+            evidence, flow_forward=evidence.flow_forward * scale, flow_backward=evidence.flow_backward * scale,
+            fb_error=evidence.fb_error * scale,
+        )
+        alignment = fit_background_alignment(evidence)
+        if not alignment.audit.accepted or alignment.matrix is None:
+            continue
+        scaling = np.diag((float(scale), float(scale), 1.0))
+        matrix = scaling @ alignment.matrix @ np.linalg.inv(scaling)
+        support = adjusted[index - 1].valid_mask & adjusted[index].valid_mask
+        adjusted[index] = _apply_output_matrix_to_grid(adjusted[index], matrix, support)
+    return tuple(adjusted)
+
+
 def render_video_v6_candidate(
     frames: tuple[object, ...], poses: tuple[np.ndarray, ...], calibration: object, *,
     pushbroom_config: dict[str, object], rgb_motions: list[object], motion_pixels_to_full_resolution: float,
@@ -82,7 +141,7 @@ def render_video_v6_candidate(
         frames, poses, calibration, pushbroom_config=pushbroom_config, rgb_motions=rgb_motions,
         motion_pixels_to_full_resolution=motion_pixels_to_full_resolution,
     )
-    result = render_video_v6_real_sources(sources)
+    result = render_video_v6_real_sources(apply_v6_background_alignment_to_grids(sources))
     metadata = {
         "schema": "video-v6-rgb-only-graphcut/v1",
         "renderer": "v6_real_source_graphcut_once_sampling",
@@ -225,4 +284,4 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
     return VideoV6RenderResult(output, owner, valid, tuple(audits), assess_video_rgb_quality(output, owner, valid, audits), len(sampled), tuple(expanded_owner_pairs))
 
 
-__all__ = ["VideoV6PairRenderResult", "VideoV6RenderResult", "build_v6_sampling_sources", "render_video_v6_candidate", "render_video_v6_real_pair", "render_video_v6_real_sources"]
+__all__ = ["VideoV6PairRenderResult", "VideoV6RenderResult", "apply_v6_background_alignment_to_grids", "build_v6_sampling_sources", "render_video_v6_candidate", "render_video_v6_real_pair", "render_video_v6_real_sources"]

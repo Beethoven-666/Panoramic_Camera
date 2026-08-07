@@ -12,4 +12,5 @@ required_output_components: [v6_rgb_only_graphcut]
 replaces_output_components: [legacy_visual_seam]
 components:
   v6_rgb_only_graphcut: true
-config_sha256: db145b888b9d671eda27903f7b2f40b4ee760e868421a45fca2816770b262801
+  scan_step: {normal_pixels: 8, risk_pixels: 5}
+config_sha256: 9a8aa3f00fc2abdcd07356c4b23fc781704b61b27af7a1d15ffb268be932be5a
