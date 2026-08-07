@@ -13,6 +13,7 @@ from panorama_demo.video_motion_resampler import (
     VideoRenderPlan,
     compose_selected_motions,
     insert_v6_real_rescue_sources,
+    reroute_v6_failed_pairs_with_real_sources,
     select_render_keyframes,
 )
 from panorama_demo.video_panorama import (
@@ -130,6 +131,25 @@ def test_v6_rescue_spends_its_limited_budget_on_the_largest_measured_gap() -> No
 
     assert rescued.rescue_source_indices == (4,)
     assert rescued.source_indices == (0, 2, 4, 6)
+
+
+def test_v6_failed_pair_reroute_reassigns_the_four_real_source_rescue_slots() -> None:
+    frames = tuple(_frame(index) for index in range(13))
+    initial = VideoRenderPlan(
+        frames=(frames[0], frames[2], frames[4], frames[6], frames[8], frames[10], frames[12]),
+        source_indices=(0, 2, 4, 6, 8, 10, 12), scan_direction=1,
+        high_risk_edge_count=0, normal_target_step_pixels=8.0, risk_target_step_pixels=5.0,
+        rescue_source_indices=(2, 4, 6, 8), rescue_source_frame_ids=(2, 4, 6, 8),
+    )
+
+    rerouted = reroute_v6_failed_pairs_with_real_sources(
+        frames, initial, failed_pair_frame_ids=((10, 12), (0, 2)), maximum_rescues=4,
+    )
+
+    assert rerouted.source_indices == (0, 1, 10, 11, 12)
+    assert rerouted.rescue_source_indices == (1, 11)
+    assert rerouted.rescue_source_frame_ids == (1, 11)
+    assert rerouted.as_dict()["interpolated_poses"] is False
 
 
 def test_motion_composition_allows_only_certified_internal_anchor_spans() -> None:

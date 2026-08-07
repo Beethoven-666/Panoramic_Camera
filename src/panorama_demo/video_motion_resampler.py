@@ -267,6 +267,63 @@ def insert_v6_real_rescue_sources(
     )
 
 
+def reroute_v6_failed_pairs_with_real_sources(
+    frames: Sequence[RGBDFrame], plan: VideoRenderPlan, *,
+    failed_pair_frame_ids: Sequence[tuple[int, int]], maximum_rescues: int = 4,
+) -> VideoRenderPlan:
+    """Replace speculative rescues with real midpoint sources for failed pairs.
+
+    This is deliberately just a source-plan transformation.  Its caller must
+    subsequently re-run the required Open3D adjacent-edge audit and the final
+    v6 renderer; no RGB pixels, poses, or flow evidence are carried across.
+    """
+
+    tracking = tuple(frames)
+    if maximum_rescues < 0:
+        raise ValueError("v6 reroute rescue maximum cannot be negative")
+    if len(plan.rescue_source_indices) > maximum_rescues:
+        raise ValueError("v6 reroute cannot start from an over-budget rescue plan")
+    frame_index = {int(frame.frame_id): index for index, frame in enumerate(tracking)}
+    if len(frame_index) != len(tracking):
+        raise ValueError("v6 reroute requires unique chronological tracking frame IDs")
+    plan_indices = tuple(int(index) for index in plan.source_indices)
+    if tuple(plan.frames) != tuple(tracking[index] for index in plan_indices):
+        raise ValueError("v6 reroute plan frames do not match direct-ORB tracking frames")
+    base_indices = [index for index in plan_indices if index not in set(plan.rescue_source_indices)]
+    if len(base_indices) < 2:
+        raise ValueError("v6 reroute requires at least two non-rescue source anchors")
+    requested: list[int] = []
+    for left_id, right_id in failed_pair_frame_ids:
+        left, right = frame_index.get(int(left_id)), frame_index.get(int(right_id))
+        if left is None or right is None:
+            raise ValueError("v6 reroute failure pair is not in the direct-ORB tracking chain")
+        if right <= left:
+            raise ValueError("v6 reroute failure pair must be chronological")
+        # A one-frame pair cannot be split without inventing a source and is
+        # therefore left for the caller's hard-owner degraded evidence.
+        if right - left <= 1:
+            continue
+        midpoint = left + (right - left) // 2
+        if midpoint not in base_indices and midpoint not in requested:
+            requested.append(midpoint)
+        if len(requested) == maximum_rescues:
+            break
+    # The reroute budget is intentionally reassigned, not accumulated: a
+    # stale pre-GraphCut rescue must not consume one of the four allowed
+    # targeted sources.
+    selected_indices = tuple(sorted((*base_indices, *requested)))
+    return VideoRenderPlan(
+        frames=tuple(tracking[index] for index in selected_indices),
+        source_indices=selected_indices,
+        scan_direction=plan.scan_direction,
+        high_risk_edge_count=plan.high_risk_edge_count,
+        normal_target_step_pixels=plan.normal_target_step_pixels,
+        risk_target_step_pixels=plan.risk_target_step_pixels,
+        rescue_source_indices=tuple(sorted(requested)),
+        rescue_source_frame_ids=tuple(tracking[index].frame_id for index in sorted(requested)),
+    )
+
+
 def compose_selected_motions(
     motions: Sequence[MotionEstimate], source_indices: Sequence[int], *, require_scan_endpoints: bool = True
 ) -> list[MotionEstimate]:
