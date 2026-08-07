@@ -209,11 +209,19 @@ def _compact_object_owner_preference(
         return preferred
     if len(object_masks.components) != len(object_masks.component_masks):
         raise RuntimeError("v6 object audit/mask component cardinality mismatch")
+    canvas_right = canvas_left + object_masks.candidate_mask.shape[1]
     for audit, component in zip(object_masks.components, object_masks.component_masks, strict=True):
         x, _y, width, _height = audit.bounding_box_xywh
+        object_left = canvas_left + x
+        object_right = canvas_left + x + width
         region = VideoObjectRegion(
             f"{old_frame_id}_{new_frame_id}_{audit.label}",
-            (float(canvas_left + x), float(canvas_left + x + width)), audit.collar_px,
+            # The GraphCut corridor is the complete observable domain for
+            # this decision.  A collar that reaches its edge is deliberately
+            # clipped there rather than demanding invisible pixels beyond it.
+            (float(max(canvas_left, object_left - audit.collar_px)),
+             float(min(canvas_right, object_right + audit.collar_px))),
+            0,
         )
         try:
             plan = plan_object_patches(region, supports)
@@ -227,7 +235,17 @@ def _compact_object_owner_preference(
         # Prefer the same all-connected object and automatic collar that is
         # protected from GraphCut.  Source validity remains enforced by the
         # hard-guard builder.
-        preferred |= cv2.dilate(np.asarray(component, np.uint8), collar_kernel).astype(bool)
+        component_with_collar = cv2.dilate(
+            np.asarray(component, np.uint8), collar_kernel,
+        ).astype(bool)
+        # A free-standing new-owner island would require two extra seams around
+        # the object and has already proven prone to GraphCut topology failure
+        # on the frozen T1 data.  Only allow the compact source switch when it
+        # is connected to the corridor boundary, so it extends the new-source
+        # region through a single monotone seam rather than creating an island.
+        if not (component_with_collar[:, 0].any() or component_with_collar[:, -1].any()):
+            continue
+        preferred |= component_with_collar
     return preferred
 
 

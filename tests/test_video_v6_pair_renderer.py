@@ -129,9 +129,9 @@ def test_hard_frontality_support_is_mapped_from_raw_columns_to_canvas_coordinate
 def test_compact_object_switches_only_to_one_complete_new_direct_source() -> None:
     height, width = 80, 120
     flow = np.zeros((height, width, 2), np.float32)
-    flow[20:48, 45:70, 0] = 4.0
+    flow[20:48, 85:115, 0] = 4.0
     backward = np.zeros_like(flow)
-    backward[20:48, 49:74, 0] = -4.0
+    backward[20:48, 89:119, 0] = -4.0
     zeros = np.zeros((height, width), np.float32)
     evidence = VideoDISPairEvidence(
         flow, backward, zeros, zeros, zeros, np.zeros((height, width), bool), zeros,
@@ -141,12 +141,12 @@ def test_compact_object_switches_only_to_one_complete_new_direct_source() -> Non
 
     preferred = _compact_object_owner_preference(
         masks, old_frame_id=1, new_frame_id=2, canvas_left=0,
-        supports=(VideoDirectSourceSupport(1, (0.0, 40.0)), VideoDirectSourceSupport(2, (39.0, 120.0))),
+        supports=(VideoDirectSourceSupport(1, (0.0, 80.0)), VideoDirectSourceSupport(2, (79.0, 120.0))),
     )
 
-    assert preferred[34, 56]
+    assert preferred[34, 100]
     assert preferred.sum() >= masks.candidate_mask.sum()
     assert not _compact_object_owner_preference(
         masks, old_frame_id=1, new_frame_id=2, canvas_left=0,
-        supports=(VideoDirectSourceSupport(1, (0.0, 65.0)), VideoDirectSourceSupport(2, (65.0, 120.0))),
+        supports=(VideoDirectSourceSupport(1, (0.0, 100.0)), VideoDirectSourceSupport(2, (100.0, 120.0))),
     ).any()
