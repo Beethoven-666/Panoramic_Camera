@@ -40,7 +40,7 @@ def build_video_hard_guards(
     old_bgr: np.ndarray, new_bgr: np.ndarray, evidence: VideoDISPairEvidence, *,
     object_mask: np.ndarray | None = None, prefer_new_mask: np.ndarray | None = None,
     old_valid: np.ndarray | None = None, new_valid: np.ndarray | None = None,
-    edge_guard_radius_px: int = 2,
+    edge_guard_radius_px: int = 3,
 ) -> VideoHardGuards:
     """Build exclusive hard-owner masks from RGB structure and cached DIS risk."""
     old, new = np.asarray(old_bgr), np.asarray(new_bgr)
