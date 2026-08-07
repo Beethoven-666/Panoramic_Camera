@@ -16,7 +16,11 @@ from .calibrated_rgb_pushbroom import (
 from .video_final_sampling import VideoSamplingSource, sample_video_sources_once
 from .video_graphcut_seam import VideoGraphCutAudit, solve_video_graphcut_seam
 from .video_hard_guards import audit_guard_owner_intersection, build_video_hard_guards
-from .video_local_alignment import VideoLocalAlignmentConfig, fit_background_alignment
+from .video_local_alignment import (
+    VideoLocalAlignmentConfig,
+    fit_background_alignment,
+    fit_near_protected_alignment,
+)
 from .video_near_blend import apply_near_multiband, build_near_blend_eligible_mask
 from .video_photometric import (
     AdjacentBGRAOverlap,
@@ -49,6 +53,7 @@ class VideoV6RenderResult:
     source_sampling_call_count: int
     expanded_real_owner_pair_frame_ids: tuple[tuple[int, int], ...]
     photometric_audit: dict[str, object]
+    prepared_pairs: tuple[object, ...]
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,7 @@ class _PreparedV6Pair:
     graphcut_audit: VideoGraphCutAudit
     choose_new: np.ndarray
     owner_expanded: bool
+    near_ladder_audit: object
 
 
 def _safe_photometric_background(pair: _PreparedV6Pair) -> np.ndarray:
@@ -212,7 +218,9 @@ def render_video_v6_candidate(
     result = render_video_v6_real_sources(aligned_sources)
     effective_observations = iter(result.quality.seam_observations)
     pair_metadata: list[dict[str, object]] = []
-    for old_source, new_source, audit in zip(sources[:-1], sources[1:], result.graphcut_audits, strict=True):
+    for old_source, new_source, audit, prepared in zip(
+        sources[:-1], sources[1:], result.graphcut_audits, result.prepared_pairs, strict=True,
+    ):
         observation = next(effective_observations, None) if audit.accepted else None
         pair_metadata.append({
             "old_frame_id": old_source.frame_id,
@@ -229,6 +237,14 @@ def render_video_v6_candidate(
             "double_edge_count": None if observation is None else observation.double_edge_count,
             "ghost_count": None if observation is None else observation.ghost_count,
             "evaluated_seam_rows": None if observation is None else observation.evaluated_row_count,
+            "near_ladder": {
+                "selected_model": prepared.near_ladder_audit.selected_model,
+                "accepted": prepared.near_ladder_audit.accepted,
+                "rejection_reason": prepared.near_ladder_audit.rejection_reason,
+                "held_out_residual_p95_px": prepared.near_ladder_audit.held_out_residual_p95_px,
+                "held_out_residual_abs_max_px": prepared.near_ladder_audit.held_out_residual_abs_max_px,
+                "maximum_displacement_px": prepared.near_ladder_audit.maximum_displacement_px,
+            },
         })
     metadata = {
         "schema": "video-v6-rgb-only-graphcut/v1",
@@ -356,10 +372,15 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
             # rescue source.
             graphcut.choose_new[:] = False
             expanded_owner_pairs.append((int(old_source.frame_id), int(new_source.frame_id)))
+        near_audit = fit_near_protected_alignment(
+            evidence,
+            support=old_crop_valid & new_crop_valid & ~guards.protected,
+            plane_verified=False,
+        ).audit
         prepared_pairs.append(_PreparedV6Pair(
             old_source, new_source, left, right, old_valid, new_valid,
             old_crop_valid, new_crop_valid, evidence, guards, graphcut.audit,
-            graphcut.choose_new.copy(), not graphcut.audit.accepted,
+            graphcut.choose_new.copy(), not graphcut.audit.accepted, near_audit,
         ))
         audits.append(graphcut.audit)
 
@@ -409,7 +430,7 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
     return VideoV6RenderResult(
         output, owner, valid, tuple(audits),
         assess_video_rgb_quality(output, owner, valid, effective_audits), len(sampled),
-        tuple(expanded_owner_pairs), photometric.audit,
+        tuple(expanded_owner_pairs), photometric.audit, tuple(prepared_pairs),
     )
 
 
