@@ -293,7 +293,8 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
         output[top:bottom, left:right] = blended
         audits.append(graphcut.audit)
     valid = owner >= 0
-    return VideoV6RenderResult(output, owner, valid, tuple(audits), assess_video_rgb_quality(output, owner, valid, audits), len(sampled), tuple(expanded_owner_pairs))
+    effective_audits = tuple(audit for audit in audits if audit.accepted)
+    return VideoV6RenderResult(output, owner, valid, tuple(audits), assess_video_rgb_quality(output, owner, valid, effective_audits), len(sampled), tuple(expanded_owner_pairs))
 
 
 __all__ = ["VideoV6PairRenderResult", "VideoV6RenderResult", "apply_v6_background_alignment_to_grids", "build_v6_sampling_sources", "render_video_v6_candidate", "render_video_v6_real_pair", "render_video_v6_real_sources"]
