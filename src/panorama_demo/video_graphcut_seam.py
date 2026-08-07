@@ -101,8 +101,16 @@ def solve_video_graphcut_seam(
         ((old_valid & ~new_hard).astype(np.uint8) * 255),
         ((new_valid & ~old_hard).astype(np.uint8) * 255),
     ]
+    if not np.any((masks[0] > 0) & (masks[1] > 0)):
+        raise RuntimeError("GraphCut has no unprotected competing support")
     finder = cv2.detail.GraphCutSeamFinder("COST_COLOR_GRAD")
-    finder.find([np.asarray(old_bgr)[..., :3], np.asarray(new_bgr)[..., :3]], [(0, 0), (0, 0)], masks)
+    try:
+        finder.find([
+            np.ascontiguousarray(np.asarray(old_bgr)[..., :3].astype(np.float32)),
+            np.ascontiguousarray(np.asarray(new_bgr)[..., :3].astype(np.float32)),
+        ], [(0, 0), (0, 0)], masks)
+    except cv2.error as error:
+        raise RuntimeError("OpenCV GraphCut failed on the protected corridor") from error
     old_label, new_label = (mask > 0 for mask in masks)
     choose_new = (new_valid & ~old_valid) | (overlap & new_label & ~old_label)
     choose_new[new_hard] = True
