@@ -68,6 +68,39 @@ class _PreparedV6Pair:
     owner_expanded: bool
 
 
+def _safe_photometric_background(pair: _PreparedV6Pair) -> np.ndarray:
+    """Return common, low-residual background samples for a pair fit."""
+
+    return (
+        pair.old_crop_valid & pair.new_crop_valid & pair.evidence.reliable_mask
+        & np.isfinite(pair.evidence.fb_error) & (pair.evidence.fb_error <= 0.75)
+        & np.isfinite(pair.evidence.rgb_residual) & (pair.evidence.rgb_residual <= 20.0)
+        & ~pair.evidence.occlusion_risk_mask & ~pair.guards.protected
+    )
+
+
+def _photometric_matched_right(
+    right_bgr: np.ndarray, right_valid: np.ndarray, evidence: VideoDISPairEvidence,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sample right evidence at cached forward-DIS correspondences only."""
+
+    height, width = right_valid.shape
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    flow = np.asarray(evidence.flow_forward, dtype=np.float32)
+    if flow.shape != (height, width, 2):
+        raise ValueError("photometric DIS flow must match the right evidence crop")
+    map_x, map_y = xx + flow[..., 0], yy + flow[..., 1]
+    matched_bgr = cv2.remap(
+        np.asarray(right_bgr), map_x, map_y, cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+    )
+    matched_valid = cv2.remap(
+        np.asarray(right_valid, dtype=np.uint8), map_x, map_y, cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+    ) > 0
+    return matched_bgr, matched_valid
+
+
 def build_v6_sampling_sources(
     frames: tuple[object, ...], poses: tuple[np.ndarray, ...], calibration: object, *,
     pushbroom_config: dict[str, object], rgb_motions: list[object], motion_pixels_to_full_resolution: float,
@@ -336,14 +369,14 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
         new_bgr = sampled[index + 1][1]
         old_crop = old_bgr[:, pair.left:pair.right]
         new_crop = new_bgr[:, pair.left:pair.right]
-        safe_background = (
-            pair.old_crop_valid & pair.new_crop_valid & pair.evidence.reliable_mask
-            & ~pair.evidence.occlusion_risk_mask & ~pair.guards.protected
+        matched_new_crop, matched_new_valid = _photometric_matched_right(
+            new_crop, pair.new_crop_valid, pair.evidence,
         )
+        safe_background = _safe_photometric_background(pair) & matched_new_valid
         overlaps.append(AdjacentBGRAOverlap(
             index, index + 1,
             np.dstack((old_crop, pair.old_crop_valid.astype(np.uint8) * 255)),
-            np.dstack((new_crop, pair.new_crop_valid.astype(np.uint8) * 255)),
+            np.dstack((matched_new_crop, matched_new_valid.astype(np.uint8) * 255)),
             safe_background, safe_background,
         ))
     photometric = solve_video_global_photometric(len(sampled), overlaps)
