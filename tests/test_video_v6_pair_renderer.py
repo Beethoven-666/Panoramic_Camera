@@ -5,11 +5,14 @@ import numpy as np
 from panorama_demo.video_final_sampling import VideoSamplingSource
 from panorama_demo.video_v6_pair_renderer import (
     _apply_output_mesh_to_grid,
+    _compact_object_owner_preference,
     _hard_frontality_supports,
     _photometric_matched_right,
     render_video_v6_real_pair,
     render_video_v6_real_sources,
 )
+from panorama_demo.video_object_mask import build_video_object_masks
+from panorama_demo.video_object_patch_planning import VideoDirectSourceSupport
 from panorama_demo.video_visual_renderer import VideoDISPairEvidence
 
 
@@ -121,3 +124,29 @@ def test_hard_frontality_support_is_mapped_from_raw_columns_to_canvas_coordinate
 
     assert support[0].frame_id == 7
     assert support[0].support_x == (30.0, 90.0)
+
+
+def test_compact_object_switches_only_to_one_complete_new_direct_source() -> None:
+    height, width = 80, 120
+    flow = np.zeros((height, width, 2), np.float32)
+    flow[20:48, 45:70, 0] = 4.0
+    backward = np.zeros_like(flow)
+    backward[20:48, 49:74, 0] = -4.0
+    zeros = np.zeros((height, width), np.float32)
+    evidence = VideoDISPairEvidence(
+        flow, backward, zeros, zeros, zeros, np.zeros((height, width), bool), zeros,
+        np.ones((height, width), bool), np.zeros((height, width, 4), np.uint8),
+    )
+    masks = build_video_object_masks(evidence, strong_protection=np.zeros((height, width), bool))
+
+    preferred = _compact_object_owner_preference(
+        masks, old_frame_id=1, new_frame_id=2, canvas_left=0,
+        supports=(VideoDirectSourceSupport(1, (0.0, 40.0)), VideoDirectSourceSupport(2, (39.0, 120.0))),
+    )
+
+    assert preferred[34, 56]
+    assert preferred.sum() >= masks.candidate_mask.sum()
+    assert not _compact_object_owner_preference(
+        masks, old_frame_id=1, new_frame_id=2, canvas_left=0,
+        supports=(VideoDirectSourceSupport(1, (0.0, 65.0)), VideoDirectSourceSupport(2, (65.0, 120.0))),
+    ).any()

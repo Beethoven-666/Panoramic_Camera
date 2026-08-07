@@ -191,6 +191,46 @@ def _object_patch_plans(
     return plans
 
 
+def _compact_object_owner_preference(
+    object_masks: VideoObjectMaskResult, *, old_frame_id: int, new_frame_id: int,
+    canvas_left: int, supports: tuple[VideoDirectSourceSupport, ...] | None,
+) -> np.ndarray:
+    """Prefer the new real source only for a complete compact object cover.
+
+    The default for every protected object is the chronological old hard owner.
+    A switch is allowed only when the object's *entire* connected component
+    plus its context collar has a single, continuous hard-frontality cover and
+    that cover is this adjacent new source.  Wide, unstable, cable/fan, and
+    otherwise unplannable regions deliberately remain hard-owner-only.
+    """
+
+    preferred = np.zeros_like(object_masks.candidate_mask, dtype=bool)
+    if supports is None:
+        return preferred
+    if len(object_masks.components) != len(object_masks.component_masks):
+        raise RuntimeError("v6 object audit/mask component cardinality mismatch")
+    for audit, component in zip(object_masks.components, object_masks.component_masks, strict=True):
+        x, _y, width, _height = audit.bounding_box_xywh
+        region = VideoObjectRegion(
+            f"{old_frame_id}_{new_frame_id}_{audit.label}",
+            (float(canvas_left + x), float(canvas_left + x + width)), audit.collar_px,
+        )
+        try:
+            plan = plan_object_patches(region, supports)
+        except RuntimeError:
+            continue
+        if plan.final_replanned_n_req != 1 or plan.source_frame_ids != (new_frame_id,):
+            continue
+        collar_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (audit.collar_px * 2 + 1, audit.collar_px * 2 + 1),
+        )
+        # Prefer the same all-connected object and automatic collar that is
+        # protected from GraphCut.  Source validity remains enforced by the
+        # hard-guard builder.
+        preferred |= cv2.dilate(np.asarray(component, np.uint8), collar_kernel).astype(bool)
+    return preferred
+
+
 def build_v6_sampling_sources(
     frames: tuple[object, ...], poses: tuple[np.ndarray, ...], calibration: object, *,
     pushbroom_config: dict[str, object], rgb_motions: list[object], motion_pixels_to_full_resolution: float,
@@ -440,7 +480,9 @@ def render_video_v6_candidate(
     near_sources, near_owner_masks, near_alignment_audits = apply_v6_near_alignment_to_grids(
         aligned_sources, return_audits=True,
     )
-    result = render_video_v6_real_sources(near_sources, near_owner_masks=near_owner_masks)
+    result = render_video_v6_real_sources(
+        near_sources, near_owner_masks=near_owner_masks, frontality_supports=hard_frontality,
+    )
     effective_observations = iter(result.quality.seam_observations)
     pair_metadata: list[dict[str, object]] = []
     for old_source, new_source, audit, prepared in zip(
@@ -572,6 +614,7 @@ def render_video_v6_real_pair(
 def render_video_v6_real_sources(
     sources: tuple[VideoSamplingSource, ...], *,
     near_owner_masks: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] | None = None,
+    frontality_supports: tuple[VideoDirectSourceSupport, ...] | None = None,
 ) -> VideoV6RenderResult:
     """Compose a chronological v6 source chain after exactly one sampling per source."""
     if len(sources) < 2:
@@ -623,12 +666,15 @@ def render_video_v6_real_sources(
             object_masks = build_video_object_masks(
                 evidence, strong_protection=base_guards.protected,
             )
-            preferred_new = None
+            preferred_new = _compact_object_owner_preference(
+                object_masks, old_frame_id=int(old_source.frame_id), new_frame_id=int(new_source.frame_id),
+                canvas_left=corridor_left, supports=frontality_supports,
+            )
             stored = (near_owner_masks or {}).get((int(old_source.frame_id), int(new_source.frame_id)))
             protected_object = object_masks.protected_mask
             if stored is not None:
                 stored_candidate, stored_protected = stored
-                preferred_new = np.asarray(stored_candidate, bool)[:, corridor_left:corridor_right]
+                preferred_new |= np.asarray(stored_candidate, bool)[:, corridor_left:corridor_right]
                 protected_object |= np.asarray(stored_protected, bool)[:, corridor_left:corridor_right]
             guards = build_video_hard_guards(
                 old_crop, new_crop, evidence, object_mask=protected_object, prefer_new_mask=preferred_new,

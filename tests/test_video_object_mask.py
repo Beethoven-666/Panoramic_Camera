@@ -31,6 +31,8 @@ def test_motion_residual_rectangle_gets_context_collar_and_homography_eligibilit
     assert result.homography_mask[30, 30]
     assert result.components[0].stable_across_pair
     assert result.components[0].rectangular
+    assert len(result.component_masks) == 1
+    assert np.array_equal(result.component_masks[0], result.candidate_mask)
 
 
 def test_thin_non_rectangle_is_protected_but_cannot_enable_homography() -> None:

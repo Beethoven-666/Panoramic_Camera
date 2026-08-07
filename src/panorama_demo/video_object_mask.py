@@ -37,6 +37,11 @@ class VideoObjectMaskResult:
     homography_mask: np.ndarray
     residual_threshold_px: float
     components: tuple[VideoObjectComponentAudit, ...]
+    # Aligned with ``components``.  Retaining each original connected region
+    # lets the owner planner make one all-or-nothing decision per object;
+    # it must not reconstruct an object from a bounding box or split it at a
+    # Canny/line protection boundary.
+    component_masks: tuple[np.ndarray, ...]
 
 
 def _residual_mask(flow: np.ndarray, reliable: np.ndarray, config: VideoObjectMaskConfig) -> tuple[np.ndarray, float]:
@@ -118,6 +123,7 @@ def build_video_object_masks(
     protected = np.zeros_like(candidates)
     homography = np.zeros_like(candidates)
     audits: list[VideoObjectComponentAudit] = []
+    component_masks: list[np.ndarray] = []
     for label in range(1, count):
         area = int(stats[label, cv2.CC_STAT_AREA])
         if area < settings.minimum_component_pixels:
@@ -143,7 +149,10 @@ def build_video_object_masks(
         audits.append(VideoObjectComponentAudit(
             label, area, (x, y, width, height), collar, stable, rectangular, eligible,
         ))
-    return VideoObjectMaskResult(candidate, protected, homography, threshold, tuple(audits))
+        component_masks.append(component)
+    return VideoObjectMaskResult(
+        candidate, protected, homography, threshold, tuple(audits), tuple(component_masks),
+    )
 
 
 __all__ = [
