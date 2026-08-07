@@ -45,6 +45,23 @@ class VideoFinalSamplingResult:
     audit: VideoFinalSamplingAudit
 
 
+def sample_video_sources_once(sources: Iterable[VideoSamplingSource]) -> tuple[tuple[VideoSamplingSource, np.ndarray], ...]:
+    """Materialize each full-resolution source grid once for a v6 renderer."""
+    ordered = tuple(sources)
+    if not ordered:
+        raise ValueError("final sampling requires at least one real source")
+    frame_ids = tuple(int(source.frame_id) for source in ordered)
+    if frame_ids != tuple(sorted(set(frame_ids))):
+        raise ValueError("final sampling source ids must be unique and chronological")
+    return tuple(
+        (
+            source,
+            cv2.remap(source.raw_bgr, source.inverse_x.astype(np.float32), source.inverse_y.astype(np.float32), cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0)),
+        )
+        for source in ordered
+    )
+
+
 def render_video_final_once(sources: Iterable[VideoSamplingSource], owner_frame_id: np.ndarray) -> VideoFinalSamplingResult:
     """Sample every true source once, then copy only its owned output pixels."""
     ordered = tuple(sources)
@@ -61,13 +78,9 @@ def render_video_final_once(sources: Iterable[VideoSamplingSource], owner_frame_
     known = np.isin(owner[valid], frame_ids)
     if not np.all(known):
         raise ValueError("final owner map contains an unknown source id")
-    sampled: list[np.ndarray] = []
-    calls: list[int] = []
-    for source in ordered:
-        # The only raw-RGB resampling operation in this function.  Its result
-        # is thereafter copied by owner id, never remapped again.
-        sampled.append(cv2.remap(source.raw_bgr, source.inverse_x.astype(np.float32), source.inverse_y.astype(np.float32), cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0)))
-        calls.append(1)
+    sampled_records = sample_video_sources_once(ordered)
+    sampled = [item[1] for item in sampled_records]
+    calls = [1] * len(sampled)
     output = np.zeros((*shape, 3), dtype=np.uint8)
     topology = True
     for source, remapped in zip(ordered, sampled, strict=True):
@@ -80,4 +93,4 @@ def render_video_final_once(sources: Iterable[VideoSamplingSource], owner_frame_
     return VideoFinalSamplingResult(output, valid, owner.copy(), VideoFinalSamplingAudit(frame_ids, tuple(calls), int(valid.sum()), topology, all(value == 1 for value in calls)))
 
 
-__all__ = ["VideoFinalSamplingAudit", "VideoFinalSamplingResult", "VideoSamplingSource", "render_video_final_once"]
+__all__ = ["VideoFinalSamplingAudit", "VideoFinalSamplingResult", "VideoSamplingSource", "render_video_final_once", "sample_video_sources_once"]
