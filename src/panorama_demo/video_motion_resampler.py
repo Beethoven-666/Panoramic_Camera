@@ -68,6 +68,8 @@ class VideoRenderPlan:
     high_risk_edge_count: int
     normal_target_step_pixels: float
     risk_target_step_pixels: float
+    rescue_source_indices: tuple[int, ...] = ()
+    rescue_source_frame_ids: tuple[int, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -78,6 +80,8 @@ class VideoRenderPlan:
             "high_risk_edge_count": self.high_risk_edge_count,
             "normal_target_step_pixels": self.normal_target_step_pixels,
             "risk_target_step_pixels": self.risk_target_step_pixels,
+            "rescue_source_indices": list(self.rescue_source_indices),
+            "rescue_source_frame_ids": list(self.rescue_source_frame_ids),
             "real_source_frames_only": True,
             "interpolated_poses": False,
         }
@@ -184,6 +188,76 @@ def select_render_keyframes(
         high_risk_edge_count=risk_edges,
         normal_target_step_pixels=settings.normal_target_step_pixels,
         risk_target_step_pixels=settings.risk_target_step_pixels,
+    )
+
+
+def insert_v6_real_rescue_sources(
+    frames: Sequence[RGBDFrame],
+    motions: Sequence[MotionEstimate],
+    plan: VideoRenderPlan,
+    *,
+    full_resolution_scale: float,
+    maximum_step_pixels: float = 8.0,
+    maximum_rescues: int = 4,
+) -> VideoRenderPlan:
+    """Insert one existing direct-ORB source into each oversized final gap.
+
+    This is source selection, not frame/pose synthesis.  It happens before
+    Open3D edge audit and final raw-RGB sampling, so every added edge is
+    audited and each final source remains sampled exactly once.  The inserted
+    node is the real tracking frame nearest to half the measured motion in its
+    selected-source gap.
+    """
+
+    tracking = tuple(frames)
+    if len(tracking) < 2 or len(motions) != len(tracking) - 1:
+        raise ValueError("v6 rescue requires complete chronological tracking motion")
+    if not np.isfinite(full_resolution_scale) or full_resolution_scale <= 0.0:
+        raise ValueError("v6 rescue full-resolution scale must be finite and positive")
+    if not np.isfinite(maximum_step_pixels) or maximum_step_pixels <= 0.0:
+        raise ValueError("v6 rescue maximum step must be finite and positive")
+    if maximum_rescues < 0:
+        raise ValueError("v6 rescue maximum count cannot be negative")
+    indices = tuple(int(index) for index in plan.source_indices)
+    if len(indices) < 2 or indices[0] != 0 or indices[-1] != len(tracking) - 1:
+        raise ValueError("v6 rescue requires a complete real-source plan")
+    if tuple(plan.frames) != tuple(tracking[index] for index in indices):
+        raise ValueError("v6 rescue plan frames do not match the direct-ORB tracking chain")
+    direction = int(plan.scan_direction)
+    if direction not in {-1, 1}:
+        raise ValueError("v6 rescue requires a monotone scan direction")
+
+    selected = list(indices)
+    rescue_indices: list[int] = []
+    for left, right in zip(indices[:-1], indices[1:], strict=True):
+        if len(rescue_indices) >= maximum_rescues or right - left <= 1:
+            continue
+        steps = np.asarray(
+            [
+                max(0.0, direction * float(motion.dx)) * full_resolution_scale
+                for motion in motions[left:right]
+            ],
+            dtype=np.float64,
+        )
+        total = float(np.sum(steps))
+        if total <= maximum_step_pixels:
+            continue
+        cumulative = np.cumsum(steps)
+        candidates = np.arange(left + 1, right, dtype=np.int32)
+        midpoint = 0.5 * total
+        rescue = int(candidates[int(np.argmin(np.abs(cumulative[:-1] - midpoint)))])
+        selected.append(rescue)
+        rescue_indices.append(rescue)
+    selected_indices = tuple(sorted(selected))
+    return VideoRenderPlan(
+        frames=tuple(tracking[index] for index in selected_indices),
+        source_indices=selected_indices,
+        scan_direction=direction,
+        high_risk_edge_count=plan.high_risk_edge_count,
+        normal_target_step_pixels=plan.normal_target_step_pixels,
+        risk_target_step_pixels=plan.risk_target_step_pixels,
+        rescue_source_indices=tuple(rescue_indices),
+        rescue_source_frame_ids=tuple(tracking[index].frame_id for index in rescue_indices),
     )
 
 

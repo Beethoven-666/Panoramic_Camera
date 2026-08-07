@@ -11,6 +11,7 @@ from panorama_demo.session import RGBDFrame
 from panorama_demo.video_motion_resampler import (
     MotionResamplingConfig,
     compose_selected_motions,
+    insert_v6_real_rescue_sources,
     select_render_keyframes,
 )
 from panorama_demo.video_panorama import (
@@ -85,6 +86,28 @@ def test_motion_resampler_keeps_risky_edges_denser_and_composes_real_motion() ->
     assert len(combined) == len(plan.frames) - 1
     assert sum(item.dx for item in combined) == 24.0
     assert all(item.method == "composed_video_motion" for item in combined)
+
+
+def test_v6_rescue_inserts_only_existing_direct_orb_midpoints_for_oversized_gaps() -> None:
+    frames = tuple(_frame(index) for index in range(5))
+    motions = [MotionEstimate(5.0, 0.0, 80, 0.9, 0.7, "dis_ultrafast") for _ in range(4)]
+    plan = select_render_keyframes(
+        frames,
+        motions,
+        full_resolution_scale=1.0,
+        frame_width=848,
+        qualities=[_quality() for _ in frames],
+        config=MotionResamplingConfig(normal_target_step_pixels=8.0, risk_target_step_pixels=5.0),
+    )
+
+    rescued = insert_v6_real_rescue_sources(
+        frames, motions, plan, full_resolution_scale=1.0, maximum_step_pixels=8.0,
+    )
+
+    assert rescued.source_indices == (0, 1, 2, 3, 4)
+    assert rescued.rescue_source_indices == (1, 3)
+    assert rescued.rescue_source_frame_ids == (1, 3)
+    assert rescued.as_dict()["interpolated_poses"] is False
 
 
 def test_motion_composition_allows_only_certified_internal_anchor_spans() -> None:
