@@ -97,7 +97,7 @@ def _legacy_settings_for(spec: VideoAlgorithmSpec) -> dict[str, Any]:
             raise ValueError("Frozen production config does not provide a runnable renderer contract")
         settings.update(legacy)
         return settings
-    if spec.algorithm_id == "V6_rgb_only_graphcut":
+    if spec.algorithm_id in {"V6_rgb_only_graphcut", "V6_rgb_only_graphcut_t2"}:
         components = document.get("components")
         if not isinstance(components, dict) or components.get("v6_rgb_only_graphcut") is not True:
             raise ValueError("V6 candidate requires its immutable v6 RGB-only GraphCut component")
