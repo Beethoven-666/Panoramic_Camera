@@ -28,3 +28,12 @@ def test_rgb_quality_rejects_staircase_and_invalid_owner_topology() -> None:
     assert not audit.strict_quality_pass
     assert "owner_topology" in audit.failure_reasons
     assert "seam_step_p95" in audit.failure_reasons
+
+
+def test_rgb_quality_does_not_treat_one_continuous_horizontal_line_as_double_edge() -> None:
+    bgr = np.zeros((12, 20, 3), np.uint8)
+    bgr[6:] = 255
+    owner = np.zeros((12, 20), np.int32)
+    audit = assess_video_rgb_quality(bgr, owner, np.ones(owner.shape, bool), (_audit((10,) * 12),))
+
+    assert audit.double_edge_count == 0

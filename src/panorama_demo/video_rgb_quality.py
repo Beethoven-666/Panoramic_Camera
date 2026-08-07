@@ -64,8 +64,12 @@ def _double_edge_and_ghost_count(bgr: np.ndarray, audits: Sequence[VideoGraphCut
             if local_x < 0 or seam_x < 2 or seam_x >= edges.shape[1] - 2 or row >= edges.shape[0]:
                 continue
             window = edges[row, seam_x - 2 : seam_x + 3]
-            double += int(np.count_nonzero(window) >= 2)
-            ghost += int(np.count_nonzero(window[[0, -1]]) == 2)
+            # A continuous horizontal edge crossing a vertical seam is one
+            # real line, not a double edge.  Count only distinct Canny runs
+            # separated by at least one non-edge pixel in the seam window.
+            starts = int(window[0]) + int(np.count_nonzero(~window[:-1] & window[1:]))
+            double += int(starts >= 2)
+            ghost += int(starts >= 2 and bool(window[0]) and bool(window[-1]))
     return double, ghost
 
 
