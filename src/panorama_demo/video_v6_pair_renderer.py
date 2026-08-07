@@ -18,6 +18,11 @@ from .video_graphcut_seam import VideoGraphCutAudit, solve_video_graphcut_seam
 from .video_hard_guards import audit_guard_owner_intersection, build_video_hard_guards
 from .video_local_alignment import VideoLocalAlignmentConfig, fit_background_alignment
 from .video_near_blend import apply_near_multiband, build_near_blend_eligible_mask
+from .video_photometric import (
+    AdjacentBGRAOverlap,
+    apply_video_photometric_correction,
+    solve_video_global_photometric,
+)
 from .video_rgb_quality import VideoRGBQualityAudit, assess_video_rgb_quality
 from .video_visual_renderer import VideoDISPairEvidence, video_dis_pair_evidence
 
@@ -43,6 +48,24 @@ class VideoV6RenderResult:
     quality: VideoRGBQualityAudit
     source_sampling_call_count: int
     expanded_real_owner_pair_frame_ids: tuple[tuple[int, int], ...]
+    photometric_audit: dict[str, object]
+
+
+@dataclass(frozen=True)
+class _PreparedV6Pair:
+    old_source: VideoSamplingSource
+    new_source: VideoSamplingSource
+    left: int
+    right: int
+    old_valid: np.ndarray
+    new_valid: np.ndarray
+    old_crop_valid: np.ndarray
+    new_crop_valid: np.ndarray
+    evidence: VideoDISPairEvidence
+    guards: object
+    graphcut_audit: VideoGraphCutAudit
+    choose_new: np.ndarray
+    owner_expanded: bool
 
 
 def build_v6_sampling_sources(
@@ -194,6 +217,7 @@ def render_video_v6_candidate(
         },
         "expanded_real_owner_pair_frame_ids": [list(pair) for pair in result.expanded_real_owner_pair_frame_ids],
         "background_alignment": list(alignment_audits),
+        "video_global_photometric": result.photometric_audit,
     }
     return CalibratedRGBPushbroomResult(result.bgr, metadata, owner_frame_id=result.owner_frame_id)
 
@@ -255,10 +279,7 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
     if len(sources) < 2:
         raise ValueError("v6 renderer requires at least two chronological real sources")
     sampled = sample_video_sources_once(sources)
-    first, first_bgr = sampled[0]
-    owner = np.full(first.valid_mask.shape, -1, np.int32)
-    owner[first.valid_mask] = int(first.frame_id)
-    output = first_bgr.copy()
+    prepared_pairs: list[_PreparedV6Pair] = []
     audits: list[VideoGraphCutAudit] = []
     expanded_owner_pairs: list[tuple[int, int]] = []
     for (old_source, old_bgr), (new_source, new_bgr) in zip(sampled[:-1], sampled[1:], strict=True):
@@ -302,18 +323,61 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
             # rescue source.
             graphcut.choose_new[:] = False
             expanded_owner_pairs.append((int(old_source.frame_id), int(new_source.frame_id)))
-        crop_owner = owner[top:bottom, left:right]
-        crop_owner[graphcut.choose_new] = int(new_source.frame_id)
-        owner[top:bottom, left:right] = crop_owner
-        owner[new_valid & ~old_valid] = int(new_source.frame_id)
-        output[owner == int(new_source.frame_id)] = new_bgr[owner == int(new_source.frame_id)]
-        eligible = build_near_blend_eligible_mask(old_crop_valid, new_crop_valid, evidence, guards)
-        blended, _, _ = apply_near_multiband(old_crop, new_crop, output[top:bottom, left:right], graphcut.choose_new, eligible, guards)
-        output[top:bottom, left:right] = blended
+        prepared_pairs.append(_PreparedV6Pair(
+            old_source, new_source, left, right, old_valid, new_valid,
+            old_crop_valid, new_crop_valid, evidence, guards, graphcut.audit,
+            graphcut.choose_new.copy(), not graphcut.audit.accepted,
+        ))
         audits.append(graphcut.audit)
+
+    overlaps: list[AdjacentBGRAOverlap] = []
+    for index, pair in enumerate(prepared_pairs):
+        old_bgr = sampled[index][1]
+        new_bgr = sampled[index + 1][1]
+        old_crop = old_bgr[:, pair.left:pair.right]
+        new_crop = new_bgr[:, pair.left:pair.right]
+        safe_background = (
+            pair.old_crop_valid & pair.new_crop_valid & pair.evidence.reliable_mask
+            & ~pair.evidence.occlusion_risk_mask & ~pair.guards.protected
+        )
+        overlaps.append(AdjacentBGRAOverlap(
+            index, index + 1,
+            np.dstack((old_crop, pair.old_crop_valid.astype(np.uint8) * 255)),
+            np.dstack((new_crop, pair.new_crop_valid.astype(np.uint8) * 255)),
+            safe_background, safe_background,
+        ))
+    photometric = solve_video_global_photometric(len(sampled), overlaps)
+    corrected: list[np.ndarray] = []
+    for index, (source, bgr) in enumerate(sampled):
+        if not photometric.accepted:
+            corrected.append(bgr)
+            continue
+        bgra = np.dstack((bgr, np.asarray(source.valid_mask, bool).astype(np.uint8) * 255))
+        corrected.append(apply_video_photometric_correction(bgra, photometric.corrections[index])[:, :, :3])
+
+    first = sampled[0][0]
+    owner = np.full(first.valid_mask.shape, -1, np.int32)
+    owner[first.valid_mask] = int(first.frame_id)
+    output = corrected[0].copy()
+    for index, pair in enumerate(prepared_pairs):
+        new_bgr = corrected[index + 1]
+        crop_owner = owner[:, pair.left:pair.right]
+        crop_owner[pair.choose_new] = int(pair.new_source.frame_id)
+        owner[:, pair.left:pair.right] = crop_owner
+        owner[pair.new_valid & ~pair.old_valid] = int(pair.new_source.frame_id)
+        output[owner == int(pair.new_source.frame_id)] = new_bgr[owner == int(pair.new_source.frame_id)]
+        old_crop = corrected[index][:, pair.left:pair.right]
+        new_crop = new_bgr[:, pair.left:pair.right]
+        eligible = build_near_blend_eligible_mask(pair.old_crop_valid, pair.new_crop_valid, pair.evidence, pair.guards)
+        blended, _, _ = apply_near_multiband(old_crop, new_crop, output[:, pair.left:pair.right], pair.choose_new, eligible, pair.guards)
+        output[:, pair.left:pair.right] = blended
     valid = owner >= 0
     effective_audits = tuple(audit for audit in audits if audit.accepted)
-    return VideoV6RenderResult(output, owner, valid, tuple(audits), assess_video_rgb_quality(output, owner, valid, effective_audits), len(sampled), tuple(expanded_owner_pairs))
+    return VideoV6RenderResult(
+        output, owner, valid, tuple(audits),
+        assess_video_rgb_quality(output, owner, valid, effective_audits), len(sampled),
+        tuple(expanded_owner_pairs), photometric.audit,
+    )
 
 
 __all__ = ["VideoV6PairRenderResult", "VideoV6RenderResult", "apply_v6_background_alignment_to_grids", "build_v6_sampling_sources", "render_video_v6_candidate", "render_video_v6_real_pair", "render_video_v6_real_sources"]

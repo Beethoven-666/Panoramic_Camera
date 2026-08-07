@@ -41,7 +41,6 @@ from .video_3d import publish_video_3d
 from .video_motion_resampler import (
     MotionResamplingConfig,
     compose_selected_motions,
-    insert_v6_real_rescue_sources,
     select_render_keyframes,
 )
 from .video_online_state import load_online_state
@@ -688,19 +687,11 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                     video_settings.get("motion_resampling")
                 ),
             )
-            if legacy_renderer == "v6_graphcut_candidate":
-                # The v6 candidate may add at most one already-direct-ORB
-                # tracking frame to an oversized final gap.  This is done
-                # before source poses, Open3D edges, or raw RGB are consumed.
-                plan = insert_v6_real_rescue_sources(
-                    tracking_frames,
-                    tracking_motions,
-                    plan,
-                    full_resolution_scale=video.rgbd.calibration.width
-                    / float(stitch.get("analysis_width", 320)),
-                    maximum_step_pixels=8.0,
-                    maximum_rescues=4,
-                )
+            # A real-source rescue is only admissible after a concrete seam
+            # failure has been audited.  This pre-render stage has no such
+            # evidence yet, so it retains the measured base plan.  The
+            # bounded rescue selector remains available to the later failure
+            # planner; never pre-insert sources merely because a gap is wide.
             sources, source_indices = plan.frames, plan.source_indices
             render_plan = plan.as_dict()
             selected_motions = compose_selected_motions(tracking_motions, source_indices)
