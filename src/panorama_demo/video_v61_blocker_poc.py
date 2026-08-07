@@ -1,0 +1,382 @@
+"""Isolated v6.1 real-RGB narrow-strip blocker proof of concept.
+
+This module deliberately does *not* build a panorama, read a pose, read
+depth, or publish an artifact.  It compares one existing wide-baseline RGB
+pair with the same interval split by an actual capture RGB frame.  The POC is
+the Phase-1 evidence gate before the v6.1 anchor/render-strip architecture is
+allowed to change the video pipeline.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from time import perf_counter
+from typing import Callable, Sequence
+
+import cv2
+import numpy as np
+
+from .video_graphcut_seam import VideoGraphCutAudit, solve_video_graphcut_seam
+from .video_hard_guards import build_video_hard_guards
+from .video_local_alignment import VideoAlignmentAudit, VideoLocalAlignmentConfig, fit_near_protected_alignment
+from .video_near_blend import VideoNearBlendConfig, apply_near_multiband, build_near_blend_eligible_mask
+from .video_rgb_quality import assess_video_rgb_quality
+from .video_visual_renderer import VideoDISPairEvidence, video_dis_pair_evidence
+
+
+@dataclass(frozen=True)
+class V61BlockerPocConfig:
+    """Frozen Phase-1 bounds for one central 480px pair corridor."""
+
+    corridor_width_px: int = 160
+    minimum_reliable_pixels: int = 128
+    fb_p95_hard_px: float = 1.25
+    edge_residual_p95_hard_px: float = 1.25
+    blend_width_px: int = 2
+
+    def __post_init__(self) -> None:
+        if not 96 <= self.corridor_width_px <= 160:
+            raise ValueError("POC corridor must be within the v6.1 96--160px range")
+        if self.minimum_reliable_pixels < 64:
+            raise ValueError("POC needs at least 64 reliable DIS pixels")
+        if self.fb_p95_hard_px <= 0.0 or self.edge_residual_p95_hard_px <= 0.0:
+            raise ValueError("POC residual limits must be positive")
+        if not 2 <= self.blend_width_px <= 4:
+            raise ValueError("POC blend must stay within the v6.1 2--4px range")
+
+
+@dataclass(frozen=True)
+class V61BlockerPocSpec:
+    """One A--M--B real-capture experiment; ``M`` has no pose field."""
+
+    name: str
+    session_root: Path
+    left_frame_id: int
+    middle_frame_ids: tuple[int, ...]
+    right_frame_id: int
+
+    def __post_init__(self) -> None:
+        ids = (self.left_frame_id, *self.middle_frame_ids, self.right_frame_id)
+        if len(ids) < 3 or tuple(sorted(ids)) != ids or len(set(ids)) != len(ids):
+            raise ValueError("POC frame ids must be distinct and chronological A--M--B capture frames")
+
+
+@dataclass(frozen=True)
+class V61PocPairMetrics:
+    left_frame_id: int
+    right_frame_id: int
+    fb_residual_p95_px: float | None
+    edge_residual_p95_px: float | None
+    line_step_p95_px: float | None
+    line_step_abs_max_px: float | None
+    double_edge_count: int | None
+    ghost_count: int | None
+    reliable_pixel_count: int
+    alignment_model: str
+    alignment_accepted: bool
+    pre_seam_pass: bool
+    graphcut_called: bool
+    graphcut_accepted: bool
+    blend_band_pixel_count: int
+    runtime_ms: float
+    rejection_reason: str | None
+
+
+@dataclass(frozen=True)
+class V61BlockerPocResult:
+    name: str
+    baseline: V61PocPairMetrics
+    densified_pairs: tuple[V61PocPairMetrics, ...]
+    baseline_double_edge_count: int | None
+    baseline_ghost_count: int | None
+    densified_double_edge_count: int | None
+    densified_ghost_count: int | None
+    baseline_runtime_ms: float
+    densified_runtime_ms: float
+    visual_metrics_non_worse: bool
+    visual_metrics_improved: bool
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+EvidenceFactory = Callable[[np.ndarray, np.ndarray, np.ndarray], VideoDISPairEvidence | None]
+
+
+def _p95(values: np.ndarray) -> float | None:
+    finite = np.asarray(values, np.float64)
+    finite = finite[np.isfinite(finite)]
+    return None if not finite.size else float(np.percentile(finite, 95.0))
+
+
+def _alignment_config() -> VideoLocalAlignmentConfig:
+    """Use only the v6.1 identity/translation/rotation/affine ladder bounds."""
+
+    return VideoLocalAlignmentConfig(
+        near_translation_target_px=2.0,
+        near_translation_hard_px=4.0,
+        near_rotation_target_deg=0.75,
+        near_rotation_hard_deg=1.5,
+        near_affine_scale_min=0.97,
+        near_affine_scale_max=1.03,
+        near_affine_anisotropic_ratio_max=1.03,
+        near_affine_shear_abs_max=0.03,
+        near_homography_corner_displacement_hard_px=6.0,
+        near_homography_scale_min=0.97,
+        near_homography_scale_max=1.03,
+        near_homography_line_orientation_change_max_deg=1.5,
+        near_homography_held_out_fb_p95_max_px=1.0,
+        near_homography_held_out_fb_abs_max_px=2.0,
+    )
+
+
+def _central_corridor(image: np.ndarray, width: int) -> np.ndarray:
+    height, image_width = image.shape[:2]
+    if height != 480 or image_width < width:
+        raise ValueError("POC requires a 480px-tall RGB frame wider than its corridor")
+    left = (image_width - width) // 2
+    return np.ascontiguousarray(image[:, left : left + width])
+
+
+def _aligned_new_image(new_bgr: np.ndarray, matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Sample new at the old-coordinate targets; matrix maps old -> new."""
+
+    height, width = new_bgr.shape[:2]
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    points = np.column_stack((xx.ravel(), yy.ravel(), np.ones(height * width, np.float32)))
+    projected = points @ np.asarray(matrix, np.float64).T
+    map_x = (projected[:, 0] / projected[:, 2]).reshape((height, width)).astype(np.float32)
+    map_y = (projected[:, 1] / projected[:, 2]).reshape((height, width)).astype(np.float32)
+    aligned = cv2.remap(new_bgr, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+    valid = cv2.remap(
+        np.full((height, width), 255, np.uint8), map_x, map_y, cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+    ).astype(bool)
+    return aligned, valid
+
+
+def _edge_residual_p95(old_bgr: np.ndarray, aligned_new_bgr: np.ndarray, support: np.ndarray) -> float | None:
+    """Symmetric Canny-to-Canny distance in pixels after bounded alignment."""
+
+    old_edge = cv2.Canny(cv2.cvtColor(old_bgr, cv2.COLOR_BGR2GRAY), 80, 160) > 0
+    new_edge = cv2.Canny(cv2.cvtColor(aligned_new_bgr, cv2.COLOR_BGR2GRAY), 80, 160) > 0
+    support = np.asarray(support, bool)
+    old_edge &= support
+    new_edge &= support
+    if not old_edge.any() or not new_edge.any():
+        return None
+    old_distance = cv2.distanceTransform((~old_edge).astype(np.uint8), cv2.DIST_L2, 3)
+    new_distance = cv2.distanceTransform((~new_edge).astype(np.uint8), cv2.DIST_L2, 3)
+    values = np.concatenate((old_distance[new_edge], new_distance[old_edge]))
+    return _p95(values)
+
+
+def _null_metrics(
+    left_id: int,
+    right_id: int,
+    *,
+    model: str,
+    accepted: bool,
+    reliable: int,
+    fb_p95: float | None,
+    runtime_ms: float,
+    reason: str,
+) -> V61PocPairMetrics:
+    return V61PocPairMetrics(
+        left_id, right_id, fb_p95, None, None, None, None, None, reliable,
+        model, accepted, False, False, False, 0, runtime_ms, reason,
+    )
+
+
+def run_v61_poc_pair(
+    left_bgr: np.ndarray,
+    right_bgr: np.ndarray,
+    *,
+    left_frame_id: int,
+    right_frame_id: int,
+    config: V61BlockerPocConfig | None = None,
+    evidence_factory: EvidenceFactory | None = None,
+) -> V61PocPairMetrics:
+    """Run exactly one F/B DIS observation then bounded geometry and GraphCut.
+
+    No GraphCut call is made when the geometry gate fails.  The function is
+    intentionally pair-local: it has no pose or strip-placement output.
+    """
+
+    settings = config or V61BlockerPocConfig()
+    started = perf_counter()
+    old = _central_corridor(np.asarray(left_bgr), settings.corridor_width_px)
+    new = _central_corridor(np.asarray(right_bgr), settings.corridor_width_px)
+    valid = np.ones(old.shape[:2], dtype=bool)
+    factory = evidence_factory or (
+        lambda left, right, overlap: video_dis_pair_evidence(
+            np.dstack((left, overlap.astype(np.uint8) * 255)),
+            np.dstack((right, overlap.astype(np.uint8) * 255)),
+            overlap,
+        )
+    )
+    # Evidence is owned by the pair stage; callbacks must not be able to
+    # mutate the canonical all-real support mask used by later audit stages.
+    evidence = factory(old, new, valid.copy())
+    def elapsed() -> float:
+        return (perf_counter() - started) * 1000.0
+    if evidence is None:
+        return _null_metrics(
+            left_frame_id, right_frame_id, model="hard_owner_only", accepted=False, reliable=0,
+            fb_p95=None, runtime_ms=elapsed(), reason="no_fb_dis_evidence",
+        )
+    reliable = np.asarray(evidence.reliable_mask, bool) & valid
+    reliable_count = int(reliable.sum())
+    # Guard construction currently uses in-place mask operators internally;
+    # retain the full real pair support for the later geometry/GraphCut audit.
+    guards = build_video_hard_guards(
+        old, new, evidence, old_valid=valid.copy(), new_valid=valid.copy(),
+    )
+    support = reliable & ~np.asarray(guards.protected, bool)
+    alignment = fit_near_protected_alignment(evidence, support=support, plane_verified=False, config=_alignment_config())
+    audit: VideoAlignmentAudit = alignment.audit
+    fb_p95 = _p95(np.asarray(evidence.fb_error)[reliable])
+    if not audit.accepted or alignment.matrix is None:
+        return _null_metrics(
+            left_frame_id, right_frame_id, model=audit.selected_model, accepted=audit.accepted,
+            reliable=reliable_count, fb_p95=fb_p95, runtime_ms=elapsed(),
+            reason=audit.rejection_reason or "no_bounded_alignment",
+        )
+    aligned_new, aligned_valid = _aligned_new_image(new, alignment.matrix)
+    overlap = valid & aligned_valid
+    # Geometry must be checked at protected edges too.  Protection determines
+    # owner and blend eligibility, not whether a visible line is allowed to
+    # evade the pre-seam residual audit.
+    edge_p95 = _edge_residual_p95(old, aligned_new, overlap)
+    pre_pass = bool(
+        reliable_count >= settings.minimum_reliable_pixels
+        and fb_p95 is not None and fb_p95 <= settings.fb_p95_hard_px
+        and edge_p95 is not None and edge_p95 <= settings.edge_residual_p95_hard_px
+    )
+    if not pre_pass:
+        return V61PocPairMetrics(
+            left_frame_id, right_frame_id, fb_p95, edge_p95, None, None, None, None,
+            reliable_count, audit.selected_model, True, False, False, False, 0, elapsed(), "pre_seam_geometry_gate_failed",
+        )
+    aligned_guards = build_video_hard_guards(
+        old, aligned_new, evidence, old_valid=valid.copy(), new_valid=aligned_valid.copy(),
+    )
+    graphcut = solve_video_graphcut_seam(
+        old, aligned_new, valid, aligned_valid,
+        hard_owner_old=aligned_guards.hard_owner_old,
+        hard_owner_new=aligned_guards.hard_owner_new,
+    )
+    graph_audit: VideoGraphCutAudit = graphcut.audit
+    if not graph_audit.accepted:
+        return V61PocPairMetrics(
+            left_frame_id, right_frame_id, fb_p95, edge_p95, None, graph_audit.maximum_adjacent_row_step_px,
+            None, None, reliable_count, audit.selected_model, True, True, True, False, 0, elapsed(), graph_audit.rejection_reason,
+        )
+    owner = np.full(valid.shape, int(left_frame_id), np.int32)
+    owner[graphcut.choose_new] = int(right_frame_id)
+    output = old.copy()
+    output[graphcut.choose_new] = aligned_new[graphcut.choose_new]
+    eligible = build_near_blend_eligible_mask(valid, aligned_valid, evidence, aligned_guards)
+    output, _band, blend = apply_near_multiband(
+        old, aligned_new, output, graphcut.choose_new, eligible, aligned_guards,
+        config=VideoNearBlendConfig(near_width_px=settings.blend_width_px),
+    )
+    quality = assess_video_rgb_quality(output, owner, valid, (graph_audit,))
+    return V61PocPairMetrics(
+        left_frame_id, right_frame_id, fb_p95, edge_p95, quality.seam_step_p95_px,
+        quality.seam_step_abs_max_px, quality.double_edge_count, quality.ghost_count,
+        reliable_count, audit.selected_model, True, True, True, True, blend.band_pixel_count,
+        elapsed(), None,
+    )
+
+
+def _capture_rgb_paths(session_root: Path) -> dict[int, Path]:
+    root = Path(session_root).resolve()
+    frames_csv = root / "frames.csv"
+    if not frames_csv.is_file():
+        raise FileNotFoundError(f"POC session has no frames.csv: {frames_csv}")
+    paths: dict[int, Path] = {}
+    with frames_csv.open("r", encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            frame_id = int(row["frame_id"])
+            candidate = (root / row["color_path"]).resolve()
+            if root not in candidate.parents or not candidate.is_file():
+                raise FileNotFoundError(f"POC RGB frame is missing or outside its session: {frame_id}")
+            paths[frame_id] = candidate
+    return paths
+
+
+def _read_rgb(paths: dict[int, Path], frame_id: int) -> np.ndarray:
+    path = paths.get(frame_id)
+    if path is None:
+        raise ValueError(f"POC frame {frame_id} is not a real capture frame")
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise FileNotFoundError(f"Cannot decode POC RGB frame {path}")
+    return image
+
+
+def _sum_metric(values: Sequence[V61PocPairMetrics], attribute: str) -> int | None:
+    result = [getattr(value, attribute) for value in values]
+    return None if any(value is None for value in result) else int(sum(int(value) for value in result))
+
+
+def run_v61_blocker_poc(
+    spec: V61BlockerPocSpec, *, config: V61BlockerPocConfig | None = None,
+    evidence_factory: EvidenceFactory | None = None,
+) -> V61BlockerPocResult:
+    """Compare the old A--B seam with A--M--B real-RGB densification."""
+
+    paths = _capture_rgb_paths(spec.session_root)
+    frames = {frame_id: _read_rgb(paths, frame_id) for frame_id in (spec.left_frame_id, *spec.middle_frame_ids, spec.right_frame_id)}
+    baseline = run_v61_poc_pair(
+        frames[spec.left_frame_id], frames[spec.right_frame_id], left_frame_id=spec.left_frame_id,
+        right_frame_id=spec.right_frame_id, config=config, evidence_factory=evidence_factory,
+    )
+    ids = (spec.left_frame_id, *spec.middle_frame_ids, spec.right_frame_id)
+    densified = tuple(
+        run_v61_poc_pair(frames[left], frames[right], left_frame_id=left, right_frame_id=right, config=config, evidence_factory=evidence_factory)
+        for left, right in zip(ids[:-1], ids[1:], strict=True)
+    )
+    baseline_double, baseline_ghost = baseline.double_edge_count, baseline.ghost_count
+    dense_double = _sum_metric(densified, "double_edge_count")
+    dense_ghost = _sum_metric(densified, "ghost_count")
+    comparable = None not in (baseline_double, baseline_ghost, dense_double, dense_ghost)
+    non_worse = bool(comparable and dense_double <= baseline_double and dense_ghost <= baseline_ghost)
+    improved = bool(non_worse and (dense_double < baseline_double or dense_ghost < baseline_ghost))
+    return V61BlockerPocResult(
+        spec.name, baseline, densified, baseline_double, baseline_ghost, dense_double, dense_ghost,
+        baseline.runtime_ms, float(sum(pair.runtime_ms for pair in densified)), non_worse, improved,
+    )
+
+
+def default_v61_blocker_specs(root: Path) -> tuple[V61BlockerPocSpec, ...]:
+    """The three primary Phase-1 blocker seams frozen in the v6 audit."""
+
+    return (
+        V61BlockerPocSpec("140140_63_to_66_dense", root / "run_20260807_140140", 63, (64, 65), 66),
+        V61BlockerPocSpec("162340_196_to_202_dense", root / "run_20260804_162340", 196, (197, 199, 200), 202),
+        V61BlockerPocSpec("153033_87_to_95_dense", root / "run_20260806_153033", 87, (88, 89, 90, 91, 92, 93, 94), 95),
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run isolated v6.1 A--M--B real-RGB blocker POCs")
+    parser.add_argument("--captures-root", type=Path, required=True, help="Directory containing frozen run_* sessions")
+    parser.add_argument("--output", type=Path, help="Optional JSON evidence path; never a production artifact")
+    args = parser.parse_args(argv)
+    results = [result.as_dict() for result in (run_v61_blocker_poc(spec) for spec in default_v61_blocker_specs(args.captures_root))]
+    payload = {"schema": "video-v61-blocker-poc/v1", "isolated_candidate_only": True, "results": results}
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text + "\n", encoding="utf-8")
+    print(text)
+
+
+if __name__ == "__main__":
+    main()
