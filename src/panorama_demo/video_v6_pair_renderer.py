@@ -22,6 +22,7 @@ from .video_local_alignment import (
     fit_near_protected_alignment,
 )
 from .video_near_blend import apply_near_multiband, build_near_blend_eligible_mask
+from .video_object_mask import VideoObjectMaskConfig, VideoObjectMaskResult, build_video_object_masks
 from .video_photometric import (
     AdjacentBGRAOverlap,
     apply_video_photometric_correction,
@@ -68,10 +69,12 @@ class _PreparedV6Pair:
     new_crop_valid: np.ndarray
     evidence: VideoDISPairEvidence
     guards: object
+    photometric_protection: np.ndarray
     graphcut_audit: VideoGraphCutAudit
     choose_new: np.ndarray
     owner_expanded: bool
     near_ladder_audit: object
+    object_masks: VideoObjectMaskResult
 
 
 def _safe_photometric_background(pair: _PreparedV6Pair) -> np.ndarray:
@@ -81,7 +84,7 @@ def _safe_photometric_background(pair: _PreparedV6Pair) -> np.ndarray:
         pair.old_crop_valid & pair.new_crop_valid & pair.evidence.reliable_mask
         & np.isfinite(pair.evidence.fb_error) & (pair.evidence.fb_error <= 0.75)
         & np.isfinite(pair.evidence.rgb_residual) & (pair.evidence.rgb_residual <= 20.0)
-        & ~pair.evidence.occlusion_risk_mask & ~pair.guards.protected
+        & ~pair.evidence.occlusion_risk_mask & ~pair.photometric_protection
     )
 
 
@@ -205,6 +208,72 @@ def apply_v6_background_alignment_to_grids(
     return (outcome, tuple(audits)) if return_audits else outcome
 
 
+def _preview_near_alignment_config(scale: int) -> VideoLocalAlignmentConfig:
+    return VideoLocalAlignmentConfig(
+        near_translation_target_px=3.0 / scale,
+        near_translation_hard_px=6.0 / scale,
+        near_homography_corner_displacement_hard_px=6.0 / scale,
+        near_homography_held_out_fb_p95_max_px=1.0 / scale,
+        near_homography_held_out_fb_abs_max_px=2.0 / scale,
+    )
+
+
+def apply_v6_near_alignment_to_grids(
+    sources: tuple[VideoSamplingSource, ...], *, return_audits: bool = False,
+) -> tuple[VideoSamplingSource, ...] | tuple[
+    tuple[VideoSamplingSource, ...], dict[tuple[int, int], tuple[np.ndarray, np.ndarray]], tuple[dict[str, object], ...],
+]:
+    """Apply only audited object-local matrices to final inverse grids."""
+
+    adjusted = list(sources)
+    owner_masks: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
+    audits: list[dict[str, object]] = []
+    scale = 4
+    for index in range(1, len(adjusted)):
+        old_preview, old_valid = _preview_bgr(adjusted[index - 1], scale)
+        new_preview, new_valid = _preview_bgr(adjusted[index], scale)
+        evidence = video_dis_pair_evidence(
+            np.dstack((old_preview, old_valid.astype(np.uint8) * 255)),
+            np.dstack((new_preview, new_valid.astype(np.uint8) * 255)), old_valid & new_valid,
+        )
+        old_id, new_id = adjusted[index - 1].frame_id, adjusted[index].frame_id
+        if evidence is None:
+            audits.append({"old_frame_id": old_id, "new_frame_id": new_id, "accepted": False, "reason": "no_preview_dis_evidence"})
+            continue
+        base_guards = build_video_hard_guards(
+            old_preview, new_preview, evidence, old_valid=old_valid, new_valid=new_valid,
+        )
+        objects = build_video_object_masks(
+            evidence, strong_protection=base_guards.protected,
+            config=VideoObjectMaskConfig(minimum_component_pixels=16, residual_floor_px=1.5 / scale),
+        )
+        support = old_valid & new_valid & objects.candidate_mask & ~base_guards.protected
+        near = fit_near_protected_alignment(
+            evidence, support=support, plane_verified=bool(objects.homography_mask.any()),
+            config=_preview_near_alignment_config(scale),
+        )
+        if not near.audit.accepted or near.matrix is None or near.audit.selected_model == "identity":
+            audits.append({"old_frame_id": old_id, "new_frame_id": new_id, "accepted": False, "model": near.audit.selected_model, "reason": near.audit.rejection_reason})
+            continue
+        scaling = np.diag((float(scale), float(scale), 1.0))
+        full_matrix = scaling @ near.matrix @ np.linalg.inv(scaling)
+        candidate = cv2.resize(
+            objects.candidate_mask.astype(np.uint8),
+            (adjusted[index].valid_mask.shape[1], adjusted[index].valid_mask.shape[0]),
+            interpolation=cv2.INTER_NEAREST,
+        ).astype(bool)
+        protected = cv2.resize(
+            objects.protected_mask.astype(np.uint8),
+            (adjusted[index].valid_mask.shape[1], adjusted[index].valid_mask.shape[0]),
+            interpolation=cv2.INTER_NEAREST,
+        ).astype(bool)
+        adjusted[index] = _apply_output_matrix_to_grid(adjusted[index], full_matrix, candidate)
+        owner_masks[(int(old_id), int(new_id))] = (candidate, protected)
+        audits.append({"old_frame_id": old_id, "new_frame_id": new_id, "accepted": True, "model": near.audit.selected_model, "homography_eligible": bool(objects.homography_mask.any())})
+    outcome = tuple(adjusted)
+    return (outcome, owner_masks, tuple(audits)) if return_audits else outcome
+
+
 def render_video_v6_candidate(
     frames: tuple[object, ...], poses: tuple[np.ndarray, ...], calibration: object, *,
     pushbroom_config: dict[str, object], rgb_motions: list[object], motion_pixels_to_full_resolution: float,
@@ -215,7 +284,10 @@ def render_video_v6_candidate(
         motion_pixels_to_full_resolution=motion_pixels_to_full_resolution,
     )
     aligned_sources, alignment_audits = apply_v6_background_alignment_to_grids(sources, return_audits=True)
-    result = render_video_v6_real_sources(aligned_sources)
+    near_sources, near_owner_masks, near_alignment_audits = apply_v6_near_alignment_to_grids(
+        aligned_sources, return_audits=True,
+    )
+    result = render_video_v6_real_sources(near_sources, near_owner_masks=near_owner_masks)
     effective_observations = iter(result.quality.seam_observations)
     pair_metadata: list[dict[str, object]] = []
     for old_source, new_source, audit, prepared in zip(
@@ -245,6 +317,23 @@ def render_video_v6_candidate(
                 "held_out_residual_abs_max_px": prepared.near_ladder_audit.held_out_residual_abs_max_px,
                 "maximum_displacement_px": prepared.near_ladder_audit.maximum_displacement_px,
             },
+            "object_mask": {
+                "residual_threshold_px": prepared.object_masks.residual_threshold_px,
+                "candidate_pixel_count": int(prepared.object_masks.candidate_mask.sum()),
+                "protected_pixel_count": int(prepared.object_masks.protected_mask.sum()),
+                "homography_pixel_count": int(prepared.object_masks.homography_mask.sum()),
+                "components": [
+                    {
+                        "area_pixels": component.area_pixels,
+                        "bounding_box_xywh": list(component.bounding_box_xywh),
+                        "collar_px": component.collar_px,
+                        "stable_across_pair": component.stable_across_pair,
+                        "rectangular": component.rectangular,
+                        "homography_eligible": component.homography_eligible,
+                    }
+                    for component in prepared.object_masks.components
+                ],
+            },
         })
     metadata = {
         "schema": "video-v6-rgb-only-graphcut/v1",
@@ -266,6 +355,7 @@ def render_video_v6_candidate(
         },
         "expanded_real_owner_pair_frame_ids": [list(pair) for pair in result.expanded_real_owner_pair_frame_ids],
         "background_alignment": list(alignment_audits),
+        "near_protected_alignment": list(near_alignment_audits),
         "video_global_photometric": result.photometric_audit,
     }
     return CalibratedRGBPushbroomResult(result.bgr, metadata, owner_frame_id=result.owner_frame_id)
@@ -323,7 +413,10 @@ def render_video_v6_real_pair(
     return VideoV6PairRenderResult(base, owner, valid, evidence, graphcut.audit, quality, blend_audit.band_pixel_count, 2)
 
 
-def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> VideoV6RenderResult:
+def render_video_v6_real_sources(
+    sources: tuple[VideoSamplingSource, ...], *,
+    near_owner_masks: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] | None = None,
+) -> VideoV6RenderResult:
     """Compose a chronological v6 source chain after exactly one sampling per source."""
     if len(sources) < 2:
         raise ValueError("v6 renderer requires at least two chronological real sources")
@@ -348,8 +441,22 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
         evidence = video_dis_pair_evidence(np.dstack((old_crop, old_crop_valid.astype(np.uint8) * 255)), np.dstack((new_crop, new_crop_valid.astype(np.uint8) * 255)), old_crop_valid & new_crop_valid)
         if evidence is None:
             raise RuntimeError("adjacent v6 pair did not produce required F/B DIS evidence")
-        guards = build_video_hard_guards(
+        base_guards = build_video_hard_guards(
             old_crop, new_crop, evidence, old_valid=old_crop_valid, new_valid=new_crop_valid,
+        )
+        object_masks = build_video_object_masks(
+            evidence, strong_protection=base_guards.protected,
+        )
+        preferred_new = None
+        stored = (near_owner_masks or {}).get((int(old_source.frame_id), int(new_source.frame_id)))
+        protected_object = object_masks.protected_mask
+        if stored is not None:
+            stored_candidate, stored_protected = stored
+            preferred_new = np.asarray(stored_candidate, bool)[:, left:right]
+            protected_object |= np.asarray(stored_protected, bool)[:, left:right]
+        guards = build_video_hard_guards(
+            old_crop, new_crop, evidence, object_mask=protected_object, prefer_new_mask=preferred_new,
+            old_valid=old_crop_valid, new_valid=new_crop_valid,
         )
         graphcut = solve_video_graphcut_seam(old_crop, new_crop, old_crop_valid, new_crop_valid, hard_owner_old=guards.hard_owner_old, hard_owner_new=guards.hard_owner_new)
         graphcut = replace(graphcut, audit=replace(graphcut.audit, canvas_x_offset=left))
@@ -374,13 +481,13 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
             expanded_owner_pairs.append((int(old_source.frame_id), int(new_source.frame_id)))
         near_audit = fit_near_protected_alignment(
             evidence,
-            support=old_crop_valid & new_crop_valid & ~guards.protected,
-            plane_verified=False,
+            support=old_crop_valid & new_crop_valid & object_masks.candidate_mask & ~base_guards.protected,
+            plane_verified=bool(object_masks.homography_mask.any()),
         ).audit
         prepared_pairs.append(_PreparedV6Pair(
             old_source, new_source, left, right, old_valid, new_valid,
-            old_crop_valid, new_crop_valid, evidence, guards, graphcut.audit,
-            graphcut.choose_new.copy(), not graphcut.audit.accepted, near_audit,
+            old_crop_valid, new_crop_valid, evidence, guards, base_guards.protected, graphcut.audit,
+            graphcut.choose_new.copy(), not graphcut.audit.accepted, near_audit, object_masks,
         ))
         audits.append(graphcut.audit)
 

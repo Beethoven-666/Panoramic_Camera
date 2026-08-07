@@ -66,7 +66,11 @@ def build_video_hard_guards(
         raise ValueError("object mask must match hard-guard crop")
     object_outer = cv2.morphologyEx(object_region.astype(np.uint8), cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)).astype(bool)
     occlusion = np.asarray(evidence.occlusion_risk_mask, dtype=bool)
-    protected = line | thin | object_outer | occlusion
+    # A detected object and its context collar are owner-locked in full, not
+    # merely at the outer contour.  This prevents GraphCut or MultiBand from
+    # traversing a foreground object while preserving a separate boundary
+    # count for the audit.
+    protected = line | thin | object_region | object_outer | occlusion
     prefer_new = np.zeros(shape, dtype=bool) if prefer_new_mask is None else np.asarray(prefer_new_mask, dtype=bool)
     if prefer_new.shape != shape:
         raise ValueError("preferred owner mask must match hard-guard crop")

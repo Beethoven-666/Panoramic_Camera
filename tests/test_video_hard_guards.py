@@ -25,6 +25,7 @@ def test_hard_guards_protect_line_object_boundary_thin_and_occlusion_without_dep
     assert guards.audit.line_guard_pixels > 0
     assert guards.audit.thin_structure_pixels > 0
     assert guards.audit.object_outer_boundary_pixels > 0
+    assert guards.protected[27, 47]
     assert guards.audit.occlusion_risk_pixels == 25
     assert audit_guard_owner_intersection(guards.hard_owner_new.copy(), guards) == 0
     labels = guards.hard_owner_new.copy()
