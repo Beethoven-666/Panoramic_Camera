@@ -6,6 +6,7 @@ import pytest
 from panorama_demo.video_visual_renderer import (
     VideoVisualSeamConfig,
     VideoVisualSource,
+    video_dis_pair_evidence,
     render_video_visual_sources,
     video_flow_correspondence_evidence,
 )
@@ -95,8 +96,14 @@ def test_flow_evidence_is_recorded_without_warping_source_colour() -> None:
     old[:, 20:55, :3] = 160
     new = np.roll(old, 2, axis=1)
     result = render_video_visual_sources((_source(1, old), _source(2, new)))
-    assert result.seams[0].reliable_flow_fraction is not None
-    assert result.seams[0].method == "dis_flow_depth_protected_curved_hard_owner"
+    audit = result.seams[0]
+    assert audit.reliable_flow_fraction is not None
+    assert audit.dis_forward_backward_call_count == 2
+    assert audit.flow_forward_backward_p95_pixels is not None
+    assert audit.rgb_residual_p95 is not None
+    assert audit.gradient_residual_p95 is not None
+    assert audit.occlusion_risk_pixel_count >= 0
+    assert audit.method == "dis_flow_depth_protected_curved_hard_owner"
     for frame_id, expected in ((1, old), (2, new)):
         selected = result.owner_frame_id == frame_id
         assert np.array_equal(result.bgra[selected], expected[selected])
@@ -116,6 +123,48 @@ def test_pair_flow_correspondence_is_evidence_not_rendered_colour() -> None:
     # pair-wide median still demonstrates useful correspondence evidence.
     assert float(np.median(residual[reliable])) < 20.0
     assert sampled_new.shape == new.shape
+
+
+def test_dis_pair_evidence_performs_exactly_one_forward_and_backward_pass(monkeypatch) -> None:
+    import panorama_demo.video_visual_renderer as renderer
+
+    image = np.zeros((24, 32, 4), dtype=np.uint8)
+    image[..., 3] = 255
+    calls: list[tuple[tuple[int, int], tuple[int, int]]] = []
+
+    class _DIS:
+        def calc(self, first, second, _flow):
+            calls.append((first.shape, second.shape))
+            return np.zeros((*first.shape, 2), dtype=np.float32)
+
+    monkeypatch.setattr(renderer.cv2, "DISOpticalFlow_create", lambda _preset: _DIS())
+    evidence = video_dis_pair_evidence(image, image, np.ones(image.shape[:2], dtype=bool))
+
+    assert evidence is not None
+    assert len(calls) == 2
+    assert evidence.flow_forward.shape == (24, 32, 2)
+    assert evidence.flow_backward.shape == (24, 32, 2)
+    assert evidence.gradient_residual.shape == image.shape[:2]
+    assert evidence.occlusion_risk_mask.shape == image.shape[:2]
+
+
+def test_final_pair_reuses_its_single_dis_evidence_pass(monkeypatch) -> None:
+    import panorama_demo.video_visual_renderer as renderer
+
+    image = np.zeros((24, 32, 4), dtype=np.uint8)
+    image[..., 3] = 255
+    calls: list[int] = []
+
+    class _DIS:
+        def calc(self, first, _second, _flow):
+            calls.append(1)
+            return np.zeros((*first.shape, 2), dtype=np.float32)
+
+    monkeypatch.setattr(renderer.cv2, "DISOpticalFlow_create", lambda _preset: _DIS())
+    result = render_video_visual_sources((_source(1, image), _source(2, image)))
+
+    assert len(calls) == 2
+    assert result.seams[0].dis_forward_backward_call_count == 2
 
 
 def test_rejects_invalid_source_shapes_and_duplicate_ids() -> None:
