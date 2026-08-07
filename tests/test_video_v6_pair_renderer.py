@@ -12,8 +12,8 @@ from panorama_demo.video_v6_pair_renderer import (
 from panorama_demo.video_visual_renderer import VideoDISPairEvidence
 
 
-def _source(frame_id: int, value: int) -> VideoSamplingSource:
-    shape = (480, 120)
+def _source(frame_id: int, value: int, *, width: int = 120) -> VideoSamplingSource:
+    shape = (480, width)
     y, x = np.indices(shape, dtype=np.float32)
     return VideoSamplingSource(frame_id, np.full((*shape, 3), value, np.uint8), x, y, np.ones(shape, bool))
 
@@ -57,6 +57,32 @@ def test_v6_chain_records_real_owner_expansion_instead_of_faking_a_dp_fallback(m
 
     assert result.expanded_real_owner_pair_frame_ids == ((1, 2),)
     assert result.graphcut_audits[0].rejection_reason == "synthetic_topology_failure"
+
+
+def test_v6_graphcut_retries_once_in_a_192px_corridor_using_cached_pair_evidence(monkeypatch) -> None:
+    import panorama_demo.video_v6_pair_renderer as renderer
+
+    original = renderer.solve_video_graphcut_seam
+    widths: list[int] = []
+
+    def reject_normal_then_use_rescue(*args, **kwargs):
+        outcome = original(*args, **kwargs)
+        widths.append(args[0].shape[1])
+        if len(widths) == 1:
+            return type(outcome)(outcome.choose_new, type(outcome.audit)(
+                outcome.audit.graphcut_called, outcome.audit.rescue_corridor_used,
+                outcome.audit.seam_x_by_row, outcome.audit.maximum_adjacent_row_step_px,
+                outcome.audit.owner_island_count, outcome.audit.small_fragment_count,
+                outcome.audit.valid_pixel_exactly_one_owner, False, "synthetic_normal_failure",
+            ))
+        return outcome
+
+    monkeypatch.setattr(renderer, "solve_video_graphcut_seam", reject_normal_then_use_rescue)
+    result = renderer.render_video_v6_real_sources((_source(1, 80, width=240), _source(2, 80, width=240)))
+
+    assert widths == [160, 192]
+    assert result.graphcut_audits[0].accepted
+    assert result.graphcut_audits[0].rescue_corridor_used
 
 
 def test_photometric_right_samples_follow_the_cached_forward_dis_flow() -> None:

@@ -110,6 +110,27 @@ def _photometric_matched_right(
     return matched_bgr, matched_valid
 
 
+def _crop_dis_evidence(
+    evidence: VideoDISPairEvidence, left: int, right: int,
+) -> VideoDISPairEvidence:
+    """Slice one already-computed F/B DIS observation into a GraphCut corridor."""
+
+    if not 0 <= left < right <= evidence.fb_error.shape[1]:
+        raise ValueError("DIS corridor slice is outside its cached evidence")
+    return replace(
+        evidence,
+        flow_forward=evidence.flow_forward[:, left:right],
+        flow_backward=evidence.flow_backward[:, left:right],
+        fb_error=evidence.fb_error[:, left:right],
+        rgb_residual=evidence.rgb_residual[:, left:right],
+        gradient_residual=evidence.gradient_residual[:, left:right],
+        occlusion_risk_mask=evidence.occlusion_risk_mask[:, left:right],
+        correspondence_confidence=evidence.correspondence_confidence[:, left:right],
+        reliable_mask=evidence.reliable_mask[:, left:right],
+        sampled_new_bgra=evidence.sampled_new_bgra[:, left:right],
+    )
+
+
 def build_v6_sampling_sources(
     frames: tuple[object, ...], poses: tuple[np.ndarray, ...], calibration: object, *,
     pushbroom_config: dict[str, object], rgb_motions: list[object], motion_pixels_to_full_resolution: float,
@@ -499,35 +520,64 @@ def render_video_v6_real_sources(
         if rows.size == 0:
             raise RuntimeError("adjacent v6 real sources have no common GraphCut support")
         full_left, full_right = int(columns.min()), int(columns.max()) + 1
-        corridor_width = max(96, min(160, full_right - full_left))
+        # Calculate F/B DIS once on the maximum permitted rescue corridor.
+        # A normal 96--160px GraphCut may then fail topology and consume one
+        # 192px retry by slicing this same evidence, never by recomputing flow.
+        rescue_width = max(96, min(192, full_right - full_left))
+        corridor_width = min(160, rescue_width)
         centre = (full_left + full_right) // 2
-        left = max(0, min(old_valid.shape[1] - corridor_width, centre - corridor_width // 2))
+        rescue_left = max(0, min(old_valid.shape[1] - rescue_width, centre - rescue_width // 2))
+        rescue_right = rescue_left + rescue_width
+        left = rescue_left + (rescue_width - corridor_width) // 2
         right = left + corridor_width
         top, bottom = 0, old_valid.shape[0]
-        old_crop, new_crop = old_bgr[top:bottom, left:right], new_bgr[top:bottom, left:right]
-        old_crop_valid, new_crop_valid = old_valid[top:bottom, left:right], new_valid[top:bottom, left:right]
-        evidence = video_dis_pair_evidence(np.dstack((old_crop, old_crop_valid.astype(np.uint8) * 255)), np.dstack((new_crop, new_crop_valid.astype(np.uint8) * 255)), old_crop_valid & new_crop_valid)
-        if evidence is None:
+        rescue_old_crop = old_bgr[top:bottom, rescue_left:rescue_right]
+        rescue_new_crop = new_bgr[top:bottom, rescue_left:rescue_right]
+        rescue_old_valid = old_valid[top:bottom, rescue_left:rescue_right]
+        rescue_new_valid = new_valid[top:bottom, rescue_left:rescue_right]
+        rescue_evidence = video_dis_pair_evidence(
+            np.dstack((rescue_old_crop, rescue_old_valid.astype(np.uint8) * 255)),
+            np.dstack((rescue_new_crop, rescue_new_valid.astype(np.uint8) * 255)),
+            rescue_old_valid & rescue_new_valid,
+        )
+        if rescue_evidence is None:
             raise RuntimeError("adjacent v6 pair did not produce required F/B DIS evidence")
-        base_guards = build_video_hard_guards(
-            old_crop, new_crop, evidence, old_valid=old_crop_valid, new_valid=new_crop_valid,
-        )
-        object_masks = build_video_object_masks(
-            evidence, strong_protection=base_guards.protected,
-        )
-        preferred_new = None
-        stored = (near_owner_masks or {}).get((int(old_source.frame_id), int(new_source.frame_id)))
-        protected_object = object_masks.protected_mask
-        if stored is not None:
-            stored_candidate, stored_protected = stored
-            preferred_new = np.asarray(stored_candidate, bool)[:, left:right]
-            protected_object |= np.asarray(stored_protected, bool)[:, left:right]
-        guards = build_video_hard_guards(
-            old_crop, new_crop, evidence, object_mask=protected_object, prefer_new_mask=preferred_new,
-            old_valid=old_crop_valid, new_valid=new_crop_valid,
-        )
-        graphcut = solve_video_graphcut_seam(old_crop, new_crop, old_crop_valid, new_crop_valid, hard_owner_old=guards.hard_owner_old, hard_owner_new=guards.hard_owner_new)
-        graphcut = replace(graphcut, audit=replace(graphcut.audit, canvas_x_offset=left))
+
+        def build_corridor(corridor_left: int, corridor_right: int):
+            relative_left, relative_right = corridor_left - rescue_left, corridor_right - rescue_left
+            old_crop = rescue_old_crop[:, relative_left:relative_right]
+            new_crop = rescue_new_crop[:, relative_left:relative_right]
+            old_crop_valid = rescue_old_valid[:, relative_left:relative_right]
+            new_crop_valid = rescue_new_valid[:, relative_left:relative_right]
+            evidence = _crop_dis_evidence(rescue_evidence, relative_left, relative_right)
+            base_guards = build_video_hard_guards(
+                old_crop, new_crop, evidence, old_valid=old_crop_valid, new_valid=new_crop_valid,
+            )
+            object_masks = build_video_object_masks(
+                evidence, strong_protection=base_guards.protected,
+            )
+            preferred_new = None
+            stored = (near_owner_masks or {}).get((int(old_source.frame_id), int(new_source.frame_id)))
+            protected_object = object_masks.protected_mask
+            if stored is not None:
+                stored_candidate, stored_protected = stored
+                preferred_new = np.asarray(stored_candidate, bool)[:, corridor_left:corridor_right]
+                protected_object |= np.asarray(stored_protected, bool)[:, corridor_left:corridor_right]
+            guards = build_video_hard_guards(
+                old_crop, new_crop, evidence, object_mask=protected_object, prefer_new_mask=preferred_new,
+                old_valid=old_crop_valid, new_valid=new_crop_valid,
+            )
+            graphcut = solve_video_graphcut_seam(
+                old_crop, new_crop, old_crop_valid, new_crop_valid,
+                hard_owner_old=guards.hard_owner_old, hard_owner_new=guards.hard_owner_new,
+            )
+            graphcut = replace(graphcut, audit=replace(graphcut.audit, canvas_x_offset=corridor_left))
+            return old_crop, new_crop, old_crop_valid, new_crop_valid, evidence, base_guards, object_masks, guards, graphcut
+
+        old_crop, new_crop, old_crop_valid, new_crop_valid, evidence, base_guards, object_masks, guards, graphcut = build_corridor(left, right)
+        if not graphcut.audit.accepted and rescue_width > corridor_width:
+            left, right = rescue_left, rescue_right
+            old_crop, new_crop, old_crop_valid, new_crop_valid, evidence, base_guards, object_masks, guards, graphcut = build_corridor(left, right)
         guard_violation = audit_guard_owner_intersection(graphcut.choose_new, guards)
         if guard_violation:
             raise RuntimeError(
