@@ -41,6 +41,7 @@ class VideoV6RenderResult:
     graphcut_audits: tuple[VideoGraphCutAudit, ...]
     quality: VideoRGBQualityAudit
     source_sampling_call_count: int
+    expanded_real_owner_pair_frame_ids: tuple[tuple[int, int], ...]
 
 
 def build_v6_sampling_sources(
@@ -86,8 +87,8 @@ def render_video_v6_candidate(
         "schema": "video-v6-rgb-only-graphcut/v1",
         "renderer": "v6_real_source_graphcut_once_sampling",
         "quality_metrics": {
-            "quality_pass": result.quality.strict_quality_pass,
-            "strict_quality_pass": result.quality.strict_quality_pass,
+            "quality_pass": result.quality.strict_quality_pass and not result.expanded_real_owner_pair_frame_ids,
+            "strict_quality_pass": result.quality.strict_quality_pass and not result.expanded_real_owner_pair_frame_ids,
             "failure_reasons": list(result.quality.failure_reasons),
             "seam_step_p95_px": result.quality.seam_step_p95_px,
             "seam_step_abs_max_px": result.quality.seam_step_abs_max_px,
@@ -109,6 +110,7 @@ def render_video_v6_candidate(
             "source_sampling_call_count": result.source_sampling_call_count,
             "exactly_once": True,
         },
+        "expanded_real_owner_pair_frame_ids": [list(pair) for pair in result.expanded_real_owner_pair_frame_ids],
     }
     return CalibratedRGBPushbroomResult(result.bgr, metadata, owner_frame_id=result.owner_frame_id)
 
@@ -171,6 +173,7 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
     owner[first.valid_mask] = int(first.frame_id)
     output = first_bgr.copy()
     audits: list[VideoGraphCutAudit] = []
+    expanded_owner_pairs: list[tuple[int, int]] = []
     for (old_source, old_bgr), (new_source, new_bgr) in zip(sampled[:-1], sampled[1:], strict=True):
         old_valid, new_valid = np.asarray(old_source.valid_mask, bool), np.asarray(new_source.valid_mask, bool)
         overlap = old_valid & new_valid
@@ -190,8 +193,25 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
             raise RuntimeError("adjacent v6 pair did not produce required F/B DIS evidence")
         guards = build_video_hard_guards(old_crop, new_crop, evidence)
         graphcut = solve_video_graphcut_seam(old_crop, new_crop, old_crop_valid, new_crop_valid, hard_owner_old=guards.hard_owner_old, hard_owner_new=guards.hard_owner_new)
-        if not graphcut.audit.accepted or audit_guard_owner_intersection(graphcut.choose_new, guards):
-            raise RuntimeError("v6 GraphCut chain pair failed topology or hard guards")
+        guard_violation = audit_guard_owner_intersection(graphcut.choose_new, guards)
+        if guard_violation:
+            raise RuntimeError(
+                "v6 GraphCut chain pair failed "
+                f"{old_source.frame_id}->{new_source.frame_id}: "
+                f"reason={graphcut.audit.rejection_reason}, "
+                f"row_step={graphcut.audit.maximum_adjacent_row_step_px}, "
+                f"islands={graphcut.audit.owner_island_count}, "
+                f"small_fragments={graphcut.audit.small_fragment_count}, "
+                f"guard_violations={guard_violation}"
+            )
+        if not graphcut.audit.accepted:
+            # Required recovery stage 2: retain the failed GraphCut evidence,
+            # then extend one existing real source across this corridor.  This
+            # is explicitly degraded, never a synthetic seam success or DP
+            # replacement; a later planner may instead insert one direct-ORB
+            # rescue source.
+            graphcut.choose_new[:] = False
+            expanded_owner_pairs.append((int(old_source.frame_id), int(new_source.frame_id)))
         crop_owner = owner[top:bottom, left:right]
         crop_owner[graphcut.choose_new] = int(new_source.frame_id)
         owner[top:bottom, left:right] = crop_owner
@@ -202,7 +222,7 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
         output[top:bottom, left:right] = blended
         audits.append(graphcut.audit)
     valid = owner >= 0
-    return VideoV6RenderResult(output, owner, valid, tuple(audits), assess_video_rgb_quality(output, owner, valid, audits), len(sampled))
+    return VideoV6RenderResult(output, owner, valid, tuple(audits), assess_video_rgb_quality(output, owner, valid, audits), len(sampled), tuple(expanded_owner_pairs))
 
 
 __all__ = ["VideoV6PairRenderResult", "VideoV6RenderResult", "build_v6_sampling_sources", "render_video_v6_candidate", "render_video_v6_real_pair", "render_video_v6_real_sources"]

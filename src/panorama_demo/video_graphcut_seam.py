@@ -65,11 +65,19 @@ def _row_seam(choose_new: np.ndarray, overlap: np.ndarray) -> tuple[tuple[int, .
         if columns.size == 0:
             seam.append(-1)
             continue
-        labels = choose_new[row, columns]
+        splits = np.flatnonzero(np.diff(columns) > 1) + 1
+        runs = np.split(columns, splits)
+        # Invalid projection holes are not a seam transition.  Audit each
+        # contiguous overlap run, and use the largest one as that row's seam
+        # coordinate so row-step checks never bridge an invalid gap.
+        run = max(runs, key=len)
+        for candidate in runs:
+            labels = choose_new[row, candidate]
+            if np.count_nonzero(labels[1:] != labels[:-1]) > 1:
+                monotone = False
+        labels = choose_new[row, run]
         transitions = np.flatnonzero(labels[1:] != labels[:-1])
-        if transitions.size > 1:
-            monotone = False
-        seam.append(int(columns[transitions[0] + 1]) if transitions.size == 1 else int(columns[0] if labels[0] else columns[-1] + 1))
+        seam.append(int(run[transitions[0] + 1]) if transitions.size == 1 else int(run[0] if labels[0] else run[-1] + 1))
     known = [value for value in seam if value >= 0]
     maximum = None if len(known) < 2 else max(abs(right - left) for left, right in zip(known, known[1:]))
     return tuple(seam), maximum, monotone
