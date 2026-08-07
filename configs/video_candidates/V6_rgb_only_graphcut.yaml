@@ -1,0 +1,15 @@
+config_schema: gemini305-video-candidate/v1
+role: candidate
+candidate_id: V6_rgb_only_graphcut
+parent_candidate_id: C0_baseline_reference
+algorithm_id: V6_rgb_only_graphcut
+implementation_id: v6_real_source_graphcut_once_sampling
+model_sha256: {}
+allow_baseline_fallback: false
+changed_components: [direct_orb_tracking, dynamic_frontality, dis_evidence, rgb_only_alignment, graphcut, hard_guards, near_multiband, one_pass_sampling, rgb_quality]
+required_evidence_components: [orb_anchor_trajectory, dis_forward_backward]
+required_output_components: [v6_rgb_only_graphcut]
+replaces_output_components: [legacy_visual_seam]
+components:
+  v6_rgb_only_graphcut: true
+config_sha256: db145b888b9d671eda27903f7b2f40b4ee760e868421a45fca2816770b262801

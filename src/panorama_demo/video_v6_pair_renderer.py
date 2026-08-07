@@ -9,6 +9,7 @@ import numpy as np
 from .calibrated_rgb_pushbroom import (
     CalibratedRGBPushbroomConfig,
     CalibratedRGBPushbroomRenderer,
+    CalibratedRGBPushbroomResult,
     build_calibrated_rgb_pushbroom_layout,
     estimate_rgb_motion_pixels_per_mm,
 )
@@ -71,6 +72,47 @@ def build_v6_sampling_sources(
     return tuple(results)
 
 
+def render_video_v6_candidate(
+    frames: tuple[object, ...], poses: tuple[np.ndarray, ...], calibration: object, *,
+    pushbroom_config: dict[str, object], rgb_motions: list[object], motion_pixels_to_full_resolution: float,
+) -> CalibratedRGBPushbroomResult:
+    """Return the legacy result container while executing only the v6 path."""
+    sources = build_v6_sampling_sources(
+        frames, poses, calibration, pushbroom_config=pushbroom_config, rgb_motions=rgb_motions,
+        motion_pixels_to_full_resolution=motion_pixels_to_full_resolution,
+    )
+    result = render_video_v6_real_sources(sources)
+    metadata = {
+        "schema": "video-v6-rgb-only-graphcut/v1",
+        "renderer": "v6_real_source_graphcut_once_sampling",
+        "quality_metrics": {
+            "quality_pass": result.quality.strict_quality_pass,
+            "strict_quality_pass": result.quality.strict_quality_pass,
+            "failure_reasons": list(result.quality.failure_reasons),
+            "seam_step_p95_px": result.quality.seam_step_p95_px,
+            "seam_step_abs_max_px": result.quality.seam_step_abs_max_px,
+            "double_edge_count": result.quality.double_edge_count,
+            "ghost_count": result.quality.ghost_count,
+        },
+        "v6_pair_graphcut": [
+            {
+                "graphcut_called": audit.graphcut_called,
+                "accepted": audit.accepted,
+                "maximum_adjacent_row_step_px": audit.maximum_adjacent_row_step_px,
+                "owner_island_count": audit.owner_island_count,
+                "small_fragment_count": audit.small_fragment_count,
+            }
+            for audit in result.graphcut_audits
+        ],
+        "raw_rgb_once_sampling": {
+            "source_frame_ids": [source.frame_id for source in sources],
+            "source_sampling_call_count": result.source_sampling_call_count,
+            "exactly_once": True,
+        },
+    }
+    return CalibratedRGBPushbroomResult(result.bgr, metadata, owner_frame_id=result.owner_frame_id)
+
+
 def render_video_v6_real_pair(
     old_source: VideoSamplingSource, new_source: VideoSamplingSource, *, object_mask: np.ndarray | None = None,
 ) -> VideoV6PairRenderResult:
@@ -81,7 +123,16 @@ def render_video_v6_real_pair(
     rows, columns = np.where(overlap)
     if rows.size == 0:
         raise RuntimeError("v6 pair has no real common support for GraphCut")
-    top, bottom, left, right = int(rows.min()), int(rows.max()) + 1, int(columns.min()), int(columns.max()) + 1
+    # GraphCut's frozen domain is always the complete calibrated 480px image
+    # height.  Invalid top/bottom cells remain masked; shrinking to observed
+    # overlap would silently violate that domain when pose levelling clips a
+    # few rows.
+    full_left, full_right = int(columns.min()), int(columns.max()) + 1
+    corridor_width = max(96, min(160, full_right - full_left))
+    centre = (full_left + full_right) // 2
+    left = max(0, min(old_valid.shape[1] - corridor_width, centre - corridor_width // 2))
+    right = left + corridor_width
+    top, bottom = 0, old_valid.shape[0]
     old_crop, new_crop = old_bgr[top:bottom, left:right], new_bgr[top:bottom, left:right]
     old_crop_valid, new_crop_valid = old_valid[top:bottom, left:right], new_valid[top:bottom, left:right]
     old_bgra = np.dstack((old_crop, old_crop_valid.astype(np.uint8) * 255))
@@ -126,7 +177,12 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
         rows, columns = np.where(overlap)
         if rows.size == 0:
             raise RuntimeError("adjacent v6 real sources have no common GraphCut support")
-        top, bottom, left, right = int(rows.min()), int(rows.max()) + 1, int(columns.min()), int(columns.max()) + 1
+        full_left, full_right = int(columns.min()), int(columns.max()) + 1
+        corridor_width = max(96, min(160, full_right - full_left))
+        centre = (full_left + full_right) // 2
+        left = max(0, min(old_valid.shape[1] - corridor_width, centre - corridor_width // 2))
+        right = left + corridor_width
+        top, bottom = 0, old_valid.shape[0]
         old_crop, new_crop = old_bgr[top:bottom, left:right], new_bgr[top:bottom, left:right]
         old_crop_valid, new_crop_valid = old_valid[top:bottom, left:right], new_valid[top:bottom, left:right]
         evidence = video_dis_pair_evidence(np.dstack((old_crop, old_crop_valid.astype(np.uint8) * 255)), np.dstack((new_crop, new_crop_valid.astype(np.uint8) * 255)), old_crop_valid & new_crop_valid)
@@ -149,4 +205,4 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
     return VideoV6RenderResult(output, owner, valid, tuple(audits), assess_video_rgb_quality(output, owner, valid, audits), len(sampled))
 
 
-__all__ = ["VideoV6PairRenderResult", "VideoV6RenderResult", "build_v6_sampling_sources", "render_video_v6_real_pair", "render_video_v6_real_sources"]
+__all__ = ["VideoV6PairRenderResult", "VideoV6RenderResult", "build_v6_sampling_sources", "render_video_v6_candidate", "render_video_v6_real_pair", "render_video_v6_real_sources"]

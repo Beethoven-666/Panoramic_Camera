@@ -97,6 +97,13 @@ def _legacy_settings_for(spec: VideoAlgorithmSpec) -> dict[str, Any]:
             raise ValueError("Frozen production config does not provide a runnable renderer contract")
         settings.update(legacy)
         return settings
+    if spec.algorithm_id == "V6_rgb_only_graphcut":
+        components = document.get("components")
+        if not isinstance(components, dict) or components.get("v6_rgb_only_graphcut") is not True:
+            raise ValueError("V6 candidate requires its immutable v6 RGB-only GraphCut component")
+        settings["fast_renderer"] = "v6_graphcut_candidate"
+        settings["fast_orb_target_fps"] = 8.0
+        return settings
     if spec.algorithm_id == "D1_dense_real_frame_scan_layout":
         dense = document.get("components", {}).get("dense_real_frame_layout")
         if not isinstance(dense, dict) or dense.get("enabled") is not True:

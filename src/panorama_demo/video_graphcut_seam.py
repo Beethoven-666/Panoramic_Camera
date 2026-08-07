@@ -48,7 +48,7 @@ def _validate(image: np.ndarray, mask: np.ndarray, config: VideoGraphCutConfig) 
     if height != config.required_height_px:
         raise ValueError("v6 GraphCut requires a 480px corridor height")
     if width < config.normal_corridor_min_px or width > config.rescue_corridor_max_px:
-        raise ValueError("GraphCut corridor width is outside v6 normal/rescue bounds")
+        raise ValueError(f"GraphCut corridor width {width}px is outside v6 normal/rescue bounds")
 
 
 def _components(mask: np.ndarray, minimum_pixels: int) -> tuple[int, int]:

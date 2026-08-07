@@ -1,5 +1,6 @@
 {
   "candidates": {
+    "V6_rgb_only_graphcut": {"config_sha256": "db145b888b9d671eda27903f7b2f40b4ee760e868421a45fca2816770b262801", "replaces_output_components": ["legacy_visual_seam"], "required_evidence_components": ["orb_anchor_trajectory", "dis_forward_backward"], "required_output_components": ["v6_rgb_only_graphcut"]},
     "C0_baseline_reference": {"config_sha256": "c553b57b883146d9168ea4dbd8062b1732920958b6534fb291f931c8f7723016", "replaces_output_components": [], "required_evidence_components": ["orb_anchor_trajectory"], "required_output_components": ["legacy_visual_seam"]},
     "C0_cuda_strict_strip_owner": {"config_sha256": "fbde6e1f34661068c043c387466438974310d218b3300abbb7d41595d3d479de", "replaces_output_components": ["legacy_visual_seam"], "required_evidence_components": ["orb_anchor_trajectory"], "required_output_components": ["c1_constrained_owner"]},
     "D1_dense_real_frame_scan_layout": {"config_sha256": "f92e76e4ce87a8a20d6cae4375e736b47b1a6dca5153120712e9b4f5e381a39b", "replaces_output_components": ["legacy_visual_seam"], "required_evidence_components": ["orb_anchor_trajectory", "dense_real_frame_pose_audit"], "required_output_components": ["d1_dense_real_frame_hard_owner"]},
@@ -19,6 +20,6 @@
     "C12_joint_owner_mesh_window": {"config_sha256": "ec951832383715e74e598203bc87a332e07a571a983d8363550acd629ae0d32b", "replaces_output_components": ["c3_raft_mesh", "c4_depth_layered_mesh"], "required_evidence_components": ["raft_correspondence_evidence", "depth_visibility_evidence", "orb_anchor_trajectory"], "required_output_components": ["c1_constrained_owner", "c12_joint_owner_final_grid"]},
     "C13_robust_photometric_bundle": {"config_sha256": "538b245a89401287ec544b919c3184016253b51f18c28fab83bc42b9d40b8710", "replaces_output_components": ["c3_raft_mesh"], "required_evidence_components": ["c3_raft_mesh"], "required_output_components": ["c1_constrained_owner", "c4_depth_layered_mesh", "c5_object_owner_lock", "c6_safe_multiband", "c7_global_photometric", "c8_local_multilabel_owner", "c13_robust_photometric_bundle"]}
   },
-  "manifest_sha256": "08069e2ac5180c145e0bf3e9789441c2527d53bf70cd0418b6afce78190621d6",
+  "manifest_sha256": "c3b9e20d9f9de9ff45f5d5ee30c43eff9e0d02b9779cf653b7083f01553bdd17",
   "schema": "gemini305-video-candidate-manifest/v1"
 }

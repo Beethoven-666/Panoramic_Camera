@@ -463,10 +463,11 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                 "audited_visual",
                 "visual_seam",
                 "hard_owner_diagnostic",
+                "v6_graphcut_candidate",
             }:
                 raise ValueError(
                     "video_panorama.fast_renderer must be audited_visual, "
-                    "visual_seam, or hard_owner_diagnostic"
+                    "visual_seam, hard_owner_diagnostic, or v6_graphcut_candidate"
                 )
             candidate_c1_constrained_owner = bool(
                 video_settings.get("candidate_c1_constrained_owner", False)
@@ -1162,7 +1163,17 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                 else:
                     raise RuntimeError("unknown v2 CUDA renderer mode")
             else:
-                push = render_calibrated_rgb_pushbroom(
+                if legacy_renderer == "v6_graphcut_candidate":
+                    from .video_v6_pair_renderer import render_video_v6_candidate
+
+                    push = render_video_v6_candidate(
+                        tuple(sources), tuple(poses), video.rgbd.calibration,
+                        pushbroom_config=push_config, rgb_motions=selected_motions,
+                        motion_pixels_to_full_resolution=video.rgbd.calibration.width
+                        / float(stitch.get("analysis_width", 320)),
+                    )
+                else:
+                    push = render_calibrated_rgb_pushbroom(
                     list(sources),
                     poses,
                     video.rgbd.calibration,
@@ -1210,7 +1221,7 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                         and isinstance(getattr(args, "measurement_annotations", None), dict)
                         else ()
                     ),
-                )
+                    )
             if v2_cuda_mode is not None and publish_auxiliary_exports:
                 # The v2 archive is a strictly post-render, read-only export
                 # of actual real-source calibrated tiles and final owner
