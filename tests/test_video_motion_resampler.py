@@ -10,6 +10,7 @@ from panorama_demo.quality import FrameQuality, MotionEstimate
 from panorama_demo.session import RGBDFrame
 from panorama_demo.video_motion_resampler import (
     MotionResamplingConfig,
+    VideoRenderPlan,
     compose_selected_motions,
     insert_v6_real_rescue_sources,
     select_render_keyframes,
@@ -108,6 +109,27 @@ def test_v6_rescue_inserts_only_existing_direct_orb_midpoints_for_oversized_gaps
     assert rescued.rescue_source_indices == (1, 3)
     assert rescued.rescue_source_frame_ids == (1, 3)
     assert rescued.as_dict()["interpolated_poses"] is False
+
+
+def test_v6_rescue_spends_its_limited_budget_on_the_largest_measured_gap() -> None:
+    frames = tuple(_frame(index) for index in range(7))
+    motions = [
+        MotionEstimate(value, 0.0, 80, 0.9, 0.7, "dis_ultrafast")
+        for value in (5.0, 5.0, 15.0, 15.0, 15.0, 15.0)
+    ]
+    plan = VideoRenderPlan(
+        frames=(frames[0], frames[2], frames[6]), source_indices=(0, 2, 6),
+        scan_direction=1, high_risk_edge_count=0, normal_target_step_pixels=8.0,
+        risk_target_step_pixels=5.0,
+    )
+
+    rescued = insert_v6_real_rescue_sources(
+        frames, motions, plan, full_resolution_scale=1.0, maximum_step_pixels=8.0,
+        maximum_rescues=1,
+    )
+
+    assert rescued.rescue_source_indices == (4,)
+    assert rescued.source_indices == (0, 2, 4, 6)
 
 
 def test_motion_composition_allows_only_certified_internal_anchor_spans() -> None:

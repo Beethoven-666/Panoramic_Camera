@@ -228,9 +228,13 @@ def insert_v6_real_rescue_sources(
         raise ValueError("v6 rescue requires a monotone scan direction")
 
     selected = list(indices)
-    rescue_indices: list[int] = []
+    # The v6 rescue budget is intentionally small.  Spend it on the largest
+    # measured source gaps, rather than whichever oversized gaps happen to
+    # occur first in time; otherwise a late hard GraphCut corridor is starved
+    # while an easier early gap consumes the only real direct-ORB rescue.
+    candidates: list[tuple[float, int, int]] = []
     for left, right in zip(indices[:-1], indices[1:], strict=True):
-        if len(rescue_indices) >= maximum_rescues or right - left <= 1:
+        if right - left <= 1:
             continue
         steps = np.asarray(
             [
@@ -243,11 +247,13 @@ def insert_v6_real_rescue_sources(
         if total <= maximum_step_pixels:
             continue
         cumulative = np.cumsum(steps)
-        candidates = np.arange(left + 1, right, dtype=np.int32)
+        midpoint_indices = np.arange(left + 1, right, dtype=np.int32)
         midpoint = 0.5 * total
-        rescue = int(candidates[int(np.argmin(np.abs(cumulative[:-1] - midpoint)))])
-        selected.append(rescue)
-        rescue_indices.append(rescue)
+        rescue = int(midpoint_indices[int(np.argmin(np.abs(cumulative[:-1] - midpoint)))])
+        candidates.append((total - maximum_step_pixels, left, rescue))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    rescue_indices = sorted(item[2] for item in candidates[:maximum_rescues])
+    selected.extend(rescue_indices)
     selected_indices = tuple(sorted(selected))
     return VideoRenderPlan(
         frames=tuple(tracking[index] for index in selected_indices),
