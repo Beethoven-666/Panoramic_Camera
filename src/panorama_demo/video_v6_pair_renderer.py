@@ -93,6 +93,25 @@ def _safe_photometric_background(pair: _PreparedV6Pair) -> np.ndarray:
     )
 
 
+def _photometric_background_audit(pair: _PreparedV6Pair) -> dict[str, int]:
+    """Count each fixed photometric eligibility stage for report evidence."""
+
+    common = pair.old_crop_valid & pair.new_crop_valid
+    reliable = common & pair.evidence.reliable_mask
+    fb_ok = reliable & np.isfinite(pair.evidence.fb_error) & (pair.evidence.fb_error <= 0.75)
+    rgb_ok = fb_ok & np.isfinite(pair.evidence.rgb_residual) & (pair.evidence.rgb_residual <= 20.0)
+    no_occlusion = rgb_ok & ~pair.evidence.occlusion_risk_mask
+    safe = no_occlusion & ~pair.photometric_protection
+    return {
+        "common_valid_pixels": int(np.count_nonzero(common)),
+        "reliable_pixels": int(np.count_nonzero(reliable)),
+        "fb_target_pixels": int(np.count_nonzero(fb_ok)),
+        "rgb_residual_pixels": int(np.count_nonzero(rgb_ok)),
+        "nonoccluded_pixels": int(np.count_nonzero(no_occlusion)),
+        "safe_background_pixels": int(np.count_nonzero(safe)),
+    }
+
+
 def _photometric_matched_right(
     right_bgr: np.ndarray, right_valid: np.ndarray, evidence: VideoDISPairEvidence,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -578,6 +597,7 @@ def render_video_v6_candidate(
                 "held_out_residual_abs_max_px": prepared.near_ladder_audit.held_out_residual_abs_max_px,
                 "maximum_displacement_px": prepared.near_ladder_audit.maximum_displacement_px,
             },
+            "photometric_background": _photometric_background_audit(prepared),
             "object_mask": {
                 "residual_threshold_px": prepared.object_masks.residual_threshold_px,
                 "candidate_pixel_count": int(prepared.object_masks.candidate_mask.sum()),

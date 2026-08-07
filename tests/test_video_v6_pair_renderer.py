@@ -8,6 +8,7 @@ from panorama_demo.video_v6_pair_renderer import (
     _compact_object_owner_preference,
     _hard_frontality_supports,
     _low_structure_corridor_left,
+    _photometric_background_audit,
     _photometric_matched_right,
     render_video_v6_real_pair,
     render_video_v6_real_sources,
@@ -41,6 +42,16 @@ def test_v6_source_chain_samples_each_real_source_only_once() -> None:
     assert len(result.graphcut_audits) == 2
     assert all(audit.graphcut_called for audit in result.graphcut_audits)
     assert result.valid_mask.all()
+
+
+def test_v6_pair_reports_monotone_photometric_background_eligibility_counts() -> None:
+    result = render_video_v6_real_sources((_source(1, 80), _source(2, 80)))
+
+    audit = _photometric_background_audit(result.prepared_pairs[0])
+
+    assert audit["common_valid_pixels"] >= audit["reliable_pixels"] >= audit["fb_target_pixels"]
+    assert audit["fb_target_pixels"] >= audit["rgb_residual_pixels"] >= audit["nonoccluded_pixels"]
+    assert audit["nonoccluded_pixels"] >= audit["safe_background_pixels"]
 
 
 def test_v6_chain_records_real_owner_expansion_instead_of_faking_a_dp_fallback(monkeypatch) -> None:
