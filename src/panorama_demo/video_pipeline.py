@@ -104,8 +104,11 @@ def _legacy_settings_for(spec: VideoAlgorithmSpec) -> dict[str, Any]:
         scan_step = components.get("scan_step")
         if not isinstance(scan_step, dict) or scan_step.get("normal_pixels") != 8 or scan_step.get("risk_pixels") != 5:
             raise ValueError("V6 candidate requires immutable 8/5px direct-ORB source reselection")
+        tracking_fps = components.get("tracking_fps")
+        if tracking_fps not in {8, 12, 16}:
+            raise ValueError("V6 candidate tracking_fps must be one of T0/T1/T2: 8, 12, or 16")
         settings["fast_renderer"] = "v6_graphcut_candidate"
-        settings["fast_orb_target_fps"] = 8.0
+        settings["fast_orb_target_fps"] = float(tracking_fps)
         resampling = dict(settings.get("motion_resampling", {}))
         resampling.update({"normal_target_step_pixels": 8.0, "risk_target_step_pixels": 5.0, "maximum_step_pixels": 12.0})
         settings["motion_resampling"] = resampling

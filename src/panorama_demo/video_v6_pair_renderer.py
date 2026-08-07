@@ -1,7 +1,7 @@
 """End-to-end v6 candidate renderer for one adjacent real-source pair."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
@@ -214,6 +214,7 @@ def render_video_v6_real_pair(
     object_crop = None if object_mask is None else np.asarray(object_mask, bool)[top:bottom, left:right]
     guards = build_video_hard_guards(old_crop, new_crop, evidence, object_mask=object_crop)
     graphcut = solve_video_graphcut_seam(old_crop, new_crop, old_crop_valid, new_crop_valid, hard_owner_old=guards.hard_owner_old, hard_owner_new=guards.hard_owner_new)
+    graphcut = replace(graphcut, audit=replace(graphcut.audit, canvas_x_offset=left))
     if not graphcut.audit.accepted or audit_guard_owner_intersection(graphcut.choose_new, guards):
         raise RuntimeError("v6 GraphCut pair failed topology or hard-guard ownership")
     owner = np.full(old_valid.shape, -1, np.int32)
@@ -262,6 +263,7 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
             raise RuntimeError("adjacent v6 pair did not produce required F/B DIS evidence")
         guards = build_video_hard_guards(old_crop, new_crop, evidence)
         graphcut = solve_video_graphcut_seam(old_crop, new_crop, old_crop_valid, new_crop_valid, hard_owner_old=guards.hard_owner_old, hard_owner_new=guards.hard_owner_new)
+        graphcut = replace(graphcut, audit=replace(graphcut.audit, canvas_x_offset=left))
         guard_violation = audit_guard_owner_intersection(graphcut.choose_new, guards)
         if guard_violation:
             raise RuntimeError(

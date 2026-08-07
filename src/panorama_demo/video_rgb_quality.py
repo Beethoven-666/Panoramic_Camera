@@ -53,17 +53,19 @@ def _staircase_runs(steps: np.ndarray) -> int:
     return runs + int(length >= 5)
 
 
-def _double_edge_and_ghost_count(bgr: np.ndarray, seam_x_by_row: Sequence[int]) -> tuple[int, int]:
+def _double_edge_and_ghost_count(bgr: np.ndarray, audits: Sequence[VideoGraphCutAudit]) -> tuple[int, int]:
     """Conservative RGB-only local discontinuity observation near each seam."""
     gray = cv2.cvtColor(np.asarray(bgr), cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 80, 160) > 0
     double, ghost = 0, 0
-    for row, seam_x in enumerate(seam_x_by_row):
-        if seam_x < 2 or seam_x >= edges.shape[1] - 2 or row >= edges.shape[0]:
-            continue
-        window = edges[row, seam_x - 2 : seam_x + 3]
-        double += int(np.count_nonzero(window) >= 2)
-        ghost += int(np.count_nonzero(window[[0, -1]]) == 2)
+    for audit in audits:
+        for row, local_x in enumerate(audit.seam_x_by_row):
+            seam_x = int(local_x) + int(audit.canvas_x_offset)
+            if local_x < 0 or seam_x < 2 or seam_x >= edges.shape[1] - 2 or row >= edges.shape[0]:
+                continue
+            window = edges[row, seam_x - 2 : seam_x + 3]
+            double += int(np.count_nonzero(window) >= 2)
+            ghost += int(np.count_nonzero(window[[0, -1]]) == 2)
     return double, ghost
 
 
@@ -81,8 +83,7 @@ def assess_video_rgb_quality(
     p95 = None if not steps.size else float(np.percentile(steps, 95.0))
     maximum = None if not steps.size else float(np.max(steps))
     staircase = _staircase_runs(steps)
-    seam_rows = tuple(value for audit in graphcut_audits for value in audit.seam_x_by_row)
-    double, ghost = _double_edge_and_ghost_count(bgr, seam_rows)
+    double, ghost = _double_edge_and_ghost_count(bgr, graphcut_audits)
     guard_violation = 0
     if guards is not None and guards.protected.shape == owner.shape:
         # The guard owner was applied before GraphCut.  A protected invalid

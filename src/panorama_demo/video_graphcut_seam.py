@@ -33,6 +33,7 @@ class VideoGraphCutAudit:
     valid_pixel_exactly_one_owner: bool
     accepted: bool
     rejection_reason: str | None
+    canvas_x_offset: int = 0
 
 
 @dataclass(frozen=True)

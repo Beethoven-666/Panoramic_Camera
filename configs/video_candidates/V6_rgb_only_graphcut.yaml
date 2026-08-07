@@ -13,4 +13,5 @@ replaces_output_components: [legacy_visual_seam]
 components:
   v6_rgb_only_graphcut: true
   scan_step: {normal_pixels: 8, risk_pixels: 5}
-config_sha256: 9a8aa3f00fc2abdcd07356c4b23fc781704b61b27af7a1d15ffb268be932be5a
+  tracking_fps: 12
+config_sha256: 36375bab610399f0747ec7618304341573f8d8b11bcf71736d92e1a2b15a007e
