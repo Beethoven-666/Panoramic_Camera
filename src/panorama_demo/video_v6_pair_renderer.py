@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from dataclasses import replace
 
 import cv2
 import numpy as np
@@ -17,7 +16,7 @@ from .calibrated_rgb_pushbroom import (
 from .video_final_sampling import VideoSamplingSource, sample_video_sources_once
 from .video_graphcut_seam import VideoGraphCutAudit, solve_video_graphcut_seam
 from .video_hard_guards import audit_guard_owner_intersection, build_video_hard_guards
-from .video_local_alignment import fit_background_alignment
+from .video_local_alignment import VideoLocalAlignmentConfig, fit_background_alignment
 from .video_near_blend import apply_near_multiband, build_near_blend_eligible_mask
 from .video_rgb_quality import VideoRGBQualityAudit, assess_video_rgb_quality
 from .video_visual_renderer import VideoDISPairEvidence, video_dis_pair_evidence
@@ -104,9 +103,12 @@ def _apply_output_matrix_to_grid(
     )
 
 
-def apply_v6_background_alignment_to_grids(sources: tuple[VideoSamplingSource, ...]) -> tuple[VideoSamplingSource, ...]:
+def apply_v6_background_alignment_to_grids(
+    sources: tuple[VideoSamplingSource, ...], *, return_audits: bool = False,
+) -> tuple[VideoSamplingSource, ...] | tuple[tuple[VideoSamplingSource, ...], tuple[dict[str, object], ...]]:
     """Apply only accepted RGB/DIS background models before the final sample."""
     adjusted = list(sources)
+    audits: list[dict[str, object]] = []
     scale = 4
     for index in range(1, len(adjusted)):
         old_preview, old_valid = _preview_bgr(adjusted[index - 1], scale)
@@ -115,21 +117,27 @@ def apply_v6_background_alignment_to_grids(sources: tuple[VideoSamplingSource, .
         new_bgra = np.dstack((new_preview, new_valid.astype(np.uint8) * 255))
         evidence = video_dis_pair_evidence(old_bgra, new_bgra, old_valid & new_valid)
         if evidence is None:
+            audits.append({"old_frame_id": adjusted[index - 1].frame_id, "new_frame_id": adjusted[index].frame_id, "accepted": False, "reason": "no_preview_dis_evidence"})
             continue
-        # The model consumes full-resolution pixel limits, so scale geometric
-        # flow evidence from the analysis grid before held-out evaluation.
-        evidence = replace(
-            evidence, flow_forward=evidence.flow_forward * scale, flow_backward=evidence.flow_backward * scale,
-            fb_error=evidence.fb_error * scale,
+        # Fit in preview coordinates with equivalently scaled hard limits;
+        # the accepted matrix is lifted to the full output grid exactly once.
+        alignment_config = VideoLocalAlignmentConfig(
+            background_displacement_target_px=6.0 / scale,
+            background_displacement_hard_px=10.0 / scale,
+            background_held_out_fb_target_px=1.25 / scale,
+            background_held_out_fb_hard_px=2.0 / scale,
         )
-        alignment = fit_background_alignment(evidence)
+        alignment = fit_background_alignment(evidence, config=alignment_config)
         if not alignment.audit.accepted or alignment.matrix is None:
+            audits.append({"old_frame_id": adjusted[index - 1].frame_id, "new_frame_id": adjusted[index].frame_id, "accepted": False, "model": alignment.audit.selected_model, "reason": alignment.audit.rejection_reason})
             continue
         scaling = np.diag((float(scale), float(scale), 1.0))
         matrix = scaling @ alignment.matrix @ np.linalg.inv(scaling)
         support = adjusted[index - 1].valid_mask & adjusted[index].valid_mask
         adjusted[index] = _apply_output_matrix_to_grid(adjusted[index], matrix, support)
-    return tuple(adjusted)
+        audits.append({"old_frame_id": adjusted[index - 1].frame_id, "new_frame_id": adjusted[index].frame_id, "accepted": True, "model": alignment.audit.selected_model, "warning": alignment.audit.large_alignment_warning})
+    outcome = tuple(adjusted)
+    return (outcome, tuple(audits)) if return_audits else outcome
 
 
 def render_video_v6_candidate(
@@ -141,7 +149,8 @@ def render_video_v6_candidate(
         frames, poses, calibration, pushbroom_config=pushbroom_config, rgb_motions=rgb_motions,
         motion_pixels_to_full_resolution=motion_pixels_to_full_resolution,
     )
-    result = render_video_v6_real_sources(apply_v6_background_alignment_to_grids(sources))
+    aligned_sources, alignment_audits = apply_v6_background_alignment_to_grids(sources, return_audits=True)
+    result = render_video_v6_real_sources(aligned_sources)
     metadata = {
         "schema": "video-v6-rgb-only-graphcut/v1",
         "renderer": "v6_real_source_graphcut_once_sampling",
@@ -170,6 +179,7 @@ def render_video_v6_candidate(
             "exactly_once": True,
         },
         "expanded_real_owner_pair_frame_ids": [list(pair) for pair in result.expanded_real_owner_pair_frame_ids],
+        "background_alignment": list(alignment_audits),
     }
     return CalibratedRGBPushbroomResult(result.bgr, metadata, owner_frame_id=result.owner_frame_id)
 
