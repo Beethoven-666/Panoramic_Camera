@@ -8,6 +8,7 @@ import pytest
 
 from panorama_demo.video_dataset_lock import (
     DIAGNOSTIC_DEVELOPMENT_RUN_NAME,
+    V6_PRIMARY_DEVELOPMENT_RUN_NAME,
     create_dataset_lock,
     development_dataset_lock_path,
     verify_experiment_dataset_lock,
@@ -46,6 +47,20 @@ def test_diagnostic_session_uses_a_separate_candidate_only_lock(tmp_path):
     # accept the diagnostic capture.
     with pytest.raises(ValueError, match="locked session"):
         create_dataset_lock(session)
+
+
+def test_fast_primary_can_run_the_v6_candidate_matrix_but_not_production(tmp_path):
+    session = _diagnostic_session(tmp_path)
+    session.rename(session.with_name(V6_PRIMARY_DEVELOPMENT_RUN_NAME))
+    session = session.with_name(V6_PRIMARY_DEVELOPMENT_RUN_NAME)
+    benchmark_root = tmp_path / "benchmarks" / session.name
+
+    lock = write_or_verify_experiment_dataset_lock(session, benchmark_root, role="candidate")
+
+    assert lock.schema == "gemini305-video-development-dataset-lock/v1"
+    assert verify_experiment_dataset_lock(session, benchmark_root, role="candidate") == lock
+    with pytest.raises(ValueError, match="candidate-only"):
+        write_or_verify_experiment_dataset_lock(session, benchmark_root, role="production")
 
 
 def test_v6_tracking_gate_uses_only_the_frozen_fast_primary_bytes(tmp_path, monkeypatch):

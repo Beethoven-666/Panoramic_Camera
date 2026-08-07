@@ -17,6 +17,16 @@ from typing import Any
 APPROVED_RUN_NAME = "run_20260804_162340"
 DIAGNOSTIC_DEVELOPMENT_RUN_NAME = "run_20260806_153033"
 V6_TRACKING_GATE_RUN_NAME = "run_20260807_140140"
+# The FAST primary recording first enters through the isolated direct-ORB
+# feasibility gate above.  Once that gate has a frozen direct survivor, v6
+# candidate evaluation needs the same candidate-only byte-lock treatment as
+# the slow control recording; it must never become an approved/production
+# dataset merely because it is the primary development capture.
+V6_PRIMARY_DEVELOPMENT_RUN_NAME = V6_TRACKING_GATE_RUN_NAME
+DEVELOPMENT_CANDIDATE_RUN_NAMES = frozenset((
+    DIAGNOSTIC_DEVELOPMENT_RUN_NAME,
+    V6_PRIMARY_DEVELOPMENT_RUN_NAME,
+))
 CONTROL_FILE_SHA256 = {
     "manifest.json": "11e52a86126b7a4445806bb7b8b82abd507d35f90e3c94797e5008d87af89cb0",
     "calibration.json": "9e19b8dc506b27834b4fa0166294deecb1c23d93e3b7bb93184b3aa8c5691330",
@@ -96,7 +106,7 @@ def create_dataset_lock(session: Path) -> DatasetLock:
 
 
 def _create_development_dataset_lock(session: Path) -> DatasetLock:
-    """Lock the explicitly authorised diagnostic capture by bytes.
+    """Lock an explicitly authorised v6 development capture by bytes.
 
     This is deliberately a different lock schema and file name from the
     approved-session lock.  It is valid only for candidate development work;
@@ -105,10 +115,10 @@ def _create_development_dataset_lock(session: Path) -> DatasetLock:
     """
 
     root = _session_root(session)
-    if root.name != DIAGNOSTIC_DEVELOPMENT_RUN_NAME:
+    if root.name not in DEVELOPMENT_CANDIDATE_RUN_NAMES:
         raise ValueError(
-            "Development experiments only accept the diagnostic session "
-            f"{DIAGNOSTIC_DEVELOPMENT_RUN_NAME}"
+            "Development experiments only accept an authorised v6 candidate session: "
+            + ", ".join(sorted(DEVELOPMENT_CANDIDATE_RUN_NAMES))
         )
     controls = {
         name: sha256_file(root / name)
@@ -119,7 +129,7 @@ def _create_development_dataset_lock(session: Path) -> DatasetLock:
         for path in _source_paths(root)
     }
     if not sources:
-        raise ValueError("Diagnostic session has no RGB-D source images to lock")
+        raise ValueError("Development session has no RGB-D source images to lock")
     return DatasetLock(
         schema="gemini305-video-development-dataset-lock/v1",
         session=str(root),
@@ -230,16 +240,16 @@ def verify_dataset_lock(session: Path, lock_path: Path) -> DatasetLock:
     return current
 
 
-def _is_diagnostic_development_session(session: Path) -> bool:
-    return _session_root(session).name == DIAGNOSTIC_DEVELOPMENT_RUN_NAME
+def _is_development_candidate_session(session: Path) -> bool:
+    return _session_root(session).name in DEVELOPMENT_CANDIDATE_RUN_NAMES
 
 
 def require_candidate_role_for_diagnostic_session(session: Path, role: str) -> None:
-    """Prevent the new capture from entering baseline or production workflows."""
+    """Prevent v6 development captures entering baseline or production workflows."""
 
-    if _is_diagnostic_development_session(session) and role != "candidate":
+    if _is_development_candidate_session(session) and role != "candidate":
         raise ValueError(
-            "The diagnostic development session is candidate-only; it cannot run "
+            "The v6 development session is candidate-only; it cannot run "
             f"as {role}"
         )
 
@@ -250,7 +260,7 @@ def write_or_verify_experiment_dataset_lock(
     """Lock an experiment input without broadening the approved-session lock."""
 
     require_candidate_role_for_diagnostic_session(session, role)
-    if _is_diagnostic_development_session(session):
+    if _is_development_candidate_session(session):
         lock_path = development_dataset_lock_path(benchmark_root)
         if lock_path.is_file():
             return verify_development_dataset_lock(session, lock_path)
@@ -276,6 +286,6 @@ def verify_experiment_dataset_lock(session: Path, benchmark_root: Path, *, role:
     """Verify the correct per-session lock without accepting it as a holdout lock."""
 
     require_candidate_role_for_diagnostic_session(session, role)
-    if _is_diagnostic_development_session(session):
+    if _is_development_candidate_session(session):
         return verify_development_dataset_lock(session, development_dataset_lock_path(benchmark_root))
     return verify_dataset_lock(session, benchmark_root / "dataset_lock.json")
