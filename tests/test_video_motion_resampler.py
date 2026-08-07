@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
 
 from panorama_demo.quality import FrameQuality, MotionEstimate
 from panorama_demo.session import RGBDFrame
@@ -8,6 +11,10 @@ from panorama_demo.video_motion_resampler import (
     MotionResamplingConfig,
     compose_selected_motions,
     select_render_keyframes,
+)
+from panorama_demo.video_panorama import (
+    _select_real_orb_tracking_indices,
+    run_direct_orb_tracking_gate,
 )
 
 
@@ -94,3 +101,62 @@ def test_motion_resampling_config_rejects_relaxed_order() -> None:
         assert "minimum <= risk <= normal" in str(exc)
     else:
         raise AssertionError("Invalid resampling order was accepted")
+
+
+def test_direct_orb_fps_selection_uses_only_ordered_real_frames() -> None:
+    frames = tuple(_frame(index) for index in range(25))
+
+    selected_8 = _select_real_orb_tracking_indices(frames, target_fps=8.0)
+    selected_12 = _select_real_orb_tracking_indices(frames, target_fps=12.0)
+    selected_16 = _select_real_orb_tracking_indices(frames, target_fps=16.0)
+
+    assert selected_8[0] == selected_12[0] == selected_16[0] == 0
+    assert selected_8[-1] == selected_12[-1] == selected_16[-1] == 24
+    assert len(selected_8) < len(selected_12) < len(selected_16)
+    assert all(tuple(sorted(set(indices))) == indices for indices in (selected_8, selected_12, selected_16))
+
+
+def test_direct_orb_tracking_gate_selects_lowest_complete_candidate(monkeypatch, tmp_path) -> None:
+    import panorama_demo.video_panorama as video_panorama
+
+    frames = tuple(_frame(index) for index in range(13))
+    qualities = [_quality() for _ in frames]
+    motions = [MotionEstimate(1.0, 0.0, 80, 0.9, 0.7, "dis_ultrafast") for _ in range(12)]
+    session = SimpleNamespace(
+        rgbd=SimpleNamespace(frames=frames, calibration=object(), root=tmp_path)
+    )
+    monkeypatch.setattr(video_panorama, "load_config", lambda _path: {"stitch": {}})
+    monkeypatch.setattr(video_panorama, "load_video_session", lambda *_args, **_kwargs: session)
+    monkeypatch.setattr(
+        video_panorama,
+        "analyse_video_scan",
+        lambda *_args, **_kwargs: (qualities, motions, {"start_index": 0, "end_index": 12}),
+    )
+
+    attempts = 0
+
+    def _run_orb(candidate_frames, *_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        ids = tuple(frame.frame_id for frame in candidate_frames)
+        if attempts == 1:
+            raise RuntimeError("T0 lost tracking")
+        return SimpleNamespace(
+            tracked_frame_ids=ids,
+            poses_by_frame_id={frame_id: np.eye(4) for frame_id in ids},
+            attempt_audit=(),
+        )
+
+    monkeypatch.setattr(video_panorama, "run_orbslam3_rgbd", _run_orb)
+    report = run_direct_orb_tracking_gate(
+        tmp_path,
+        tmp_path / "gate",
+        fps_candidates=(8.0, 12.0, 16.0),
+        fast_orbslam3_config={"feature_count": 1000},
+    )
+
+    assert report["selected_tracking_candidate_id"] == "T1"
+    assert report["full_direct_orb_chain_available"] is True
+    assert report["interpolated_poses"] is False
+    assert report["tracking_candidates"][0]["status"] == "direct_chain_failed"
+    assert report["tracking_candidates"][1]["direct_orb_pose_coverage"] == 1.0

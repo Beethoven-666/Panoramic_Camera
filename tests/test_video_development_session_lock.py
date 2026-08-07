@@ -12,6 +12,7 @@ from panorama_demo.video_dataset_lock import (
     development_dataset_lock_path,
     verify_experiment_dataset_lock,
     write_or_verify_experiment_dataset_lock,
+    write_or_verify_v6_tracking_gate_dataset_lock,
 )
 from panorama_demo.video_experiment import _benchmark_root, run
 from panorama_demo.video_pipeline import run_video_algorithm
@@ -45,6 +46,32 @@ def test_diagnostic_session_uses_a_separate_candidate_only_lock(tmp_path):
     # accept the diagnostic capture.
     with pytest.raises(ValueError, match="locked session"):
         create_dataset_lock(session)
+
+
+def test_v6_tracking_gate_uses_only_the_frozen_fast_primary_bytes(tmp_path, monkeypatch):
+    import panorama_demo.video_dataset_lock as dataset_lock
+
+    session = tmp_path / dataset_lock.V6_TRACKING_GATE_RUN_NAME
+    (session / "color").mkdir(parents=True)
+    (session / "depth_aligned").mkdir()
+    for name in ("manifest.json", "calibration.json", "frames.csv"):
+        (session / name).write_text("{}\n", encoding="utf-8")
+    (session / "color" / "00000000.jpg").write_bytes(b"rgb")
+    (session / "depth_aligned" / "00000000.png").write_bytes(b"depth")
+    expected_controls = {
+        name: dataset_lock.sha256_file(session / name)
+        for name in ("manifest.json", "calibration.json", "frames.csv")
+    }
+    monkeypatch.setattr(dataset_lock, "V6_TRACKING_GATE_CONTROL_FILE_SHA256", expected_controls)
+    benchmark_root = tmp_path / "benchmarks" / session.name
+
+    lock = write_or_verify_v6_tracking_gate_dataset_lock(session, benchmark_root)
+
+    assert lock.schema == "gemini305-video-v6-tracking-gate-dataset-lock/v1"
+    assert write_or_verify_v6_tracking_gate_dataset_lock(session, benchmark_root) == lock
+    (session / "frames.csv").write_text("changed\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="control hash mismatch"):
+        write_or_verify_v6_tracking_gate_dataset_lock(session, benchmark_root)
 
 
 def test_diagnostic_benchmark_root_and_split_are_per_session_and_immutable(tmp_path):

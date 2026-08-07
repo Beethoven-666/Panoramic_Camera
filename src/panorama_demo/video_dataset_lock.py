@@ -16,10 +16,16 @@ from typing import Any
 
 APPROVED_RUN_NAME = "run_20260804_162340"
 DIAGNOSTIC_DEVELOPMENT_RUN_NAME = "run_20260806_153033"
+V6_TRACKING_GATE_RUN_NAME = "run_20260807_140140"
 CONTROL_FILE_SHA256 = {
     "manifest.json": "11e52a86126b7a4445806bb7b8b82abd507d35f90e3c94797e5008d87af89cb0",
     "calibration.json": "9e19b8dc506b27834b4fa0166294deecb1c23d93e3b7bb93184b3aa8c5691330",
     "frames.csv": "f27d7dd4b675193a3846fa70fd1e8461da7898568b300c6e1e4ea190e1fcb42d",
+}
+V6_TRACKING_GATE_CONTROL_FILE_SHA256 = {
+    "manifest.json": "0e82fa48b51703f228ee1922c1bfd2b7eebd74584d4deb7bfd872cf7242d07d0",
+    "calibration.json": "9e19b8dc506b27834b4fa0166294deecb1c23d93e3b7bb93184b3aa8c5691330",
+    "frames.csv": "ea9784b6c47e9d5b6b9898d82512a139e425cbab412d84dd55299037c7109380",
 }
 
 
@@ -120,6 +126,65 @@ def _create_development_dataset_lock(session: Path) -> DatasetLock:
         control_sha256=controls,
         source_sha256=sources,
     )
+
+
+def create_v6_tracking_gate_dataset_lock(session: Path) -> DatasetLock:
+    """Freeze the v6 FAST primary bytes for direct-ORB feasibility work only."""
+
+    root = _session_root(session)
+    if root.name != V6_TRACKING_GATE_RUN_NAME:
+        raise ValueError(
+            "v6 direct-ORB tracking gate only accepts the FAST primary session "
+            f"{V6_TRACKING_GATE_RUN_NAME}"
+        )
+    controls = {
+        name: sha256_file(root / name) for name in V6_TRACKING_GATE_CONTROL_FILE_SHA256
+    }
+    mismatched = [
+        name
+        for name, expected in V6_TRACKING_GATE_CONTROL_FILE_SHA256.items()
+        if controls[name] != expected
+    ]
+    if mismatched:
+        raise ValueError(
+            "v6 FAST primary control hash mismatch: " + ", ".join(mismatched)
+        )
+    sources = {
+        path.relative_to(root).as_posix(): sha256_file(path)
+        for path in _source_paths(root)
+    }
+    if not sources:
+        raise ValueError("v6 FAST primary has no RGB-D source images to lock")
+    return DatasetLock(
+        schema="gemini305-video-v6-tracking-gate-dataset-lock/v1",
+        session=str(root),
+        control_sha256=controls,
+        source_sha256=sources,
+    )
+
+
+def v6_tracking_gate_dataset_lock_path(benchmark_root: Path) -> Path:
+    return benchmark_root / "v6_tracking_gate_dataset_lock.json"
+
+
+def write_or_verify_v6_tracking_gate_dataset_lock(
+    session: Path, benchmark_root: Path
+) -> DatasetLock:
+    """Create once and then byte-verify the isolated v6 tracking-gate input."""
+
+    expected = create_v6_tracking_gate_dataset_lock(session)
+    path = v6_tracking_gate_dataset_lock_path(benchmark_root)
+    benchmark_root.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Invalid v6 tracking-gate dataset lock: {path}") from exc
+        if saved != expected.as_dict():
+            raise ValueError("v6 tracking-gate dataset lock mismatch; input has changed")
+        return expected
+    path.write_text(json.dumps(expected.as_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    return expected
 
 
 def write_dataset_lock(session: Path, benchmark_root: Path) -> DatasetLock:

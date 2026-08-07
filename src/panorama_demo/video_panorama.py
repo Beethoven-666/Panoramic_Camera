@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,7 @@ from .video_online_state import load_online_state
 from .video_performance import VideoPerformanceProfiler
 from .video_scan_segment import analyse_video_scan
 from .video_session import load_video_session
+from .video_runtime_environment import atomic_write_json
 
 
 def _sha256(path: Path) -> str:
@@ -279,6 +281,139 @@ def _select_real_orb_tracking_indices(frames, *, target_fps: float) -> tuple[int
     if selected[-1] != len(frames) - 1:
         selected.append(len(frames) - 1)
     return tuple(selected)
+
+
+def _tracking_fps_candidates(values: object) -> tuple[float, ...]:
+    """Validate the ordered, direct-ORB FPS alternatives for v6 development."""
+
+    if not isinstance(values, (tuple, list)) or not values:
+        raise ValueError("tracking FPS candidates must be a non-empty list")
+    candidates = tuple(float(value) for value in values)
+    if not np.isfinite(candidates).all() or any(value <= 0.0 for value in candidates):
+        raise ValueError("tracking FPS candidates must be finite and positive")
+    if tuple(sorted(candidates)) != candidates or len(set(candidates)) != len(candidates):
+        raise ValueError("tracking FPS candidates must be strictly increasing")
+    return candidates
+
+
+def run_direct_orb_tracking_gate(
+    input_path: Path,
+    output: Path,
+    *,
+    fps_candidates: tuple[float, ...] = (8.0, 12.0, 16.0),
+    config_path: Path | None = None,
+    fast_orbslam3_config: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Measure T0/T1/T2 using only real frames and direct ORB poses.
+
+    This v6 Phase-1 command intentionally stops before source selection or
+    rendering.  A failed rate remains observable in the report; it never
+    receives an interpolated pose, DIS replacement, or an Open3D substitute.
+    """
+
+    candidates = _tracking_fps_candidates(fps_candidates)
+    root = input_path.expanduser().resolve()
+    root = root if root.is_dir() else root.parent
+    destination = output.expanduser().resolve()
+    config = load_config(config_path)
+    stitch = dict(config.get("stitch", {}))
+    video_settings = dict(stitch.get("video_panorama", {}))
+    validation_workers = int(video_settings.get("fast_session_validation_workers", 4))
+    scan_workers = int(video_settings.get("fast_scan_analysis_workers", 4))
+    if validation_workers < 1 or scan_workers < 1:
+        raise ValueError("tracking gate worker counts must be positive")
+    video = load_video_session(
+        root,
+        validate_frame_files=True,
+        validation_workers=validation_workers,
+    )
+    qualities, motions, segment = analyse_video_scan(
+        video.rgbd.frames,
+        analysis_width=int(stitch.get("analysis_width", 320)),
+        motion_backend=str(video_settings.get("motion_backend", "dis")),
+        workers=scan_workers,
+    )
+    first, last = int(segment["start_index"]), int(segment["end_index"])
+    scan_frames = tuple(video.rgbd.frames[first : last + 1])
+    if len(scan_frames) < 2:
+        raise RuntimeError("Direct ORB tracking gate has fewer than two real scan frames")
+    trajectory_base = dict(stitch.get("orbslam3_rgbd", {}))
+    if fast_orbslam3_config is not None:
+        trajectory_base.update(dict(fast_orbslam3_config))
+    trajectory_base["minimum_tracked_fraction"] = 1.0
+
+    results: list[dict[str, object]] = []
+    selected_id: str | None = None
+    for index, fps in enumerate(candidates):
+        candidate_id = f"T{index}"
+        tracking_indices = _select_real_orb_tracking_indices(scan_frames, target_fps=fps)
+        tracking_frames = tuple(scan_frames[item] for item in tracking_indices)
+        expected_ids = [int(frame.frame_id) for frame in tracking_frames]
+        started = time.perf_counter()
+        row: dict[str, object] = {
+            "tracking_candidate_id": candidate_id,
+            "tracking_fps": fps,
+            "requested_real_frame_count": len(expected_ids),
+            "requested_frame_ids": expected_ids,
+            "direct_orb_pose_count": 0,
+            "direct_orb_pose_coverage": 0.0,
+            "full_direct_orb_chain_available": False,
+            # Source spans have not been planned until Step 3.  This explicit
+            # pending value prevents a tracking-only result from claiming a
+            # frontality decision it has not measured.
+            "frontality_coverage_pass": None,
+            "frontality_coverage_status": "pending_step_3_source_selection",
+        }
+        try:
+            with tempfile.TemporaryDirectory(prefix=f"g305-v6-{candidate_id.lower()}-orb-") as work:
+                trajectory = run_orbslam3_rgbd(
+                    tracking_frames,
+                    video.rgbd.calibration,
+                    work,
+                    config=trajectory_base,
+                )
+            tracked_ids = [int(frame_id) for frame_id in trajectory.tracked_frame_ids]
+            coverage = len(tracked_ids) / len(expected_ids)
+            complete = tracked_ids == expected_ids and len(trajectory.poses_by_frame_id) == len(expected_ids)
+            row.update(
+                {
+                    "direct_orb_pose_count": len(tracked_ids),
+                    "direct_orb_pose_coverage": coverage,
+                    "full_direct_orb_chain_available": complete,
+                    "orb_attempt_audit": [dict(item) for item in trajectory.attempt_audit],
+                    "elapsed_seconds": time.perf_counter() - started,
+                    "status": "direct_chain_complete" if complete else "direct_chain_incomplete",
+                }
+            )
+        except Exception as exc:
+            row.update(
+                {
+                    "elapsed_seconds": time.perf_counter() - started,
+                    "status": "direct_chain_failed",
+                    "failure_reason": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        results.append(row)
+        if selected_id is None and row["full_direct_orb_chain_available"] is True:
+            selected_id = candidate_id
+
+    result: dict[str, object] = {
+        "schema": "gemini305-video-direct-orb-tracking-gate/v1",
+        "session_root": str(root),
+        "scan_segment": dict(segment),
+        "scan_real_frame_count": len(scan_frames),
+        "tracking_candidates": results,
+        "selected_tracking_candidate_id": selected_id,
+        "full_direct_orb_chain_available": selected_id is not None,
+        "selection_status": (
+            "pending_step_3_frontality" if selected_id is not None else "no_direct_orb_survivor"
+        ),
+        "interpolated_poses": False,
+        "open3d_pose_replacement": False,
+        "dis_pose_replacement": False,
+    }
+    atomic_write_json(destination / "tracking_gate.json", result)
+    return result
 
 
 def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
