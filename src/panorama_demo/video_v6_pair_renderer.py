@@ -136,6 +136,54 @@ def _crop_dis_evidence(
     )
 
 
+def _low_structure_corridor_left(
+    old_bgr: np.ndarray, new_bgr: np.ndarray, common_valid: np.ndarray, *,
+    overlap_left: int, overlap_right: int, width: int, image_width: int,
+) -> int:
+    """Pick one legal GraphCut corridor using RGB structure only.
+
+    This runs before the pair's single F/B DIS observation.  It neither warps
+    RGB nor emits a pose: it merely avoids placing the permitted GraphCut
+    search window on the densest Canny structure when an equally real common
+    support window is available.
+    """
+
+    if width <= 0 or width > image_width or not 0 <= overlap_left < overlap_right <= image_width:
+        raise ValueError("v6 structure corridor is outside the legal canvas")
+    old_gray = cv2.cvtColor(np.asarray(old_bgr), cv2.COLOR_BGR2GRAY)
+    new_gray = cv2.cvtColor(np.asarray(new_bgr), cv2.COLOR_BGR2GRAY)
+    structure = cv2.Canny(old_gray, 80, 160) > 0
+    structure |= cv2.Canny(new_gray, 80, 160) > 0
+    valid = np.asarray(common_valid, bool)
+    if valid.shape != structure.shape:
+        raise ValueError("v6 structure corridor valid mask has wrong shape")
+    centre_left = max(0, min(
+        image_width - width, overlap_left + (overlap_right - overlap_left - width) // 2,
+    ))
+    minimum_left = max(0, overlap_left - width + 1)
+    maximum_left = min(image_width - width, overlap_right - 1)
+    candidates = set(range(minimum_left, maximum_left + 1, 4))
+    candidates.add(centre_left)
+    best: tuple[float, int] | None = None
+    for left in sorted(candidates):
+        right = left + width
+        support = valid[:, left:right]
+        if not support.any():
+            continue
+        support_count = int(np.count_nonzero(support))
+        density = float(np.count_nonzero(structure[:, left:right] & support)) / float(support_count)
+        # Retain a very small central preference so a nearly equal low-texture
+        # corridor does not drift to a projection boundary.
+        coverage_penalty = 0.10 * (1.0 - support_count / float(width * support.shape[0]))
+        score = density + coverage_penalty + 0.01 * abs(left - centre_left) / max(1, width)
+        candidate = (score, left)
+        if best is None or candidate < best:
+            best = candidate
+    if best is None:
+        raise RuntimeError("v6 structure corridor has no real common support")
+    return best[1]
+
+
 def _hard_frontality_supports(
     sources: tuple[VideoSamplingSource, ...], hard_spans: dict[int, tuple[int, int]],
 ) -> tuple[VideoDirectSourceSupport, ...]:
@@ -653,8 +701,11 @@ def render_video_v6_real_sources(
         # 192px retry by slicing this same evidence, never by recomputing flow.
         rescue_width = max(96, min(192, full_right - full_left))
         corridor_width = min(160, rescue_width)
-        centre = (full_left + full_right) // 2
-        rescue_left = max(0, min(old_valid.shape[1] - rescue_width, centre - rescue_width // 2))
+        rescue_left = _low_structure_corridor_left(
+            old_bgr, new_bgr, overlap,
+            overlap_left=full_left, overlap_right=full_right, width=rescue_width,
+            image_width=old_valid.shape[1],
+        )
         rescue_right = rescue_left + rescue_width
         left = rescue_left + (rescue_width - corridor_width) // 2
         right = left + corridor_width

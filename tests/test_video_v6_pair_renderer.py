@@ -7,6 +7,7 @@ from panorama_demo.video_v6_pair_renderer import (
     _apply_output_mesh_to_grid,
     _compact_object_owner_preference,
     _hard_frontality_supports,
+    _low_structure_corridor_left,
     _photometric_matched_right,
     render_video_v6_real_pair,
     render_video_v6_real_sources,
@@ -124,6 +125,20 @@ def test_hard_frontality_support_is_mapped_from_raw_columns_to_canvas_coordinate
 
     assert support[0].frame_id == 7
     assert support[0].support_x == (30.0, 90.0)
+
+
+def test_v6_corridor_prefers_lower_canny_structure_within_common_real_support() -> None:
+    old = np.zeros((480, 240, 3), np.uint8)
+    new = old.copy()
+    old[:, 100:104] = 255
+    new[:, 100:104] = 255
+
+    left = _low_structure_corridor_left(
+        old, new, np.ones((480, 240), bool), overlap_left=0, overlap_right=240, width=96,
+        image_width=240,
+    )
+
+    assert not left <= 102 < left + 96
 
 
 def test_compact_object_switches_only_to_one_complete_new_direct_source() -> None:
