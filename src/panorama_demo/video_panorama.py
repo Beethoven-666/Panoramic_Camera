@@ -1188,6 +1188,10 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                         pushbroom_config=push_config, rgb_motions=selected_motions,
                         motion_pixels_to_full_resolution=video.rgbd.calibration.width
                         / float(stitch.get("analysis_width", 320)),
+                        frontality_hard_spans={
+                            int(record.frame_id): tuple(int(value) for value in record.general_hard_span)
+                            for record in frontality_records
+                        },
                     )
                 else:
                     push = render_calibrated_rgb_pushbroom(

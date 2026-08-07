@@ -5,6 +5,7 @@ import numpy as np
 from panorama_demo.video_final_sampling import VideoSamplingSource
 from panorama_demo.video_v6_pair_renderer import (
     _apply_output_mesh_to_grid,
+    _hard_frontality_supports,
     _photometric_matched_right,
     render_video_v6_real_pair,
     render_video_v6_real_sources,
@@ -111,3 +112,12 @@ def test_bounded_mesh_changes_only_explicit_safe_background_grid_cells() -> None
     assert np.array_equal(adjusted.inverse_x[~safe], source.inverse_x[~safe])
     assert np.array_equal(adjusted.inverse_y[~safe], source.inverse_y[~safe])
     assert not np.array_equal(adjusted.inverse_x[safe], source.inverse_x[safe])
+
+
+def test_hard_frontality_support_is_mapped_from_raw_columns_to_canvas_coordinates() -> None:
+    source = _source(7, 90)
+
+    support = _hard_frontality_supports((source,), {7: (30, 90)})
+
+    assert support[0].frame_id == 7
+    assert support[0].support_x == (30.0, 90.0)

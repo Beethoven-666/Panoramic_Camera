@@ -23,6 +23,11 @@ from .video_local_alignment import (
 )
 from .video_near_blend import apply_near_multiband, build_near_blend_eligible_mask
 from .video_object_mask import VideoObjectMaskConfig, VideoObjectMaskResult, build_video_object_masks
+from .video_object_patch_planning import (
+    VideoDirectSourceSupport,
+    VideoObjectRegion,
+    plan_object_patches,
+)
 from .video_photometric import (
     AdjacentBGRAOverlap,
     apply_video_photometric_correction,
@@ -129,6 +134,61 @@ def _crop_dis_evidence(
         reliable_mask=evidence.reliable_mask[:, left:right],
         sampled_new_bgra=evidence.sampled_new_bgra[:, left:right],
     )
+
+
+def _hard_frontality_supports(
+    sources: tuple[VideoSamplingSource, ...], hard_spans: dict[int, tuple[int, int]],
+) -> tuple[VideoDirectSourceSupport, ...]:
+    """Map raw calibrated hard-frontality columns into output-canvas spans."""
+
+    supports: list[VideoDirectSourceSupport] = []
+    for source in sources:
+        span = hard_spans.get(int(source.frame_id))
+        if span is None:
+            raise ValueError(f"v6 source {source.frame_id} has no hard-frontality span")
+        raw_left, raw_right = (int(value) for value in span)
+        if raw_right <= raw_left:
+            raise ValueError("hard-frontality span must be non-empty")
+        valid = np.asarray(source.valid_mask, bool)
+        raw_x = np.asarray(source.inverse_x, np.float32)
+        support = valid & np.isfinite(raw_x) & (raw_x >= raw_left) & (raw_x < raw_right)
+        columns = np.flatnonzero(np.any(support, axis=0))
+        if not columns.size:
+            raise RuntimeError(f"v6 source {source.frame_id} has no canvas hard-frontality support")
+        left, right = int(columns[0]), int(columns[-1]) + 1
+        if not np.all(np.any(support, axis=0)[left:right]):
+            raise RuntimeError(f"v6 source {source.frame_id} hard-frontality support is not continuous")
+        supports.append(VideoDirectSourceSupport(int(source.frame_id), (float(left), float(right))))
+    return tuple(supports)
+
+
+def _object_patch_plans(
+    prepared_pairs: tuple[object, ...], supports: tuple[VideoDirectSourceSupport, ...],
+) -> list[dict[str, object]]:
+    """Plan the minimal continuous hard-frontality cover for every object region."""
+
+    plans: list[dict[str, object]] = []
+    for pair in prepared_pairs:
+        for component in pair.object_masks.components:
+            x, _y, width, _height = component.bounding_box_xywh
+            region = VideoObjectRegion(
+                f"{pair.old_source.frame_id}_{pair.new_source.frame_id}_{component.label}",
+                (float(pair.left + x), float(pair.left + x + width)), component.collar_px,
+            )
+            try:
+                plan = plan_object_patches(region, supports)
+            except RuntimeError as error:
+                plans.append({
+                    "object_id": region.object_id,
+                    "requested_span_x": list(region.protected_span_x),
+                    "accepted": False,
+                    "reason": str(error),
+                })
+                continue
+            payload = plan.as_dict()
+            payload["accepted"] = True
+            plans.append(payload)
+    return plans
 
 
 def build_v6_sampling_sources(
@@ -366,11 +426,15 @@ def apply_v6_near_alignment_to_grids(
 def render_video_v6_candidate(
     frames: tuple[object, ...], poses: tuple[np.ndarray, ...], calibration: object, *,
     pushbroom_config: dict[str, object], rgb_motions: list[object], motion_pixels_to_full_resolution: float,
+    frontality_hard_spans: dict[int, tuple[int, int]] | None = None,
 ) -> CalibratedRGBPushbroomResult:
     """Return the legacy result container while executing only the v6 path."""
     sources = build_v6_sampling_sources(
         frames, poses, calibration, pushbroom_config=pushbroom_config, rgb_motions=rgb_motions,
         motion_pixels_to_full_resolution=motion_pixels_to_full_resolution,
+    )
+    hard_frontality = None if frontality_hard_spans is None else _hard_frontality_supports(
+        sources, frontality_hard_spans,
     )
     aligned_sources, alignment_audits = apply_v6_background_alignment_to_grids(sources, return_audits=True)
     near_sources, near_owner_masks, near_alignment_audits = apply_v6_near_alignment_to_grids(
@@ -446,6 +510,9 @@ def render_video_v6_candidate(
         "background_alignment": list(alignment_audits),
         "near_protected_alignment": list(near_alignment_audits),
         "video_global_photometric": result.photometric_audit,
+        "object_patch_plans": (
+            [] if hard_frontality is None else _object_patch_plans(result.prepared_pairs, hard_frontality)
+        ),
     }
     return CalibratedRGBPushbroomResult(result.bgr, metadata, owner_frame_id=result.owner_frame_id)
 
