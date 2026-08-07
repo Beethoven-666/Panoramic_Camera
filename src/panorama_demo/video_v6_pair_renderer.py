@@ -151,6 +151,22 @@ def render_video_v6_candidate(
     )
     aligned_sources, alignment_audits = apply_v6_background_alignment_to_grids(sources, return_audits=True)
     result = render_video_v6_real_sources(aligned_sources)
+    effective_observations = iter(result.quality.seam_observations)
+    pair_metadata: list[dict[str, object]] = []
+    for old_source, new_source, audit in zip(sources[:-1], sources[1:], result.graphcut_audits, strict=True):
+        observation = next(effective_observations, None) if audit.accepted else None
+        pair_metadata.append({
+            "old_frame_id": old_source.frame_id,
+            "new_frame_id": new_source.frame_id,
+            "graphcut_called": audit.graphcut_called,
+            "accepted": audit.accepted,
+            "maximum_adjacent_row_step_px": audit.maximum_adjacent_row_step_px,
+            "owner_island_count": audit.owner_island_count,
+            "small_fragment_count": audit.small_fragment_count,
+            "double_edge_count": None if observation is None else observation.double_edge_count,
+            "ghost_count": None if observation is None else observation.ghost_count,
+            "evaluated_seam_rows": None if observation is None else observation.evaluated_row_count,
+        })
     metadata = {
         "schema": "video-v6-rgb-only-graphcut/v1",
         "renderer": "v6_real_source_graphcut_once_sampling",
@@ -163,16 +179,7 @@ def render_video_v6_candidate(
             "double_edge_count": result.quality.double_edge_count,
             "ghost_count": result.quality.ghost_count,
         },
-        "v6_pair_graphcut": [
-            {
-                "graphcut_called": audit.graphcut_called,
-                "accepted": audit.accepted,
-                "maximum_adjacent_row_step_px": audit.maximum_adjacent_row_step_px,
-                "owner_island_count": audit.owner_island_count,
-                "small_fragment_count": audit.small_fragment_count,
-            }
-            for audit in result.graphcut_audits
-        ],
+        "v6_pair_graphcut": pair_metadata,
         "raw_rgb_once_sampling": {
             "source_frame_ids": [source.frame_id for source in sources],
             "source_sampling_call_count": result.source_sampling_call_count,

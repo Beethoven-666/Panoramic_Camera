@@ -37,3 +37,5 @@ def test_rgb_quality_does_not_treat_one_continuous_horizontal_line_as_double_edg
     audit = assess_video_rgb_quality(bgr, owner, np.ones(owner.shape, bool), (_audit((10,) * 12),))
 
     assert audit.double_edge_count == 0
+    assert audit.seam_observations[0].double_edge_count == 0
+    assert audit.seam_observations[0].evaluated_row_count == 12

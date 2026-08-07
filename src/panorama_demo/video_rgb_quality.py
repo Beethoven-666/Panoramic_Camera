@@ -21,6 +21,16 @@ class VideoRGBQualityConfig:
 
 
 @dataclass(frozen=True)
+class VideoSeamQualityObservation:
+    """RGB-only discontinuity evidence for one effective final seam."""
+
+    canvas_x_offset: int
+    evaluated_row_count: int
+    double_edge_count: int
+    ghost_count: int
+
+
+@dataclass(frozen=True)
 class VideoRGBQualityAudit:
     owner_topology_ok: bool
     seam_step_p95_px: float | None
@@ -31,6 +41,7 @@ class VideoRGBQualityAudit:
     guard_owner_violation_count: int
     strict_quality_pass: bool
     failure_reasons: tuple[str, ...]
+    seam_observations: tuple[VideoSeamQualityObservation, ...]
 
 
 def _seam_steps(audits: Sequence[VideoGraphCutAudit]) -> np.ndarray:
@@ -53,24 +64,34 @@ def _staircase_runs(steps: np.ndarray) -> int:
     return runs + int(length >= 5)
 
 
-def _double_edge_and_ghost_count(bgr: np.ndarray, audits: Sequence[VideoGraphCutAudit]) -> tuple[int, int]:
+def _double_edge_and_ghost_count(
+    bgr: np.ndarray, audits: Sequence[VideoGraphCutAudit],
+) -> tuple[int, int, tuple[VideoSeamQualityObservation, ...]]:
     """Conservative RGB-only local discontinuity observation near each seam."""
     gray = cv2.cvtColor(np.asarray(bgr), cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 80, 160) > 0
     double, ghost = 0, 0
+    observations: list[VideoSeamQualityObservation] = []
     for audit in audits:
+        seam_double, seam_ghost, rows = 0, 0, 0
         for row, local_x in enumerate(audit.seam_x_by_row):
             seam_x = int(local_x) + int(audit.canvas_x_offset)
             if local_x < 0 or seam_x < 2 or seam_x >= edges.shape[1] - 2 or row >= edges.shape[0]:
                 continue
+            rows += 1
             window = edges[row, seam_x - 2 : seam_x + 3]
             # A continuous horizontal edge crossing a vertical seam is one
             # real line, not a double edge.  Count only distinct Canny runs
             # separated by at least one non-edge pixel in the seam window.
             starts = int(window[0]) + int(np.count_nonzero(~window[:-1] & window[1:]))
-            double += int(starts >= 2)
-            ghost += int(starts >= 2 and bool(window[0]) and bool(window[-1]))
-    return double, ghost
+            seam_double += int(starts >= 2)
+            seam_ghost += int(starts >= 2 and bool(window[0]) and bool(window[-1]))
+        double += seam_double
+        ghost += seam_ghost
+        observations.append(VideoSeamQualityObservation(
+            int(audit.canvas_x_offset), rows, seam_double, seam_ghost,
+        ))
+    return double, ghost, tuple(observations)
 
 
 def assess_video_rgb_quality(
@@ -87,7 +108,7 @@ def assess_video_rgb_quality(
     p95 = None if not steps.size else float(np.percentile(steps, 95.0))
     maximum = None if not steps.size else float(np.max(steps))
     staircase = _staircase_runs(steps)
-    double, ghost = _double_edge_and_ghost_count(bgr, graphcut_audits)
+    double, ghost, observations = _double_edge_and_ghost_count(bgr, graphcut_audits)
     guard_violation = 0
     if guards is not None and guards.protected.shape == owner.shape:
         # The guard owner was applied before GraphCut.  A protected invalid
@@ -109,7 +130,13 @@ def assess_video_rgb_quality(
         failures.append("ghost")
     if guard_violation:
         failures.append("guard_owner_violation")
-    return VideoRGBQualityAudit(topology, p95, maximum, staircase, double, ghost, guard_violation, not failures, tuple(failures))
+    return VideoRGBQualityAudit(
+        topology, p95, maximum, staircase, double, ghost, guard_violation,
+        not failures, tuple(failures), observations,
+    )
 
 
-__all__ = ["VideoRGBQualityAudit", "VideoRGBQualityConfig", "assess_video_rgb_quality"]
+__all__ = [
+    "VideoRGBQualityAudit", "VideoRGBQualityConfig", "VideoSeamQualityObservation",
+    "assess_video_rgb_quality",
+]
