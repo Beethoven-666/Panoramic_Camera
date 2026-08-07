@@ -3,8 +3,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
+from .calibrated_rgb_pushbroom import (
+    CalibratedRGBPushbroomConfig,
+    CalibratedRGBPushbroomRenderer,
+    build_calibrated_rgb_pushbroom_layout,
+    estimate_rgb_motion_pixels_per_mm,
+)
 from .video_final_sampling import VideoSamplingSource, sample_video_sources_once
 from .video_graphcut_seam import VideoGraphCutAudit, solve_video_graphcut_seam
 from .video_hard_guards import audit_guard_owner_intersection, build_video_hard_guards
@@ -33,6 +40,35 @@ class VideoV6RenderResult:
     graphcut_audits: tuple[VideoGraphCutAudit, ...]
     quality: VideoRGBQualityAudit
     source_sampling_call_count: int
+
+
+def build_v6_sampling_sources(
+    frames: tuple[object, ...], poses: tuple[np.ndarray, ...], calibration: object, *,
+    pushbroom_config: dict[str, object], rgb_motions: list[object], motion_pixels_to_full_resolution: float,
+) -> tuple[VideoSamplingSource, ...]:
+    """Build full-canvas inverse grids without invoking the legacy compositor."""
+    settings = CalibratedRGBPushbroomConfig.from_mapping(pushbroom_config)
+    scale = estimate_rgb_motion_pixels_per_mm(
+        frames, poses, calibration, settings, rgb_motions=rgb_motions,
+        motion_pixels_to_full_resolution=motion_pixels_to_full_resolution,
+    )
+    layout = build_calibrated_rgb_pushbroom_layout(
+        [frame.frame_id for frame in frames], poses, calibration, scale, settings
+    )
+    renderer = CalibratedRGBPushbroomRenderer(layout, calibration, poses)
+    height, width = layout.canvas_height, layout.canvas_width
+    grid_x = np.arange(width, dtype=np.float64)
+    grid_y = np.arange(height, dtype=np.float64)
+    results: list[VideoSamplingSource] = []
+    for index, frame in enumerate(frames):
+        map_x, map_y, valid = renderer._inverse_map(index, grid_x, grid_y)
+        support = np.zeros((height, width), dtype=bool)
+        support[:, layout.support_left_x[index] : layout.support_right_x[index]] = True
+        image = cv2.imread(str(frame.color_path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise FileNotFoundError(f"Cannot read v6 raw RGB source {frame.color_path}")
+        results.append(VideoSamplingSource(int(frame.frame_id), image, map_x, map_y, valid & support))
+    return tuple(results)
 
 
 def render_video_v6_real_pair(
@@ -113,4 +149,4 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
     return VideoV6RenderResult(output, owner, valid, tuple(audits), assess_video_rgb_quality(output, owner, valid, audits), len(sampled))
 
 
-__all__ = ["VideoV6PairRenderResult", "VideoV6RenderResult", "render_video_v6_real_pair", "render_video_v6_real_sources"]
+__all__ = ["VideoV6PairRenderResult", "VideoV6RenderResult", "build_v6_sampling_sources", "render_video_v6_real_pair", "render_video_v6_real_sources"]
