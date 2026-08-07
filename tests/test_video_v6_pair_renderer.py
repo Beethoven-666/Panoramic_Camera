@@ -4,6 +4,7 @@ import numpy as np
 
 from panorama_demo.video_final_sampling import VideoSamplingSource
 from panorama_demo.video_v6_pair_renderer import (
+    _apply_output_mesh_to_grid,
     _photometric_matched_right,
     render_video_v6_real_pair,
     render_video_v6_real_sources,
@@ -70,3 +71,17 @@ def test_photometric_right_samples_follow_the_cached_forward_dis_flow() -> None:
 
     assert matched[0, 0, 0] == 1
     assert not valid[:, -1].any()
+
+
+def test_bounded_mesh_changes_only_explicit_safe_background_grid_cells() -> None:
+    source = _source(7, 90)
+    mesh = np.zeros((3, 3, 2), np.float32)
+    mesh[..., 0] = 1.0
+    safe = np.zeros(source.valid_mask.shape, bool)
+    safe[120:360, 30:90] = True
+
+    adjusted = _apply_output_mesh_to_grid(source, mesh, safe, preview_scale=4)
+
+    assert np.array_equal(adjusted.inverse_x[~safe], source.inverse_x[~safe])
+    assert np.array_equal(adjusted.inverse_y[~safe], source.inverse_y[~safe])
+    assert not np.array_equal(adjusted.inverse_x[safe], source.inverse_x[safe])

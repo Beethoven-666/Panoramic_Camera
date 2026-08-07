@@ -168,6 +168,56 @@ def _apply_output_matrix_to_grid(
     )
 
 
+def _apply_output_mesh_to_grid(
+    source: VideoSamplingSource, mesh: np.ndarray, support: np.ndarray, *, preview_scale: int,
+) -> VideoSamplingSource:
+    """Compose a bounded preview mesh into a final inverse grid once.
+
+    The mesh is correspondence evidence, not a free RGB flow warp.  Its
+    displacement is lifted into the output coordinate system and is applied
+    only to the independently safe background support supplied by the caller.
+    Protected lines, thin structures and occlusions retain their original
+    inverse-grid coordinates exactly.
+    """
+
+    height, width = source.valid_mask.shape
+    field = cv2.resize(
+        np.asarray(mesh, np.float32), (width, height), interpolation=cv2.INTER_LINEAR,
+    ) * float(preview_scale)
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    target_x = xx + field[..., 0]
+    target_y = yy + field[..., 1]
+    adjusted_x = cv2.remap(
+        source.inverse_x.astype(np.float32), target_x, target_y, cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=-1.0,
+    )
+    adjusted_y = cv2.remap(
+        source.inverse_y.astype(np.float32), target_x, target_y, cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=-1.0,
+    )
+    adjusted_valid = cv2.remap(
+        source.valid_mask.astype(np.uint8), target_x, target_y, cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+    ) > 0
+    mask = np.asarray(support, bool)
+    if mask.shape != source.valid_mask.shape:
+        raise ValueError("mesh safe support must match the final inverse grid")
+    return VideoSamplingSource(
+        source.frame_id, source.raw_bgr,
+        np.where(mask, adjusted_x, source.inverse_x), np.where(mask, adjusted_y, source.inverse_y),
+        np.where(mask, adjusted_valid, source.valid_mask),
+    )
+
+
+def _lift_preview_mask(mask: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    """Lift a preview-only audit mask without interpolating its protection."""
+
+    height, width = shape
+    return cv2.resize(
+        np.asarray(mask, np.uint8), (width, height), interpolation=cv2.INTER_NEAREST,
+    ).astype(bool)
+
+
 def apply_v6_background_alignment_to_grids(
     sources: tuple[VideoSamplingSource, ...], *, return_audits: bool = False,
 ) -> tuple[VideoSamplingSource, ...] | tuple[tuple[VideoSamplingSource, ...], tuple[dict[str, object], ...]]:
@@ -184,6 +234,10 @@ def apply_v6_background_alignment_to_grids(
         if evidence is None:
             audits.append({"old_frame_id": adjusted[index - 1].frame_id, "new_frame_id": adjusted[index].frame_id, "accepted": False, "reason": "no_preview_dis_evidence"})
             continue
+        guards = build_video_hard_guards(
+            old_preview, new_preview, evidence, old_valid=old_valid, new_valid=new_valid,
+        )
+        safe_preview = old_valid & new_valid & ~guards.protected
         # Fit in preview coordinates with equivalently scaled hard limits;
         # the accepted matrix is lifted to the full output grid exactly once.
         alignment_config = VideoLocalAlignmentConfig(
@@ -192,18 +246,32 @@ def apply_v6_background_alignment_to_grids(
             background_held_out_fb_target_px=1.25 / scale,
             background_held_out_fb_hard_px=2.0 / scale,
         )
-        alignment = fit_background_alignment(evidence, config=alignment_config)
-        if not alignment.audit.accepted or alignment.matrix is None:
+        alignment = fit_background_alignment(evidence, support=safe_preview, config=alignment_config)
+        if not alignment.audit.accepted:
             reason = alignment.audit.rejection_reason
-            if alignment.audit.accepted and alignment.mesh_displacement is not None:
-                reason = "bounded_mesh_lacks_full_resolution_line_and_error_qualification"
             audits.append({"old_frame_id": adjusted[index - 1].frame_id, "new_frame_id": adjusted[index].frame_id, "accepted": False, "model": alignment.audit.selected_model, "reason": reason})
             continue
-        support = adjusted[index - 1].valid_mask & adjusted[index].valid_mask
+        support = _lift_preview_mask(safe_preview, adjusted[index].valid_mask.shape)
         scaling = np.diag((float(scale), float(scale), 1.0))
-        matrix = scaling @ alignment.matrix @ np.linalg.inv(scaling)
-        adjusted[index] = _apply_output_matrix_to_grid(adjusted[index], matrix, support)
-        audits.append({"old_frame_id": adjusted[index - 1].frame_id, "new_frame_id": adjusted[index].frame_id, "accepted": True, "model": alignment.audit.selected_model, "warning": alignment.audit.large_alignment_warning})
+        if alignment.matrix is not None:
+            matrix = scaling @ alignment.matrix @ np.linalg.inv(scaling)
+            adjusted[index] = _apply_output_matrix_to_grid(adjusted[index], matrix, support)
+        elif alignment.mesh_displacement is not None:
+            adjusted[index] = _apply_output_mesh_to_grid(
+                adjusted[index], alignment.mesh_displacement, support, preview_scale=scale,
+            )
+        else:
+            audits.append({"old_frame_id": adjusted[index - 1].frame_id, "new_frame_id": adjusted[index].frame_id, "accepted": False, "model": alignment.audit.selected_model, "reason": "accepted_alignment_has_no_grid_model"})
+            continue
+        audits.append({
+            "old_frame_id": adjusted[index - 1].frame_id,
+            "new_frame_id": adjusted[index].frame_id,
+            "accepted": True,
+            "model": alignment.audit.selected_model,
+            "warning": alignment.audit.large_alignment_warning,
+            "protected_grid_warp_pixels": 0,
+            "safe_background_grid_warp_pixels": int(support.sum()),
+        })
     outcome = tuple(adjusted)
     return (outcome, tuple(audits)) if return_audits else outcome
 
