@@ -50,3 +50,4 @@ def test_v6_chain_records_real_owner_expansion_instead_of_faking_a_dp_fallback(m
     result = renderer.render_video_v6_real_sources((_source(1, 80), _source(2, 80)))
 
     assert result.expanded_real_owner_pair_frame_ids == ((1, 2),)
+    assert result.graphcut_audits[0].rejection_reason == "synthetic_topology_failure"

@@ -39,6 +39,7 @@ class VideoHardGuards:
 def build_video_hard_guards(
     old_bgr: np.ndarray, new_bgr: np.ndarray, evidence: VideoDISPairEvidence, *,
     object_mask: np.ndarray | None = None, prefer_new_mask: np.ndarray | None = None,
+    old_valid: np.ndarray | None = None, new_valid: np.ndarray | None = None,
     edge_guard_radius_px: int = 2,
 ) -> VideoHardGuards:
     """Build exclusive hard-owner masks from RGB structure and cached DIS risk."""
@@ -69,8 +70,16 @@ def build_video_hard_guards(
     prefer_new = np.zeros(shape, dtype=bool) if prefer_new_mask is None else np.asarray(prefer_new_mask, dtype=bool)
     if prefer_new.shape != shape:
         raise ValueError("preferred owner mask must match hard-guard crop")
-    hard_new = protected & prefer_new
-    hard_old = protected & ~hard_new
+    old_support = np.ones(shape, dtype=bool) if old_valid is None else np.asarray(old_valid, dtype=bool)
+    new_support = np.ones(shape, dtype=bool) if new_valid is None else np.asarray(new_valid, dtype=bool)
+    if old_support.shape != shape or new_support.shape != shape:
+        raise ValueError("hard-guard valid support must match the corridor")
+    # A protection label can only name a real source that actually covers the
+    # pixel.  In a one-sided valid region, forcing the absent source would
+    # create an unowned final pixel and must never reach GraphCut.
+    protected &= old_support | new_support
+    hard_new = protected & prefer_new & new_support
+    hard_old = protected & ~prefer_new & old_support
     return VideoHardGuards(
         line, object_outer, thin, occlusion, protected, hard_old, hard_new,
         VideoHardGuardAudit(int(line.sum()), int(object_outer.sum()), int(thin.sum()), int(occlusion.sum()), int(hard_old.sum()), int(hard_new.sum())),

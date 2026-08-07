@@ -30,3 +30,20 @@ def test_hard_guards_protect_line_object_boundary_thin_and_occlusion_without_dep
     labels = guards.hard_owner_new.copy()
     labels[guards.hard_owner_old] = True
     assert audit_guard_owner_intersection(labels, guards) == guards.audit.hard_owner_old_pixels
+
+
+def test_hard_guards_never_assign_an_absent_source_in_one_sided_support() -> None:
+    old = np.zeros((48, 64, 3), np.uint8)
+    new = old.copy()
+    old[:, 30:32] = 255
+    old_valid = np.ones(old.shape[:2], bool)
+    new_valid = np.ones(old.shape[:2], bool)
+    old_valid[:, 40:] = False
+    guards = build_video_hard_guards(
+        old, new, _evidence(old.shape[:2]), old_valid=old_valid, new_valid=new_valid,
+    )
+
+    assert not guards.hard_owner_old[:, 40:].any()
+    labels = guards.hard_owner_new.copy()
+    labels[:, 40:] = True
+    assert not audit_guard_owner_intersection(labels, guards)

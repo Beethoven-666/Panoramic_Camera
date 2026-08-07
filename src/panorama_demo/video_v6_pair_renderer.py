@@ -163,6 +163,10 @@ def render_video_v6_candidate(
             "new_frame_id": new_source.frame_id,
             "graphcut_called": audit.graphcut_called,
             "accepted": audit.accepted,
+            "rejection_reason": audit.rejection_reason,
+            "valid_pixel_exactly_one_owner": audit.valid_pixel_exactly_one_owner,
+            "rescue_corridor_used": audit.rescue_corridor_used,
+            "canvas_x_offset": audit.canvas_x_offset,
             "maximum_adjacent_row_step_px": audit.maximum_adjacent_row_step_px,
             "owner_island_count": audit.owner_island_count,
             "small_fragment_count": audit.small_fragment_count,
@@ -222,7 +226,10 @@ def render_video_v6_real_pair(
     if evidence is None:
         raise RuntimeError("v6 pair did not produce its required F/B DIS evidence")
     object_crop = None if object_mask is None else np.asarray(object_mask, bool)[top:bottom, left:right]
-    guards = build_video_hard_guards(old_crop, new_crop, evidence, object_mask=object_crop)
+    guards = build_video_hard_guards(
+        old_crop, new_crop, evidence, object_mask=object_crop,
+        old_valid=old_crop_valid, new_valid=new_crop_valid,
+    )
     graphcut = solve_video_graphcut_seam(old_crop, new_crop, old_crop_valid, new_crop_valid, hard_owner_old=guards.hard_owner_old, hard_owner_new=guards.hard_owner_new)
     graphcut = replace(graphcut, audit=replace(graphcut.audit, canvas_x_offset=left))
     if not graphcut.audit.accepted or audit_guard_owner_intersection(graphcut.choose_new, guards):
@@ -271,7 +278,9 @@ def render_video_v6_real_sources(sources: tuple[VideoSamplingSource, ...]) -> Vi
         evidence = video_dis_pair_evidence(np.dstack((old_crop, old_crop_valid.astype(np.uint8) * 255)), np.dstack((new_crop, new_crop_valid.astype(np.uint8) * 255)), old_crop_valid & new_crop_valid)
         if evidence is None:
             raise RuntimeError("adjacent v6 pair did not produce required F/B DIS evidence")
-        guards = build_video_hard_guards(old_crop, new_crop, evidence)
+        guards = build_video_hard_guards(
+            old_crop, new_crop, evidence, old_valid=old_crop_valid, new_valid=new_crop_valid,
+        )
         graphcut = solve_video_graphcut_seam(old_crop, new_crop, old_crop_valid, new_crop_valid, hard_owner_old=guards.hard_owner_old, hard_owner_new=guards.hard_owner_new)
         graphcut = replace(graphcut, audit=replace(graphcut.audit, canvas_x_offset=left))
         guard_violation = audit_guard_owner_intersection(graphcut.choose_new, guards)
