@@ -47,6 +47,10 @@ from .video_online_state import load_online_state
 from .video_performance import VideoPerformanceProfiler
 from .video_scan_segment import analyse_video_scan
 from .video_session import load_video_session
+from .video_source_selection import (
+    assess_video_source_frontality,
+    plan_frontality_owner_spans,
+)
 from .video_runtime_environment import atomic_write_json
 
 
@@ -349,6 +353,28 @@ def run_direct_orb_tracking_gate(
         tracking_indices = _select_real_orb_tracking_indices(scan_frames, target_fps=fps)
         tracking_frames = tuple(scan_frames[item] for item in tracking_indices)
         expected_ids = [int(frame.frame_id) for frame in tracking_frames]
+        tracking_motions = compose_selected_motions(motions[first:last], tracking_indices)
+        source_steps = np.asarray(
+            [
+                float(segment["scan_direction"]) * float(motion.dx)
+                * (video.rgbd.calibration.width / float(stitch.get("analysis_width", 320)))
+                for motion in tracking_motions
+            ],
+            dtype=np.float64,
+        )
+        if not np.isfinite(source_steps).all() or np.any(source_steps <= 0.0):
+            raise RuntimeError("tracking candidate has non-positive measured scan progress")
+        source_centres_x = tuple(
+            float(value) for value in np.concatenate(([0.0], np.cumsum(source_steps)))
+        )
+        frontality = assess_video_source_frontality(
+            tracking_frames, video.rgbd.calibration
+        )
+        owner_plan = plan_frontality_owner_spans(
+            frontality, video.rgbd.calibration, source_centres_x
+        )
+        frontality_records = [record.as_dict() for record in frontality]
+        frontality_pass = len(frontality_records) == len(expected_ids)
         started = time.perf_counter()
         row: dict[str, object] = {
             "tracking_candidate_id": candidate_id,
@@ -358,11 +384,14 @@ def run_direct_orb_tracking_gate(
             "direct_orb_pose_count": 0,
             "direct_orb_pose_coverage": 0.0,
             "full_direct_orb_chain_available": False,
-            # Source spans have not been planned until Step 3.  This explicit
-            # pending value prevents a tracking-only result from claiming a
-            # frontality decision it has not measured.
-            "frontality_coverage_pass": None,
-            "frontality_coverage_status": "pending_step_3_source_selection",
+            "frontality_coverage_pass": frontality_pass,
+            "frontality_coverage_status": (
+                "calibrated_per_source_spans_available"
+                if frontality_pass
+                else "frontality_span_coverage_incomplete"
+            ),
+            "source_frontality": frontality_records,
+            "frontality_owner_plan": owner_plan.as_dict(),
         }
         try:
             with tempfile.TemporaryDirectory(prefix=f"g305-v6-{candidate_id.lower()}-orb-") as work:
@@ -406,7 +435,9 @@ def run_direct_orb_tracking_gate(
         "selected_tracking_candidate_id": selected_id,
         "full_direct_orb_chain_available": selected_id is not None,
         "selection_status": (
-            "pending_step_3_frontality" if selected_id is not None else "no_direct_orb_survivor"
+            "direct_orb_and_calibrated_frontality_ready"
+            if selected_id is not None
+            else "no_direct_orb_survivor"
         ),
         "interpolated_poses": False,
         "open3d_pose_replacement": False,
@@ -658,6 +689,38 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
             sources, source_indices = plan.frames, plan.source_indices
             render_plan = plan.as_dict()
             selected_motions = compose_selected_motions(tracking_motions, source_indices)
+            frontality_scale = video.rgbd.calibration.width / float(
+                stitch.get("analysis_width", 320)
+            )
+            source_steps = np.asarray(
+                [
+                    float(plan.scan_direction) * float(motion.dx) * frontality_scale
+                    for motion in selected_motions
+                ],
+                dtype=np.float64,
+            )
+            if not np.isfinite(source_steps).all() or np.any(source_steps <= 0.0):
+                raise RuntimeError(
+                    "Dynamic frontality source selection requires strictly positive "
+                    "measured scan progress between adjacent real sources"
+                )
+            source_centres_x = tuple(
+                float(value)
+                for value in np.concatenate(([0.0], np.cumsum(source_steps)))
+            )
+            frontality_records = assess_video_source_frontality(
+                sources, video.rgbd.calibration
+            )
+            frontality_owner_plan = plan_frontality_owner_spans(
+                frontality_records,
+                video.rgbd.calibration,
+                source_centres_x,
+            )
+            render_plan["frontality"] = {
+                "source_records": [record.as_dict() for record in frontality_records],
+                "owner_plan": frontality_owner_plan.as_dict(),
+                "source_centre_evidence": "measured_adjacent_rgb_motion_only",
+            }
             poses = [poses_by_id[frame.frame_id] for frame in sources]
             dense_layout = None
             if candidate_dense_real_frame_layout is not None:
