@@ -129,11 +129,14 @@ def apply_v6_background_alignment_to_grids(
         )
         alignment = fit_background_alignment(evidence, config=alignment_config)
         if not alignment.audit.accepted or alignment.matrix is None:
-            audits.append({"old_frame_id": adjusted[index - 1].frame_id, "new_frame_id": adjusted[index].frame_id, "accepted": False, "model": alignment.audit.selected_model, "reason": alignment.audit.rejection_reason})
+            reason = alignment.audit.rejection_reason
+            if alignment.audit.accepted and alignment.mesh_displacement is not None:
+                reason = "bounded_mesh_lacks_full_resolution_line_and_error_qualification"
+            audits.append({"old_frame_id": adjusted[index - 1].frame_id, "new_frame_id": adjusted[index].frame_id, "accepted": False, "model": alignment.audit.selected_model, "reason": reason})
             continue
+        support = adjusted[index - 1].valid_mask & adjusted[index].valid_mask
         scaling = np.diag((float(scale), float(scale), 1.0))
         matrix = scaling @ alignment.matrix @ np.linalg.inv(scaling)
-        support = adjusted[index - 1].valid_mask & adjusted[index].valid_mask
         adjusted[index] = _apply_output_matrix_to_grid(adjusted[index], matrix, support)
         audits.append({"old_frame_id": adjusted[index - 1].frame_id, "new_frame_id": adjusted[index].frame_id, "accepted": True, "model": alignment.audit.selected_model, "warning": alignment.audit.large_alignment_warning})
     outcome = tuple(adjusted)

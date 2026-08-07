@@ -39,3 +39,14 @@ def test_rgb_quality_does_not_treat_one_continuous_horizontal_line_as_double_edg
     assert audit.double_edge_count == 0
     assert audit.seam_observations[0].double_edge_count == 0
     assert audit.seam_observations[0].evaluated_row_count == 12
+
+
+def test_rgb_quality_detects_parallel_vertical_contours_at_a_seam() -> None:
+    bgr = np.zeros((24, 24, 3), np.uint8)
+    bgr[:, 9:10] = 255
+    bgr[:, 13:14] = 255
+    owner = np.zeros((24, 24), np.int32)
+
+    audit = assess_video_rgb_quality(bgr, owner, np.ones(owner.shape, bool), (_audit((12,) * 24),))
+
+    assert audit.double_edge_count > 0

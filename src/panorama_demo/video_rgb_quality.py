@@ -70,6 +70,12 @@ def _double_edge_and_ghost_count(
     """Conservative RGB-only local discontinuity observation near each seam."""
     gray = cv2.cvtColor(np.asarray(bgr), cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 80, 160) > 0
+    # A double edge at a vertical seam is a pair of parallel, vertically
+    # persistent contours.  Horizontal shelf lines and texture that merely
+    # cross the seam are not duplicate owner edges.  Restrict the row-wise
+    # run test to Canny responses with an adjacent response along Y.
+    vertical_edges = np.zeros_like(edges)
+    vertical_edges[1:-1] = edges[1:-1] & (edges[:-2] | edges[2:])
     double, ghost = 0, 0
     observations: list[VideoSeamQualityObservation] = []
     for audit in audits:
@@ -79,10 +85,9 @@ def _double_edge_and_ghost_count(
             if local_x < 0 or seam_x < 2 or seam_x >= edges.shape[1] - 2 or row >= edges.shape[0]:
                 continue
             rows += 1
-            window = edges[row, seam_x - 2 : seam_x + 3]
-            # A continuous horizontal edge crossing a vertical seam is one
-            # real line, not a double edge.  Count only distinct Canny runs
-            # separated by at least one non-edge pixel in the seam window.
+            window = vertical_edges[row, seam_x - 2 : seam_x + 3]
+            # Count only distinct vertical-contour runs separated by at least
+            # one non-edge pixel in the seam window.
             starts = int(window[0]) + int(np.count_nonzero(~window[:-1] & window[1:]))
             seam_double += int(starts >= 2)
             seam_ghost += int(starts >= 2 and bool(window[0]) and bool(window[-1]))
