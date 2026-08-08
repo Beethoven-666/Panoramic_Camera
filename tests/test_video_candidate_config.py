@@ -264,6 +264,9 @@ def test_v61_config_routes_immutable_tracking_geometry_and_report_contract() -> 
         "v61_tail_guarded_full_panorama"
     ]
     assert report["replaces_output_components"] == ["v6_rgb_only_graphcut"]
+    assert report["working_tree_dirty"] is spec.working_tree_dirty
+    assert report["candidate_manifest_path"] == str(spec.candidate_manifest_path)
+    assert report["candidate_manifest_sha256"] == spec.candidate_manifest_sha256
 
 
 @pytest.mark.parametrize(

@@ -158,6 +158,10 @@ class V61GeometryAudit:
             "edge_p995_px": self.edge_p995_px,
             "edge_abs_max_px": self.edge_abs_max_px,
             "edge_abs_max_gate_role": "telemetry_only",
+            "edge_residual_measurement_definition": (
+                "symmetric_orientation_matched_edge_normal_distance_"
+                "with_3x3_target_contour_tolerance"
+            ),
             "matched_edge_fraction": self.matched_edge_fraction,
             "edge_sample_count": int(self.edge_sample_count),
             "matched_edge_count": int(self.matched_edge_count),

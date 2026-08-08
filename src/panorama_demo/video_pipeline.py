@@ -419,8 +419,15 @@ def _spec_report(
         "implementation_id": spec.implementation_id,
         "config_sha256": spec.config_sha256,
         "source_commit": spec.source_commit,
+        "working_tree_dirty": spec.working_tree_dirty,
         "model_sha256": dict(spec.model_sha256),
         "fallback_used": fallback_used,
+        "candidate_manifest_path": (
+            str(spec.candidate_manifest_path)
+            if spec.candidate_manifest_path is not None
+            else None
+        ),
+        "candidate_manifest_sha256": spec.candidate_manifest_sha256,
         # This is immutable candidate intent.  The renderer must later emit
         # a matching rich final-output ``component_execution`` audit before
         # the candidate can be considered by selection.

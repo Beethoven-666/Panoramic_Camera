@@ -89,6 +89,11 @@ def test_tail_outlier_is_guarded_without_being_an_absolute_max_veto() -> None:
     assert np.any(audit.tail_guard)
     assert np.any(audit.residual_px[audit.residual_sample_mask] > 1.25)
     assert audit.as_report_dict()["edge_abs_max_gate_role"] == "telemetry_only"
+    assert (
+        audit.as_report_dict()["edge_residual_measurement_definition"]
+        == "symmetric_orientation_matched_edge_normal_distance_"
+        "with_3x3_target_contour_tolerance"
+    )
 
 
 def test_tail_guard_is_only_the_increment_beyond_existing_edge_guard() -> None:
