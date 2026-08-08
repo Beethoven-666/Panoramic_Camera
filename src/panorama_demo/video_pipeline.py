@@ -89,6 +89,11 @@ def _legacy_settings_for(spec: VideoAlgorithmSpec) -> dict[str, Any]:
 
     settings = _baseline_legacy_settings()
     document = load_algorithm_config(spec.config_path)
+    if (
+        spec.algorithm_id == "V61_tail_guarded_full_panorama"
+        and spec.role != "candidate"
+    ):
+        raise ValueError("V6.1 tail-guarded full panorama is candidate-only")
     if spec.role == "baseline":
         return settings
     if spec.role == "production":
@@ -108,14 +113,46 @@ def _legacy_settings_for(spec: VideoAlgorithmSpec) -> dict[str, Any]:
         if tracking_fps not in {8, 12, 16}:
             raise ValueError("V6 candidate tracking_fps must be one of T0/T1/T2: 8, 12, or 16")
         settings["fast_renderer"] = "v6_graphcut_candidate"
+        settings["fast_orb_target_fps"] = float(tracking_fps)
+        resampling = dict(settings.get("motion_resampling", {}))
+        resampling.update(
+            {
+                "normal_target_step_pixels": 8.0,
+                "risk_target_step_pixels": 5.0,
+                "maximum_step_pixels": 12.0,
+            }
+        )
+        settings["motion_resampling"] = resampling
+        return settings
     if spec.algorithm_id == "V61_tail_guarded_full_panorama":
         components = document.get("components", {})
         if not isinstance(components, dict) or components.get("v61_tail_guarded_full_panorama") is not True:
             raise ValueError("V6.1 candidate requires its immutable tail-guarded full-panorama component")
+        tracking_fps = components.get("tracking_fps")
+        if tracking_fps != 12:
+            raise ValueError("V6.1 candidate requires immutable tracking_fps=12")
+        geometry_gate = components.get("geometry_gate")
+        expected_geometry_gate = {
+            "minimum_reliable_pixels": 128,
+            "fb_p95_max_px": 1.25,
+            "edge_p95_max_px": 0.75,
+            "minimum_matched_edge_fraction": 0.85,
+            "tail_threshold_px": 1.25,
+            "tail_dilation_px": 3,
+        }
+        if not isinstance(geometry_gate, dict) or geometry_gate != expected_geometry_gate:
+            raise ValueError("V6.1 candidate requires its immutable geometry_gate mapping")
         settings["fast_renderer"] = "v61_tail_guarded_candidate"
         settings["fast_orb_target_fps"] = float(tracking_fps)
+        settings["candidate_v61_geometry_gate"] = dict(geometry_gate)
         resampling = dict(settings.get("motion_resampling", {}))
-        resampling.update({"normal_target_step_pixels": 8.0, "risk_target_step_pixels": 5.0, "maximum_step_pixels": 12.0})
+        resampling.update(
+            {
+                "normal_target_step_pixels": 8.0,
+                "risk_target_step_pixels": 5.0,
+                "maximum_step_pixels": 12.0,
+            }
+        )
         settings["motion_resampling"] = resampling
         return settings
     if spec.algorithm_id == "D1_dense_real_frame_scan_layout":
@@ -388,6 +425,9 @@ def _spec_report(
         # a matching rich final-output ``component_execution`` audit before
         # the candidate can be considered by selection.
         "required_components": list(spec.required_components),
+        "required_evidence_components": list(spec.required_evidence_components),
+        "required_output_components": list(spec.required_output_components),
+        "replaces_output_components": list(spec.replaces_output_components),
         # The immutable algorithm declaration identifies intended component
         # lineage.  This separate field records the renderer that actually
         # produced pixels, preventing the legacy experiment bridge from being

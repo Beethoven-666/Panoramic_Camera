@@ -1,0 +1,112 @@
+{
+  "schema": "video-v61-phase13-split-lock/v1",
+  "purpose": "Frozen calibration/held-out assignment before visual samples are generated",
+  "assignment_rule": "SHA-256 phase13-split-v1 tuple; held_out when first byte mod 3 is zero",
+  "pairs": [
+    {
+      "sample_id": "sample-a59ca1ca7f05",
+      "session": "140140_63_to_66_dense",
+      "left_frame_id": 63,
+      "right_frame_id": 64,
+      "split": "held_out"
+    },
+    {
+      "sample_id": "sample-c7c36aa86a86",
+      "session": "140140_63_to_66_dense",
+      "left_frame_id": 64,
+      "right_frame_id": 65,
+      "split": "calibration"
+    },
+    {
+      "sample_id": "sample-2543470f8ee0",
+      "session": "140140_63_to_66_dense",
+      "left_frame_id": 65,
+      "right_frame_id": 66,
+      "split": "calibration"
+    },
+    {
+      "sample_id": "sample-12435a768272",
+      "session": "162340_196_to_202_dense",
+      "left_frame_id": 196,
+      "right_frame_id": 197,
+      "split": "calibration"
+    },
+    {
+      "sample_id": "sample-22c32608e00c",
+      "session": "162340_196_to_202_dense",
+      "left_frame_id": 197,
+      "right_frame_id": 199,
+      "split": "calibration"
+    },
+    {
+      "sample_id": "sample-95d75bbf325d",
+      "session": "162340_196_to_202_dense",
+      "left_frame_id": 199,
+      "right_frame_id": 200,
+      "split": "calibration"
+    },
+    {
+      "sample_id": "sample-f9b6f9adf43b",
+      "session": "162340_196_to_202_dense",
+      "left_frame_id": 200,
+      "right_frame_id": 202,
+      "split": "calibration"
+    },
+    {
+      "sample_id": "sample-0f7330d22f84",
+      "session": "153033_87_to_95_dense",
+      "left_frame_id": 87,
+      "right_frame_id": 88,
+      "split": "calibration"
+    },
+    {
+      "sample_id": "sample-5d4f1b3f8806",
+      "session": "153033_87_to_95_dense",
+      "left_frame_id": 88,
+      "right_frame_id": 89,
+      "split": "held_out"
+    },
+    {
+      "sample_id": "sample-c22d57e31ddb",
+      "session": "153033_87_to_95_dense",
+      "left_frame_id": 89,
+      "right_frame_id": 90,
+      "split": "calibration"
+    },
+    {
+      "sample_id": "sample-ae0ffdef9225",
+      "session": "153033_87_to_95_dense",
+      "left_frame_id": 90,
+      "right_frame_id": 91,
+      "split": "calibration"
+    },
+    {
+      "sample_id": "sample-a7665858c73a",
+      "session": "153033_87_to_95_dense",
+      "left_frame_id": 91,
+      "right_frame_id": 92,
+      "split": "calibration"
+    },
+    {
+      "sample_id": "sample-0c1479c5c85f",
+      "session": "153033_87_to_95_dense",
+      "left_frame_id": 92,
+      "right_frame_id": 93,
+      "split": "calibration"
+    },
+    {
+      "sample_id": "sample-6bcc451b9449",
+      "session": "153033_87_to_95_dense",
+      "left_frame_id": 93,
+      "right_frame_id": 94,
+      "split": "calibration"
+    },
+    {
+      "sample_id": "sample-90a8ba3dd81e",
+      "session": "153033_87_to_95_dense",
+      "left_frame_id": 94,
+      "right_frame_id": 95,
+      "split": "calibration"
+    }
+  ]
+}

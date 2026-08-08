@@ -472,6 +472,29 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                     "video_panorama.fast_renderer must be audited_visual, "
                     "visual_seam, hard_owner_diagnostic, v6_graphcut_candidate, or v61_tail_guarded_candidate"
                 )
+            candidate_v61_geometry_gate = video_settings.get(
+                "candidate_v61_geometry_gate"
+            )
+            if legacy_renderer == "v61_tail_guarded_candidate":
+                algorithm_identity = getattr(args, "algorithm_spec", None)
+                if (
+                    not isinstance(algorithm_identity, dict)
+                    or algorithm_identity.get("role") != "candidate"
+                    or algorithm_identity.get("algorithm_id")
+                    != "V61_tail_guarded_full_panorama"
+                ):
+                    raise ValueError(
+                        "V6.1 tail-guarded renderer is available only through its candidate route"
+                    )
+                if not isinstance(candidate_v61_geometry_gate, dict):
+                    raise ValueError(
+                        "V6.1 candidate requires candidate_v61_geometry_gate"
+                    )
+                candidate_v61_geometry_gate = dict(candidate_v61_geometry_gate)
+            elif candidate_v61_geometry_gate is not None:
+                raise ValueError(
+                    "candidate_v61_geometry_gate cannot be applied to another renderer"
+                )
             candidate_c1_constrained_owner = bool(
                 video_settings.get("candidate_c1_constrained_owner", False)
             )
@@ -1187,6 +1210,12 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                         from .video_v61_renderer import render_video_v61_candidate as candidate_renderer
                     else:
                         from .video_v6_pair_renderer import render_video_v6_candidate as candidate_renderer
+                    candidate_route_kwargs: dict[str, object] = {}
+                    if legacy_renderer == "v61_tail_guarded_candidate":
+                        candidate_route_kwargs.update(
+                            geometry_gate_config=dict(candidate_v61_geometry_gate),
+                            open3d_edges=tuple(edges),
+                        )
                     push = candidate_renderer(
                         tuple(sources), tuple(poses), video.rgbd.calibration,
                         pushbroom_config=push_config, rgb_motions=selected_motions,
@@ -1196,6 +1225,7 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                             int(record.frame_id): tuple(int(value) for value in record.general_hard_span)
                             for record in frontality_records
                         },
+                        **candidate_route_kwargs,
                     )
                     # A rejected true GraphCut is evidence to reroute a real
                     # source, not permission to synthesize a pose or loosen a
@@ -1268,6 +1298,12 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                             ]
                             if len(rerouted_edges) != len(rerouted_sources) - 1:
                                 raise RuntimeError("v6 reroute Open3D audit did not cover every real source edge")
+                            rerouted_candidate_route_kwargs: dict[str, object] = {}
+                            if legacy_renderer == "v61_tail_guarded_candidate":
+                                rerouted_candidate_route_kwargs.update(
+                                    geometry_gate_config=dict(candidate_v61_geometry_gate),
+                                    open3d_edges=tuple(rerouted_edges),
+                                )
                             rerouted_push = candidate_renderer(
                                 tuple(rerouted_sources), tuple(rerouted_poses), video.rgbd.calibration,
                                 pushbroom_config=push_config, rgb_motions=rerouted_motions,
@@ -1277,6 +1313,7 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                                     int(record.frame_id): tuple(int(value) for value in record.general_hard_span)
                                     for record in rerouted_frontality
                                 },
+                                **rerouted_candidate_route_kwargs,
                             )
                             def _v6_failure_score(result: object) -> tuple[int, int, int]:
                                 metadata = getattr(result, "metadata", {})
