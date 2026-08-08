@@ -12,6 +12,7 @@ from panorama_demo.video_v61_visual_calibration import (
     frozen_phase13_split,
     render_phase13_pair,
 )
+from panorama_demo.video_graphcut_seam import VideoGraphCutAudit, VideoGraphCutResult
 from panorama_demo.video_visual_renderer import VideoDISPairEvidence
 
 
@@ -50,6 +51,9 @@ def test_phase13_graphcut_is_diagnostic_and_never_enters_hard_protection(tmp_pat
     assert result.generated
     assert result.graphcut_guard_intersection_pixels == 0
     assert result.blend_guard_intersection_pixels == 0
+    assert result.old_owner_pixel_count > 0
+    assert result.new_owner_pixel_count > 0
+    assert result.interior_seam_row_count == 480
     assert crop is not None and crop.shape == (480, 160, 3)
     assert owner is not None and set(np.unique(owner)).issubset({0, 255})
     assert result.core_metrics["core_pixels_each_side"] >= 0
@@ -64,7 +68,7 @@ def test_phase13_annotation_manifest_is_blinded_and_has_required_human_fields(tm
     pair = _write_real_rgb_pair(capture_root / "run", old, old.copy())
     monkeypatch.setattr("panorama_demo.video_v61_visual_calibration.phase13_pairs", lambda _root: (pair,))
 
-    ledger = build_phase13_review_package(capture_root, tmp_path / "review")
+    ledger = build_phase13_review_package(capture_root, tmp_path / "review", evidence_factory=_evidence)
     manifest = json.loads((tmp_path / "review" / "annotation_manifest.json").read_text(encoding="utf-8"))
 
     assert ledger["graphcut_call_count"] == 1
@@ -80,3 +84,21 @@ def test_phase13_split_is_frozen_before_rendering_and_contains_holdout() -> None
     split = frozen_phase13_split("data/captures/video")
     assert split["schema"] == "video-v61-phase13-split-lock/v1"
     assert {entry["split"] for entry in split["pairs"]} == {"calibration", "held_out"}
+
+
+def test_phase13_rejects_a_boundary_graphcut_with_no_new_owner(tmp_path, monkeypatch) -> None:
+    old = np.zeros((480, 200, 3), np.uint8)
+    pair = _write_real_rgb_pair(tmp_path / "capture", old, old.copy())
+    boundary = VideoGraphCutResult(
+        np.zeros((480, 160), bool),
+        VideoGraphCutAudit(True, False, (160,) * 480, 0, 0, 0, True, True, None),
+    )
+    monkeypatch.setattr("panorama_demo.video_v61_visual_calibration.solve_video_graphcut_seam", lambda *args, **kwargs: boundary)
+
+    result, crop, owner = render_phase13_pair(pair, evidence_factory=_evidence)
+
+    assert not result.generated
+    assert result.reason == "not_a_real_two_owner_interior_handoff"
+    assert result.new_owner_pixel_count == 0
+    assert result.interior_seam_row_count == 0
+    assert crop is None and owner is None

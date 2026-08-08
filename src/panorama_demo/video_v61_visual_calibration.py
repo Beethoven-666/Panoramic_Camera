@@ -36,6 +36,7 @@ class Phase13VisualCalibrationConfig:
     blend_width_px: int = 2
     core_half_width_px: int = 4
     context_half_width_px: int = 16
+    handoff_anchor_width_px: int = 4
     diagnostic_only: bool = True
 
     def __post_init__(self) -> None:
@@ -43,7 +44,7 @@ class Phase13VisualCalibrationConfig:
             raise ValueError("Phase 1.3 GraphCut is diagnostic-only")
         if self.corridor_width_px != 160 or self.blend_width_px not in {2, 3, 4}:
             raise ValueError("Phase 1.3 uses one fixed 160px corridor and 2--4px narrow blend")
-        if self.core_half_width_px != 4 or self.context_half_width_px < 16:
+        if self.core_half_width_px != 4 or self.context_half_width_px < 16 or self.handoff_anchor_width_px != 4:
             raise ValueError("Phase 1.3 review windows are fixed at 4px core and >=16px context")
 
 
@@ -72,6 +73,9 @@ class Phase13PairResult:
     seam_coordinates: tuple[int, ...]
     core_metrics: dict[str, float | int | None]
     context_metrics: dict[str, float | int | None]
+    old_owner_pixel_count: int = 0
+    new_owner_pixel_count: int = 0
+    interior_seam_row_count: int = 0
 
 
 EvidenceFactory = Callable[[np.ndarray, np.ndarray, np.ndarray], VideoDISPairEvidence | None]
@@ -160,6 +164,45 @@ def _protected_guards(
     }
 
 
+def _fixed_handoff_anchors(
+    guards: VideoHardGuards, old_valid: np.ndarray, new_valid: np.ndarray, width_px: int,
+) -> tuple[VideoHardGuards, int, int]:
+    """Set fixed, safe outer anchors so GraphCut must evaluate a real handoff.
+
+    The anchors never override a protected owner.  They are a single global
+    Phase-1.3 configuration, not a data-set-specific seam adjustment.
+    """
+    old_valid, new_valid = np.asarray(old_valid, bool), np.asarray(new_valid, bool)
+    # The original guard builder defaults every protected pixel to old.  That
+    # is safe for a one-owner fallback, but it creates unavoidable islands in
+    # any real left-to-right handoff.  Here each *whole* protected component
+    # receives one fixed owner by its centroid relative to the corridor
+    # midline; the seam still cannot enter it.  This is a global POC rule,
+    # never a per-pair data-cost or threshold adjustment.
+    protected = np.asarray(guards.protected, bool)
+    labels_count, labels = cv2.connectedComponents(protected.astype(np.uint8), connectivity=8)
+    hard_old, hard_new = np.zeros_like(protected), np.zeros_like(protected)
+    for label in range(1, labels_count):
+        component = labels == label
+        median_x = float(np.median(np.nonzero(component)[1]))
+        prefer_new = median_x >= (protected.shape[1] / 2.0)
+        assign_new = component & new_valid & (prefer_new | ~old_valid)
+        hard_new |= assign_new
+        hard_old |= component & ~assign_new & old_valid
+    safe = old_valid & new_valid & ~protected
+    columns = np.arange(safe.shape[1])[None, :]
+    old_anchor = safe & (columns < width_px)
+    new_anchor = safe & (columns >= safe.shape[1] - width_px)
+    hard_old |= old_anchor
+    hard_new |= new_anchor
+    if np.any(hard_old & hard_new):
+        raise RuntimeError("fixed diagnostic handoff anchors overlapped a protected owner")
+    return VideoHardGuards(
+        guards.line_guard, guards.object_outer_boundary, guards.thin_structure, guards.occlusion_risk,
+        guards.protected, hard_old, hard_new, guards.audit,
+    ), int(old_anchor.sum()), int(new_anchor.sum())
+
+
 def _seam_windows(seam: Iterable[int], width: int, half_width: int) -> tuple[np.ndarray, np.ndarray]:
     left, right = np.zeros((480, width), bool), np.zeros((480, width), bool)
     for row, coordinate in enumerate(seam):
@@ -245,6 +288,9 @@ def render_phase13_pair(pair: Phase13Pair, *, config: Phase13VisualCalibrationCo
     aligned_new = _central_corridor(final_new_full, settings.corridor_width_px)
     aligned_valid = _central_corridor(final_valid_full.astype(np.uint8), settings.corridor_width_px).astype(bool)
     aligned_guards, counts = _protected_guards(old, aligned_new, evidence, old_valid, aligned_valid)
+    aligned_guards, old_anchor_count, new_anchor_count = _fixed_handoff_anchors(
+        aligned_guards, old_valid, aligned_valid, settings.handoff_anchor_width_px,
+    )
     try:
         graphcut = solve_video_graphcut_seam(old, aligned_new, old_valid, aligned_valid, hard_owner_old=aligned_guards.hard_owner_old, hard_owner_new=aligned_guards.hard_owner_new)
     except RuntimeError:
@@ -252,16 +298,35 @@ def render_phase13_pair(pair: Phase13Pair, *, config: Phase13VisualCalibrationCo
     violation = audit_guard_owner_intersection(graphcut.choose_new, aligned_guards)
     if not graphcut.audit.accepted or violation:
         return Phase13PairResult(sample_id, split, False, graphcut.audit.rejection_reason or "protected_owner_violation", True, False, violation, 0, **counts, seam_coordinates=graphcut.audit.seam_x_by_row, core_metrics={}, context_metrics={}), None, None
+    overlap = old_valid & aligned_valid
+    old_owner_count = int(np.count_nonzero(overlap & ~graphcut.choose_new))
+    new_owner_count = int(np.count_nonzero(overlap & graphcut.choose_new))
+    interior_rows = sum(
+        int(settings.core_half_width_px <= coordinate <= settings.corridor_width_px - settings.core_half_width_px)
+        for coordinate in graphcut.audit.seam_x_by_row
+    )
+    # A boundary-labelled corridor is a valid GraphCut topology but not an
+    # actual two-frame handoff and therefore cannot enter human calibration.
+    if old_owner_count == 0 or new_owner_count == 0 or interior_rows != old.shape[0]:
+        return Phase13PairResult(
+            sample_id, split, False, "not_a_real_two_owner_interior_handoff", True, True, violation, 0,
+            **counts, seam_coordinates=graphcut.audit.seam_x_by_row, core_metrics={}, context_metrics={},
+            old_owner_pixel_count=old_owner_count, new_owner_pixel_count=new_owner_count,
+            interior_seam_row_count=interior_rows,
+        ), None, None
     output = old.copy()
     output[graphcut.choose_new] = aligned_new[graphcut.choose_new]
     eligible = build_near_blend_eligible_mask(old_valid, aligned_valid, evidence, aligned_guards)
     output, _band, blend = apply_near_multiband(old, aligned_new, output, graphcut.choose_new, eligible, aligned_guards, config=VideoNearBlendConfig(near_width_px=settings.blend_width_px))
     owner = np.where(graphcut.choose_new, 255, 0).astype(np.uint8)
     core, context = _review_metrics(output, graphcut.audit.seam_x_by_row, settings)
-    return Phase13PairResult(sample_id, split, True, None, True, True, violation, blend.guard_intersection_pixel_count, **counts, seam_coordinates=graphcut.audit.seam_x_by_row, core_metrics=core, context_metrics=context), output, owner
+    return Phase13PairResult(sample_id, split, True, None, True, True, violation, blend.guard_intersection_pixel_count, **counts, seam_coordinates=graphcut.audit.seam_x_by_row, core_metrics=core, context_metrics=context, old_owner_pixel_count=old_owner_count, new_owner_pixel_count=new_owner_count, interior_seam_row_count=interior_rows), output, owner
 
 
-def build_phase13_review_package(captures_root: Path, output_root: Path, *, config: Phase13VisualCalibrationConfig | None = None) -> dict[str, object]:
+def build_phase13_review_package(
+    captures_root: Path, output_root: Path, *, config: Phase13VisualCalibrationConfig | None = None,
+    evidence_factory: EvidenceFactory | None = None,
+) -> dict[str, object]:
     """Write an intentionally blinded annotation package and private evidence ledger."""
     settings, root = config or Phase13VisualCalibrationConfig(), Path(output_root)
     images, owners, seams = (root / name for name in ("images", "owners", "seams"))
@@ -271,15 +336,15 @@ def build_phase13_review_package(captures_root: Path, output_root: Path, *, conf
     (root / "split.lock.json").write_text(json.dumps(split_lock, indent=2) + "\n", encoding="utf-8")
     results: list[Phase13PairResult] = []
     for pair in phase13_pairs(captures_root):
-        result, crop, owner = render_phase13_pair(pair, config=settings)
+        result, crop, owner = render_phase13_pair(pair, config=settings, evidence_factory=evidence_factory)
         results.append(result)
         if result.generated and crop is not None and owner is not None:
             cv2.imwrite(str(images / f"{result.sample_id}.png"), crop)
             cv2.imwrite(str(owners / f"{result.sample_id}.png"), owner)
             (seams / f"{result.sample_id}.json").write_text(json.dumps({"seam_x_by_row": result.seam_coordinates}) + "\n", encoding="utf-8")
-    annotations = {"schema": "video-v61-phase13-human-annotation/v1", "instructions": "Review each full-resolution crop at 100%; leave values null until human labelled.", "samples": [{"sample_id": r.sample_id, "image": f"images/{r.sample_id}.png", "owner_map": f"owners/{r.sample_id}.png", "seam_coordinates": f"seams/{r.sample_id}.json", "seam_visible": None, "gradient_break_visible": None, "double_edge_or_ghost": None, "line_break": None, "confidence": None} for r in results if r.generated]}
+    annotations = {"schema": "video-v61-phase13-human-annotation/v2", "instructions": "Review each genuine two-owner, full-resolution crop at 100%; leave values null until human labelled.", "samples": [{"sample_id": r.sample_id, "image": f"images/{r.sample_id}.png", "owner_map": f"owners/{r.sample_id}.png", "seam_coordinates": f"seams/{r.sample_id}.json", "seam_visible": None, "gradient_break_visible": None, "double_edge_or_ghost": None, "line_break": None, "confidence": None} for r in results if r.generated]}
     (root / "annotation_manifest.json").write_text(json.dumps(annotations, indent=2) + "\n", encoding="utf-8")
-    ledger = {"schema": "video-v61-phase13-visual-evidence/v1", "scope": "isolated diagnostic POC; not a production or candidate lock", "fixed_config": asdict(settings), "split_lock_sha256": hashlib.sha256((root / "split.lock.json").read_bytes()).hexdigest(), "graphcut_call_count": sum(r.graphcut_called for r in results), "guard_intersection_pixel_count": sum(r.graphcut_guard_intersection_pixels + r.blend_guard_intersection_pixels for r in results), "results": [asdict(r) for r in results]}
+    ledger = {"schema": "video-v61-phase13-visual-evidence/v2", "scope": "isolated diagnostic POC; not a production or candidate lock", "fixed_config": asdict(settings), "split_lock_sha256": hashlib.sha256((root / "split.lock.json").read_bytes()).hexdigest(), "graphcut_call_count": sum(r.graphcut_called for r in results), "guard_intersection_pixel_count": sum(r.graphcut_guard_intersection_pixels + r.blend_guard_intersection_pixels for r in results), "real_two_owner_sample_count": sum(r.generated for r in results), "results": [asdict(r) for r in results]}
     (root / "evidence_manifest.json").write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
     return ledger
 
