@@ -35,7 +35,10 @@ class V61BlockerPocConfig:
     corridor_width_px: int = 160
     minimum_reliable_pixels: int = 128
     fb_p95_hard_px: float = 1.25
-    edge_residual_p95_hard_px: float = 1.25
+    # Phase 1.3 reconciles this current diagnostic default with the declared
+    # Phase 1.2 contract.  The historical Phase 1.2 source is separately
+    # content-addressed by ``v61_blocker_poc_v12.lock.json`` and is untouched.
+    edge_residual_p95_hard_px: float = 0.75
     edge_residual_abs_hard_px: float = 1.25
     edge_normal_search_px: int = 8
     edge_normal_sample_step_px: float = 0.125

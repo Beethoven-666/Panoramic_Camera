@@ -1,0 +1,23 @@
+{
+  "schema": "video-v61-blocker-poc-v1.2-reconciliation-lock/v1",
+  "purpose": "Preserve the immutable Phase 1.2 evidence while correcting its declared P95/source-default discrepancy for later isolated diagnostics.",
+  "historical_phase_1_2_lock": {
+    "path": "benchmarks/v61_blocker_poc_v12.lock.json",
+    "sha256": "170c7d44e4361686cd72f56e394c1b04a4a56ef0299e0f06260185343f9b6b8d"
+  },
+  "historical_measurement_source": {
+    "path": "src/panorama_demo/video_v61_blocker_poc.py",
+    "sha256": "76f92e4eca107769846f5581d29a90f58d49d4a365a15e612e7891a07bfd60dc",
+    "edge_residual_p95_hard_px": 1.25
+  },
+  "corrected_current_diagnostic_default": {
+    "edge_residual_p95_hard_px": 0.75,
+    "scope": "isolated diagnostic POC only"
+  },
+  "invariants": {
+    "historical_json_overwritten": false,
+    "historical_lock_overwritten": false,
+    "main_pipeline_modified": false,
+    "production_lock_generated": false
+  }
+}
