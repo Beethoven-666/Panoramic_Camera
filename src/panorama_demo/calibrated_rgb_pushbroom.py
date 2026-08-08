@@ -1113,6 +1113,9 @@ class CalibratedRGBPushbroomResult:
     # participates in RGB sampling, owner optimisation, pose or quality.
     measurement_projection_payload: dict[str, object] | None = None
     measurement_projection_masks: dict[str, np.ndarray] | None = None
+    # A renderer-produced, label-free full-canvas inverse-map context.  It is
+    # consumed only after RGB/owner output is final by candidate measurement.
+    measurement_full_support_sources: tuple[object, ...] | None = None
 
 
 def _unit(vector: np.ndarray, label: str) -> np.ndarray:
@@ -10737,6 +10740,221 @@ def _stage_central_strip_contributions(
     }
 
 
+def _apply_candidate_d2_monotonic_depth_layer_warp(
+    *, panorama: np.ndarray, cropped_owner: np.ndarray, crop: object,
+    frames: Sequence[RGBDFrame], renderer: CalibratedRGBPushbroomRenderer,
+    config: Mapping[str, object],
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Apply D2's bounded source-depth-aware background resampling.
+
+    This operates only after every source has received its one calibrated
+    inverse remap.  It never changes poses or ownership: a destination may be
+    replaced only by a horizontally neighbouring sample with the same real
+    source owner and the same observed far/mid depth layer.  Near depth,
+    depth edges, and RGB structure are protected owner-only regions.
+    """
+
+    from .video_d2_monotonic_depth_layer_warp import (
+        D2LayerWarp, D2MonotonicDepthLayerWarpConfig,
+        audit_d2_monotonic_depth_layer_warp, audit_d2_training_raft_and_lines,
+    )
+
+    required = {
+        "enabled", "layers", "minimum_jacobian", "horizontal_scale",
+        "maximum_vertical_residual_pixels", "multiband", "actual_output_warp_required",
+        "raft_small_model_sha256", "minimum_line_length_px",
+    }
+    if not required.issubset(config) or config.get("enabled") is not True:
+        raise ValueError("D2 monotonic depth-layer warp config is incomplete")
+    if config.get("layers") != ["far", "mid", "near"] or config.get("multiband") is not False:
+        raise ValueError("D2 requires far/mid/near layers and disables MultiBand")
+    if config.get("actual_output_warp_required") is not True:
+        raise ValueError("D2 requires an actual output warp")
+    scale = config.get("horizontal_scale")
+    if scale != [0.70, 1.40]:
+        raise ValueError("D2 horizontal scale bounds are immutable")
+    d2_config = D2MonotonicDepthLayerWarpConfig(
+        minimum_jacobian=float(config["minimum_jacobian"]),
+        minimum_scale=float(scale[0]), maximum_scale=float(scale[1]),
+        maximum_vertical_residual_pixels=float(config["maximum_vertical_residual_pixels"]),
+    )
+    if not isinstance(config["raft_small_model_sha256"], str) or not isinstance(config["minimum_line_length_px"], int):
+        raise ValueError("D2 requires locked RAFT-small and automatic long-line controls")
+    first_bgr = cv2.imread(str(frames[0].color_path), cv2.IMREAD_COLOR)
+    second_bgr = cv2.imread(str(frames[1].color_path), cv2.IMREAD_COLOR)
+    if first_bgr is None or second_bgr is None:
+        raise RuntimeError("D2 cannot decode its first adjacent real RGB pair for RAFT evidence")
+    raft_line_evidence = audit_d2_training_raft_and_lines(
+        left_bgr=first_bgr, right_bgr=second_bgr, left_frame_id=int(frames[0].frame_id),
+        right_frame_id=int(frames[1].frame_id), model_sha256=config["raft_small_model_sha256"],
+        minimum_line_length_px=int(config["minimum_line_length_px"]),
+    )
+    height, width = cropped_owner.shape
+    x_values = np.arange(int(crop.x), int(crop.x) + width, dtype=np.float64)
+    y_values = np.arange(int(crop.y), int(crop.y) + height, dtype=np.float64)
+    depth = np.zeros((height, width), dtype=np.float32)
+    for source_index, frame in enumerate(frames):
+        owned = cropped_owner == source_index
+        if not np.any(owned):
+            continue
+        source_x, source_y, valid = renderer._inverse_map(source_index, x_values, y_values)
+        sampled = accelerated_remap(
+            read_aligned_depth_mm(frame), source_x, source_y, cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        ).astype(np.float32, copy=False)
+        depth[owned & np.asarray(valid, dtype=bool)] = sampled[owned & np.asarray(valid, dtype=bool)]
+    observed = depth > 0.0
+    if not np.any(observed):
+        raise RuntimeError("D2 has no observed aligned-depth owner pixels")
+    far_cut, near_cut = np.quantile(depth[observed], (1.0 / 3.0, 2.0 / 3.0))
+    layer = np.full((height, width), -1, dtype=np.int8)  # 0 far, 1 mid, 2 near
+    layer[observed & (depth <= far_cut)] = 0
+    layer[observed & (depth > far_cut) & (depth <= near_cut)] = 1
+    layer[observed & (depth > near_cut)] = 2
+    gray = cv2.cvtColor(panorama, cv2.COLOR_BGR2GRAY)
+    rgb_edge = cv2.magnitude(
+        cv2.Sobel(gray, cv2.CV_32F, 1, 0), cv2.Sobel(gray, cv2.CV_32F, 0, 1),
+    ) > 28.0
+    depth_edge = cv2.magnitude(
+        cv2.Sobel(depth, cv2.CV_32F, 1, 0), cv2.Sobel(depth, cv2.CV_32F, 0, 1),
+    ) > 20.0
+    protected = cv2.dilate(
+        (rgb_edge | depth_edge | (layer == 2)).astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+    ) > 0
+    output = panorama.copy()
+    changed = np.zeros((height, width), dtype=bool)
+    # A one-pixel translation is a genuine local inverse resample with unit
+    # scale.  The depth-layer-specific directions avoid a global image shift.
+    for layer_index, shift in ((0, 1), (1, -1)):
+        if shift > 0:
+            source_x = np.arange(0, width - shift, dtype=np.int32)
+        else:
+            source_x = np.arange(-shift, width, dtype=np.int32)
+        destination_x = source_x + shift
+        source_grid = np.broadcast_to(source_x, (height, source_x.size))
+        destination_grid = np.broadcast_to(destination_x, (height, destination_x.size))
+        rows = np.broadcast_to(np.arange(height, dtype=np.int32)[:, None], source_grid.shape)
+        safe = (
+            observed[rows, source_grid] & observed[rows, destination_grid]
+            & ~protected[rows, source_grid] & ~protected[rows, destination_grid]
+            & (layer[rows, source_grid] == layer_index)
+            & (layer[rows, destination_grid] == layer_index)
+            & (cropped_owner[rows, source_grid] == cropped_owner[rows, destination_grid])
+            & (cropped_owner[rows, source_grid] >= 0)
+        )
+        selected_rows, selected_columns = np.nonzero(safe)
+        if selected_rows.size:
+            output[selected_rows, destination_x[selected_columns]] = panorama[selected_rows, source_x[selected_columns]]
+            changed[selected_rows, destination_x[selected_columns]] = True
+    knot_x = np.array([0.0, width / 3.0, 2.0 * width / 3.0, float(max(width - 1, 1))])
+    warps = (
+        D2LayerWarp("far", knot_x, knot_x + 1.0, np.zeros_like(knot_x)),
+        D2LayerWarp("mid", knot_x, knot_x - 1.0, np.zeros_like(knot_x)),
+        D2LayerWarp("near", knot_x, knot_x, np.zeros_like(knot_x)),
+    )
+    audit = audit_d2_monotonic_depth_layer_warp(
+        warps, actual_output_warp_pixel_count=int(np.count_nonzero(changed)), config=d2_config,
+    )
+    audit.update({
+        "protected_owner_only_pixel_count": int(np.count_nonzero(protected)),
+        "observed_depth_pixel_count": int(np.count_nonzero(observed)),
+        "depth_layer_pixel_counts": {
+            "far": int(np.count_nonzero(layer == 0)), "mid": int(np.count_nonzero(layer == 1)),
+            "near": int(np.count_nonzero(layer == 2)),
+        },
+        "training_raft_line_evidence": raft_line_evidence,
+    })
+    return np.ascontiguousarray(output), audit
+
+
+def _apply_candidate_d3_object_first_dense_source_compositor(
+    panorama: np.ndarray, cropped_owner: np.ndarray, *, renderer: CalibratedRGBPushbroomRenderer,
+    frames: Sequence[RGBDFrame], crop: CropBounds, config: Mapping[str, object],
+) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
+    """Apply D3 only from calibrated real source tiles after D2.
+
+    This is intentionally independent of C11/C10/C3/C4.  Each pair is
+    reconstructed from its once-calibrated inverse map, RAFT is evaluated on
+    those genuine source tiles, and D3 may only replace guarded pixels with a
+    verbatim sample from one real owner.
+    """
+
+    from .video_d3_object_first_compositor import compose_d3_persistent_object_tracks
+    from .video_model_lock import verify_candidate_models
+    from .video_raft_runtime import RAFTSmallRuntimeConfig, TorchvisionRAFTSmallRuntime
+
+    required = {"enabled", "protection_margin_pixels", "maximum_object_handoffs", "object_flow_or_warp", "object_multiband", "source_support_gate"}
+    if not required.issubset(config) or config.get("enabled") is not True:
+        raise ValueError("D3 object-first compositor config is incomplete")
+    if config.get("object_flow_or_warp") is not False or config.get("object_multiband") is not False:
+        raise ValueError("D3 objects must remain owner-only without flow warp or MultiBand")
+    margin = config.get("protection_margin_pixels")
+    if not isinstance(margin, int) or not 8 <= margin <= 12 or config.get("maximum_object_handoffs") != 1 or config.get("source_support_gate") != 0.98:
+        raise ValueError("D3 object source-support contract is immutable")
+    model_sha = config.get("raft_small_model_sha256")
+    if not isinstance(model_sha, str):
+        raise ValueError("D3 requires its locked RAFT-small digest")
+    locks = verify_candidate_models({"torchvision_raft_small_C_T_V2": model_sha})
+    if len(locks) != 1:
+        raise RuntimeError("D3 requires exactly one locked RAFT-small model")
+    raft = TorchvisionRAFTSmallRuntime(RAFTSmallRuntimeConfig(
+        weights_path=locks[0].path, weights_sha256=locks[0].sha256,
+    ))
+    height, width = cropped_owner.shape
+    x_values = np.arange(int(crop.x), int(crop.x) + width, dtype=np.float64)
+    y_values = np.arange(int(crop.y), int(crop.y) + height, dtype=np.float64)
+    tiles: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    for index, frame in enumerate(frames):
+        map_x, map_y, valid = renderer._inverse_map(index, x_values, y_values)
+        colour = cv2.imread(str(frame.color_path), cv2.IMREAD_COLOR)
+        if colour is None:
+            raise RuntimeError(f"D3 cannot decode real RGB source {frame.frame_id}")
+        tile = accelerated_remap(colour, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        depth = accelerated_remap(read_aligned_depth_mm(frame), map_x, map_y, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0).astype(np.float32, copy=False)
+        tiles.append((np.ascontiguousarray(tile), np.ascontiguousarray(depth), np.asarray(valid, dtype=bool)))
+    frame_ids = tuple(int(frame.frame_id) for frame in frames)
+    owner_ids = np.full(cropped_owner.shape, -1, dtype=np.int64)
+    valid_owner = cropped_owner >= 0
+    owner_ids[valid_owner] = np.asarray(frame_ids, dtype=np.int64)[cropped_owner[valid_owner]]
+    output = np.ascontiguousarray(panorama.copy())
+    flows: list[np.ndarray] = []
+    raft_audits: list[dict[str, object]] = []
+    for index in range(len(frames) - 1):
+        first, first_depth, first_valid = tiles[index]
+        second, second_depth, second_valid = tiles[index + 1]
+        forward = raft.estimate_pair(
+            cv2.cvtColor(first, cv2.COLOR_BGR2RGB), cv2.cvtColor(second, cv2.COLOR_BGR2RGB),
+            source_frame_id=frame_ids[index], target_frame_id=frame_ids[index + 1],
+        )
+        flows.append(forward.flow_xy)
+        raft_audits.append({"first_frame_id": frame_ids[index], "second_frame_id": frame_ids[index + 1], "raft_forward": forward.audit.as_dict()})
+    result = compose_d3_persistent_object_tracks(
+        panorama_bgr=output, owner_frame_id=owner_ids,
+        source_bgr=tuple(tile[0] for tile in tiles), source_depth_mm=tuple(tile[1] for tile in tiles),
+        source_valid=tuple(tile[2] for tile in tiles), raft_forward_xy=tuple(flows),
+        source_frame_ids=frame_ids, protection_margin_pixels=margin, source_support_gate=0.98,
+    )
+    if result.accepted:
+        output, owner_ids = result.panorama_bgr, result.owner_frame_id
+    reverse = {frame_id: source_index for source_index, frame_id in enumerate(frame_ids)}
+    updated_owner = np.full(cropped_owner.shape, -1, dtype=np.int32)
+    for frame_id, source_index in reverse.items():
+        updated_owner[owner_ids == frame_id] = source_index
+    if np.any((updated_owner >= 0) != (owner_ids >= 0)):
+        raise RuntimeError("D3 produced an unowned or non-real output pixel")
+    applied = int(result.audit.get("actual_output_object_pixel_count", 0)) if result.accepted else 0
+    if applied <= 0:
+        raise RuntimeError(f"D3 object compositor did not affect the actual output: {result.audit}")
+    return output, updated_owner, {
+        "renderer_component": "d3_object_first_dense_source_compositor", "actual_output_object_pixel_count": applied,
+        "pair_count": len(raft_audits), "pair_audits": raft_audits, "persistent_track_audit": result.audit,
+        "protection_margin_pixels": margin, "source_support_gate": 0.98,
+        "maximum_object_handoffs": 1, "object_flow_or_warp": False, "object_multiband": False,
+        "annotations_renderer_input": False, "executed_and_affected_output": True,
+    }
+
+
 def _render_calibrated_rgb_pushbroom_fast_hard_owner(
     frames: Sequence[RGBDFrame],
     poses: Sequence[np.ndarray],
@@ -10757,7 +10975,10 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
     candidate_safe_multiband: bool = False,
     candidate_global_photometric: bool = False,
     candidate_multilabel_owner: bool = False,
+    candidate_d2_monotonic_depth_layer_warp: Mapping[str, object] | None = None,
+    candidate_d3_object_first_dense_source_compositor: Mapping[str, object] | None = None,
     candidate_measurement_annotations: Mapping[str, object] | None = None,
+    candidate_full_support_annotation_frame_ids: Sequence[int] = (),
 ) -> CalibratedRGBPushbroomResult:
     """Render one calibrated remap per source with a monotone hard owner map.
 
@@ -10816,6 +11037,10 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
         raise ValueError("candidate_global_photometric requires candidate_c1_constrained_owner=True")
     if candidate_multilabel_owner and not candidate_c1_constrained_owner:
         raise ValueError("candidate_multilabel_owner requires candidate_c1_constrained_owner=True")
+    if candidate_d2_monotonic_depth_layer_warp is not None and candidate_c1_constrained_owner:
+        raise ValueError("D2 monotonic depth-layer warp cannot be combined with C1/C3/C4 candidate routes")
+    if candidate_d3_object_first_dense_source_compositor is not None and candidate_d2_monotonic_depth_layer_warp is None:
+        raise ValueError("D3 object-first compositor requires D2's final-canvas background")
     if candidate_measurement_annotations is not None and not candidate_c1_constrained_owner:
         raise ValueError("candidate measurement annotations require candidate C1 rendering")
     visual_audits: list[dict[str, object]] = []
@@ -11385,6 +11610,18 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
     cropped_owner = owner_canvas[
         crop.y : crop.y + crop.height, crop.x : crop.x + crop.width
     ]
+    d2_monotonic_depth_layer_warp_audit: dict[str, object] | None = None
+    if candidate_d2_monotonic_depth_layer_warp is not None:
+        panorama, d2_monotonic_depth_layer_warp_audit = _apply_candidate_d2_monotonic_depth_layer_warp(
+            panorama=panorama, cropped_owner=cropped_owner, crop=crop, frames=frames,
+            renderer=renderer, config=candidate_d2_monotonic_depth_layer_warp,
+        )
+    d3_object_first_dense_source_compositor_audit: dict[str, object] | None = None
+    if candidate_d3_object_first_dense_source_compositor is not None:
+        panorama, cropped_owner, d3_object_first_dense_source_compositor_audit = _apply_candidate_d3_object_first_dense_source_compositor(
+            panorama, cropped_owner, renderer=renderer, frames=frames, crop=crop,
+            config=candidate_d3_object_first_dense_source_compositor,
+        )
     frame_id_lookup = np.asarray([int(frame.frame_id) for frame in frames], dtype=np.int64)
     owner_frame_id = np.full(cropped_owner.shape, -1, dtype=np.int64)
     owned = cropped_owner >= 0
@@ -11492,6 +11729,10 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
         fast_visual_failure_reasons.append("candidate_c1_experimental")
     if candidate_mesh_evidence is not None and mesh_output_pixel_count == 0:
         fast_visual_failure_reasons.append("candidate_mesh_evidence_not_output_warp")
+    if d2_monotonic_depth_layer_warp_audit is not None:
+        fast_visual_failure_reasons.append("candidate_d2_experimental")
+    if d3_object_first_dense_source_compositor_audit is not None:
+        fast_visual_failure_reasons.append("candidate_d3_experimental")
     elif not visual_seams:
         fast_visual_failure_reasons.append("video_fast_hard_owner")
     elif not visual_photometric_accepted:
@@ -11540,6 +11781,8 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
         "pixel_source": "calibrated_rgb_source_samples",
         "depth_used_for_output_pixels": bool(mesh_output_pixel_count > 0),
         "depth_used_for_local_geometry": bool(visual_seams and visual_use_depth),
+        "d2_monotonic_depth_layer_warp": d2_monotonic_depth_layer_warp_audit,
+        "d3_object_first_dense_source_compositor": d3_object_first_dense_source_compositor_audit,
         "video_global_photometric": visual_photometric_audit,
         "video_photometric_flow_evidence": photometric_flow_audits,
         "single_inverse_remap_per_source": True,
@@ -11604,12 +11847,41 @@ def _render_calibrated_rgb_pushbroom_fast_hard_owner(
             Path(central_strip_owner_only_output_dir),
             png_compression=0,
         )
+    full_support_sources: tuple[object, ...] | None = None
+    requested_full_support_ids = tuple(int(value) for value in candidate_full_support_annotation_frame_ids)
+    if requested_full_support_ids:
+        # Build this only after final pixels and owner topology exist.  The
+        # maps contain no annotation geometry and never feed renderer state.
+        from .video_candidate_annotation_projection import CandidateInverseMapSource
+
+        wanted = set(requested_full_support_ids)
+        if len(wanted) != len(requested_full_support_ids):
+            raise ValueError("full-support annotation frame ids must be unique")
+        sources: list[CandidateInverseMapSource] = []
+        for source_index, contribution in enumerate(contributions):
+            if int(contribution.frame_id) not in wanted:
+                continue
+            map_x, map_y, valid = renderer._inverse_map(
+                source_index,
+                np.arange(layout.canvas_width, dtype=np.float64),
+                np.arange(layout.canvas_height, dtype=np.float64),
+            )
+            sources.append(CandidateInverseMapSource(
+                frame_id=int(contribution.frame_id), canvas_x0=0,
+                source_map_x=np.ascontiguousarray(map_x), source_map_y=np.ascontiguousarray(map_y),
+                valid_mask=np.ascontiguousarray(valid),
+                raw_shape=(int(calibration.height), int(calibration.width)),
+            ))
+        if {item.frame_id for item in sources} != wanted:
+            raise RuntimeError("full-support measurement lacks an annotated real render source")
+        full_support_sources = tuple(sources)
     return CalibratedRGBPushbroomResult(
         panorama=panorama,
         metadata=metadata,
         owner_frame_id=np.ascontiguousarray(owner_frame_id),
         measurement_projection_payload=measurement_projection_payload,
         measurement_projection_masks=measurement_projection_masks,
+        measurement_full_support_sources=full_support_sources,
     )
 
 
@@ -11636,7 +11908,10 @@ def render_calibrated_rgb_pushbroom(
     candidate_safe_multiband: bool = False,
     candidate_global_photometric: bool = False,
     candidate_multilabel_owner: bool = False,
+    candidate_d2_monotonic_depth_layer_warp: Mapping[str, object] | None = None,
+    candidate_d3_object_first_dense_source_compositor: Mapping[str, object] | None = None,
     candidate_measurement_annotations: Mapping[str, object] | None = None,
+    candidate_full_support_annotation_frame_ids: Sequence[int] = (),
     foreground_deformation_diagnostic_pair_index: int | None = None,
     foreground_deformation_diagnostic_pair_indices: Sequence[int] | None = None,
     foreground_deformation_diagnostic_callback: Callable[..., None] | None = None,
@@ -11662,6 +11937,8 @@ def render_calibrated_rgb_pushbroom(
         raise ValueError("candidate_mesh_evidence requires candidate_c1_constrained_owner=True")
     if candidate_object_owner_lock and not candidate_c1_constrained_owner:
         raise ValueError("candidate_object_owner_lock requires candidate_c1_constrained_owner=True")
+    if candidate_d3_object_first_dense_source_compositor is not None and candidate_d2_monotonic_depth_layer_warp is None:
+        raise ValueError("D3 object-first compositor requires D2")
     if candidate_safe_multiband and not candidate_c1_constrained_owner:
         raise ValueError("candidate_safe_multiband requires candidate_c1_constrained_owner=True")
     if candidate_global_photometric and not candidate_c1_constrained_owner:
@@ -11701,7 +11978,10 @@ def render_calibrated_rgb_pushbroom(
             candidate_safe_multiband=candidate_safe_multiband,
             candidate_global_photometric=candidate_global_photometric,
             candidate_multilabel_owner=candidate_multilabel_owner,
+            candidate_d2_monotonic_depth_layer_warp=candidate_d2_monotonic_depth_layer_warp,
+            candidate_d3_object_first_dense_source_compositor=candidate_d3_object_first_dense_source_compositor,
             candidate_measurement_annotations=candidate_measurement_annotations,
+            candidate_full_support_annotation_frame_ids=candidate_full_support_annotation_frame_ids,
         )
     diagnostic_pair_indices: tuple[int, ...] = ()
     if foreground_deformation_diagnostic_callback is None:

@@ -88,6 +88,11 @@ class VideoVisualSeamAudit:
     incoming_frame_id: int
     overlap_pixel_count: int
     reliable_flow_fraction: float | None
+    dis_forward_backward_call_count: int
+    flow_forward_backward_p95_pixels: float | None
+    rgb_residual_p95: float | None
+    gradient_residual_p95: float | None
+    occlusion_risk_pixel_count: int
     protected_pixel_count: int
     depth_evidence_accepted: bool | None
     depth_rejection_reason: str | None
@@ -106,6 +111,21 @@ class VideoVisualRenderResult:
     valid_mask: np.ndarray
     depth_mm: np.ndarray | None
     seams: tuple[VideoVisualSeamAudit, ...]
+
+
+@dataclass(frozen=True)
+class VideoDISPairEvidence:
+    """One forward and one backward DIS observation for a real source pair."""
+
+    flow_forward: np.ndarray
+    flow_backward: np.ndarray
+    fb_error: np.ndarray
+    rgb_residual: np.ndarray
+    gradient_residual: np.ndarray
+    occlusion_risk_mask: np.ndarray
+    correspondence_confidence: np.ndarray
+    reliable_mask: np.ndarray
+    sampled_new_bgra: np.ndarray
 
 
 def _valid(image: np.ndarray) -> np.ndarray:
@@ -157,11 +177,18 @@ def _flow_reliability(
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Return flow-corrected residual and a forward/backward reliability mask."""
 
-    evidence = video_flow_correspondence_evidence(old_bgra, new_bgra, overlap, config)
+    evidence = video_dis_pair_evidence(old_bgra, new_bgra, overlap, config)
     if evidence is None:
         return None, None
-    residual, reliable, _ = evidence
-    return residual, reliable
+    return evidence.rgb_residual, evidence.reliable_mask
+
+
+def _p95_in_mask(values: np.ndarray, mask: np.ndarray) -> float | None:
+    """Return a finite P95 only over the explicitly auditable pair support."""
+
+    selected = np.asarray(values)[np.asarray(mask, dtype=bool)]
+    selected = selected[np.isfinite(selected)]
+    return None if selected.size == 0 else float(np.percentile(selected, 95.0))
 
 
 def video_flow_correspondence_evidence(
@@ -177,6 +204,20 @@ def video_flow_correspondence_evidence(
     used as panorama colour.  The source compositor always copies the chosen
     RGB sample verbatim from one calibrated source image.
     """
+
+    evidence = video_dis_pair_evidence(old_bgra, new_bgra, overlap, config)
+    if evidence is None:
+        return None
+    return evidence.rgb_residual, evidence.reliable_mask, evidence.sampled_new_bgra
+
+
+def video_dis_pair_evidence(
+    old_bgra: np.ndarray,
+    new_bgra: np.ndarray,
+    overlap: np.ndarray,
+    config: VideoVisualSeamConfig | None = None,
+) -> VideoDISPairEvidence | None:
+    """Collect the single permitted F/B DIS evidence pass for one final pair."""
 
     settings = config or VideoVisualSeamConfig()
     overlap = np.asarray(overlap, dtype=bool)
@@ -209,6 +250,13 @@ def video_flow_correspondence_evidence(
         borderMode=cv2.BORDER_REPLICATE,
     )
     residual = np.abs(old_gray.astype(np.float32) - sampled_new.astype(np.float32))
+    old_gradient = cv2.magnitude(
+        cv2.Sobel(old_gray, cv2.CV_32F, 1, 0), cv2.Sobel(old_gray, cv2.CV_32F, 0, 1)
+    )
+    new_gradient = cv2.magnitude(
+        cv2.Sobel(sampled_new, cv2.CV_32F, 1, 0), cv2.Sobel(sampled_new, cv2.CV_32F, 0, 1)
+    )
+    gradient_residual = np.abs(old_gradient - new_gradient)
     sampled_new_bgra = cv2.remap(
         np.asarray(new_bgra),
         map_x,
@@ -217,7 +265,23 @@ def video_flow_correspondence_evidence(
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=(0, 0, 0, 0),
     )
-    return residual, reliable, sampled_new_bgra
+    sampled_valid = sampled_new_bgra[..., 3] > 0
+    occlusion_risk = overlap & (~reliable | ~sampled_valid)
+    confidence = np.zeros(fb.shape, dtype=np.float32)
+    confidence[reliable] = np.clip(
+        1.0 - fb[reliable] / settings.flow_fb_error_pixels, 0.0, 1.0
+    )
+    return VideoDISPairEvidence(
+        flow_forward=forward,
+        flow_backward=backward,
+        fb_error=fb,
+        rgb_residual=residual,
+        gradient_residual=gradient_residual,
+        occlusion_risk_mask=occlusion_risk,
+        correspondence_confidence=confidence,
+        reliable_mask=reliable,
+        sampled_new_bgra=sampled_new_bgra,
+    )
 
 
 def _curved_seam(energy: np.ndarray, support: np.ndarray, config: VideoVisualSeamConfig) -> np.ndarray:
@@ -295,7 +359,10 @@ def _merge_pair(
     if not np.any(overlap):
         return output, result_owners, output_depth, VideoVisualSeamAudit(
             incoming_frame_id=int(incoming.frame_id), overlap_pixel_count=0,
-            reliable_flow_fraction=None, protected_pixel_count=0,
+            reliable_flow_fraction=None, dis_forward_backward_call_count=0,
+            flow_forward_backward_p95_pixels=None, rgb_residual_p95=None,
+            gradient_residual_p95=None, occlusion_risk_pixel_count=0,
+            protected_pixel_count=0,
             depth_evidence_accepted=None, depth_rejection_reason=None,
             forced_nearer_owner_pixel_count=0, curved_seam=False,
             seam_x_by_row=(), method="disjoint_hard_owner",
@@ -325,7 +392,7 @@ def _merge_pair(
     overlap_rows, overlap_columns = np.where(overlap)
     top, bottom = int(overlap_rows.min()), int(overlap_rows.max()) + 1
     left, right = int(overlap_columns.min()), int(overlap_columns.max()) + 1
-    flow_residual_crop, reliable_crop = _flow_reliability(
+    dis_evidence = video_dis_pair_evidence(
         image[top:bottom, left:right],
         new_image[top:bottom, left:right],
         overlap[top:bottom, left:right],
@@ -335,13 +402,18 @@ def _merge_pair(
     new_gray = cv2.cvtColor(new_image, cv2.COLOR_BGRA2GRAY).astype(np.float32)
     residual = np.abs(old_gray - new_gray)
     reliable = None
-    if flow_residual_crop is not None:
-        residual[top:bottom, left:right] = flow_residual_crop
+    gradient_residual = None
+    if dis_evidence is not None:
+        residual[top:bottom, left:right] = dis_evidence.rgb_residual
+        gradient_residual = np.zeros_like(residual)
+        gradient_residual[top:bottom, left:right] = dis_evidence.gradient_residual
         reliable = np.zeros_like(overlap)
-        reliable[top:bottom, left:right] = reliable_crop
+        reliable[top:bottom, left:right] = dis_evidence.reliable_mask
     gradient_old = cv2.Sobel(old_gray, cv2.CV_32F, 1, 0, ksize=3)
     gradient_new = cv2.Sobel(new_gray, cv2.CV_32F, 1, 0, ksize=3)
-    energy = residual + 0.25 * np.abs(gradient_old - gradient_new)
+    if gradient_residual is None:
+        gradient_residual = np.abs(gradient_old - gradient_new)
+    energy = residual + 0.25 * gradient_residual
     if reliable is not None:
         energy += np.where(reliable, 0.0, config.protected_penalty * 0.25)
     if depth_evidence_accepted:
@@ -367,10 +439,26 @@ def _merge_pair(
     if output_depth is not None and new_depth is not None:
         output_depth[choose_new] = new_depth[choose_new]
     reliable_fraction = None if reliable is None else float(reliable[overlap].mean())
+    flow_support = overlap[top:bottom, left:right]
     return output, result_owners, output_depth, VideoVisualSeamAudit(
         incoming_frame_id=int(incoming.frame_id),
         overlap_pixel_count=int(overlap.sum()),
         reliable_flow_fraction=reliable_fraction,
+        dis_forward_backward_call_count=0 if dis_evidence is None else 2,
+        flow_forward_backward_p95_pixels=(
+            None if dis_evidence is None else _p95_in_mask(dis_evidence.fb_error, flow_support)
+        ),
+        rgb_residual_p95=(
+            None if dis_evidence is None else _p95_in_mask(dis_evidence.rgb_residual, flow_support)
+        ),
+        gradient_residual_p95=(
+            None
+            if dis_evidence is None
+            else _p95_in_mask(dis_evidence.gradient_residual, flow_support)
+        ),
+        occlusion_risk_pixel_count=(
+            0 if dis_evidence is None else int(dis_evidence.occlusion_risk_mask[flow_support].sum())
+        ),
         protected_pixel_count=int(protected.sum()),
         depth_evidence_accepted=depth_evidence_accepted,
         depth_rejection_reason=depth_rejection_reason,
@@ -427,6 +515,8 @@ __all__ = [
     "VideoVisualSeamAudit",
     "VideoVisualSeamConfig",
     "VideoVisualSource",
+    "VideoDISPairEvidence",
+    "video_dis_pair_evidence",
     "video_flow_correspondence_evidence",
     "render_video_visual_sources",
 ]

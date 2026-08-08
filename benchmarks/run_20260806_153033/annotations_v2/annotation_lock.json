@@ -1,0 +1,16 @@
+{
+  "schema": "gemini305-video-annotation-lock/v2",
+  "role": "fixed_validation_measurement_input",
+  "annotations_path": "annotations_v2/annotations.json",
+  "annotations_sha256": "eab4c3730fb6593301d34ce2b5782f271d67f693ecb6ceacdc8f8713a8b87b04",
+  "v1_annotations_preserved": false,
+  "v1_canonical_annotations_path": null,
+  "v1_canonical_annotations_sha256": null,
+  "holdout_status": "validation_only_to_prevent_holdout_leakage",
+  "locked_roles": [
+    "compact_foreground_single_owner",
+    "extended_background_structure",
+    "safe_background",
+    "long_line"
+  ]
+}

@@ -46,6 +46,11 @@ _COUNTERS = {
     "cpu_calls": 0,
     "host_to_device_bytes": 0,
     "device_to_host_bytes": 0,
+    # Wall-clock operation accounting includes transfers and the required
+    # host/device synchronisation at this public NumPy boundary.  It is not
+    # presented as kernel-only CUDA time.
+    "gpu_remap_wall_seconds": 0.0,
+    "cpu_remap_wall_seconds": 0.0,
 }
 
 
@@ -253,6 +258,11 @@ def reset_cuda_audit() -> None:
         _COUNTERS[key] = 0
     _AUTO_DECISIONS.clear()
     _FALLBACKS.clear()
+
+
+def _record_remap_timing(*, device: str, elapsed_seconds: float) -> None:
+    key = "gpu_remap_wall_seconds" if device == "gpu" else "cpu_remap_wall_seconds"
+    _COUNTERS[key] += max(0.0, float(elapsed_seconds))
 
 
 def _use_cuda(nbytes: int) -> bool:
@@ -467,7 +477,8 @@ def remap(
         )
         if status.mode == "auto" and _AUTO_DECISIONS.get(decision_key) == "cpu":
             _COUNTERS["cpu_calls"] += 1
-            return cv2.remap(
+            started = time.perf_counter()
+            result = cv2.remap(
                 src,
                 mx,
                 my,
@@ -475,6 +486,8 @@ def remap(
                 borderMode=borderMode,
                 borderValue=borderValue,
             )
+            _record_remap_timing(device="cpu", elapsed_seconds=time.perf_counter() - started)
+            return result
         gpu_result: np.ndarray | None = None
         gpu_elapsed = float("inf")
         gpu_error: Exception | None = None
@@ -511,8 +524,10 @@ def remap(
                 if status.mode == "required":
                     raise
         if gpu_result is not None and status.mode == "required":
+            _record_remap_timing(device="gpu", elapsed_seconds=gpu_elapsed)
             return gpu_result
         if gpu_result is not None and status.mode == "prefer":
+            _record_remap_timing(device="gpu", elapsed_seconds=gpu_elapsed)
             return gpu_result
         if gpu_result is not None and status.mode == "auto":
             started = time.perf_counter()
@@ -525,6 +540,7 @@ def remap(
                 borderValue=borderValue,
             )
             cpu_elapsed = time.perf_counter() - started
+            _record_remap_timing(device="cpu", elapsed_seconds=cpu_elapsed)
             if np.issubdtype(cpu_result.dtype, np.integer):
                 parity = bool(
                     np.max(
@@ -553,6 +569,7 @@ def remap(
             )
             _AUTO_DECISIONS[decision_key] = selected
             if selected == "cuda":
+                _record_remap_timing(device="gpu", elapsed_seconds=gpu_elapsed)
                 return gpu_result
             _COUNTERS["cpu_calls"] += 1
             return cpu_result
@@ -572,7 +589,8 @@ def remap(
             "border mode, or map shape is unsupported"
         )
     _COUNTERS["cpu_calls"] += 1
-    return cv2.remap(
+    started = time.perf_counter()
+    result = cv2.remap(
         src,
         mx,
         my,
@@ -580,6 +598,8 @@ def remap(
         borderMode=borderMode,
         borderValue=borderValue,
     )
+    _record_remap_timing(device="cpu", elapsed_seconds=time.perf_counter() - started)
+    return result
 
 
 def pinhole_unproject(

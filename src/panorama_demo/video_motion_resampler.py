@@ -68,6 +68,8 @@ class VideoRenderPlan:
     high_risk_edge_count: int
     normal_target_step_pixels: float
     risk_target_step_pixels: float
+    rescue_source_indices: tuple[int, ...] = ()
+    rescue_source_frame_ids: tuple[int, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -78,6 +80,8 @@ class VideoRenderPlan:
             "high_risk_edge_count": self.high_risk_edge_count,
             "normal_target_step_pixels": self.normal_target_step_pixels,
             "risk_target_step_pixels": self.risk_target_step_pixels,
+            "rescue_source_indices": list(self.rescue_source_indices),
+            "rescue_source_frame_ids": list(self.rescue_source_frame_ids),
             "real_source_frames_only": True,
             "interpolated_poses": False,
         }
@@ -187,8 +191,141 @@ def select_render_keyframes(
     )
 
 
+def insert_v6_real_rescue_sources(
+    frames: Sequence[RGBDFrame],
+    motions: Sequence[MotionEstimate],
+    plan: VideoRenderPlan,
+    *,
+    full_resolution_scale: float,
+    maximum_step_pixels: float = 8.0,
+    maximum_rescues: int = 4,
+) -> VideoRenderPlan:
+    """Insert one existing direct-ORB source into each oversized final gap.
+
+    This is source selection, not frame/pose synthesis.  It happens before
+    Open3D edge audit and final raw-RGB sampling, so every added edge is
+    audited and each final source remains sampled exactly once.  The inserted
+    node is the real tracking frame nearest to half the measured motion in its
+    selected-source gap.
+    """
+
+    tracking = tuple(frames)
+    if len(tracking) < 2 or len(motions) != len(tracking) - 1:
+        raise ValueError("v6 rescue requires complete chronological tracking motion")
+    if not np.isfinite(full_resolution_scale) or full_resolution_scale <= 0.0:
+        raise ValueError("v6 rescue full-resolution scale must be finite and positive")
+    if not np.isfinite(maximum_step_pixels) or maximum_step_pixels <= 0.0:
+        raise ValueError("v6 rescue maximum step must be finite and positive")
+    if maximum_rescues < 0:
+        raise ValueError("v6 rescue maximum count cannot be negative")
+    indices = tuple(int(index) for index in plan.source_indices)
+    if len(indices) < 2 or indices[0] != 0 or indices[-1] != len(tracking) - 1:
+        raise ValueError("v6 rescue requires a complete real-source plan")
+    if tuple(plan.frames) != tuple(tracking[index] for index in indices):
+        raise ValueError("v6 rescue plan frames do not match the direct-ORB tracking chain")
+    direction = int(plan.scan_direction)
+    if direction not in {-1, 1}:
+        raise ValueError("v6 rescue requires a monotone scan direction")
+
+    selected = list(indices)
+    # The v6 rescue budget is intentionally small.  Spend it on the largest
+    # measured source gaps, rather than whichever oversized gaps happen to
+    # occur first in time; otherwise a late hard GraphCut corridor is starved
+    # while an easier early gap consumes the only real direct-ORB rescue.
+    candidates: list[tuple[float, int, int]] = []
+    for left, right in zip(indices[:-1], indices[1:], strict=True):
+        if right - left <= 1:
+            continue
+        steps = np.asarray(
+            [
+                max(0.0, direction * float(motion.dx)) * full_resolution_scale
+                for motion in motions[left:right]
+            ],
+            dtype=np.float64,
+        )
+        total = float(np.sum(steps))
+        if total <= maximum_step_pixels:
+            continue
+        cumulative = np.cumsum(steps)
+        midpoint_indices = np.arange(left + 1, right, dtype=np.int32)
+        midpoint = 0.5 * total
+        rescue = int(midpoint_indices[int(np.argmin(np.abs(cumulative[:-1] - midpoint)))])
+        candidates.append((total - maximum_step_pixels, left, rescue))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    rescue_indices = sorted(item[2] for item in candidates[:maximum_rescues])
+    selected.extend(rescue_indices)
+    selected_indices = tuple(sorted(selected))
+    return VideoRenderPlan(
+        frames=tuple(tracking[index] for index in selected_indices),
+        source_indices=selected_indices,
+        scan_direction=direction,
+        high_risk_edge_count=plan.high_risk_edge_count,
+        normal_target_step_pixels=plan.normal_target_step_pixels,
+        risk_target_step_pixels=plan.risk_target_step_pixels,
+        rescue_source_indices=tuple(rescue_indices),
+        rescue_source_frame_ids=tuple(tracking[index].frame_id for index in rescue_indices),
+    )
+
+
+def reroute_v6_failed_pairs_with_real_sources(
+    frames: Sequence[RGBDFrame], plan: VideoRenderPlan, *,
+    failed_pair_frame_ids: Sequence[tuple[int, int]], maximum_rescues: int = 4,
+) -> VideoRenderPlan:
+    """Replace speculative rescues with real midpoint sources for failed pairs.
+
+    This is deliberately just a source-plan transformation.  Its caller must
+    subsequently re-run the required Open3D adjacent-edge audit and the final
+    v6 renderer; no RGB pixels, poses, or flow evidence are carried across.
+    """
+
+    tracking = tuple(frames)
+    if maximum_rescues < 0:
+        raise ValueError("v6 reroute rescue maximum cannot be negative")
+    if len(plan.rescue_source_indices) > maximum_rescues:
+        raise ValueError("v6 reroute cannot start from an over-budget rescue plan")
+    frame_index = {int(frame.frame_id): index for index, frame in enumerate(tracking)}
+    if len(frame_index) != len(tracking):
+        raise ValueError("v6 reroute requires unique chronological tracking frame IDs")
+    plan_indices = tuple(int(index) for index in plan.source_indices)
+    if tuple(plan.frames) != tuple(tracking[index] for index in plan_indices):
+        raise ValueError("v6 reroute plan frames do not match direct-ORB tracking frames")
+    base_indices = [index for index in plan_indices if index not in set(plan.rescue_source_indices)]
+    if len(base_indices) < 2:
+        raise ValueError("v6 reroute requires at least two non-rescue source anchors")
+    requested: list[int] = []
+    for left_id, right_id in failed_pair_frame_ids:
+        left, right = frame_index.get(int(left_id)), frame_index.get(int(right_id))
+        if left is None or right is None:
+            raise ValueError("v6 reroute failure pair is not in the direct-ORB tracking chain")
+        if right <= left:
+            raise ValueError("v6 reroute failure pair must be chronological")
+        # A one-frame pair cannot be split without inventing a source and is
+        # therefore left for the caller's hard-owner degraded evidence.
+        if right - left <= 1:
+            continue
+        midpoint = left + (right - left) // 2
+        if midpoint not in base_indices and midpoint not in requested:
+            requested.append(midpoint)
+        if len(requested) == maximum_rescues:
+            break
+    # The reroute budget is intentionally reassigned, not accumulated: a
+    # stale pre-GraphCut rescue must not consume one of the four allowed
+    # targeted sources.
+    selected_indices = tuple(sorted((*base_indices, *requested)))
+    return VideoRenderPlan(
+        frames=tuple(tracking[index] for index in selected_indices),
+        source_indices=selected_indices,
+        scan_direction=plan.scan_direction,
+        high_risk_edge_count=plan.high_risk_edge_count,
+        normal_target_step_pixels=plan.normal_target_step_pixels,
+        risk_target_step_pixels=plan.risk_target_step_pixels,
+        rescue_source_indices=tuple(sorted(requested)),
+        rescue_source_frame_ids=tuple(tracking[index].frame_id for index in sorted(requested)),
+    )
+
+
 def compose_selected_motions(
-    motions: Sequence[MotionEstimate], source_indices: Sequence[int]
+    motions: Sequence[MotionEstimate], source_indices: Sequence[int], *, require_scan_endpoints: bool = True
 ) -> list[MotionEstimate]:
     """Compose measured intermediate motion for selected real-frame pairs.
 
@@ -199,7 +336,7 @@ def compose_selected_motions(
     indices = tuple(int(index) for index in source_indices)
     if len(indices) < 2 or indices != tuple(sorted(set(indices))):
         raise ValueError("Selected source indices must be unique and increasing")
-    if indices[0] != 0 or indices[-1] != len(motions):
+    if require_scan_endpoints and (indices[0] != 0 or indices[-1] != len(motions)):
         raise ValueError("Selected source indices must retain both scan endpoints")
     combined: list[MotionEstimate] = []
     for first, second in zip(indices, indices[1:]):

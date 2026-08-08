@@ -37,10 +37,15 @@ from .video_visual_renderer_v2 import (
     CudaC1ConstrainedOwnerConfig,
     CudaRealSource,
     TorchCudaC4RAFTDepthLayeredMeshAlgorithm,
+    TorchCudaC9PositiveJacobianLinePreservingLayeredMeshAlgorithm,
     TorchCudaC5ObjectLockAlgorithm,
     TorchCudaC6SafeMultiBandAlgorithm,
     TorchCudaC7PhotometricGraphAlgorithm,
     TorchCudaC8MultilabelWindowAlgorithm,
+    TorchCudaC13RobustPhotometricBundleAlgorithm,
+    TorchCudaC10DepthConditionedLayoutAlgorithm,
+    TorchCudaC12JointOwnerFinalGridAlgorithm,
+    TorchCudaC11ObjectFirstForegroundCompositorAlgorithm,
     TorchCudaC3RAFTResidualMeshAlgorithm,
     TorchCudaC2DisResidualMeshAlgorithm,
     TorchCudaC1ConstrainedOwnerAlgorithm,
@@ -49,7 +54,7 @@ from .video_visual_renderer_v2 import (
 )
 from .video_candidate_annotation_projection import (
     build_candidate_annotation_projection,
-    build_v2_c1_calibrated_inverse_sources,
+    build_v2_full_support_measurement_sources,
 )
 from .video_v2_audit_export import V2CudaAuditExportContext
 
@@ -106,6 +111,7 @@ class V2PostPublicationMeasurementContext:
     calibration: CameraIntrinsics
     canvas_shape: tuple[int, int]
     corridor_width_pixels: int
+    final_grid_updates: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -237,6 +243,18 @@ def is_cuda_c4_raft_rgbd_layered_mesh_implementation(
     )
 
 
+def is_cuda_c9_positive_jacobian_line_mesh_implementation(
+    *, role: str, algorithm_id: str, implementation_id: str
+) -> bool:
+    """C9 is a candidate-only C4 extension with automatic line evidence."""
+
+    return (
+        role == "candidate"
+        and algorithm_id == "C9_positive_jacobian_line_mesh"
+        and implementation_id == "video_visual_renderer_v2"
+    )
+
+
 def is_cuda_c5_object_lock_implementation(
     *, role: str, algorithm_id: str, implementation_id: str
 ) -> bool:
@@ -285,6 +303,54 @@ def is_cuda_c8_multilabel_window_implementation(
     )
 
 
+def is_cuda_c13_robust_photometric_bundle_implementation(
+    *, role: str, algorithm_id: str, implementation_id: str
+) -> bool:
+    """C13 is candidate-only; its robust bundle is never a C7 fallback."""
+
+    return (
+        role == "candidate"
+        and algorithm_id == "C13_robust_photometric_bundle"
+        and implementation_id == "video_visual_renderer_v2"
+    )
+
+
+def is_cuda_c10_depth_conditioned_layout_implementation(
+    *, role: str, algorithm_id: str, implementation_id: str
+) -> bool:
+    """C10 is an experimental candidate-only depth-conditioned layout route."""
+
+    return (
+        role == "candidate"
+        and algorithm_id == "C10_depth_conditioned_multi_perspective_layout"
+        and implementation_id == "video_visual_renderer_v2"
+    )
+
+
+def is_cuda_c11_object_first_foreground_compositor_implementation(
+    *, role: str, algorithm_id: str, implementation_id: str
+) -> bool:
+    """C11 is a candidate-only C10 final-grid foreground compositor."""
+
+    return (
+        role == "candidate"
+        and algorithm_id == "C11_object_first_single_view_foreground_compositor"
+        and implementation_id == "video_visual_renderer_v2"
+    )
+
+
+def is_cuda_c12_joint_owner_final_grid_implementation(
+    *, role: str, algorithm_id: str, implementation_id: str
+) -> bool:
+    """C12 is a candidate-only real 5--7 source final renderer route."""
+
+    return (
+        role == "candidate"
+        and algorithm_id == "C12_joint_owner_mesh_window"
+        and implementation_id == "video_visual_renderer_v2"
+    )
+
+
 def _decode_real_source(
     frame: RGBDFrame, calibration: CameraIntrinsics, pose: np.ndarray,
 ) -> CudaRealSource:
@@ -308,7 +374,7 @@ def _decode_real_source(
     )
 
 
-def _c1_measurement_projection(
+def _full_support_measurement_projection(
     *,
     annotations: Mapping[str, object] | None,
     strips: Sequence[object],
@@ -316,14 +382,16 @@ def _c1_measurement_projection(
     calibration: CameraIntrinsics,
     canvas_shape: tuple[int, int],
     final_owner_frame_id: np.ndarray,
-    corridor_width_pixels: int,
+    final_grid_updates: Sequence[Mapping[str, object]] = (),
 ) -> tuple[dict[str, object] | None, dict[str, np.ndarray] | None]:
-    """Create C1 post-render measurement evidence without touching output.
+    """Create full-support post-render measurement evidence without touching output.
 
     This intentionally runs only after the CUDA renderer has returned the
     final CPU provenance map.  The source maps are reconstructed from the
-    exact C1 layout/grid equations and then owner-filtered, so annotations
-    never become an owner/seam or colour input.
+    exact calibrated layout/grid equations over every source's full canvas
+    support. Projection is owner-independent, so
+    annotations never become an owner/seam or colour input and a later owner
+    decision cannot erase the measurement subject.
     """
 
     if annotations is None:
@@ -338,7 +406,7 @@ def _c1_measurement_projection(
         int(frame.frame_id): (int(calibration.height), int(calibration.width))
         for frame in sources
     }
-    inverse_sources = build_v2_c1_calibrated_inverse_sources(
+    inverse_sources = build_v2_full_support_measurement_sources(
         strips=strips,
         source_shapes=source_shapes,
         canvas_shape=canvas_shape,
@@ -348,7 +416,7 @@ def _c1_measurement_projection(
             "distortion": calibration.distortion,
         },
         annotation_frame_ids=tuple(sorted(frame_ids)),
-        corridor_width_pixels=int(corridor_width_pixels),
+        final_grid_updates=final_grid_updates,
     )
     payload, masks = build_candidate_annotation_projection(
         annotations,
@@ -361,10 +429,15 @@ def _c1_measurement_projection(
     )
     payload = {
         **payload,
-        "projection_method": "v2_cuda_c1_calibrated_inverse_grid_owner_filtered",
-        "v2_grid_reference": "torch_cuda_c1_constrained_owner_v2._render_window",
+        "projection_method": "v2_cuda_full_support_final_inverse_grid_owner_independent_consensus",
+        "v2_grid_reference": (
+            "torch_cuda_final_inverse_grid_with_accepted_local_mesh_deltas"
+            if final_grid_updates else "torch_cuda_c1_constrained_owner_v2._render_window"
+        ),
         "source_map_count": len(inverse_sources),
-        "final_owner_filter_applied": True,
+        "source_map_support": "full_final_canvas_calibrated_inverse_validity",
+        "final_grid_update_count": len(final_grid_updates),
+        "final_owner_filter_applied": False,
     }
     return payload, masks
 
@@ -379,14 +452,14 @@ def build_v2_post_publication_measurement_projection(
 
     if tuple(int(value) for value in final_owner_frame_id.shape) != tuple(context.canvas_shape):
         raise VideoV2RouteError("post-publication measurement owner shape differs from its frozen v2 canvas")
-    payload, masks = _c1_measurement_projection(
+    payload, masks = _full_support_measurement_projection(
         annotations=annotations,
         strips=context.strips,
         sources=context.sources,
         calibration=context.calibration,
         canvas_shape=context.canvas_shape,
         final_owner_frame_id=final_owner_frame_id,
-        corridor_width_pixels=context.corridor_width_pixels,
+        final_grid_updates=context.final_grid_updates,
     )
     if payload is None or masks is None:
         raise VideoV2RouteError("post-publication v2 measurement projection requires fixed annotations")
@@ -400,6 +473,7 @@ def _post_publication_measurement_context(
     strips: Sequence[object],
     calibration: CameraIntrinsics,
     result: object,
+    final_grid_updates: Sequence[Mapping[str, object]] = (),
 ) -> V2PostPublicationMeasurementContext:
     return V2PostPublicationMeasurementContext(
         sources=tuple(sources),
@@ -407,6 +481,25 @@ def _post_publication_measurement_context(
         calibration=calibration,
         canvas_shape=tuple(int(value) for value in getattr(result, "owner_frame_id").shape),
         corridor_width_pixels=CudaC1ConstrainedOwnerConfig().corridor_width_pixels,
+        final_grid_updates=tuple(dict(item) for item in final_grid_updates),
+    )
+
+
+def _post_publication_measurement_context_from_final_grid(
+    *,
+    sources: Sequence[RGBDFrame],
+    strips: Sequence[object],
+    calibration: CameraIntrinsics,
+    result: object,
+) -> V2PostPublicationMeasurementContext | None:
+    """Return a read-only context for C1 plus any actual final-grid deltas."""
+
+    updates = getattr(result, "measurement_grid_updates", ())
+    if not isinstance(updates, tuple) or not all(isinstance(item, Mapping) for item in updates):
+        raise VideoV2RouteError("v2 renderer final measurement grid updates are malformed")
+    return _post_publication_measurement_context(
+        sources=sources, strips=strips, calibration=calibration, result=result,
+        final_grid_updates=updates,
     )
 
 
@@ -417,19 +510,21 @@ def _post_publication_measurement_context_if_c1_geometry_is_exact(
     calibration: CameraIntrinsics,
     result: object,
 ) -> V2PostPublicationMeasurementContext | None:
-    """Return C1 label projection context only when its grids remain exact.
+    """Keep later C5--C8 evaluation fail-closed until their final grids exist."""
 
-    C4's accepted RGB-D residual mesh changes a real source's inverse grid.
-    A C1-only post-publication annotation projection would then be an
-    approximation, which cannot be used for fixed validation selection.
-    Later C5--C8 stages may retain the C1 grid context only while C4 applied
-    no mesh pixels; their owner/colour operations otherwise do not alter the
-    source-coordinate map.
-    """
-
-    audit = getattr(result, "algorithm_audit", {})
-    c4 = audit.get("c4_raft_rgbd_layered_mesh") if isinstance(audit, Mapping) else None
-    if isinstance(c4, Mapping) and int(c4.get("actual_output_mesh_pixel_count", 0)) > 0:
+    updates = getattr(result, "measurement_grid_updates", None)
+    if updates is None:
+        # Older renderer results never emitted final-grid evidence; retain
+        # their original C1-only fail-closed behaviour rather than treating
+        # an accepted C4 mesh as if it were a nominal C1 sample.
+        audit = getattr(result, "algorithm_audit", {})
+        c4 = audit.get("c4_raft_rgbd_layered_mesh") if isinstance(audit, Mapping) else None
+        if isinstance(c4, Mapping) and int(c4.get("actual_output_mesh_pixel_count", 0)) > 0:
+            return None
+        updates = ()
+    if not isinstance(updates, tuple):
+        raise VideoV2RouteError("v2 renderer final measurement grid updates are malformed")
+    if updates:
         return None
     return _post_publication_measurement_context(
         sources=sources, strips=strips, calibration=calibration, result=result,
@@ -547,7 +642,12 @@ def render_cuda_c1_constrained_owner_v2(
     annotations: Mapping[str, object] | None = None,
     cuda_device: int = 0,
 ) -> V2CudaStripRender:
-    """Run C1's real-source CUDA owner path; it never falls back to C0."""
+    """Run C1's real-source CUDA owner path; it never falls back to C0.
+
+    Fixed annotations are intentionally not read here.  The common
+    publication path builds their full-support measurement maps only after
+    the primary output has been atomically published.
+    """
 
     if len(sources) != len(camera_to_world) or len(sources) < 2:
         raise VideoV2RouteError("v2 CUDA C1 route needs at least two aligned real sources and poses")
@@ -613,37 +713,26 @@ def render_cuda_c1_constrained_owner_v2(
         result = algorithm.render(prepared)
     except (VideoAlgorithmContractError, ValueError) as exc:
         raise VideoV2RouteError(str(exc)) from exc
-    try:
-        projection_payload, projection_masks = _c1_measurement_projection(
-            annotations=annotations,
-            strips=strips,
-            sources=sources,
-            calibration=calibration,
-            canvas_shape=tuple(int(value) for value in result.owner_frame_id.shape),
-            final_owner_frame_id=result.owner_frame_id,
-            corridor_width_pixels=resolved_c1_config.corridor_width_pixels,
-        )
-    except ValueError as exc:
-        # Annotation projection is measurement-only.  It must never change a
-        # successful C1 primary result, but an invalid projection is not
-        # silently represented as usable evidence.
-        raise VideoV2RouteError(f"C1 annotation projection failed: {exc}") from exc
+    # Retain the public call signature for the candidate pipeline, but do
+    # not allow annotations to become an input of the CUDA render lifecycle.
+    del annotations
     metadata: dict[str, object] = {
         **result.algorithm_audit,
         "layout": layout.as_dict(),
         "rgb_motion_scale": scale.as_dict(),
         "quality_metrics": _v2_quality_metrics(result, cuda_c1_owner_route=True),
-        "measurement_projection": (
-            "v2_cuda_c1_calibrated_inverse_grid_owner_filtered"
-            if projection_payload is not None else "not_requested"
-        ),
+        "measurement_projection": "v2_post_publication_full_support_final_grid_context",
     }
     return V2CudaStripRender(
         panorama=np.ascontiguousarray(result.panorama_bgr),
         owner_frame_id=np.ascontiguousarray(result.owner_frame_id),
         metadata=metadata,
-        measurement_projection_payload=projection_payload,
-        measurement_projection_masks=projection_masks,
+        post_publication_measurement_context=_post_publication_measurement_context(
+            sources=sources,
+            strips=strips,
+            calibration=calibration,
+            result=result,
+        ),
         audit_export_context=_v2_audit_export_context(
             sources=sources, strips=strips, calibration=calibration, result=result,
             include_adjacent_corridors=True,
@@ -733,12 +822,15 @@ def render_cuda_c2_dis_residual_mesh_v2(
         "layout": layout.as_dict(),
         "rgb_motion_scale": scale.as_dict(),
         "quality_metrics": _v2_quality_metrics(result, cuda_c2_dis_mesh_route=True),
-        "measurement_projection": "not_available_for_cuda_c2",
+        "measurement_projection": "v2_post_publication_final_grid_context",
     }
     return V2CudaStripRender(
         panorama=np.ascontiguousarray(result.panorama_bgr),
         owner_frame_id=np.ascontiguousarray(result.owner_frame_id),
         metadata=metadata,
+        post_publication_measurement_context=_post_publication_measurement_context_from_final_grid(
+            sources=sources, strips=strips, calibration=calibration, result=result,
+        ),
         audit_export_context=_v2_audit_export_context(
             sources=sources, strips=strips, calibration=calibration, result=result,
             include_adjacent_corridors=True,
@@ -847,12 +939,15 @@ def render_cuda_c3_raft_residual_mesh_v2(
         "layout": layout.as_dict(),
         "rgb_motion_scale": scale.as_dict(),
         "quality_metrics": _v2_quality_metrics(result, cuda_c3_raft_mesh_route=True),
-        "measurement_projection": "not_available_for_cuda_c3",
+        "measurement_projection": "v2_post_publication_final_grid_context",
     }
     return V2CudaStripRender(
         panorama=np.ascontiguousarray(result.panorama_bgr),
         owner_frame_id=np.ascontiguousarray(result.owner_frame_id),
         metadata=metadata,
+        post_publication_measurement_context=_post_publication_measurement_context_from_final_grid(
+            sources=sources, strips=strips, calibration=calibration, result=result,
+        ),
         audit_export_context=_v2_audit_export_context(
             sources=sources, strips=strips, calibration=calibration, result=result,
             include_adjacent_corridors=True,
@@ -936,12 +1031,12 @@ def render_cuda_c4_raft_rgbd_layered_mesh_v2(
         "layout": layout.as_dict(),
         "rgb_motion_scale": scale.as_dict(),
         "quality_metrics": _v2_quality_metrics(result, cuda_c4_raft_rgbd_layered_mesh_route=True),
-        "measurement_projection": "not_available_for_cuda_c4",
+        "measurement_projection": "v2_post_publication_final_grid_context",
     }
     return V2CudaStripRender(
         panorama=np.ascontiguousarray(result.panorama_bgr),
         owner_frame_id=np.ascontiguousarray(result.owner_frame_id), metadata=metadata,
-        post_publication_measurement_context=_post_publication_measurement_context_if_c1_geometry_is_exact(
+        post_publication_measurement_context=_post_publication_measurement_context_from_final_grid(
             sources=sources, strips=strips, calibration=calibration, result=result,
         ),
         audit_export_context=_v2_audit_export_context(
@@ -949,6 +1044,228 @@ def render_cuda_c4_raft_rgbd_layered_mesh_v2(
             include_adjacent_corridors=True,
         ),
     )
+
+
+def render_cuda_c9_positive_jacobian_line_mesh_v2(
+    *,
+    sources: Sequence[RGBDFrame], camera_to_world: Sequence[np.ndarray], calibration: CameraIntrinsics,
+    pushbroom_config: Mapping[str, object], selected_motions: Sequence[object],
+    motion_pixels_to_full_resolution: float, c1_config: Mapping[str, object] | None = None,
+    cuda_device: int = 0, long_line_minimum_length_px: int = 32,
+) -> V2CudaStripRender:
+    """Run C9's real-source C4 chain with automatic long-line CTF mesh."""
+
+    if len(sources) != len(camera_to_world) or len(sources) < 2:
+        raise VideoV2RouteError("v2 CUDA C9 route needs at least two aligned real sources and poses")
+    resolved_c1_config = _c1_config_from_mapping(c1_config)
+    settings = CalibratedRGBPushbroomConfig.from_mapping(pushbroom_config)
+    settings = CalibratedRGBPushbroomConfig.from_mapping({**settings.__dict__, "max_pose_count": None})
+    scale = estimate_rgb_motion_pixels_per_mm(sources, camera_to_world, calibration, settings, rgb_motions=selected_motions, motion_pixels_to_full_resolution=motion_pixels_to_full_resolution)
+    layout = build_calibrated_rgb_pushbroom_layout([frame.frame_id for frame in sources], camera_to_world, calibration, scale, settings)
+    if layout.redundant_pose_node_suppression:
+        raise VideoV2RouteError("C9 CUDA requires every selected real source to retain a non-empty owner strip")
+    model_id = "torchvision_raft_small_C_T_V2"
+    expected_sha256 = "01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27"
+    try:
+        locks = verify_candidate_models({model_id: expected_sha256})
+        if len(locks) != 1 or locks[0].model_id != model_id:
+            raise VideoV2RouteError("C9 RAFT-small model lock is absent or ambiguous")
+        raft_runtime = TorchvisionRAFTSmallRuntime(RAFTSmallRuntimeConfig(weights_path=locks[0].path, weights_sha256=locks[0].sha256, cuda_device=int(cuda_device)))
+        strips = build_cuda_strips_from_pushbroom_layout(layout, calibration_width=calibration.width, calibration_cx=calibration.cx)
+        decoded = tuple(_decode_real_source(frame, calibration, pose) for frame, pose in zip(sources, camera_to_world, strict=True))
+        plans = tuple(PairPlan(left_frame_id=int(left.frame_id), right_frame_id=int(right.frame_id), risk_level=1, flow_backend="raft_small", use_raft_backward=True, use_depth_mesh=True, use_open3d=True, object_lock_required=False, seam_mode="curved_hard_owner", blend_mode="none") for left, right in zip(sources[:-1], sources[1:], strict=True))
+        algorithm = TorchCudaC9PositiveJacobianLinePreservingLayeredMeshAlgorithm(
+            sources=decoded, strips=strips, output_height=calibration.height, output_width=layout.canvas_width,
+            calibration={"fx": calibration.fx, "fy": calibration.fy, "cx": calibration.cx, "cy": calibration.cy, "distortion": calibration.distortion},
+            runtime_config=VideoGpuRuntimeConfig(cuda_mode="required", cuda_device=int(cuda_device), maximum_resident_frames=2),
+            raft_runtime=raft_runtime, c1_config=resolved_c1_config, long_line_minimum_length_px=int(long_line_minimum_length_px),
+        )
+        prepared = algorithm.prepare(session=None, online_state=None, context={"pair_plans": plans})
+        result = algorithm.render(prepared)
+    except (VideoAlgorithmContractError, ValueError) as exc:
+        raise VideoV2RouteError(str(exc)) from exc
+    metadata: dict[str, object] = {
+        **result.algorithm_audit, "layout": layout.as_dict(), "rgb_motion_scale": scale.as_dict(),
+        "manual_measurement_annotations": {"renderer_input": False, "post_publication_evaluation_only": True, "protection_input": "aligned_depth_only"},
+        "quality_metrics": _v2_quality_metrics(result, cuda_c9_positive_jacobian_line_mesh_route=True),
+        "measurement_projection": "not_available_for_cuda_c9",
+    }
+    return V2CudaStripRender(
+        panorama=np.ascontiguousarray(result.panorama_bgr), owner_frame_id=np.ascontiguousarray(result.owner_frame_id), metadata=metadata,
+        post_publication_measurement_context=_post_publication_measurement_context_if_c1_geometry_is_exact(sources=sources, strips=strips, calibration=calibration, result=result),
+        audit_export_context=_v2_audit_export_context(sources=sources, strips=strips, calibration=calibration, result=result, include_adjacent_corridors=True),
+    )
+
+
+def render_cuda_c10_depth_conditioned_layout_v2(
+    *,
+    sources: Sequence[RGBDFrame], camera_to_world: Sequence[np.ndarray],
+    calibration: CameraIntrinsics, pushbroom_config: Mapping[str, object],
+    selected_motions: Sequence[object], motion_pixels_to_full_resolution: float,
+    c1_config: Mapping[str, object] | None = None, cuda_device: int = 0,
+) -> V2CudaStripRender:
+    """Execute the C10 C1+C3+C4 chain with three real-depth layout grids."""
+
+    if len(sources) != len(camera_to_world) or len(sources) < 2:
+        raise VideoV2RouteError("v2 CUDA C10 route needs at least two aligned real sources and poses")
+    resolved_c1_config = _c1_config_from_mapping(c1_config)
+    settings = CalibratedRGBPushbroomConfig.from_mapping(pushbroom_config)
+    settings = CalibratedRGBPushbroomConfig.from_mapping({**settings.__dict__, "max_pose_count": None})
+    scale = estimate_rgb_motion_pixels_per_mm(
+        sources, camera_to_world, calibration, settings, rgb_motions=selected_motions,
+        motion_pixels_to_full_resolution=motion_pixels_to_full_resolution,
+    )
+    layout = build_calibrated_rgb_pushbroom_layout(
+        [frame.frame_id for frame in sources], camera_to_world, calibration, scale, settings
+    )
+    if layout.redundant_pose_node_suppression:
+        raise VideoV2RouteError("C10 CUDA requires every selected real source to retain a non-empty owner strip")
+    model_id = "torchvision_raft_small_C_T_V2"
+    expected_sha256 = "01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27"
+    try:
+        locks = verify_candidate_models({model_id: expected_sha256})
+        if len(locks) != 1 or locks[0].model_id != model_id:
+            raise VideoV2RouteError("C10 RAFT-small model lock is absent or ambiguous")
+        raft_runtime = TorchvisionRAFTSmallRuntime(
+            RAFTSmallRuntimeConfig(weights_path=locks[0].path, weights_sha256=locks[0].sha256, cuda_device=int(cuda_device))
+        )
+        strips = build_cuda_strips_from_pushbroom_layout(layout, calibration_width=calibration.width, calibration_cx=calibration.cx)
+        decoded = tuple(_decode_real_source(frame, calibration, pose) for frame, pose in zip(sources, camera_to_world, strict=True))
+        plans = tuple(PairPlan(
+            left_frame_id=int(left.frame_id), right_frame_id=int(right.frame_id), risk_level=1,
+            flow_backend="raft_small", use_raft_backward=True, use_depth_mesh=True, use_open3d=True,
+            object_lock_required=False, seam_mode="curved_hard_owner", blend_mode="none",
+        ) for left, right in zip(sources[:-1], sources[1:], strict=True))
+        algorithm = TorchCudaC10DepthConditionedLayoutAlgorithm(
+            sources=decoded, strips=strips, output_height=calibration.height, output_width=layout.canvas_width,
+            calibration={"fx": calibration.fx, "fy": calibration.fy, "cx": calibration.cx, "cy": calibration.cy, "distortion": calibration.distortion},
+            runtime_config=VideoGpuRuntimeConfig(cuda_mode="required", cuda_device=int(cuda_device), maximum_resident_frames=2),
+            raft_runtime=raft_runtime, c1_config=resolved_c1_config,
+        )
+        prepared = algorithm.prepare(session=None, online_state=None, context={"pair_plans": plans})
+        result = algorithm.render(prepared)
+    except (VideoAlgorithmContractError, ValueError) as exc:
+        raise VideoV2RouteError(str(exc)) from exc
+    metadata: dict[str, object] = {
+        **result.algorithm_audit, "layout": layout.as_dict(), "rgb_motion_scale": scale.as_dict(),
+        "manual_measurement_annotations": {"renderer_input": False, "post_publication_evaluation_only": True, "protection_input": "aligned_depth_only"},
+        "quality_metrics": _v2_quality_metrics(result, cuda_c10_depth_conditioned_layout_route=True),
+        "measurement_projection": "v2_post_publication_final_grid_context",
+    }
+    return V2CudaStripRender(
+        panorama=np.ascontiguousarray(result.panorama_bgr), owner_frame_id=np.ascontiguousarray(result.owner_frame_id), metadata=metadata,
+        post_publication_measurement_context=_post_publication_measurement_context_from_final_grid(sources=sources, strips=strips, calibration=calibration, result=result),
+        audit_export_context=_v2_audit_export_context(sources=sources, strips=strips, calibration=calibration, result=result, include_adjacent_corridors=True),
+    )
+
+
+def render_cuda_c12_joint_owner_final_grid_v2(
+    *, sources: Sequence[RGBDFrame], camera_to_world: Sequence[np.ndarray],
+    calibration: CameraIntrinsics, pushbroom_config: Mapping[str, object],
+    selected_motions: Sequence[object], motion_pixels_to_full_resolution: float,
+    c1_config: Mapping[str, object] | None = None, cuda_device: int = 0,
+) -> V2CudaStripRender:
+    """Run C12's genuine 5--7 source resident owner/final-grid renderer."""
+
+    if len(sources) != len(camera_to_world) or len(sources) < 5:
+        raise VideoV2RouteError("C12 CUDA requires at least one matching genuine chronological 5--7 source window")
+    resolved_c1_config = _c1_config_from_mapping(c1_config)
+    settings = CalibratedRGBPushbroomConfig.from_mapping(pushbroom_config)
+    settings = CalibratedRGBPushbroomConfig.from_mapping({**settings.__dict__, "max_pose_count": None})
+    scale = estimate_rgb_motion_pixels_per_mm(
+        sources, camera_to_world, calibration, settings, rgb_motions=selected_motions,
+        motion_pixels_to_full_resolution=motion_pixels_to_full_resolution,
+    )
+    layout = build_calibrated_rgb_pushbroom_layout(
+        [frame.frame_id for frame in sources], camera_to_world, calibration, scale, settings
+    )
+    if layout.redundant_pose_node_suppression:
+        raise VideoV2RouteError("C12 CUDA requires every genuine 5--7 source to retain a non-empty owner strip")
+    model_id = "torchvision_raft_small_C_T_V2"
+    expected_sha256 = "01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27"
+    try:
+        locks = verify_candidate_models({model_id: expected_sha256})
+        if len(locks) != 1 or locks[0].model_id != model_id:
+            raise VideoV2RouteError("C12 RAFT-small model lock is absent or ambiguous")
+        raft_runtime = TorchvisionRAFTSmallRuntime(
+            RAFTSmallRuntimeConfig(weights_path=locks[0].path, weights_sha256=locks[0].sha256, cuda_device=int(cuda_device))
+        )
+        strips = build_cuda_strips_from_pushbroom_layout(layout, calibration_width=calibration.width, calibration_cx=calibration.cx)
+        decoded = tuple(_decode_real_source(frame, calibration, pose) for frame, pose in zip(sources, camera_to_world, strict=True))
+        plans = tuple(PairPlan(
+            left_frame_id=int(left.frame_id), right_frame_id=int(right.frame_id), risk_level=1,
+            flow_backend="raft_small", use_raft_backward=True, use_depth_mesh=True, use_open3d=True,
+            object_lock_required=False, seam_mode="curved_hard_owner", blend_mode="none",
+        ) for left, right in zip(sources[:-1], sources[1:], strict=True))
+        algorithm = TorchCudaC12JointOwnerFinalGridAlgorithm(
+            sources=decoded, strips=strips, output_height=calibration.height, output_width=layout.canvas_width,
+            calibration={"fx": calibration.fx, "fy": calibration.fy, "cx": calibration.cx, "cy": calibration.cy, "distortion": calibration.distortion},
+            runtime_config=VideoGpuRuntimeConfig(cuda_mode="required", cuda_device=int(cuda_device), maximum_resident_frames=len(decoded)),
+            raft_runtime=raft_runtime, c1_config=resolved_c1_config,
+        )
+        prepared = algorithm.prepare(session=None, online_state=None, context={"pair_plans": plans})
+        result = algorithm.render(prepared)
+    except (VideoAlgorithmContractError, ValueError) as exc:
+        raise VideoV2RouteError(str(exc)) from exc
+    metadata: dict[str, object] = {
+        **result.algorithm_audit, "layout": layout.as_dict(), "rgb_motion_scale": scale.as_dict(),
+        "manual_measurement_annotations": {"renderer_input": False, "post_publication_evaluation_only": True, "protection_input": "aligned_depth_only"},
+        "quality_metrics": _v2_quality_metrics(result, cuda_c12_joint_owner_final_grid_route=True),
+        "measurement_projection": "v2_post_publication_final_grid_context",
+    }
+    return V2CudaStripRender(
+        panorama=np.ascontiguousarray(result.panorama_bgr), owner_frame_id=np.ascontiguousarray(result.owner_frame_id), metadata=metadata,
+        post_publication_measurement_context=_post_publication_measurement_context_from_final_grid(sources=sources, strips=strips, calibration=calibration, result=result),
+        audit_export_context=_v2_audit_export_context(sources=sources, strips=strips, calibration=calibration, result=result, include_adjacent_corridors=True),
+    )
+
+
+def render_cuda_c11_object_first_foreground_compositor_v2(
+    *, sources: Sequence[RGBDFrame], camera_to_world: Sequence[np.ndarray], calibration: CameraIntrinsics,
+    pushbroom_config: Mapping[str, object], selected_motions: Sequence[object],
+    motion_pixels_to_full_resolution: float, c1_config: Mapping[str, object] | None = None,
+    cuda_device: int = 0, protection_margin_pixels: int = 10,
+) -> V2CudaStripRender:
+    """Execute C10 final-grid background plus C11 real object-owner tracks."""
+
+    if len(sources) != len(camera_to_world) or len(sources) < 2:
+        raise VideoV2RouteError("v2 CUDA C11 route needs at least two aligned real sources and poses")
+    if not isinstance(protection_margin_pixels, int) or not 8 <= protection_margin_pixels <= 12:
+        raise VideoV2RouteError("C11 requires immutable protection_margin_pixels in [8, 12]")
+    resolved_c1_config = _c1_config_from_mapping(c1_config)
+    settings = CalibratedRGBPushbroomConfig.from_mapping(pushbroom_config)
+    settings = CalibratedRGBPushbroomConfig.from_mapping({**settings.__dict__, "max_pose_count": None})
+    scale = estimate_rgb_motion_pixels_per_mm(sources, camera_to_world, calibration, settings, rgb_motions=selected_motions, motion_pixels_to_full_resolution=motion_pixels_to_full_resolution)
+    layout = build_calibrated_rgb_pushbroom_layout([frame.frame_id for frame in sources], camera_to_world, calibration, scale, settings)
+    if layout.redundant_pose_node_suppression:
+        raise VideoV2RouteError("C11 CUDA requires every selected real source to retain a non-empty owner strip")
+    model_id = "torchvision_raft_small_C_T_V2"
+    expected_sha256 = "01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27"
+    try:
+        locks = verify_candidate_models({model_id: expected_sha256})
+        if len(locks) != 1 or locks[0].model_id != model_id:
+            raise VideoV2RouteError("C11 RAFT-small model lock is absent or ambiguous")
+        raft_runtime = TorchvisionRAFTSmallRuntime(RAFTSmallRuntimeConfig(weights_path=locks[0].path, weights_sha256=locks[0].sha256, cuda_device=int(cuda_device)))
+        strips = build_cuda_strips_from_pushbroom_layout(layout, calibration_width=calibration.width, calibration_cx=calibration.cx)
+        decoded = tuple(_decode_real_source(frame, calibration, pose) for frame, pose in zip(sources, camera_to_world, strict=True))
+        plans = tuple(PairPlan(int(left.frame_id), int(right.frame_id), 1, "raft_small", True, True, True, False, "curved_hard_owner", "none") for left, right in zip(sources[:-1], sources[1:], strict=True))
+        algorithm = TorchCudaC11ObjectFirstForegroundCompositorAlgorithm(
+            sources=decoded, strips=strips, output_height=calibration.height, output_width=layout.canvas_width,
+            calibration={"fx": calibration.fx, "fy": calibration.fy, "cx": calibration.cx, "cy": calibration.cy, "distortion": calibration.distortion},
+            runtime_config=VideoGpuRuntimeConfig(cuda_mode="required", cuda_device=int(cuda_device), maximum_resident_frames=2),
+            raft_runtime=raft_runtime, c1_config=resolved_c1_config, protection_margin_pixels=protection_margin_pixels,
+        )
+        prepared = algorithm.prepare(session=None, online_state=None, context={"pair_plans": plans})
+        result = algorithm.render(prepared)
+    except (VideoAlgorithmContractError, ValueError) as exc:
+        raise VideoV2RouteError(str(exc)) from exc
+    metadata: dict[str, object] = {**result.algorithm_audit, "layout": layout.as_dict(), "rgb_motion_scale": scale.as_dict(),
+        "manual_measurement_annotations": {"renderer_input": False, "post_publication_evaluation_only": True},
+        "quality_metrics": _v2_quality_metrics(result, cuda_c11_object_first_foreground_compositor_route=True),
+        "measurement_projection": "v2_post_publication_final_grid_context"}
+    return V2CudaStripRender(panorama=np.ascontiguousarray(result.panorama_bgr), owner_frame_id=np.ascontiguousarray(result.owner_frame_id), metadata=metadata,
+        post_publication_measurement_context=_post_publication_measurement_context_from_final_grid(sources=sources, strips=strips, calibration=calibration, result=result),
+        audit_export_context=_v2_audit_export_context(sources=sources, strips=strips, calibration=calibration, result=result, include_adjacent_corridors=True))
 
 
 def render_cuda_c5_object_lock_v2(
@@ -1234,6 +1551,7 @@ def render_cuda_c8_multilabel_window_v2(
     motion_pixels_to_full_resolution: float,
     c1_config: Mapping[str, object] | None = None,
     cuda_device: int = 0,
+    _algorithm_type: type = TorchCudaC8MultilabelWindowAlgorithm,
 ) -> V2CudaStripRender:
     """Execute C7/C6 and bounded chronological real-owner C8 recomposition."""
 
@@ -1277,7 +1595,7 @@ def render_cuda_c8_multilabel_window_v2(
         # selected real sources through final recomposition.  This is derived
         # from the actual sequence, not a fixed resampling cap: evicting an
         # old source would require an impermissible second H2D upload.
-        algorithm = TorchCudaC8MultilabelWindowAlgorithm(
+        algorithm = _algorithm_type(
             sources=decoded, strips=strips, output_height=calibration.height, output_width=layout.canvas_width,
             calibration={
                 "fx": calibration.fx, "fy": calibration.fy, "cx": calibration.cx,
@@ -1314,6 +1632,36 @@ def render_cuda_c8_multilabel_window_v2(
     )
 
 
+def render_cuda_c13_robust_photometric_bundle_v2(
+    *,
+    sources: Sequence[RGBDFrame],
+    camera_to_world: Sequence[np.ndarray],
+    calibration: CameraIntrinsics,
+    pushbroom_config: Mapping[str, object],
+    selected_motions: Sequence[object],
+    motion_pixels_to_full_resolution: float,
+    c1_config: Mapping[str, object] | None = None,
+    cuda_device: int = 0,
+) -> V2CudaStripRender:
+    """Run C13's actual C8 lineage plus robust pre-seam field, not C8 alone."""
+
+    result = render_cuda_c8_multilabel_window_v2(
+        sources=sources, camera_to_world=camera_to_world, calibration=calibration,
+        pushbroom_config=pushbroom_config, selected_motions=selected_motions,
+        motion_pixels_to_full_resolution=motion_pixels_to_full_resolution,
+        c1_config=c1_config, cuda_device=cuda_device,
+        _algorithm_type=TorchCudaC13RobustPhotometricBundleAlgorithm,
+    )
+    # The immutable C13 component is present only if the C13 renderer made
+    # final-output audit evidence.  Do not paper over a C13 identity/reject
+    # with the C8 route label.
+    execution = result.metadata.get("component_execution")
+    if not isinstance(execution, dict) or "c13_robust_photometric_bundle" not in execution:
+        raise VideoV2RouteError("C13 CUDA renderer omitted robust photometric bundle execution evidence")
+    result.metadata["cuda_c13_robust_photometric_bundle_route"] = True
+    return result
+
+
 __all__ = [
     "V2CudaStripRender",
     "V2PostPublicationMeasurementContext",
@@ -1324,15 +1672,25 @@ __all__ = [
     "is_cuda_c2_dis_residual_mesh_implementation",
     "is_cuda_c3_raft_residual_mesh_implementation",
     "is_cuda_c4_raft_rgbd_layered_mesh_implementation",
+    "is_cuda_c9_positive_jacobian_line_mesh_implementation",
     "is_cuda_c5_object_lock_implementation",
     "is_cuda_c6_safe_multiband_implementation",
     "is_cuda_c7_photometric_graph_implementation",
     "is_cuda_c8_multilabel_window_implementation",
+    "is_cuda_c13_robust_photometric_bundle_implementation",
+    "is_cuda_c10_depth_conditioned_layout_implementation",
+    "is_cuda_c11_object_first_foreground_compositor_implementation",
+    "is_cuda_c12_joint_owner_final_grid_implementation",
+    "render_cuda_c10_depth_conditioned_layout_v2",
+    "render_cuda_c11_object_first_foreground_compositor_v2",
+    "render_cuda_c12_joint_owner_final_grid_v2",
     "render_cuda_c8_multilabel_window_v2",
+    "render_cuda_c13_robust_photometric_bundle_v2",
     "render_cuda_c7_photometric_graph_v2",
     "render_cuda_c6_safe_multiband_v2",
     "render_cuda_c5_object_lock_v2",
     "render_cuda_c4_raft_rgbd_layered_mesh_v2",
+    "render_cuda_c9_positive_jacobian_line_mesh_v2",
     "render_cuda_c3_raft_residual_mesh_v2",
     "render_cuda_c2_dis_residual_mesh_v2",
     "render_cuda_c1_constrained_owner_v2",

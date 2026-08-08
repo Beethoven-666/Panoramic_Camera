@@ -18,6 +18,18 @@ from .video_split import source_progress_by_frame
 
 
 ANNOTATION_SCHEMA = "gemini305-video-source-annotations/v1"
+ANNOTATION_SCHEMA_V2 = "gemini305-video-source-annotations/v2"
+SUPPORTED_ANNOTATION_SCHEMAS = frozenset((ANNOTATION_SCHEMA, ANNOTATION_SCHEMA_V2))
+
+# These labels describe how a fixed *measurement* is evaluated.  They never
+# select render sources, change an owner, or otherwise feed back into a video
+# renderer.  v1 intentionally has no role field and keeps its historical
+# compact-object semantics.
+ANNOTATION_ROLES_BY_KIND = {
+    "objects": frozenset(("compact_foreground_single_owner", "extended_background_structure")),
+    "lines": frozenset(("long_line",)),
+    "safe_background": frozenset(("safe_background",)),
+}
 
 
 class VideoAnnotationError(ValueError):
@@ -30,7 +42,7 @@ def load_source_annotations(path: str | Path) -> dict[str, Any]:
         data = json.loads(annotation_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise VideoAnnotationError(f"Invalid annotation JSON: {annotation_path}") from exc
-    if not isinstance(data, dict) or data.get("schema") != ANNOTATION_SCHEMA:
+    if not isinstance(data, dict) or data.get("schema") not in SUPPORTED_ANNOTATION_SCHEMAS:
         raise VideoAnnotationError("Unsupported source annotation schema")
     frames = data.get("source_frames")
     if not isinstance(frames, Mapping) or not frames:
@@ -50,11 +62,11 @@ def load_source_annotations(path: str | Path) -> dict[str, Any]:
         for entry in entries:
             if not isinstance(entry, Mapping):
                 raise VideoAnnotationError(f"{group} entries must be mappings")
-            _validate_entry(entry, frames, group)
+            _validate_entry(entry, frames, group, schema=str(data["schema"]))
     return data
 
 
-def _validate_entry(entry: Mapping[str, Any], frames: Mapping[str, Any], group: str) -> None:
+def _validate_entry(entry: Mapping[str, Any], frames: Mapping[str, Any], group: str, *, schema: str) -> None:
     label = entry.get("id")
     if not isinstance(label, str) or not label:
         raise VideoAnnotationError(f"{group} entry requires id")
@@ -72,6 +84,15 @@ def _validate_entry(entry: Mapping[str, Any], frames: Mapping[str, Any], group: 
         raise VideoAnnotationError(
             f"{group} entry {label!r} measurement_group must be a non-empty string when present"
         )
+    role = entry.get("role")
+    if schema == ANNOTATION_SCHEMA_V2:
+        if not isinstance(role, str) or role not in ANNOTATION_ROLES_BY_KIND[group]:
+            allowed = ", ".join(sorted(ANNOTATION_ROLES_BY_KIND[group]))
+            raise VideoAnnotationError(
+                f"{group} entry {label!r} requires one of the v2 roles: {allowed}"
+            )
+    elif role is not None:
+        raise VideoAnnotationError("v1 source annotations must not declare v2 measurement roles")
     if group == "lines":
         points = entry.get("points")
         if not isinstance(points, list) or len(points) != 2:
@@ -241,6 +262,9 @@ def write_annotation_preview(
 
 __all__ = [
     "ANNOTATION_SCHEMA",
+    "ANNOTATION_SCHEMA_V2",
+    "SUPPORTED_ANNOTATION_SCHEMAS",
+    "ANNOTATION_ROLES_BY_KIND",
     "VideoAnnotationError",
     "load_source_annotations",
     "audit_annotation_source_progress",

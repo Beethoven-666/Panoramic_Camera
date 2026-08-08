@@ -23,7 +23,7 @@ from .video_algorithm import (
     load_algorithm_config,
 )
 from .video_algorithm_lock import VIDEO_ALGORITHM_LOCK_SCHEMA, verify_algorithm_lock
-from .video_algorithm_selection import _measurement_evidence_reasons
+from .video_algorithm_selection import SELECTION_SCHEMA, _measurement_evidence_reasons, _visual_hard_gate_reasons
 
 
 HOLDOUT_STATE_SCHEMA = "gemini305-video-first-holdout-state/v1"
@@ -73,7 +73,7 @@ def _atomic_write_json_new(path: Path, payload: Mapping[str, object]) -> None:
 
 
 def _selection_algorithm(selection_path: Path, selection: Mapping[str, object]) -> str:
-    if selection.get("schema") != "gemini305-video-algorithm-selection/v1":
+    if selection.get("schema") not in {"gemini305-video-algorithm-selection/v1", SELECTION_SCHEMA}:
         raise VideoProductionFreezeError("Validation selection schema is invalid")
     if selection.get("selection_stage") != "validation":
         raise VideoProductionFreezeError("Production freeze requires a validation selection")
@@ -114,7 +114,7 @@ def _validate_holdout_report(report_path: Path, report: Mapping[str, object], *,
         )
     if report.get("evaluation_scope") != "holdout_only":
         raise VideoProductionFreezeError("First holdout evidence must be scoped exactly to holdout_only")
-    reasons = _measurement_evidence_reasons(report_path)
+    reasons = _measurement_evidence_reasons(report_path) + _visual_hard_gate_reasons(report_path)
     if reasons:
         raise VideoProductionFreezeError(
             "Holdout report has ineligible measurement evidence: " + ", ".join(reasons)

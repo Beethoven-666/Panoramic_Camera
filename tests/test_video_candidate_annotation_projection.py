@@ -4,8 +4,10 @@ import numpy as np
 
 from panorama_demo.video_candidate_annotation_projection import (
     CandidateInverseMapSource,
+    apply_final_grid_updates,
     build_candidate_annotation_projection,
     build_v2_c1_calibrated_inverse_sources,
+    build_v2_full_support_measurement_sources,
     write_candidate_annotation_projection_sidecar,
 )
 from panorama_demo.video_visual_renderer_v2 import CudaSourceStrip
@@ -25,7 +27,7 @@ def _annotations() -> dict[str, object]:
     }
 
 
-def test_candidate_projection_uses_inverse_maps_and_final_owner_without_rgb(tmp_path):
+def test_candidate_projection_uses_inverse_maps_without_owner_filtering(tmp_path):
     height, width = 8, 10
     source = CandidateInverseMapSource(
         frame_id=7,
@@ -36,7 +38,7 @@ def test_candidate_projection_uses_inverse_maps_and_final_owner_without_rgb(tmp_
         raw_shape=(height, width),
     )
     owner = np.full((height, width), 7, dtype=np.int32)
-    owner[2:6, 2:5] = 9  # final provenance must remove only part of the raw polygon.
+    owner[2:6, 2:5] = 9  # Must not erase a source measurement projection.
     annotations = _annotations()
     annotations["objects"][0]["measurement_group"] = "box_pair"  # type: ignore[index]
     annotations["lines"][0]["measurement_group"] = "edge_pair"  # type: ignore[index]
@@ -46,10 +48,10 @@ def test_candidate_projection_uses_inverse_maps_and_final_owner_without_rgb(tmp_
         crop_xywh=(2, 0, width, height), horizontal_flip=False,
     )
     assert payload["measurement_only"] is True
-    assert payload["projection_method"] == "candidate_calibrated_inverse_map_owner_filtered"
+    assert payload["projection_method"] == "candidate_calibrated_inverse_map_owner_independent_consensus"
     assert payload["objects"][0]["measurement_group"] == "box_pair"
-    assert masks["objects__box"].dtype == bool
-    assert not np.any(masks["objects__box"][2:6, 2:5])
+    assert masks["objects__consensus__box_pair"].dtype == bool
+    assert np.any(masks["objects__consensus__box_pair"][2:6, 2:5])
     projection_path, mask_path = write_candidate_annotation_projection_sidecar(
         tmp_path / "candidate_annotation_projection.json", payload, masks
     )
@@ -59,7 +61,7 @@ def test_candidate_projection_uses_inverse_maps_and_final_owner_without_rgb(tmp_
     )
     panorama = np.full((height, width, 3), 20, dtype=np.uint8)
     evaluation = evaluate_offline_visual_annotations(panorama, owner, annotations=annotations, projection=loaded)
-    assert evaluation["object_integrity"]["box_pair"]["valid_pixel_count"] == int(masks["objects__box"].sum())
+    assert evaluation["object_integrity"]["box_pair"]["valid_pixel_count"] == int(masks["objects__consensus__box_pair"].sum())
 
 
 def test_candidate_projection_omits_unavailable_annotated_source():
@@ -74,6 +76,40 @@ def test_candidate_projection_omits_unavailable_annotated_source():
     )
     assert not masks
     assert {entry["reason"] for entry in payload["omitted"]} == {"annotated_source_not_a_candidate_render_source"}
+
+
+def test_final_grid_update_changes_only_the_actual_mesh_output_domain_without_owner_filtering():
+    """C2--C4 evidence must use final inverse samples, never nominal C1 maps."""
+
+    source = CandidateInverseMapSource(
+        frame_id=7,
+        canvas_x0=10,
+        source_map_x=np.tile(np.arange(6, dtype=np.float64), (4, 1)),
+        source_map_y=np.tile(np.arange(4, dtype=np.float64)[:, None], (1, 6)),
+        valid_mask=np.ones((4, 6), dtype=bool),
+        raw_shape=(4, 6),
+    )
+    normalized = np.zeros((4, 3, 2), dtype=np.float32)
+    normalized[..., 0] = -0.2  # raw x=2 for a six-pixel source
+    normalized[..., 1] = -1.0
+    applied = np.zeros((4, 3), dtype=bool)
+    applied[1, 1] = True
+    result = apply_final_grid_updates(
+        [source],
+        [{
+            "frame_id": 7,
+            "canvas_x0": 12,
+            "normalized_grid_xy": normalized,
+            "applied_mask": applied,
+            "source_shape": [4, 6],
+        }],
+    )
+    updated = result[0]
+    assert np.isclose(updated.source_map_x[1, 3], 2.0)
+    assert np.isclose(updated.source_map_y[1, 3], 0.0)
+    # An unapplied mesh cell retains the calibrated C1 map exactly.
+    assert updated.source_map_x[1, 2] == source.source_map_x[1, 2]
+    assert bool(updated.valid_mask[1, 3])
 
 
 def test_v2_c1_projection_uses_actual_c1_windows_and_calibrated_grid_not_owner_geometry():
@@ -119,9 +155,145 @@ def test_v2_c1_projection_uses_actual_c1_windows_and_calibrated_grid_not_owner_g
         crop_xywh=(0, 0, canvas_width, height),
         horizontal_flip=False,
     )
-    assert payload["projection_method"] == "candidate_calibrated_inverse_map_owner_filtered"
-    # Source 8's raw polygon projects using the C1 grid; final ownership
-    # removes the one explicitly foreign-provenance column.
-    assert masks["objects__box"].shape == owner.shape
-    assert not np.any(masks["objects__box"][2:6, 22])
-    assert np.any(masks["objects__box"][:, 20:25])
+    assert payload["projection_method"] == "candidate_calibrated_inverse_map_owner_independent_consensus"
+    # Source 8's raw polygon projects using the C1 grid. Foreign provenance
+    # remains measurable; it is precisely what the object gate later audits.
+    assert masks["objects__consensus__box"].shape == owner.shape
+    assert np.any(masks["objects__consensus__box"][2:6, 22])
+    assert np.any(masks["objects__consensus__box"][:, 20:25])
+
+
+def test_v2_full_support_projection_keeps_fan_and_cable_outside_final_owner_strip():
+    """M2 evidence spans true source support, never just the final owner strip."""
+
+    height, canvas_width = 12, 20
+    strips = (
+        CudaSourceStrip(7, 0, 0, 10, 10.0),
+        CudaSourceStrip(8, 10, 10, 10, 10.0),
+    )
+    maps = build_v2_full_support_measurement_sources(
+        strips=strips,
+        source_shapes={7: (height, 30), 8: (height, 30)},
+        canvas_shape=(height, canvas_width),
+        calibration={"fx": 100.0, "fy": 100.0, "cx": 10.0, "cy": 5.5, "distortion": ()},
+        annotation_frame_ids=(8,),
+    )
+    assert len(maps) == 1
+    source = maps[0]
+    assert source.canvas_x0 == 0
+    assert source.source_map_x.shape == (height, canvas_width)
+    # Source 8 owns [10, 20), but its calibrated full support maps raw x=5
+    # to panorama x=5.  A later owner decision must not erase this evidence.
+    assert source.source_map_x[6, 5] == 5.0
+    annotations = {
+        "objects": [{"id": "fan", "frame_id": 8, "polygon": [[4, 3], [7, 3], [7, 8], [4, 8]]}],
+        "lines": [{"id": "cable", "frame_id": 8, "points": [[3, 2], [8, 9]]}],
+        "safe_background": [],
+    }
+    owner = np.full((height, canvas_width), 7, dtype=np.int32)
+    owner[:, 10:] = 8
+    payload, masks = build_candidate_annotation_projection(
+        annotations,
+        sources=maps,
+        final_owner_frame_id=owner,
+        crop_xywh=(0, 0, canvas_width, height),
+        horizontal_flip=False,
+    )
+    assert any(item["id"] == "fan" for item in payload["objects"])
+    assert any(item["id"] == "cable" for item in payload["lines"])
+    assert np.any(masks["objects__consensus__fan"][:, :10])
+    group = next(item for item in payload["measurement_groups"] if item["measurement_group"] == "fan")
+    assert group["consensus_area_pixels"] > 0
+    assert group["source_projection_geometry"][0]["area_pixels"] > 0
+    assert group["source_projection_geometry"][0]["centroid_xy"][0] < 10.0
+
+
+def test_v2_full_support_applies_final_grid_update_outside_owner_strip():
+    """A final local grid delta remains authoritative outside an owner interval."""
+
+    height, canvas_width = 8, 20
+    maps = build_v2_full_support_measurement_sources(
+        strips=(CudaSourceStrip(7, 0, 0, 10, 10.0), CudaSourceStrip(8, 10, 10, 10, 10.0)),
+        source_shapes={7: (height, 30), 8: (height, 30)},
+        canvas_shape=(height, canvas_width),
+        calibration={"fx": 100.0, "fy": 100.0, "cx": 10.0, "cy": 3.5, "distortion": ()},
+        annotation_frame_ids=(8,),
+        final_grid_updates=({
+            "frame_id": 8,
+            "canvas_x0": 3,
+            "normalized_grid_xy": np.zeros((height, 2, 2), dtype=np.float32),
+            "applied_mask": np.array([[False, False], [False, True], [False, False], [False, False], [False, False], [False, False], [False, False], [False, False]]),
+            "source_shape": [height, 30],
+        },),
+    )
+    # normalized x/y=0 maps to the middle of the 30x8 raw source. The update
+    # lies at canvas x=4, well outside source 8's [10, 20) owner strip.
+    assert np.isclose(maps[0].source_map_x[1, 4], 14.5)
+    assert np.isclose(maps[0].source_map_y[1, 4], 3.5)
+
+
+def test_v2_projection_consensus_survives_changed_owner_and_records_source_masks(tmp_path):
+    """A two-source object/background measurement is independent of ownership."""
+
+    height, width = 16, 24
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    first = CandidateInverseMapSource(7, 0, xx, yy, np.ones_like(xx, dtype=bool), (height, width))
+    # The second source's physical object is translated two raw pixels; its
+    # final inverse grid correctly lands it on the same panorama structure.
+    second = CandidateInverseMapSource(8, 0, xx - 2.0, yy, np.ones_like(xx, dtype=bool), (height, width))
+    annotations = {
+        "objects": [
+            {"id": "box_7", "frame_id": 7, "measurement_group": "box", "polygon": [[6, 4], [11, 4], [11, 10], [6, 10]]},
+            {"id": "box_8", "frame_id": 8, "measurement_group": "box", "polygon": [[4, 4], [9, 4], [9, 10], [4, 10]]},
+        ],
+        "lines": [],
+        "safe_background": [
+            {"id": "wall_7", "frame_id": 7, "measurement_group": "wall", "polygon": [[1, 1], [4, 1], [4, 14], [1, 14]]},
+            {"id": "wall_8", "frame_id": 8, "measurement_group": "wall", "polygon": [[-1, 1], [2, 1], [2, 14], [-1, 14]]},
+        ],
+    }
+    owner = np.full((height, width), 99, dtype=np.int32)  # changed after rendering
+    payload, masks = build_candidate_annotation_projection(
+        annotations, sources=(first, second), final_owner_frame_id=owner,
+        crop_xywh=(0, 0, width, height), horizontal_flip=False,
+    )
+    assert {item["measurement_group"] for item in payload["measurement_groups"]} == {"box", "wall"}
+    assert all(item["measurement_state"] == "evaluated" for item in payload["measurement_groups"])
+    assert "objects__source_projected__box_7" in masks
+    assert "objects__source_projected__box_8" in masks
+    assert np.any(masks["objects__consensus__box"])
+    projection_path, _ = write_candidate_annotation_projection_sidecar(tmp_path / "projection.json", payload, masks)
+    loaded = load_panorama_annotation_projection(projection_path, annotations={"schema": "gemini305-video-source-annotations/v1", "source_frames": {}, **annotations}, panorama_shape=(height, width))
+    # The object is evaluated against the actual owner map rather than
+    # disappearing merely because its original source no longer owns pixels.
+    result = evaluate_offline_visual_annotations(np.zeros((height, width, 3), np.uint8), owner, annotations={"schema": "gemini305-video-source-annotations/v1", "source_frames": {}, **annotations}, projection=loaded)
+    assert result["object_integrity"]["box"]["owner_count"] == 1
+
+
+def test_v2_projection_rejects_inconsistent_pair_and_dense_line_preserves_curvature(tmp_path):
+    height, width = 24, 32
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    curved = CandidateInverseMapSource(7, 0, xx, yy + 1.5 * np.sin(xx / 3.0), np.ones_like(xx, dtype=bool), (height, width))
+    far = CandidateInverseMapSource(8, 0, xx - 10.0, yy, np.ones_like(xx, dtype=bool), (height, width))
+    annotations = {
+        "objects": [
+            {"id": "far_7", "frame_id": 7, "measurement_group": "far", "polygon": [[8, 4], [14, 4], [14, 10], [8, 10]]},
+            {"id": "far_8", "frame_id": 8, "measurement_group": "far", "polygon": [[8, 4], [14, 4], [14, 10], [8, 10]]},
+        ],
+        "lines": [{"id": "curve", "frame_id": 7, "points": [[3, 12], [27, 12]]}],
+        "safe_background": [],
+    }
+    payload, masks = build_candidate_annotation_projection(
+        annotations, sources=(curved, far), final_owner_frame_id=np.zeros((height, width), dtype=np.int32),
+        crop_xywh=(0, 0, width, height), horizontal_flip=False,
+    )
+    far_group = next(item for item in payload["measurement_groups"] if item["measurement_group"] == "far")
+    assert far_group["measurement_state"] == "projection_inconsistent"
+    line = payload["lines"][0]["points"]
+    assert len(line) > 8
+    assert len({round(point[1], 2) for point in line}) > 2
+    projection_path, _ = write_candidate_annotation_projection_sidecar(tmp_path / "projection.json", payload, masks)
+    source_annotations = {"schema": "gemini305-video-source-annotations/v1", "source_frames": {}, **annotations}
+    loaded = load_panorama_annotation_projection(projection_path, annotations=source_annotations, panorama_shape=(height, width))
+    result = evaluate_offline_visual_annotations(np.zeros((height, width, 3), np.uint8), np.zeros((height, width), dtype=np.int32), annotations=source_annotations, projection=loaded)
+    assert result["object_integrity"]["far"]["reason"] == "projection_inconsistent"

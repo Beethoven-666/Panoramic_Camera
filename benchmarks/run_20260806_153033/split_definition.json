@@ -1,0 +1,30 @@
+{
+  "schema": "gemini305-video-split/v1",
+  "progress_coordinate": "cumulative_reliable_horizontal_motion",
+  "development": [
+    [
+      0.0,
+      0.3
+    ],
+    [
+      0.48,
+      0.68
+    ]
+  ],
+  "validation": [
+    [
+      0.3,
+      0.48
+    ],
+    [
+      0.68,
+      0.84
+    ]
+  ],
+  "holdout": [
+    [
+      0.84,
+      1.0
+    ]
+  ]
+}

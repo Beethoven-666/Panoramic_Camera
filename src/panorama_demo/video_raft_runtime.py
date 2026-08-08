@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -110,6 +111,8 @@ class RAFTSmallFlowAudit:
     finite: bool
     model: str = "torchvision_raft_small"
     downloaded: bool = False
+    inference_wall_seconds: float = 0.0
+    inference_device_seconds: float | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -125,6 +128,8 @@ class RAFTSmallFlowAudit:
             "output_shape": [self.output_height, self.output_width],
             "flow_finite": self.finite,
             "downloaded": self.downloaded,
+            "inference_wall_seconds": self.inference_wall_seconds,
+            "inference_device_seconds": self.inference_device_seconds,
         }
 
 
@@ -356,6 +361,8 @@ class TorchvisionRAFTSmallRuntime:
         padded_height, padded_width = _padded_extent(height), _padded_extent(width)
         source_tensor = self._frame_tensor(source, padded_height, padded_width)
         target_tensor = self._frame_tensor(target, padded_height, padded_width)
+        started = time.perf_counter()
+        device_elapsed: float | None = None
         try:
             inference_context = self._torch.inference_mode()
             autocast_context = (
@@ -363,9 +370,18 @@ class TorchvisionRAFTSmallRuntime:
                 if self._precision == "float16"
                 else nullcontext()
             )
+            start_event = end_event = None
+            if self._precision == "float16":
+                start_event = self._torch.cuda.Event(enable_timing=True)
+                end_event = self._torch.cuda.Event(enable_timing=True)
+                start_event.record()
             with inference_context, autocast_context:
                 output = self._model(source_tensor, target_tensor)
                 prediction = output[-1] if isinstance(output, (tuple, list)) else output
+            if end_event is not None and start_event is not None:
+                end_event.record()
+                end_event.synchronize()
+                device_elapsed = float(start_event.elapsed_time(end_event)) / 1000.0
             flow = prediction.detach().float().cpu().numpy()
         except Exception as exc:
             raise RAFTSmallRuntimeError("RAFT-small inference failed for the adjacent source pair") from exc
@@ -391,6 +407,8 @@ class TorchvisionRAFTSmallRuntime:
             output_height=height,
             output_width=width,
             finite=True,
+            inference_wall_seconds=time.perf_counter() - started,
+            inference_device_seconds=device_elapsed,
         )
         return RAFTSmallFlowResult(flow_xy=flow_xy, audit=audit)
 

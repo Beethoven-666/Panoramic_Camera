@@ -4,11 +4,13 @@ candidate_id: C2_dis_rgb_mesh
 parent_candidate_id: C1_constrained_owner
 algorithm_id: C2_dis_rgb_mesh
 implementation_id: video_visual_renderer_v2
-source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
 model_sha256: {}
 allow_baseline_fallback: false
 changed_components: [dis_rgb_residual_mesh]
+required_evidence_components: [orb_anchor_trajectory]
+required_output_components: [c1_constrained_owner, c2_dis_mesh]
+replaces_output_components: []
 components:
   residual_mesh: {enabled: true, flow_backend: dis, depth_layers: false}
   object_lock: {enabled: false}
-config_sha256: 8878338bfd048427cb766fb274df878078ea8bb37a76ab7912fef7c433b87cba
+config_sha256: 1f0b6bd6254eab7b7df1bc34e85039e579ab1938ce6d0a8762d9dac52b149c84

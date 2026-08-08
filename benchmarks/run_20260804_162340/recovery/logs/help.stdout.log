@@ -1,0 +1,33 @@
+usage: -c [-h] --output OUTPUT --algorithm {baseline,candidate}
+          [--candidate-config CANDIDATE_CONFIG]
+          [--report-level {summary,full}]
+          [--artifact-level {minimal,provenance,audit}]
+          [--maximum-post-seconds MAXIMUM_POST_SECONDS] [--defer-3d]
+          [--trajectory-cache TRAJECTORY_CACHE] [--config CONFIG]
+          [--progress-range START END] [--split {development,validation}]
+          input
+
+Run a locked video baseline or candidate experiment
+
+positional arguments:
+  input
+
+options:
+  -h, --help            show this help message and exit
+  --output OUTPUT
+  --algorithm {baseline,candidate}
+  --candidate-config CANDIDATE_CONFIG
+  --report-level {summary,full}
+  --artifact-level {minimal,provenance,audit}
+  --maximum-post-seconds MAXIMUM_POST_SECONDS
+  --defer-3d
+  --trajectory-cache TRAJECTORY_CACHE
+                        Verified real ORB trajectory cache produced by
+                        g305-video-freeze-trajectory.
+  --config CONFIG
+  --progress-range START END
+                        Restrict development work to a closed cumulative-
+                        motion interval in [0, 1].
+  --split {development,validation}
+                        Name the immutable non-holdout split containing
+                        --progress-range.

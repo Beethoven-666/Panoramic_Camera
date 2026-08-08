@@ -1,0 +1,46 @@
+{
+  "schema": "video-v61-blocker-poc-v1.2-lock/v1",
+  "purpose": "immutable Phase 1.2 edge-measurement calibration evidence; no GraphCut or pipeline output",
+  "base_commit": "26c1a14c241574be0d0302d8f0f3ccd008bc8f79",
+  "parent_v1_lock": {
+    "path": "benchmarks/v61_blocker_poc_v1.lock.json",
+    "sha256": "f8b42c8891551ea6101a09f06a0d64215bac8970563da240d2431d21fd51bcd6"
+  },
+  "parent_v1_json": {
+    "path": "benchmarks/v61_blocker_poc_primary.json",
+    "sha256": "c5fc423b01ecbc5f5b650595490aa51c3fb41c68bab238a544b32878595c1312"
+  },
+  "measurement_source": {
+    "path": "src/panorama_demo/video_v61_blocker_poc.py",
+    "sha256": "76f92e4eca107769846f5581d29a90f58d49d4a365a15e612e7891a07bfd60dc"
+  },
+  "measurement_test": {
+    "path": "tests/test_video_v61_blocker_poc.py",
+    "sha256": "8883e46f7cc81efc679a2b66881219aa8616c24d3495036045e0eab056e54e6b"
+  },
+  "poc_json": {
+    "path": "benchmarks/v61_blocker_poc_v12_calibrated.json",
+    "sha256": "3a2e9eba84a3c694e8a2fa582b71bdf82571e2f749564dc10fddccbc4fb69326"
+  },
+  "configuration": {
+    "corridor_width_px": 160,
+    "fb_p95_hard_px": 1.25,
+    "edge_normal_residual_p95_hard_px": 0.75,
+    "edge_normal_residual_abs_hard_px": 1.25,
+    "edge_normal_search_px": 8,
+    "edge_normal_sample_step_px": 0.125,
+    "edge_correspondence_band_px": 2.0,
+    "minimum_matched_edge_fraction": 0.5,
+    "allow_graphcut": false,
+    "main_pipeline_modified": false,
+    "production_lock_generated": false,
+    "recapture_performed": false
+  },
+  "result_summary": {
+    "graphcut_call_count": 0,
+    "slow_continuous_session": "run_20260806_153033",
+    "slow_continuous_edge_p95_px": 0.0,
+    "slow_continuous_edge_abs_range_px": [1.75, 2.125],
+    "strict_edge_gate_pass": false
+  }
+}

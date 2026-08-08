@@ -1,0 +1,27 @@
+# D1 is an experiment-only layout gate.  It never changes the public lock:
+# intermediate sources are recorded RGB-D frames with bracketed, audited priors.
+config_schema: gemini305-video-candidate/v1
+role: candidate
+candidate_id: D1_dense_real_frame_scan_layout
+parent_candidate_id: C0_baseline_reference
+algorithm_id: D1_dense_real_frame_scan_layout
+implementation_id: legacy_dense_real_frame_hard_owner_experiment
+model_sha256: {}
+allow_baseline_fallback: false
+changed_components: [dense_real_frame_scan_layout, audited_dense_pose_priors, monotonic_hard_owner]
+required_evidence_components: [orb_anchor_trajectory, dense_real_frame_pose_audit]
+required_output_components: [d1_dense_real_frame_hard_owner]
+replaces_output_components: [legacy_visual_seam]
+components:
+  dense_real_frame_layout:
+    enabled: true
+    orb_anchor_fps: 8
+    real_source_fps: 24
+    no_extrapolation: true
+    maximum_anchor_distance_us: 150000
+    maximum_forward_backward_p95_pixels: 1.5
+    maximum_rgbd_residual_p95_pixels: 1.5
+    minimum_dense_prior_coverage: 0.95
+    minimum_compact_object_support_coverage: 0.98
+  seam: {mode: monotonic_hard_owner}
+config_sha256: f92e76e4ce87a8a20d6cae4375e736b47b1a6dca5153120712e9b4f5e381a39b

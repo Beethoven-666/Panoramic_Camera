@@ -10,7 +10,11 @@ import statistics
 from pathlib import Path
 from typing import Any
 
-from .video_dataset_lock import verify_dataset_lock
+from .video_dataset_lock import (
+    require_candidate_role_for_diagnostic_session,
+    verify_experiment_dataset_lock,
+)
+from .video_split import write_or_verify_split
 from .video_experiment import run as run_experiment
 from .video_offline_evaluation import evaluate_delivery_artifacts, write_offline_evaluation
 from .video_runtime_environment import (
@@ -50,7 +54,7 @@ def _benchmark_root(output: Path, *, session_root: Path) -> Path:
 def _all_grades_a(report: dict[str, Any]) -> bool:
     grades = report.get("grades")
     return isinstance(grades, dict) and all(
-        grades.get(name) == "A" for name in ("structural", "visual", "performance", "overall")
+        grades.get(name) == "A" for name in ("structural", "visual", "overall")
     )
 
 
@@ -104,7 +108,7 @@ def _write_visual_metrics_if_annotated(output: Path, benchmark_root: Path) -> di
     if after["primary_artifacts"] != before["primary_artifacts"]:
         raise RuntimeError("Offline visual evaluation modified a primary video delivery artifact")
     hard_gate_pass = (
-        evaluation.get("schema") == "gemini305-video-offline-visual-evaluation/v1"
+        evaluation.get("schema") == "gemini305-video-offline-visual-evaluation/v2"
         and evaluation.get("measurement_only") is True
         and evaluation.get("projection_available") is True
         and all(
@@ -149,7 +153,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     session = args.session.expanduser().resolve()
     root = session if session.is_dir() else session.parent
     benchmark_root = _benchmark_root(args.output.expanduser().resolve(), session_root=root)
-    verify_dataset_lock(root, benchmark_root / "dataset_lock.json")
+    require_candidate_role_for_diagnostic_session(root, args.algorithm)
+    write_or_verify_split(benchmark_root / "split_definition.json")
+    verify_experiment_dataset_lock(root, benchmark_root, role=args.algorithm)
     args.output.mkdir(parents=True, exist_ok=True)
     atomic_write_json(args.output / "environment.json", capture_runtime_environment())
     runs: list[dict[str, Any]] = []
@@ -177,25 +183,35 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "run": index + 1,
                 "run_kind": "cold" if index == 0 else "warm",
                 "overall_grade": dict(report.get("grades", {})).get("overall"),
-                "post_capture_seconds": performance.get("post_capture_seconds"),
+                "primary_post_capture_seconds": performance.get("primary_post_capture_seconds"),
                 "stage_seconds": dict(performance.get("stage_seconds", {})),
                 "algorithm_id": dict(report.get("algorithm", {})).get("algorithm_id"),
                 "config_sha256": dict(report.get("algorithm", {})).get("config_sha256"),
                 "result_sha256": deterministic["result_sha256"],
                 "visual_metrics": visual_metrics,
                 "output": str(output),
+                "video_report": str(output / "video_report.json"),
             }
         )
     warm_seconds = [
-        float(row["post_capture_seconds"])
+        float(row["primary_post_capture_seconds"])
         for row in runs[1:]
-        if isinstance(row["post_capture_seconds"], (int, float))
+        if isinstance(row["primary_post_capture_seconds"], (int, float))
     ]
-    seconds = [float(row["post_capture_seconds"]) for row in runs if isinstance(row["post_capture_seconds"], (int, float))]
+    seconds = [
+        float(row["primary_post_capture_seconds"])
+        for row in runs
+        if isinstance(row["primary_post_capture_seconds"], (int, float))
+    ]
     first_report_path = Path(str(runs[0]["output"])) / "video_report.json"
     first_report = json.loads(first_report_path.read_text(encoding="utf-8"))
     aggregate_core: dict[str, object] = {
-        "schema": "gemini305-video-benchmark-result/v1",
+        "schema": "gemini305-video-benchmark-result/v2",
+        # This explicit value is intentionally required by selection.  A
+        # one-off report or an audit/full-artifact replay cannot be relabelled
+        # as production-performance evidence.
+        "benchmark_kind": "full_3m_summary_minimal",
+        "observability": {"report_level": "summary", "artifact_level": "minimal"},
         "algorithm": dict(first_report.get("algorithm", {})),
         "evaluation_scope": first_report.get("evaluation_scope"),
         "run_result_sha256": [str(row["result_sha256"]) for row in runs],
@@ -215,20 +231,35 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
     )
     all_a = renderer_grades_a and measurement_gates_pass
+    cold = seconds[0] if seconds else None
+    warm_median = statistics.median(warm_seconds) if warm_seconds else None
+    warm_max = max(warm_seconds) if warm_seconds else None
+    performance_gate_pass = (
+        isinstance(cold, float) and cold <= 12.0
+        and isinstance(warm_median, float) and warm_median <= 8.0
+        and isinstance(warm_max, float) and warm_max <= 9.0
+    )
     summary: dict[str, Any] = {
         **aggregate_core,
         "runs": runs,
         "run_count": len(runs),
-        "cold_seconds": seconds[0] if seconds else None,
-        "warm_median_seconds": statistics.median(warm_seconds) if warm_seconds else None,
-        "warm_max_seconds": max(warm_seconds) if warm_seconds else None,
-        "gate_status": "passed" if all_a else "failed",
-        "eligible_for_selection": bool(all_a),
+        "cold_seconds": cold,
+        "warm_median_seconds": warm_median,
+        "warm_max_seconds": warm_max,
+        "performance_gate": {
+            "status": "passed" if performance_gate_pass else "failed",
+            "primary_timing_only": True,
+            "cold_3m_le_12s": isinstance(cold, float) and cold <= 12.0,
+            "warm_median_3m_le_8s": isinstance(warm_median, float) and warm_median <= 8.0,
+            "warm_max_3m_le_9s": isinstance(warm_max, float) and warm_max <= 9.0,
+        },
+        "gate_status": "passed" if all_a and performance_gate_pass else "failed",
+        "eligible_for_selection": bool(all_a and performance_gate_pass),
     }
     atomic_write_json(args.output / "result.json", aggregate_core)
     atomic_write_json(args.output / "performance.json", {
-        "schema": "gemini305-video-benchmark-performance/v1",
-        "claim": "fixed-run benchmark evidence",
+        "schema": "gemini305-video-benchmark-performance/v2",
+        "claim": "full 3m summary/minimal benchmark evidence",
         "cold_seconds": summary["cold_seconds"],
         "warm_median_seconds": summary["warm_median_seconds"],
         "warm_max_seconds": summary["warm_max_seconds"],
@@ -236,6 +267,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "gate_status": summary["gate_status"],
         "renderer_grades_a": renderer_grades_a,
         "fixed_validation_measurement_gates_pass": measurement_gates_pass,
+        "performance_gate": summary["performance_gate"],
     })
     atomic_write_json(args.output / "benchmark.json", summary)
     leaderboard = benchmark_root / "leaderboard.csv"

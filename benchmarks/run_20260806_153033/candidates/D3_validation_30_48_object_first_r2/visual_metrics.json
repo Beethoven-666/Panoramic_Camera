@@ -1,0 +1,262 @@
+{
+  "automatic_grade_promotion_allowed": false,
+  "line_continuity": {
+    "table_front_edge": {
+      "annotation_role": "long_line",
+      "edge_sample_count": 852,
+      "hard_gate_pass": false,
+      "line_offset_p95_px": 5.0,
+      "line_orientation_delta_p95_degrees": 11.30993247402023,
+      "line_step_p95_px": 3.0,
+      "measurement_group": "table_front_edge",
+      "projected_annotation_ids": [
+        "table_front_edge_389",
+        "table_front_edge_391"
+      ],
+      "projected_member_count": 2,
+      "projected_source_frame_ids": [
+        389,
+        391
+      ],
+      "sample_count": 856,
+      "source_annotation_count": 2,
+      "source_annotation_ids": [
+        "table_front_edge_389",
+        "table_front_edge_391"
+      ],
+      "status": "evaluated"
+    },
+    "yellow_beam_bottom": {
+      "annotation_role": "long_line",
+      "edge_sample_count": 828,
+      "hard_gate_pass": false,
+      "line_offset_p95_px": 5.0,
+      "line_orientation_delta_p95_degrees": 26.565051177077976,
+      "line_step_p95_px": 6.0,
+      "measurement_group": "yellow_beam_bottom",
+      "projected_annotation_ids": [
+        "yellow_beam_bottom_389",
+        "yellow_beam_bottom_391"
+      ],
+      "projected_member_count": 2,
+      "projected_source_frame_ids": [
+        389,
+        391
+      ],
+      "sample_count": 856,
+      "source_annotation_count": 2,
+      "source_annotation_ids": [
+        "yellow_beam_bottom_389",
+        "yellow_beam_bottom_391"
+      ],
+      "status": "evaluated"
+    },
+    "yellow_beam_groove": {
+      "annotation_role": "long_line",
+      "edge_sample_count": 856,
+      "hard_gate_pass": false,
+      "line_offset_p95_px": 5.0,
+      "line_orientation_delta_p95_degrees": 18.434948822922024,
+      "line_step_p95_px": 3.0,
+      "measurement_group": "yellow_beam_groove",
+      "projected_annotation_ids": [
+        "yellow_beam_groove_389",
+        "yellow_beam_groove_391"
+      ],
+      "projected_member_count": 2,
+      "projected_source_frame_ids": [
+        389,
+        391
+      ],
+      "sample_count": 858,
+      "source_annotation_count": 2,
+      "source_annotation_ids": [
+        "yellow_beam_groove_389",
+        "yellow_beam_groove_391"
+      ],
+      "status": "evaluated"
+    },
+    "yellow_beam_top": {
+      "annotation_role": "long_line",
+      "edge_sample_count": 854,
+      "hard_gate_pass": false,
+      "line_offset_p95_px": 5.0,
+      "line_orientation_delta_p95_degrees": 18.476954496273834,
+      "line_step_p95_px": 3.0,
+      "measurement_group": "yellow_beam_top",
+      "projected_annotation_ids": [
+        "yellow_beam_top_389",
+        "yellow_beam_top_391"
+      ],
+      "projected_member_count": 2,
+      "projected_source_frame_ids": [
+        389,
+        391
+      ],
+      "sample_count": 858,
+      "source_annotation_count": 2,
+      "source_annotation_ids": [
+        "yellow_beam_top_389",
+        "yellow_beam_top_391"
+      ],
+      "status": "evaluated"
+    }
+  },
+  "measurement_only": true,
+  "object_integrity": {
+    "black_cable": {
+      "annotation_role": "compact_foreground_single_owner",
+      "dominant_owner_fraction": 0.056018672890963656,
+      "dominant_owner_frame_id": 411,
+      "hard_gate_pass": false,
+      "maximum_handoffs": 25,
+      "measurement_group": "black_cable",
+      "object_internal_seam_count": 20,
+      "object_internal_seam_pixel_count": 4104,
+      "owner_count": 26,
+      "projected_annotation_ids": [
+        "black_cable_389",
+        "black_cable_391"
+      ],
+      "projected_member_count": 2,
+      "projected_source_frame_ids": [
+        389,
+        391
+      ],
+      "single_owner_required": true,
+      "source_annotation_count": 2,
+      "source_annotation_ids": [
+        "black_cable_389",
+        "black_cable_391"
+      ],
+      "status": "evaluated",
+      "valid_pixel_count": 5998
+    },
+    "black_fan": {
+      "annotation_role": "compact_foreground_single_owner",
+      "dominant_owner_fraction": 1.0,
+      "dominant_owner_frame_id": 447,
+      "hard_gate_pass": true,
+      "maximum_handoffs": 0,
+      "measurement_group": "black_fan",
+      "object_internal_seam_count": 0,
+      "object_internal_seam_pixel_count": 0,
+      "owner_count": 1,
+      "projected_annotation_ids": [
+        "black_fan_389",
+        "black_fan_391"
+      ],
+      "projected_member_count": 2,
+      "projected_source_frame_ids": [
+        389,
+        391
+      ],
+      "single_owner_required": true,
+      "source_annotation_count": 2,
+      "source_annotation_ids": [
+        "black_fan_389",
+        "black_fan_391"
+      ],
+      "status": "evaluated",
+      "valid_pixel_count": 14960
+    },
+    "central_carton": {
+      "annotation_role": "compact_foreground_single_owner",
+      "dominant_owner_fraction": 0.3756578947368421,
+      "dominant_owner_frame_id": 447,
+      "hard_gate_pass": false,
+      "maximum_handoffs": 32,
+      "measurement_group": "central_carton",
+      "object_internal_seam_count": 17,
+      "object_internal_seam_pixel_count": 5785,
+      "owner_count": 34,
+      "projected_annotation_ids": [
+        "central_carton_389",
+        "central_carton_391"
+      ],
+      "projected_member_count": 2,
+      "projected_source_frame_ids": [
+        389,
+        391
+      ],
+      "single_owner_required": true,
+      "source_annotation_count": 2,
+      "source_annotation_ids": [
+        "central_carton_389",
+        "central_carton_391"
+      ],
+      "status": "evaluated",
+      "valid_pixel_count": 13680
+    },
+    "yellow_beam_high_risk": {
+      "annotation_role": "extended_background_structure",
+      "dominant_owner_fraction": 0.4295953063537569,
+      "dominant_owner_frame_id": 447,
+      "hard_gate_pass": false,
+      "maximum_handoffs": 59,
+      "measurement_group": "yellow_beam_high_risk",
+      "object_internal_seam_count": 33,
+      "object_internal_seam_pixel_count": 7983,
+      "owner_count": 60,
+      "projected_annotation_ids": [
+        "yellow_beam_high_risk_389",
+        "yellow_beam_high_risk_391"
+      ],
+      "projected_member_count": 2,
+      "projected_source_frame_ids": [
+        389,
+        391
+      ],
+      "single_owner_required": false,
+      "source_annotation_count": 2,
+      "source_annotation_ids": [
+        "yellow_beam_high_risk_389",
+        "yellow_beam_high_risk_391"
+      ],
+      "status": "evaluated",
+      "valid_pixel_count": 59996
+    }
+  },
+  "owner_topology": {
+    "active_owner_count": 60,
+    "horizontal_owner_transitions": 27315,
+    "owner_components": 77,
+    "owner_small_fragments": 0,
+    "small_fragment_area_limit_pixels": 233.82500000000002,
+    "small_owner_source_count": 0,
+    "unowned_pixel_count": 0,
+    "valid_pixel_count": 467650
+  },
+  "panorama_shape": [
+    470,
+    995
+  ],
+  "projection_available": true,
+  "safe_background": {
+    "yellow_beam_face": {
+      "annotation_role": "safe_background",
+      "boundary_pixels_in_region": 2938,
+      "brightness_step_p95_percent": 1.330672025680542,
+      "delta_e00_p95": 1.4357226122298994,
+      "hard_gate_pass": true,
+      "measurement_group": "yellow_beam_face",
+      "projected_annotation_ids": [
+        "yellow_beam_face_389",
+        "yellow_beam_face_391"
+      ],
+      "projected_member_count": 2,
+      "projected_source_frame_ids": [
+        389,
+        391
+      ],
+      "seam_sample_count": 1481,
+      "source_annotation_count": 2,
+      "source_annotation_ids": [
+        "yellow_beam_face_389",
+        "yellow_beam_face_391"
+      ],
+      "status": "evaluated"
+    }
+  },
+  "schema": "gemini305-video-offline-visual-evaluation/v2"
+}
