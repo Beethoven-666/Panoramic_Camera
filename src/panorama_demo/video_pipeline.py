@@ -108,6 +108,11 @@ def _legacy_settings_for(spec: VideoAlgorithmSpec) -> dict[str, Any]:
         if tracking_fps not in {8, 12, 16}:
             raise ValueError("V6 candidate tracking_fps must be one of T0/T1/T2: 8, 12, or 16")
         settings["fast_renderer"] = "v6_graphcut_candidate"
+    if spec.algorithm_id == "V61_tail_guarded_full_panorama":
+        components = document.get("components", {})
+        if not isinstance(components, dict) or components.get("v61_tail_guarded_full_panorama") is not True:
+            raise ValueError("V6.1 candidate requires its immutable tail-guarded full-panorama component")
+        settings["fast_renderer"] = "v61_tail_guarded_candidate"
         settings["fast_orb_target_fps"] = float(tracking_fps)
         resampling = dict(settings.get("motion_resampling", {}))
         resampling.update({"normal_target_step_pixels": 8.0, "risk_target_step_pixels": 5.0, "maximum_step_pixels": 12.0})

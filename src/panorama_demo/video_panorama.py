@@ -466,10 +466,11 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                 "visual_seam",
                 "hard_owner_diagnostic",
                 "v6_graphcut_candidate",
+                "v61_tail_guarded_candidate",
             }:
                 raise ValueError(
                     "video_panorama.fast_renderer must be audited_visual, "
-                    "visual_seam, hard_owner_diagnostic, or v6_graphcut_candidate"
+                    "visual_seam, hard_owner_diagnostic, v6_graphcut_candidate, or v61_tail_guarded_candidate"
                 )
             candidate_c1_constrained_owner = bool(
                 video_settings.get("candidate_c1_constrained_owner", False)
@@ -695,7 +696,7 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
             # ORB-tracked* midpoint sources before Open3D edges and the final
             # one-pass RGB sampling.  This is source selection only: no frame
             # or pose is synthesized and every resulting edge is audited.
-            if legacy_renderer == "v6_graphcut_candidate":
+            if legacy_renderer in {"v6_graphcut_candidate", "v61_tail_guarded_candidate"}:
                 plan = insert_v6_real_rescue_sources(
                     tracking_frames,
                     tracking_motions,
@@ -1181,10 +1182,12 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                 else:
                     raise RuntimeError("unknown v2 CUDA renderer mode")
             else:
-                if legacy_renderer == "v6_graphcut_candidate":
-                    from .video_v6_pair_renderer import render_video_v6_candidate
-
-                    push = render_video_v6_candidate(
+                if legacy_renderer in {"v6_graphcut_candidate", "v61_tail_guarded_candidate"}:
+                    if legacy_renderer == "v61_tail_guarded_candidate":
+                        from .video_v61_renderer import render_video_v61_candidate as candidate_renderer
+                    else:
+                        from .video_v6_pair_renderer import render_video_v6_candidate as candidate_renderer
+                    push = candidate_renderer(
                         tuple(sources), tuple(poses), video.rgbd.calibration,
                         pushbroom_config=push_config, rgb_motions=selected_motions,
                         motion_pixels_to_full_resolution=video.rgbd.calibration.width
@@ -1265,7 +1268,7 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
                             ]
                             if len(rerouted_edges) != len(rerouted_sources) - 1:
                                 raise RuntimeError("v6 reroute Open3D audit did not cover every real source edge")
-                            rerouted_push = render_video_v6_candidate(
+                            rerouted_push = candidate_renderer(
                                 tuple(rerouted_sources), tuple(rerouted_poses), video.rgbd.calibration,
                                 pushbroom_config=push_config, rgb_motions=rerouted_motions,
                                 motion_pixels_to_full_resolution=video.rgbd.calibration.width

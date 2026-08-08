@@ -1,5 +1,6 @@
 {
   "candidates": {
+    "V61_tail_guarded_full_panorama": {"config_sha256": "97ff82bbecd3056d2a6c1a555cc666de26cbca2a214455250d8263b4a87efad5", "replaces_output_components": ["v6_rgb_only_graphcut"], "required_evidence_components": ["orb_anchor_trajectory", "open3d_rgbd_edges", "dis_forward_backward"], "required_output_components": ["v61_tail_guarded_full_panorama"]},
     "V6_rgb_only_graphcut": {"config_sha256": "36375bab610399f0747ec7618304341573f8d8b11bcf71736d92e1a2b15a007e", "replaces_output_components": ["legacy_visual_seam"], "required_evidence_components": ["orb_anchor_trajectory", "dis_forward_backward"], "required_output_components": ["v6_rgb_only_graphcut"]},
     "V6_rgb_only_graphcut_t2": {"config_sha256": "8bf95935bcc9f9d66b25333c1fdbc226853948c157e1bcb1c172403f3645bb73", "replaces_output_components": ["legacy_visual_seam"], "required_evidence_components": ["orb_anchor_trajectory", "dis_forward_backward"], "required_output_components": ["v6_rgb_only_graphcut"]},
     "C0_baseline_reference": {"config_sha256": "c553b57b883146d9168ea4dbd8062b1732920958b6534fb291f931c8f7723016", "replaces_output_components": [], "required_evidence_components": ["orb_anchor_trajectory"], "required_output_components": ["legacy_visual_seam"]},
@@ -21,6 +22,6 @@
     "C12_joint_owner_mesh_window": {"config_sha256": "ec951832383715e74e598203bc87a332e07a571a983d8363550acd629ae0d32b", "replaces_output_components": ["c3_raft_mesh", "c4_depth_layered_mesh"], "required_evidence_components": ["raft_correspondence_evidence", "depth_visibility_evidence", "orb_anchor_trajectory"], "required_output_components": ["c1_constrained_owner", "c12_joint_owner_final_grid"]},
     "C13_robust_photometric_bundle": {"config_sha256": "538b245a89401287ec544b919c3184016253b51f18c28fab83bc42b9d40b8710", "replaces_output_components": ["c3_raft_mesh"], "required_evidence_components": ["c3_raft_mesh"], "required_output_components": ["c1_constrained_owner", "c4_depth_layered_mesh", "c5_object_owner_lock", "c6_safe_multiband", "c7_global_photometric", "c8_local_multilabel_owner", "c13_robust_photometric_bundle"]}
   },
-  "manifest_sha256": "6776d265dba4f089f4c23795dccf3685144d12f60820abd1dc5e2e853b20855e",
+  "manifest_sha256": "14f1e3a99a32a3e76d6f8f9f1fe296b7e0b2b272431214af42bbb517adf7c0f4",
   "schema": "gemini305-video-candidate-manifest/v1"
 }
