@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
+from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from panorama_demo.video_visual_renderer import VideoDISPairEvidence
 from panorama_demo.video_v61_blocker_poc import (
@@ -66,6 +70,58 @@ def test_v61_poc_preseam_failure_does_not_call_graphcut() -> None:
 
     assert not result.pre_seam_pass
     assert not result.graphcut_called
+
+
+def test_v61_coarse_placement_does_not_consume_the_four_pixel_residual_budget() -> None:
+    old, new = _translated_pair(16)
+    result = run_v61_poc_pair(
+        old, new, left_frame_id=10, right_frame_id=11,
+        evidence_factory=_exact_translation_evidence(0.0),
+    )
+
+    assert abs(result.coarse_dx_px or 0.0) > 12.0
+    assert result.residual_max_displacement_px is not None
+    assert result.residual_max_displacement_px <= 4.0
+
+
+def test_v61_exposes_not_evaluable_metrics_instead_of_ambiguous_nulls() -> None:
+    blank = np.zeros((480, 200, 3), np.uint8)
+    result = run_v61_poc_pair(blank, blank, left_frame_id=10, right_frame_id=11)
+
+    assert not result.pre_seam_pass
+    assert "edge_residual_p95_px" in result.not_evaluable_metrics
+    assert "double_edge_count" in result.not_evaluable_metrics
+
+
+def test_v61_phase_one_baseline_lock_hashes_the_original_evidence() -> None:
+    root = Path(__file__).resolve().parents[1]
+    lock = json.loads((root / "benchmarks" / "v61_blocker_poc_v1.lock.json").read_text(encoding="utf-8"))
+    evidence = root / str(lock["poc_json"]["path"])
+
+    if not evidence.is_file():
+        pytest.skip("local Phase 1 evidence is not available in this checkout")
+    actual = hashlib.sha256(evidence.read_bytes()).hexdigest()
+    assert actual == lock["poc_json"]["sha256"]
+
+
+def test_v61_real_frozen_slow_pair_remains_a_strict_phase_one_one_regression() -> None:
+    root = Path(__file__).resolve().parents[1]
+    session = root / "data" / "captures" / "video" / "run_20260806_153033"
+    if not session.is_dir():
+        pytest.skip("frozen Phase 1.1 session is not available in this checkout")
+    old = cv2.imread(str(session / "color" / "00000087.jpg"), cv2.IMREAD_COLOR)
+    new = cv2.imread(str(session / "color" / "00000088.jpg"), cv2.IMREAD_COLOR)
+    assert old is not None and new is not None
+
+    result = run_v61_poc_pair(old, new, left_frame_id=87, right_frame_id=88)
+
+    assert result.coarse_dx_px is not None
+    assert result.alignment_accepted
+    assert result.residual_max_displacement_px is not None
+    assert result.residual_max_displacement_px <= 4.0
+    assert not result.pre_seam_pass
+    assert result.rejection_reason == "pre_seam_geometry_gate_failed"
+    assert "double_edge_count" in result.not_evaluable_metrics
 
 
 def test_v61_poc_reads_only_real_capture_rgb_frames(tmp_path) -> None:

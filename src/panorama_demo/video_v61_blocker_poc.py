@@ -36,6 +36,8 @@ class V61BlockerPocConfig:
     minimum_reliable_pixels: int = 128
     fb_p95_hard_px: float = 1.25
     edge_residual_p95_hard_px: float = 1.25
+    edge_residual_abs_hard_px: float = 1.25
+    edge_normal_search_px: int = 8
     blend_width_px: int = 2
 
     def __post_init__(self) -> None:
@@ -43,8 +45,14 @@ class V61BlockerPocConfig:
             raise ValueError("POC corridor must be within the v6.1 96--160px range")
         if self.minimum_reliable_pixels < 64:
             raise ValueError("POC needs at least 64 reliable DIS pixels")
-        if self.fb_p95_hard_px <= 0.0 or self.edge_residual_p95_hard_px <= 0.0:
+        if (
+            self.fb_p95_hard_px <= 0.0
+            or self.edge_residual_p95_hard_px <= 0.0
+            or self.edge_residual_abs_hard_px <= 0.0
+        ):
             raise ValueError("POC residual limits must be positive")
+        if not 1 <= self.edge_normal_search_px <= 16:
+            raise ValueError("edge-normal search must be in [1, 16]px")
         if not 2 <= self.blend_width_px <= 4:
             raise ValueError("POC blend must stay within the v6.1 2--4px range")
 
@@ -71,6 +79,7 @@ class V61PocPairMetrics:
     right_frame_id: int
     fb_residual_p95_px: float | None
     edge_residual_p95_px: float | None
+    edge_residual_abs_max_px: float | None
     line_step_p95_px: float | None
     line_step_abs_max_px: float | None
     double_edge_count: int | None
@@ -84,6 +93,27 @@ class V61PocPairMetrics:
     blend_band_pixel_count: int
     runtime_ms: float
     rejection_reason: str | None
+    coarse_dx_px: float | None = None
+    coarse_dy_px: float | None = None
+    coarse_response: float | None = None
+    residual_max_displacement_px: float | None = None
+    not_evaluable_metrics: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        missing = tuple(
+            name
+            for name, value in (
+                ("fb_residual_p95_px", self.fb_residual_p95_px),
+                ("edge_residual_p95_px", self.edge_residual_p95_px),
+                ("edge_residual_abs_max_px", self.edge_residual_abs_max_px),
+                ("line_step_p95_px", self.line_step_p95_px),
+                ("line_step_abs_max_px", self.line_step_abs_max_px),
+                ("double_edge_count", self.double_edge_count),
+                ("ghost_count", self.ghost_count),
+            )
+            if value is None
+        )
+        object.__setattr__(self, "not_evaluable_metrics", missing)
 
 
 @dataclass(frozen=True)
@@ -142,6 +172,23 @@ def _central_corridor(image: np.ndarray, width: int) -> np.ndarray:
     return np.ascontiguousarray(image[:, left : left + width])
 
 
+def _coarse_strip_placement(left_bgr: np.ndarray, right_bgr: np.ndarray) -> tuple[np.ndarray, float, float, float]:
+    """Estimate only the unconstrained full-frame strip translation.
+
+    This is a placement prior, not a residual correction and not a pose.  The
+    v6.1 4px limit therefore applies only to the later alignment matrix.
+    """
+
+    left_gray = cv2.cvtColor(left_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    right_gray = cv2.cvtColor(right_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    window = cv2.createHanningWindow((left_gray.shape[1], left_gray.shape[0]), cv2.CV_32F)
+    (dx, dy), response = cv2.phaseCorrelate(left_gray, right_gray, window)
+    if not np.isfinite((dx, dy, response)).all():
+        raise RuntimeError("coarse strip placement returned a non-finite translation")
+    matrix = np.array(((1.0, 0.0, dx), (0.0, 1.0, dy), (0.0, 0.0, 1.0)), dtype=np.float64)
+    return matrix, float(dx), float(dy), float(response)
+
+
 def _aligned_new_image(new_bgr: np.ndarray, matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Sample new at the old-coordinate targets; matrix maps old -> new."""
 
@@ -159,20 +206,54 @@ def _aligned_new_image(new_bgr: np.ndarray, matrix: np.ndarray) -> tuple[np.ndar
     return aligned, valid
 
 
-def _edge_residual_p95(old_bgr: np.ndarray, aligned_new_bgr: np.ndarray, support: np.ndarray) -> float | None:
-    """Symmetric Canny-to-Canny distance in pixels after bounded alignment."""
+def _edge_normal_residual(
+    source_bgr: np.ndarray, target_bgr: np.ndarray, support: np.ndarray, *, search_px: int,
+) -> np.ndarray:
+    """Return matched Canny distances sampled along each source-edge normal."""
 
-    old_edge = cv2.Canny(cv2.cvtColor(old_bgr, cv2.COLOR_BGR2GRAY), 80, 160) > 0
-    new_edge = cv2.Canny(cv2.cvtColor(aligned_new_bgr, cv2.COLOR_BGR2GRAY), 80, 160) > 0
-    support = np.asarray(support, bool)
-    old_edge &= support
-    new_edge &= support
-    if not old_edge.any() or not new_edge.any():
-        return None
-    old_distance = cv2.distanceTransform((~old_edge).astype(np.uint8), cv2.DIST_L2, 3)
-    new_distance = cv2.distanceTransform((~new_edge).astype(np.uint8), cv2.DIST_L2, 3)
-    values = np.concatenate((old_distance[new_edge], new_distance[old_edge]))
-    return _p95(values)
+    source_gray = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2GRAY)
+    target_gray = cv2.cvtColor(target_bgr, cv2.COLOR_BGR2GRAY)
+    source_edge = cv2.Canny(source_gray, 80, 160) > 0
+    target_edge = cv2.Canny(target_gray, 80, 160) > 0
+    source_edge &= np.asarray(support, bool)
+    target_edge &= np.asarray(support, bool)
+    yy, xx = np.nonzero(source_edge)
+    if not xx.size or not target_edge.any():
+        return np.empty(0, np.float32)
+    stride = max(1, int(np.ceil(xx.size / 4096)))
+    yy, xx = yy[::stride].astype(np.float32), xx[::stride].astype(np.float32)
+    grad_x = cv2.Sobel(source_gray, cv2.CV_32F, 1, 0)[yy.astype(int), xx.astype(int)]
+    grad_y = cv2.Sobel(source_gray, cv2.CV_32F, 0, 1)[yy.astype(int), xx.astype(int)]
+    magnitude = np.hypot(grad_x, grad_y)
+    usable = magnitude > 1e-6
+    if not usable.any():
+        return np.empty(0, np.float32)
+    yy, xx, grad_x, grad_y, magnitude = (
+        value[usable] for value in (yy, xx, grad_x, grad_y, magnitude)
+    )
+    normal_x, normal_y = grad_x / magnitude, grad_y / magnitude
+    offsets = np.arange(-search_px, search_px + 1, dtype=np.float32)
+    target = target_edge.astype(np.uint8)
+    best = np.full(xx.shape, np.inf, np.float32)
+    for offset in offsets:
+        sampled = cv2.remap(
+            target, xx + offset * normal_x, yy + offset * normal_y, cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+        ).reshape(-1)
+        best = np.minimum(best, np.where(sampled > 0, abs(float(offset)), np.inf))
+    return best[np.isfinite(best)]
+
+
+def _matched_edge_normal_metrics(
+    old_bgr: np.ndarray, aligned_new_bgr: np.ndarray, support: np.ndarray, *, search_px: int,
+) -> tuple[float | None, float | None]:
+    """Symmetric matched edge-normal P95 and absolute maximum after placement."""
+
+    values = np.concatenate((
+        _edge_normal_residual(old_bgr, aligned_new_bgr, support, search_px=search_px),
+        _edge_normal_residual(aligned_new_bgr, old_bgr, support, search_px=search_px),
+    ))
+    return _p95(values), (None if not values.size else float(np.max(values)))
 
 
 def _null_metrics(
@@ -183,12 +264,34 @@ def _null_metrics(
     accepted: bool,
     reliable: int,
     fb_p95: float | None,
+    coarse_dx: float | None,
+    coarse_dy: float | None,
+    coarse_response: float | None,
     runtime_ms: float,
     reason: str,
 ) -> V61PocPairMetrics:
     return V61PocPairMetrics(
-        left_id, right_id, fb_p95, None, None, None, None, None, reliable,
-        model, accepted, False, False, False, 0, runtime_ms, reason,
+        left_frame_id=left_id,
+        right_frame_id=right_id,
+        fb_residual_p95_px=fb_p95,
+        edge_residual_p95_px=None,
+        edge_residual_abs_max_px=None,
+        line_step_p95_px=None,
+        line_step_abs_max_px=None,
+        double_edge_count=None,
+        ghost_count=None,
+        reliable_pixel_count=reliable,
+        alignment_model=model,
+        alignment_accepted=accepted,
+        pre_seam_pass=False,
+        graphcut_called=False,
+        graphcut_accepted=False,
+        blend_band_pixel_count=0,
+        runtime_ms=runtime_ms,
+        rejection_reason=reason,
+        coarse_dx_px=coarse_dx,
+        coarse_dy_px=coarse_dy,
+        coarse_response=coarse_response,
     )
 
 
@@ -201,7 +304,7 @@ def run_v61_poc_pair(
     config: V61BlockerPocConfig | None = None,
     evidence_factory: EvidenceFactory | None = None,
 ) -> V61PocPairMetrics:
-    """Run exactly one F/B DIS observation then bounded geometry and GraphCut.
+    """Run one post-placement F/B DIS observation then bounded geometry and GraphCut.
 
     No GraphCut call is made when the geometry gate fails.  The function is
     intentionally pair-local: it has no pose or strip-placement output.
@@ -209,9 +312,18 @@ def run_v61_poc_pair(
 
     settings = config or V61BlockerPocConfig()
     started = perf_counter()
-    old = _central_corridor(np.asarray(left_bgr), settings.corridor_width_px)
-    new = _central_corridor(np.asarray(right_bgr), settings.corridor_width_px)
-    valid = np.ones(old.shape[:2], dtype=bool)
+    old_full, new_raw = (np.asarray(image) for image in (left_bgr, right_bgr))
+    if old_full.shape != new_raw.shape or old_full.ndim != 3 or old_full.shape[2] != 3:
+        raise ValueError("POC pair requires same-shape BGR capture frames")
+    coarse_matrix, coarse_dx, coarse_dy, coarse_response = _coarse_strip_placement(old_full, new_raw)
+    # First placement always samples from the complete original RGB frame;
+    # crop only after it is in the coarse shared output coordinate system.
+    coarse_new_full, coarse_valid_full = _aligned_new_image(new_raw, coarse_matrix)
+    old = _central_corridor(old_full, settings.corridor_width_px)
+    new = _central_corridor(coarse_new_full, settings.corridor_width_px)
+    valid = _central_corridor(np.ones(old_full.shape[:2], dtype=np.uint8), settings.corridor_width_px).astype(bool)
+    new_valid = _central_corridor(coarse_valid_full.astype(np.uint8), settings.corridor_width_px).astype(bool)
+    overlap_before_residual = valid & new_valid
     factory = evidence_factory or (
         lambda left, right, overlap: video_dis_pair_evidence(
             np.dstack((left, overlap.astype(np.uint8) * 255)),
@@ -221,20 +333,21 @@ def run_v61_poc_pair(
     )
     # Evidence is owned by the pair stage; callbacks must not be able to
     # mutate the canonical all-real support mask used by later audit stages.
-    evidence = factory(old, new, valid.copy())
+    evidence = factory(old, new, overlap_before_residual.copy())
     def elapsed() -> float:
         return (perf_counter() - started) * 1000.0
     if evidence is None:
         return _null_metrics(
             left_frame_id, right_frame_id, model="hard_owner_only", accepted=False, reliable=0,
-            fb_p95=None, runtime_ms=elapsed(), reason="no_fb_dis_evidence",
+            fb_p95=None, coarse_dx=coarse_dx, coarse_dy=coarse_dy, coarse_response=coarse_response,
+            runtime_ms=elapsed(), reason="no_fb_dis_evidence",
         )
-    reliable = np.asarray(evidence.reliable_mask, bool) & valid
+    reliable = np.asarray(evidence.reliable_mask, bool) & overlap_before_residual
     reliable_count = int(reliable.sum())
     # Guard construction currently uses in-place mask operators internally;
     # retain the full real pair support for the later geometry/GraphCut audit.
     guards = build_video_hard_guards(
-        old, new, evidence, old_valid=valid.copy(), new_valid=valid.copy(),
+        old, new, evidence, old_valid=valid.copy(), new_valid=new_valid.copy(),
     )
     support = reliable & ~np.asarray(guards.protected, bool)
     alignment = fit_near_protected_alignment(evidence, support=support, plane_verified=False, config=_alignment_config())
@@ -243,24 +356,31 @@ def run_v61_poc_pair(
     if not audit.accepted or alignment.matrix is None:
         return _null_metrics(
             left_frame_id, right_frame_id, model=audit.selected_model, accepted=audit.accepted,
-            reliable=reliable_count, fb_p95=fb_p95, runtime_ms=elapsed(),
+            reliable=reliable_count, fb_p95=fb_p95, coarse_dx=coarse_dx, coarse_dy=coarse_dy,
+            coarse_response=coarse_response, runtime_ms=elapsed(),
             reason=audit.rejection_reason or "no_bounded_alignment",
         )
-    aligned_new, aligned_valid = _aligned_new_image(new, alignment.matrix)
+    crop_left = (old_full.shape[1] - settings.corridor_width_px) // 2
+    crop = np.array(((1.0, 0.0, crop_left), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)))
+    combined = coarse_matrix @ crop @ alignment.matrix @ np.linalg.inv(crop)
+    final_new_full, final_valid_full = _aligned_new_image(new_raw, combined)
+    aligned_new = _central_corridor(final_new_full, settings.corridor_width_px)
+    aligned_valid = _central_corridor(final_valid_full.astype(np.uint8), settings.corridor_width_px).astype(bool)
     overlap = valid & aligned_valid
-    # Geometry must be checked at protected edges too.  Protection determines
-    # owner and blend eligibility, not whether a visible line is allowed to
-    # evade the pre-seam residual audit.
-    edge_p95 = _edge_residual_p95(old, aligned_new, overlap)
+    edge_p95, edge_abs = _matched_edge_normal_metrics(
+        old, aligned_new, overlap, search_px=settings.edge_normal_search_px,
+    )
     pre_pass = bool(
         reliable_count >= settings.minimum_reliable_pixels
         and fb_p95 is not None and fb_p95 <= settings.fb_p95_hard_px
         and edge_p95 is not None and edge_p95 <= settings.edge_residual_p95_hard_px
+        and edge_abs is not None and edge_abs <= settings.edge_residual_abs_hard_px
     )
     if not pre_pass:
         return V61PocPairMetrics(
-            left_frame_id, right_frame_id, fb_p95, edge_p95, None, None, None, None,
+            left_frame_id, right_frame_id, fb_p95, edge_p95, edge_abs, None, None, None, None,
             reliable_count, audit.selected_model, True, False, False, False, 0, elapsed(), "pre_seam_geometry_gate_failed",
+            coarse_dx, coarse_dy, coarse_response, audit.maximum_displacement_px,
         )
     aligned_guards = build_video_hard_guards(
         old, aligned_new, evidence, old_valid=valid.copy(), new_valid=aligned_valid.copy(),
@@ -273,8 +393,9 @@ def run_v61_poc_pair(
     graph_audit: VideoGraphCutAudit = graphcut.audit
     if not graph_audit.accepted:
         return V61PocPairMetrics(
-            left_frame_id, right_frame_id, fb_p95, edge_p95, None, graph_audit.maximum_adjacent_row_step_px,
+            left_frame_id, right_frame_id, fb_p95, edge_p95, edge_abs, None, graph_audit.maximum_adjacent_row_step_px,
             None, None, reliable_count, audit.selected_model, True, True, True, False, 0, elapsed(), graph_audit.rejection_reason,
+            coarse_dx, coarse_dy, coarse_response, audit.maximum_displacement_px,
         )
     owner = np.full(valid.shape, int(left_frame_id), np.int32)
     owner[graphcut.choose_new] = int(right_frame_id)
@@ -287,10 +408,10 @@ def run_v61_poc_pair(
     )
     quality = assess_video_rgb_quality(output, owner, valid, (graph_audit,))
     return V61PocPairMetrics(
-        left_frame_id, right_frame_id, fb_p95, edge_p95, quality.seam_step_p95_px,
+        left_frame_id, right_frame_id, fb_p95, edge_p95, edge_abs, quality.seam_step_p95_px,
         quality.seam_step_abs_max_px, quality.double_edge_count, quality.ghost_count,
         reliable_count, audit.selected_model, True, True, True, True, blend.band_pixel_count,
-        elapsed(), None,
+        elapsed(), None, coarse_dx, coarse_dy, coarse_response, audit.maximum_displacement_px,
     )
 
 
@@ -370,7 +491,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--output", type=Path, help="Optional JSON evidence path; never a production artifact")
     args = parser.parse_args(argv)
     results = [result.as_dict() for result in (run_v61_blocker_poc(spec) for spec in default_v61_blocker_specs(args.captures_root))]
-    payload = {"schema": "video-v61-blocker-poc/v1", "isolated_candidate_only": True, "results": results}
+    payload = {
+        "schema": "video-v61-blocker-poc/v1.1",
+        "phase": "1.1_coarse_placement_residual_gate",
+        "isolated_candidate_only": True,
+        "results": results,
+    }
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
