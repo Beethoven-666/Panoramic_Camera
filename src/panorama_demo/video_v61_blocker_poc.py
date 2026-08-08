@@ -38,7 +38,11 @@ class V61BlockerPocConfig:
     edge_residual_p95_hard_px: float = 1.25
     edge_residual_abs_hard_px: float = 1.25
     edge_normal_search_px: int = 8
+    edge_normal_sample_step_px: float = 0.125
+    edge_correspondence_band_px: float = 2.0
+    minimum_matched_edge_fraction: float = 0.50
     blend_width_px: int = 2
+    allow_graphcut: bool = False
 
     def __post_init__(self) -> None:
         if not 96 <= self.corridor_width_px <= 160:
@@ -53,6 +57,12 @@ class V61BlockerPocConfig:
             raise ValueError("POC residual limits must be positive")
         if not 1 <= self.edge_normal_search_px <= 16:
             raise ValueError("edge-normal search must be in [1, 16]px")
+        if not 0.05 <= self.edge_normal_sample_step_px <= 0.5:
+            raise ValueError("edge-normal sample step must be in [0.05, 0.5]px")
+        if not 0.5 <= self.edge_correspondence_band_px <= 4.0:
+            raise ValueError("edge correspondence band must be in [0.5, 4]px")
+        if not 0.0 < self.minimum_matched_edge_fraction <= 1.0:
+            raise ValueError("minimum matched-edge fraction must be in (0, 1]")
         if not 2 <= self.blend_width_px <= 4:
             raise ValueError("POC blend must stay within the v6.1 2--4px range")
 
@@ -97,6 +107,9 @@ class V61PocPairMetrics:
     coarse_dy_px: float | None = None
     coarse_response: float | None = None
     residual_max_displacement_px: float | None = None
+    matched_edge_sample_count: int = 0
+    edge_sample_count: int = 0
+    edge_match_fraction: float | None = None
     not_evaluable_metrics: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -206,10 +219,39 @@ def _aligned_new_image(new_bgr: np.ndarray, matrix: np.ndarray) -> tuple[np.ndar
     return aligned, valid
 
 
+def _output_coordinate_flows(evidence: VideoDISPairEvidence, matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Express coarse-coordinate F/B DIS in the residual-corrected output grid."""
+
+    height, width = evidence.flow_forward.shape[:2]
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    points = np.column_stack((xx.ravel(), yy.ravel(), np.ones(height * width, np.float32)))
+    inverse = np.linalg.inv(np.asarray(matrix, np.float64))
+    forward_coarse = np.column_stack((
+        (xx + evidence.flow_forward[..., 0]).ravel(),
+        (yy + evidence.flow_forward[..., 1]).ravel(),
+        np.ones(height * width, np.float32),
+    ))
+    forward_final = forward_coarse @ inverse.T
+    forward_final = forward_final[:, :2] / forward_final[:, 2:3]
+    forward = (forward_final - points[:, :2]).reshape((height, width, 2)).astype(np.float32)
+    coarse_at_final = points @ np.asarray(matrix, np.float64).T
+    coarse_at_final = coarse_at_final[:, :2] / coarse_at_final[:, 2:3]
+    coarse_x = coarse_at_final[:, 0].reshape((height, width)).astype(np.float32)
+    coarse_y = coarse_at_final[:, 1].reshape((height, width)).astype(np.float32)
+    backward_sampled = cv2.remap(
+        evidence.flow_backward, coarse_x, coarse_y, cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=(np.nan, np.nan),
+    ).reshape((-1, 2))
+    backward_target = coarse_at_final[:, :2] + backward_sampled
+    backward = (backward_target - points[:, :2]).reshape((height, width, 2)).astype(np.float32)
+    return forward, backward
+
+
 def _edge_normal_residual(
-    source_bgr: np.ndarray, target_bgr: np.ndarray, support: np.ndarray, *, search_px: int,
-) -> np.ndarray:
-    """Return matched Canny distances sampled along each source-edge normal."""
+    source_bgr: np.ndarray, target_bgr: np.ndarray, support: np.ndarray, expected_flow: np.ndarray, *,
+    search_px: int, sample_step_px: float, correspondence_band_px: float,
+) -> tuple[np.ndarray, int]:
+    """Return sub-pixel, orientation-matched distances along source-edge normals."""
 
     source_gray = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2GRAY)
     target_gray = cv2.cvtColor(target_bgr, cv2.COLOR_BGR2GRAY)
@@ -219,41 +261,82 @@ def _edge_normal_residual(
     target_edge &= np.asarray(support, bool)
     yy, xx = np.nonzero(source_edge)
     if not xx.size or not target_edge.any():
-        return np.empty(0, np.float32)
+        return np.empty(0, np.float32), 0
     stride = max(1, int(np.ceil(xx.size / 4096)))
     yy, xx = yy[::stride].astype(np.float32), xx[::stride].astype(np.float32)
-    grad_x = cv2.Sobel(source_gray, cv2.CV_32F, 1, 0)[yy.astype(int), xx.astype(int)]
-    grad_y = cv2.Sobel(source_gray, cv2.CV_32F, 0, 1)[yy.astype(int), xx.astype(int)]
+    integer_y, integer_x = yy.astype(int), xx.astype(int)
+    grad_x = cv2.Sobel(source_gray, cv2.CV_32F, 1, 0)[integer_y, integer_x]
+    grad_y = cv2.Sobel(source_gray, cv2.CV_32F, 0, 1)[integer_y, integer_x]
+    expected = np.asarray(expected_flow, np.float32)[integer_y, integer_x]
     magnitude = np.hypot(grad_x, grad_y)
     usable = magnitude > 1e-6
     if not usable.any():
-        return np.empty(0, np.float32)
-    yy, xx, grad_x, grad_y, magnitude = (
-        value[usable] for value in (yy, xx, grad_x, grad_y, magnitude)
+        return np.empty(0, np.float32), int(xx.size)
+    yy, xx, grad_x, grad_y, magnitude, expected = (
+        value[usable] for value in (yy, xx, grad_x, grad_y, magnitude, expected)
     )
     normal_x, normal_y = grad_x / magnitude, grad_y / magnitude
-    offsets = np.arange(-search_px, search_px + 1, dtype=np.float32)
-    target = target_edge.astype(np.uint8)
-    best = np.full(xx.shape, np.inf, np.float32)
-    for offset in offsets:
-        sampled = cv2.remap(
-            target, xx + offset * normal_x, yy + offset * normal_y, cv2.INTER_NEAREST,
-            borderMode=cv2.BORDER_CONSTANT,
-        ).reshape(-1)
-        best = np.minimum(best, np.where(sampled > 0, abs(float(offset)), np.inf))
-    return best[np.isfinite(best)]
+    offsets = np.arange(-search_px, search_px + 0.5 * sample_step_px, sample_step_px, dtype=np.float32)
+    target_candidate = cv2.dilate(target_edge.astype(np.uint8), np.ones((3, 3), np.uint8))
+    target_grad_x = cv2.Sobel(target_gray, cv2.CV_32F, 1, 0)
+    target_grad_y = cv2.Sobel(target_gray, cv2.CV_32F, 0, 1)
+    scores = np.full((len(xx), len(offsets)), -np.inf, np.float32)
+    for index, offset in enumerate(offsets):
+        map_x, map_y = xx + offset * normal_x, yy + offset * normal_y
+        candidate = cv2.remap(target_candidate, map_x, map_y, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT).reshape(-1) > 0
+        sampled_x = cv2.remap(target_grad_x, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT).reshape(-1)
+        sampled_y = cv2.remap(target_grad_y, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT).reshape(-1)
+        sampled_magnitude = np.hypot(sampled_x, sampled_y)
+        orientation = np.zeros_like(sampled_magnitude)
+        valid_orientation = sampled_magnitude > 1e-6
+        orientation[valid_orientation] = np.abs(
+            sampled_x[valid_orientation] * normal_x[valid_orientation]
+            + sampled_y[valid_orientation] * normal_y[valid_orientation]
+        ) / sampled_magnitude[valid_orientation]
+        correspondence = (map_x - (xx + expected[:, 0])) ** 2 + (map_y - (yy + expected[:, 1])) ** 2
+        eligible = (
+            candidate
+            & (orientation >= np.cos(np.deg2rad(30.0)))
+            & (correspondence <= correspondence_band_px**2)
+        )
+        # Match the *nearest* compatible target edge.  Gradient strength only
+        # breaks ties; selecting the strongest edge would jump across a nearby
+        # parallel contour and falsely report the search boundary as residual.
+        scores[:, index] = np.where(
+            eligible,
+            -abs(float(offset)) + 1e-6 * sampled_magnitude * orientation,
+            -np.inf,
+        )
+    best_index = np.argmax(scores, axis=1)
+    best_score = scores[np.arange(len(xx)), best_index]
+    matched = np.isfinite(best_score) & (best_index > 0) & (best_index < len(offsets) - 1)
+    if not matched.any():
+        return np.empty(0, np.float32), int(len(xx))
+    selected = best_index[matched]
+    residual = offsets[selected]
+    return np.abs(residual).astype(np.float32), int(len(xx))
 
 
 def _matched_edge_normal_metrics(
-    old_bgr: np.ndarray, aligned_new_bgr: np.ndarray, support: np.ndarray, *, search_px: int,
-) -> tuple[float | None, float | None]:
+    old_bgr: np.ndarray, aligned_new_bgr: np.ndarray, support: np.ndarray, forward_flow: np.ndarray,
+    backward_flow: np.ndarray, *, search_px: int, sample_step_px: float, correspondence_band_px: float,
+    minimum_fraction: float,
+) -> tuple[float | None, float | None, int, int]:
     """Symmetric matched edge-normal P95 and absolute maximum after placement."""
 
-    values = np.concatenate((
-        _edge_normal_residual(old_bgr, aligned_new_bgr, support, search_px=search_px),
-        _edge_normal_residual(aligned_new_bgr, old_bgr, support, search_px=search_px),
-    ))
-    return _p95(values), (None if not values.size else float(np.max(values)))
+    forward, forward_count = _edge_normal_residual(
+        old_bgr, aligned_new_bgr, support, forward_flow, search_px=search_px,
+        sample_step_px=sample_step_px, correspondence_band_px=correspondence_band_px,
+    )
+    backward, backward_count = _edge_normal_residual(
+        aligned_new_bgr, old_bgr, support, backward_flow, search_px=search_px,
+        sample_step_px=sample_step_px, correspondence_band_px=correspondence_band_px,
+    )
+    values = np.concatenate((forward, backward))
+    count = forward_count + backward_count
+    if not values.size or count == 0 or len(values) / count < minimum_fraction:
+        return None, None, int(len(values)), count
+    return _p95(values), float(np.max(values)), int(len(values)), count
 
 
 def _null_metrics(
@@ -367,8 +450,12 @@ def run_v61_poc_pair(
     aligned_new = _central_corridor(final_new_full, settings.corridor_width_px)
     aligned_valid = _central_corridor(final_valid_full.astype(np.uint8), settings.corridor_width_px).astype(bool)
     overlap = valid & aligned_valid
-    edge_p95, edge_abs = _matched_edge_normal_metrics(
-        old, aligned_new, overlap, search_px=settings.edge_normal_search_px,
+    output_forward, output_backward = _output_coordinate_flows(evidence, alignment.matrix)
+    edge_p95, edge_abs, matched_edge_count, edge_sample_count = _matched_edge_normal_metrics(
+        old, aligned_new, overlap, output_forward, output_backward, search_px=settings.edge_normal_search_px,
+        sample_step_px=settings.edge_normal_sample_step_px,
+        correspondence_band_px=settings.edge_correspondence_band_px,
+        minimum_fraction=settings.minimum_matched_edge_fraction,
     )
     pre_pass = bool(
         reliable_count >= settings.minimum_reliable_pixels
@@ -381,6 +468,16 @@ def run_v61_poc_pair(
             left_frame_id, right_frame_id, fb_p95, edge_p95, edge_abs, None, None, None, None,
             reliable_count, audit.selected_model, True, False, False, False, 0, elapsed(), "pre_seam_geometry_gate_failed",
             coarse_dx, coarse_dy, coarse_response, audit.maximum_displacement_px,
+            matched_edge_count, edge_sample_count,
+            (None if edge_sample_count == 0 else matched_edge_count / edge_sample_count),
+        )
+    if not settings.allow_graphcut:
+        return V61PocPairMetrics(
+            left_frame_id, right_frame_id, fb_p95, edge_p95, edge_abs, None, None, None, None,
+            reliable_count, audit.selected_model, True, True, False, False, 0, elapsed(), "phase_1_2_graphcut_disabled",
+            coarse_dx, coarse_dy, coarse_response, audit.maximum_displacement_px,
+            matched_edge_count, edge_sample_count,
+            (None if edge_sample_count == 0 else matched_edge_count / edge_sample_count),
         )
     aligned_guards = build_video_hard_guards(
         old, aligned_new, evidence, old_valid=valid.copy(), new_valid=aligned_valid.copy(),
@@ -396,6 +493,8 @@ def run_v61_poc_pair(
             left_frame_id, right_frame_id, fb_p95, edge_p95, edge_abs, None, graph_audit.maximum_adjacent_row_step_px,
             None, None, reliable_count, audit.selected_model, True, True, True, False, 0, elapsed(), graph_audit.rejection_reason,
             coarse_dx, coarse_dy, coarse_response, audit.maximum_displacement_px,
+            matched_edge_count, edge_sample_count,
+            (None if edge_sample_count == 0 else matched_edge_count / edge_sample_count),
         )
     owner = np.full(valid.shape, int(left_frame_id), np.int32)
     owner[graphcut.choose_new] = int(right_frame_id)
@@ -412,6 +511,8 @@ def run_v61_poc_pair(
         quality.seam_step_abs_max_px, quality.double_edge_count, quality.ghost_count,
         reliable_count, audit.selected_model, True, True, True, True, blend.band_pixel_count,
         elapsed(), None, coarse_dx, coarse_dy, coarse_response, audit.maximum_displacement_px,
+        matched_edge_count, edge_sample_count,
+        (None if edge_sample_count == 0 else matched_edge_count / edge_sample_count),
     )
 
 
@@ -492,8 +593,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     results = [result.as_dict() for result in (run_v61_blocker_poc(spec) for spec in default_v61_blocker_specs(args.captures_root))]
     payload = {
-        "schema": "video-v61-blocker-poc/v1.1",
-        "phase": "1.1_coarse_placement_residual_gate",
+        "schema": "video-v61-blocker-poc/v1.2",
+        "phase": "1.2_edge_measurement_calibration",
         "isolated_candidate_only": True,
         "results": results,
     }

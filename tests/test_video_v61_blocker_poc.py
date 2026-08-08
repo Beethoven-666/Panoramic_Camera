@@ -11,6 +11,7 @@ import pytest
 
 from panorama_demo.video_visual_renderer import VideoDISPairEvidence
 from panorama_demo.video_v61_blocker_poc import (
+    V61BlockerPocConfig,
     V61BlockerPocSpec,
     run_v61_blocker_poc,
     run_v61_poc_pair,
@@ -52,7 +53,8 @@ def test_v61_poc_uses_one_real_pair_evidence_then_graphcut_and_narrow_blend() ->
     old, new = _translated_pair(1)
     result = run_v61_poc_pair(
         old, new, left_frame_id=10, right_frame_id=11,
-        evidence_factory=_exact_translation_evidence(1.0),
+        config=V61BlockerPocConfig(allow_graphcut=True),
+        evidence_factory=_exact_translation_evidence(0.0),
     )
 
     assert result.alignment_accepted
@@ -65,8 +67,11 @@ def test_v61_poc_uses_one_real_pair_evidence_then_graphcut_and_narrow_blend() ->
 
 
 def test_v61_poc_preseam_failure_does_not_call_graphcut() -> None:
-    old, new = _translated_pair(16)
-    result = run_v61_poc_pair(old, new, left_frame_id=10, right_frame_id=11)
+    old, new = _translated_pair(0)
+    result = run_v61_poc_pair(
+        old, new, left_frame_id=10, right_frame_id=11,
+        evidence_factory=_exact_translation_evidence(5.0),
+    )
 
     assert not result.pre_seam_pass
     assert not result.graphcut_called
@@ -91,6 +96,23 @@ def test_v61_exposes_not_evaluable_metrics_instead_of_ambiguous_nulls() -> None:
     assert not result.pre_seam_pass
     assert "edge_residual_p95_px" in result.not_evaluable_metrics
     assert "double_edge_count" in result.not_evaluable_metrics
+
+
+def test_v61_edge_measurement_excludes_a_noncorresponding_parallel_line() -> None:
+    old, _ = _translated_pair(0)
+    new = old.copy()
+    cv2.line(new, (150, 20), (150, 460), (255, 255, 255), 2)
+    result = run_v61_poc_pair(
+        old, new, left_frame_id=10, right_frame_id=11,
+        evidence_factory=_exact_translation_evidence(0.0),
+    )
+
+    assert result.edge_residual_p95_px is not None
+    assert result.edge_residual_abs_max_px is not None
+    assert result.edge_residual_abs_max_px <= 2.0
+    assert result.edge_match_fraction is not None
+    assert result.edge_match_fraction < 1.0
+    assert not result.graphcut_called
 
 
 def test_v61_phase_one_baseline_lock_hashes_the_original_evidence() -> None:
