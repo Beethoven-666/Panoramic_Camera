@@ -1,0 +1,38 @@
+{
+  "schema": "gemini305-video-s1-baseline-lock/v1",
+  "algorithm_id": "S01_output_first_vertical_alignment_v1",
+  "runs": {
+    "run_20260806_153033": {
+      "session": {
+        "manifest_sha256": "01c0e4cf226f339d034824c977580a72639176dd1a4c1c5af9cc89c1cf4daf57",
+        "calibration_sha256": "9e19b8dc506b27834b4fa0166294deecb1c23d93e3b7bb93184b3aa8c5691330",
+        "frames_csv_sha256": "67fa944e48b6534d15ed110f06740784caa65dbf40de6bfe82d56cbbcac22833"
+      },
+      "canvas_width": 1839,
+      "canvas_height": 480,
+      "source_frame_ids": [60, 94, 120, 144, 170, 198, 228, 257, 287, 321, 352, 374, 395, 415, 437, 458, 477, 501, 522, 543, 568, 591, 613, 637, 660, 684, 704, 724, 749, 777, 811, 845, 848],
+      "artifacts": {
+        "report_sha256": "b80d4200fffe11ea8229bcea428e809483f685728c08e666c4a2580f55b044e1",
+        "source_layout_sha256": "61f5f9a3210d638b5fe042c39bc4976362f8e29ab645f8d8e6293d0ddbf10c12",
+        "s0_owner_only_sha256": "9eb287069fed9d294c20232ef4549cfe1a11da4bff8af946835ee24f1d55c0f6",
+        "s1_owner_only_sha256": "bb7f013e105ff3c8688f66ee3ed75f260a92f44d853fb9115ca08f9c3650749a"
+      }
+    },
+    "run_20260807_140140": {
+      "session": {
+        "manifest_sha256": "0e82fa48b51703f228ee1922c1bfd2b7eebd74584d4deb7bfd872cf7242d07d0",
+        "calibration_sha256": "9e19b8dc506b27834b4fa0166294deecb1c23d93e3b7bb93184b3aa8c5691330",
+        "frames_csv_sha256": "ea9784b6c47e9d5b6b9898d82512a139e425cbab412d84dd55299037c7109380"
+      },
+      "canvas_width": 2155,
+      "canvas_height": 480,
+      "source_frame_ids": [31, 38, 42, 45, 47, 50, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 76, 78, 81, 83, 86, 88, 91, 93, 95, 97, 98, 99, 102, 104, 106, 109, 112, 116, 120, 128],
+      "artifacts": {
+        "report_sha256": "71bad1a5f95139e6037f1143617a12fefab3a80583916f870c583ea8a7a864cd",
+        "source_layout_sha256": "3457267fc4f7e7ca4f3362f3d9cc9f27531743ea75789aeaf20e030a57d9525a",
+        "s0_owner_only_sha256": "e9443b261216870b5bdb38362aa75b3146382b31c7a214c7230588eaa67f47f1",
+        "s1_owner_only_sha256": "f1d9d86adc399b386e54e1862b1f41037b1e2a261c4451b7f12ef276a2029ee4"
+      }
+    }
+  }
+}

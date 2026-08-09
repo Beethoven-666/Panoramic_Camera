@@ -268,6 +268,25 @@ pair 不可观测时仅把相应修正降为零。该路线不使用 v6/v6.1 ren
 输出同时包含 S0/S1 owner-only 与 1 px 过渡图、owner/valid map、逐 pair 候选/曲线/gain、
 source/overlap CSV 和分阶段性能报告。画质指标仅用于比较，不会阻止主图生成。
 
+### 2.5 隔离的 S1.1 对象安全直线交接实验
+
+S1.1 继续使用同一开发入口，但采用 v2 配置并强制提供经过哈希锁定的 S01 基线。它逐项继承
+S01 的真实 source、初始布局、首尾 full-FOV 和画布尺寸；只有可观测且 midpoint 穿过对象
+保护区、允许范围内又没有安全直线的 pair 才能局部补选被两端包围的真实中间帧。最终 owner
+始终是无过渡、无 foreign fill 的单调直线分区，纵向修正仅在窄且不重叠的 support 内以 pair
+原子事务提交。该实验仍为 `diagnostic_only`，不会修改生产入口或 production lock。
+
+```powershell
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-s1-experiment.exe' SESSION `
+  --config '.\configs\video_candidates\S011_object_safe_straight_handoff_v1.yaml' `
+  --baseline FROZEN_S01_OUTPUT `
+  --output BENCHMARK_OUTPUT
+```
+
+v2 固定输出 nominal midpoint、handoff-only 和 final 三阶段主图，并为每一阶段保存几何 owner、
+声明 owner 有效性、最终真实帧 owner 和最终 valid 四个 provenance 数组。`minimal` 模式保留主图、
+provenance、报告、性能和最差 crop；`audit` 模式另外保存完整 pair 证据。
+
 ### 3. 验证 CUDA Open3D 与 ORB-SLAM3
 
 正式并行位姿前端要求 Open3D 相邻边实际使用 `open3d_tensor_cuda_rgbd`。先执行：

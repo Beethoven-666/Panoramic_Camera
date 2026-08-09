@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
+
 import cv2
 import numpy as np
+import pytest
 
 import panorama_demo.video_s1_experiment as experiment
 from panorama_demo.quality import FrameQuality, MotionEstimate
@@ -11,6 +15,57 @@ from panorama_demo.video_session import VideoSession
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_frozen_s01_baseline_verifier_rejects_artifact_drift(tmp_path: Path) -> None:
+    session = tmp_path / "run_test"
+    baseline = tmp_path / "baseline"
+    session.mkdir()
+    baseline.mkdir()
+    for name, payload in (
+        ("manifest.json", b"{}"),
+        ("calibration.json", b"{}"),
+        ("frames.csv", b"frame_id\n"),
+    ):
+        (session / name).write_bytes(payload)
+    report = {"algorithm_id": "S01_output_first_vertical_alignment_v1", "source_selection": {"source_frame_ids": [1, 2]}}
+    (baseline / "report.json").write_text(json.dumps(report), encoding="utf-8")
+    (baseline / "source_layout.json").write_text('{"sources": []}', encoding="utf-8")
+    image = np.zeros((4, 6, 3), dtype=np.uint8)
+    assert cv2.imwrite(str(baseline / "s0_panorama_owner_only.png"), image)
+    assert cv2.imwrite(str(baseline / "s1_panorama_owner_only.png"), image)
+    lock = tmp_path / "lock.json"
+    lock.write_text(json.dumps({
+        "schema": "gemini305-video-s1-baseline-lock/v1",
+        "runs": {
+            "run_test": {
+                "session": {
+                    "manifest_sha256": _sha(session / "manifest.json"),
+                    "calibration_sha256": _sha(session / "calibration.json"),
+                    "frames_csv_sha256": _sha(session / "frames.csv"),
+                },
+                "canvas_width": 6,
+                "canvas_height": 4,
+                "source_frame_ids": [1, 2],
+                "artifacts": {
+                    "report_sha256": _sha(baseline / "report.json"),
+                    "source_layout_sha256": _sha(baseline / "source_layout.json"),
+                    "s0_owner_only_sha256": _sha(baseline / "s0_panorama_owner_only.png"),
+                    "s1_owner_only_sha256": _sha(baseline / "s1_panorama_owner_only.png"),
+                },
+            }
+        },
+    }), encoding="utf-8")
+
+    verified = experiment.verify_s01_baseline(session, baseline, lock_path=lock)
+    assert verified["run_name"] == "run_test"
+    (baseline / "report.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="artifact hash mismatch"):
+        experiment.verify_s01_baseline(session, baseline, lock_path=lock)
 
 
 def test_experiment_writes_complete_s0_s1_when_pair_alignment_degrades(tmp_path, monkeypatch) -> None:

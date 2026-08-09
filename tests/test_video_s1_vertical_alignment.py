@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import pytest
 
 import panorama_demo.video_s1_vertical_alignment as alignment
 from panorama_demo.video_s1_vertical_alignment import (
@@ -74,6 +75,23 @@ def test_feature_cache_computes_each_real_source_once(monkeypatch):
     assert cache[10].gray.shape == (64, 48)
     assert cache[10].lab.shape == (64, 48, 3)
     assert cache[10].valid_mask.dtype == np.bool_
+
+
+def test_batched_zncc_is_equivalent_to_scalar_masked_reference():
+    rng = np.random.default_rng(812)
+    reference = rng.normal(size=(24, 40)).astype(np.float32)
+    samples = rng.normal(size=(11, 24, 40)).astype(np.float32)
+    valid = rng.random(size=samples.shape) > 0.18
+
+    batched = alignment._batched_zncc_cost(reference, samples, valid)
+    scalar = np.asarray(
+        [
+            alignment._zncc_cost(reference, samples[index], valid[index])
+            for index in range(samples.shape[0])
+        ]
+    )
+
+    assert batched == pytest.approx(scalar, abs=1e-12)
 
 
 def test_top_k_nms_multi_subwindow_and_lr_confidence_recover_vertical_shift():
@@ -208,3 +226,118 @@ def test_gain_selection_chooses_correction_and_full_alignment_is_stable():
     assert block_gains and np.median(block_gains) >= 0.5
     assert np.isfinite(row_gain).all()
 
+
+def _s11_config(**overrides):
+    values = dict(
+        normal_coarse_search_radius_y_px=6,
+        expanded_coarse_search_radius_y_px=16,
+        normal_top_k_candidates=3,
+        expanded_top_k_candidates=5,
+        fine_search_radius_y_px=2.0,
+        fine_search_step_px=0.25,
+        minimum_independent_subwindow_agreement=2,
+        maximum_subwindow_spread_px=0.75,
+    )
+    values.update(overrides)
+    return VerticalAlignmentConfig(**values)
+
+
+def test_s11_normal_border_expands_and_fine_search_recovers_quarter_pixel_shift():
+    rng = np.random.default_rng(108)
+    left_image = cv2.GaussianBlur(
+        rng.integers(0, 256, (160, 240, 3), dtype=np.uint8), (3, 3), 0
+    )
+    right_image = cv2.warpAffine(
+        left_image,
+        np.float32([[1.0, 0.0, 0.0], [0.0, 1.0, 7.25]]),
+        (240, 160),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+    )
+    left = precompute_source_features(left_image, horizontal_scale=0.5)
+    right = precompute_source_features(right_image, horizontal_scale=0.5)
+
+    windows = generate_vertical_candidates(left, right, _s11_config())
+    centre = [item for item in windows[len(windows) // 2] if not item.is_missing]
+
+    assert len(windows) == 18  # 24-px fine windows at the configured 8-px step.
+    assert centre
+    best = max(centre, key=lambda item: item.confidence)
+    assert best.dy_px == pytest.approx(7.25, abs=0.3)
+    assert best.left_right_error_px <= 0.75
+    assert best.multi_x_consensus_error_px <= 0.75
+
+
+def test_s11_risk_search_reaches_sixteen_and_two_of_three_subwindows_agree():
+    left_image, _ = _textured_pair(height=160, width=300)
+    right_image = cv2.warpAffine(
+        left_image,
+        np.float32([[1.0, 0.0, 0.0], [0.0, 1.0, 12.0]]),
+        (300, 160),
+        borderMode=cv2.BORDER_CONSTANT,
+    )
+    # Corrupt the centre subwindow; the two independent outer windows remain
+    # sufficient and are not averaged with the outlier.
+    right_image[:, 100:200] = 127
+    left = precompute_source_features(left_image, horizontal_scale=1.0)
+    right = precompute_source_features(right_image, horizontal_scale=1.0)
+
+    windows = generate_vertical_candidates(left, right, _s11_config(), risk_pair=True)
+    real = [item for item in windows[len(windows) // 2] if not item.is_missing]
+
+    assert any(abs(item.dy_px - 12.0) <= 0.3 for item in real)
+    assert all(item.multi_x_consensus_error_px <= 0.75 for item in real)
+
+
+def test_s11_trusted_segments_keep_missing_cores_and_long_gap_at_identity():
+    config = _s11_config(trusted_row_taper_px=8)
+    selected = (
+        _candidate(0, 2.0, 0.1),
+        _candidate(1, 2.0, 0.1),
+        _candidate(2, 0.0, config.dp_missing_cost, missing=True),
+        _candidate(3, 0.0, config.dp_missing_cost, missing=True),
+        _candidate(4, -1.5, 0.1),
+        _candidate(5, -1.5, 0.1),
+    )
+
+    curve = fit_smooth_vertical_curve(selected, 128, config)
+
+    assert np.all(curve.dy_applied[45:68] == 0.0)
+    assert np.any(curve.dy_applied[12:32] > 0.0)
+    assert np.any(curve.dy_applied[80:104] < 0.0)
+    assert np.max(np.abs(np.diff(curve.dy_applied))) <= config.maximum_local_slope + 1e-6
+
+
+def test_s11_refines_later_top_k_when_best_coarse_candidate_fails_fb(monkeypatch):
+    image, _ = _textured_pair(height=64, width=96)
+    left = precompute_source_features(image, horizontal_scale=0.5)
+    right = precompute_source_features(image, horizontal_scale=0.5)
+    coarse_costs = {
+        0: (0.05, 0.05, 0.05, 0.05, 1.0, 0.8),
+        4: (0.10, 0.10, 0.10, 0.10, 1.0, 0.8),
+        -4: (0.20, 0.20, 0.20, 0.20, 1.0, 0.8),
+    }
+
+    monkeypatch.setattr(
+        alignment,
+        "_integer_costs_for_window",
+        lambda *args, **kwargs: (coarse_costs, (0, 4, -4)),
+    )
+    audited_top_k = []
+
+    def only_second_passes(*args, coarse_dys, **kwargs):
+        audited_top_k.append(tuple(coarse_dys))
+        # Candidate 0 represents a candidate-specific FB failure.  Candidate
+        # 4 independently passes 2/3 consensus and reverse checking.
+        return {4: (4.0, (4.0, 4.0, 7.0), (-4.0, -4.0, -1.0))}
+
+    monkeypatch.setattr(alignment, "_fine_candidates_consensus", only_second_passes)
+
+    windows = generate_vertical_candidates(left, right, _s11_config())
+
+    assert audited_top_k
+    assert all(values == (0, 4, -4) for values in audited_top_k)
+    assert all(
+        any(not candidate.is_missing and candidate.dy_px == 4.0 for candidate in window)
+        for window in windows
+    )

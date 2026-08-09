@@ -4,9 +4,11 @@ import numpy as np
 import pytest
 
 from panorama_demo.video_s1_warp import (
+    allocate_non_overlapping_warp_supports,
     audit_vertical_offsets,
     compose_final_inverse_map,
     compose_pair_vertical_warp,
+    compose_pair_warp_transaction,
     cosine_fade_weights,
     cosine_shoulder_weights,
     sample_vertical_correction,
@@ -29,6 +31,21 @@ def test_cosine_shoulder_is_maximum_at_seam_and_zero_at_centre() -> None:
         left,
         cosine_fade_weights(x, boundary_x=10.0, shoulder_width_px=4.0, side="left"),
     )
+
+
+def test_cosine_fade_can_keep_a_boundary_plateau_before_returning_to_identity() -> None:
+    x = np.arange(0.0, 17.0)
+    weights = cosine_fade_weights(
+        x,
+        boundary_x=16.0,
+        shoulder_width_px=16.0,
+        plateau_width_px=8.0,
+        side="left",
+    )
+
+    assert np.allclose(weights[8:], 1.0)
+    assert weights[0] == pytest.approx(0.0)
+    assert 0.0 < weights[4] < 1.0
 
 
 def test_vertical_curve_is_local_and_pair_warp_is_symmetric() -> None:
@@ -138,3 +155,70 @@ def test_validate_inverse_map_checks_only_owned_valid_samples() -> None:
         validate_inverse_map(
             map_x, map_y, valid_mask=valid, source_width=4, source_height=3
         )
+
+
+def test_s11_support_allocation_is_bounded_and_keeps_identity_column() -> None:
+    assert allocate_non_overlapping_warp_supports(9) == (4, 4)
+    assert allocate_non_overlapping_warp_supports(80) == (16, 16)
+    assert allocate_non_overlapping_warp_supports(
+        20, has_left_pair=False, has_right_pair=True
+    ) == (0, 9)
+    with pytest.raises(ValueError, match="too narrow"):
+        allocate_non_overlapping_warp_supports(8)
+
+
+@pytest.mark.parametrize(
+    ("reference", "left_changes", "right_changes"),
+    [("left", False, True), ("right", True, False), ("none", True, True)],
+)
+def test_s11_reference_source_policy_is_committed_as_one_pair(
+    reference, left_changes, right_changes
+) -> None:
+    height, width = 32, 25
+    base = np.broadcast_to(np.arange(height, dtype=np.float64)[:, None], (height, width)).copy()
+    curve = {
+        "y": [0.0, 4.0, 16.0, 27.0, 31.0],
+        "dy_applied": [0.0, 0.2, 0.2, 0.2, 0.0],
+    }
+
+    result = compose_pair_warp_transaction(
+        base,
+        base,
+        boundary_x=12.0,
+        curve=curve,
+        reference_source=reference,
+        left_support_px=6,
+        right_support_px=6,
+    )
+
+    assert result.committed
+    assert (not np.array_equal(result.left_map_y, base)) is left_changes
+    assert (not np.array_equal(result.right_map_y, base)) is right_changes
+    assert np.array_equal(base, np.broadcast_to(np.arange(height)[:, None], base.shape))
+
+
+def test_s11_mixed_reference_skips_and_one_side_failure_rolls_back_both() -> None:
+    height, width = 12, 15
+    base = np.broadcast_to(np.arange(height, dtype=np.float64)[:, None], (height, width)).copy()
+    curve = {"y": [0.0, 5.0, 11.0], "dy_applied": [0.5, 0.5, 0.5]}
+    mixed = compose_pair_warp_transaction(
+        base, base, boundary_x=7.0, curve=curve, reference_source="both"
+    )
+    assert mixed.pair_commit_status == "skipped_mixed_reference"
+    assert np.array_equal(mixed.left_map_y, base) and np.array_equal(mixed.right_map_y, base)
+
+    # The right full correction is out of bounds on the last valid row.  The
+    # reference left side must not remain as a partially committed transaction.
+    rolled_back = compose_pair_warp_transaction(
+        base,
+        base,
+        boundary_x=7.0,
+        curve=curve,
+        reference_source="left",
+        right_source_height=height,
+    )
+    assert rolled_back.pair_commit_status == "rolled_back"
+    assert np.array_equal(rolled_back.left_map_y, base)
+    assert np.array_equal(rolled_back.right_map_y, base)
+    assert np.count_nonzero(rolled_back.left_offset) == 0
+    assert np.count_nonzero(rolled_back.right_offset) == 0
