@@ -1,0 +1,75 @@
+schema: gemini305-video-s1-experiment/v1
+algorithm_id: S01_output_first_vertical_alignment_v1
+scan:
+  analysis_width: 320
+  motion_backend: lk_ransac
+  fallback_motion_backend: phase_correlation
+  maximum_workers: 4
+source_selection:
+  normal_target_step_px: 12.0
+  risk_target_step_px: 8.0
+  maximum_preferred_step_px: 18.0
+  emergency_step_px: 24.0
+  target_common_overlap_px: 128
+  minimum_s1_overlap_px: 64
+  shoulder_target_px: 64
+  shoulder_minimum_px: 32
+  shoulder_maximum_px: 96
+  adjacent_frame_rescue: true
+s0:
+  transition_width_px: 1
+  fill_invalid_owner_from_adjacent_real_source: true
+  synthetic_hole_fill: false
+s1:
+  horizontal_scale: 0.5
+  preserve_full_vertical_resolution: true
+  window_height_px: 32
+  window_step_px: 16
+  minimum_window_height_px: 16
+  maximum_window_height_px: 48
+  horizontal_subwindow_width_px: 80
+  horizontal_subwindow_count: 3
+  minimum_horizontal_subwindow_width_px: 48
+  search_radius_y_px: 16
+  top_k_candidates: 5
+  candidate_nms_radius_px: 2
+  allow_subpixel_refinement: true
+  luminance_zncc_weight: 0.45
+  vertical_gradient_zncc_weight: 0.4
+  lab_color_weight: 0.15
+  minimum_valid_fraction_for_candidate: 0.45
+  minimum_2d_texture_score: 0.05
+  left_right_sigma_px: 1.5
+  candidate_margin_sigma: 0.08
+  multi_x_consensus_sigma_px: 1.5
+  use_ransac_soft_prior: true
+  ransac_minimum_points: 6
+  ransac_residual_px: 2.0
+  dp_first_order_weight: 1.0
+  dp_second_order_weight: 0.5
+  dp_missing_cost: 1.25
+  dp_soft_prior_weight: 0.25
+  smoothing_control_spacing_px: 80
+  smoothing_data_weight: 1.0
+  smoothing_first_order_weight: 0.25
+  smoothing_second_order_weight: 2.0
+  maximum_local_slope: 0.08
+  gain_candidates:
+  - 0.0
+  - 0.25
+  - 0.5
+  - 1.0
+  gain_block_height_px: 64
+  gain_smoothness_weight: 0.2
+  warp_support_left_px: 64
+  warp_support_right_px: 64
+  symmetric_pair_warp: true
+  fade_function: cosine
+output:
+  write_s0_panorama: true
+  write_s1_panorama: true
+  write_owner_map: true
+  write_pair_diagnostics: true
+  write_candidate_heatmaps: true
+  write_before_after_crops: true
+  write_performance_report: true

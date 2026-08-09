@@ -1,0 +1,64 @@
+{
+  "cpu_workers": 4,
+  "each_source_remapped_once": true,
+  "full_resolution_remap_invocations": 33,
+  "gpu_used_only_for_remap": false,
+  "pair_count": 32,
+  "raw_frame_count": 789,
+  "slowest_pairs": [
+    {
+      "pair_index": 11,
+      "seconds": 0.6948677999971551
+    },
+    {
+      "pair_index": 29,
+      "seconds": 0.6855501999962144
+    },
+    {
+      "pair_index": 5,
+      "seconds": 0.6775321000022814
+    },
+    {
+      "pair_index": 10,
+      "seconds": 0.6771388999986812
+    },
+    {
+      "pair_index": 9,
+      "seconds": 0.6764793999973335
+    },
+    {
+      "pair_index": 17,
+      "seconds": 0.6737332999982755
+    },
+    {
+      "pair_index": 28,
+      "seconds": 0.673164200001338
+    },
+    {
+      "pair_index": 23,
+      "seconds": 0.6722286000003805
+    },
+    {
+      "pair_index": 31,
+      "seconds": 0.670684100005019
+    },
+    {
+      "pair_index": 6,
+      "seconds": 0.6703747999999905
+    }
+  ],
+  "source_count": 33,
+  "stage_seconds": {
+    "candidate_generation": 21.251860500000475,
+    "diagnostic_export": 0.9079319999946165,
+    "feature_precompute": 0.3526750999953947,
+    "final_full_resolution_remap": 0.4511742000031518,
+    "inverse_map_build": 0.0010668000031728297,
+    "s0_render": 0.024329499996383674,
+    "s1_compose": 0.02555739999661455,
+    "scan_analysis": 5.124521600002481,
+    "session_load": 1.375656699994579,
+    "source_selection": 0.0033878999965963885,
+    "total": 29.69454399999813
+  }
+}

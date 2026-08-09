@@ -249,6 +249,25 @@ silently labelled as an SLA success.
 `video_tsdf_mesh_viewer.html` 及 `video_3d_delivery.json`；3-D 失败只写
 `video_3d_failure.json`，不会撤销已经发布的 2-D 交付。
 
+### 2.4 隔离的 S01 纵向对齐实验
+
+`g305-video-s1-experiment` 是开发专用的 output-first 实验入口，不修改
+`g305-video-panorama`、production lock 或正式交付。它只使用低分辨率 RGB 运动选择真实
+source，生成动态中央 owner 的 S0，并在相邻接缝局部估计一维 `Δy(y)` 生成 S1；任一窗口或
+pair 不可观测时仅把相应修正降为零。该路线不使用 v6/v6.1 renderer、GraphCut、MultiBand、
+二维 mesh、DIS/RAFT 形变、RGB-D 补纹理或 TSDF。
+
+```powershell
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-s1-experiment.exe' SESSION `
+  --config '.\configs\video_candidates\S01_output_first_vertical_alignment_v1.yaml' `
+  --output BENCHMARK_OUTPUT
+```
+
+未重新安装 editable 包时，也可从仓库运行
+`D:\Panoramic_Camera\.conda\python.exe -m panorama_demo.video_s1_experiment ...`。
+输出同时包含 S0/S1 owner-only 与 1 px 过渡图、owner/valid map、逐 pair 候选/曲线/gain、
+source/overlap CSV 和分阶段性能报告。画质指标仅用于比较，不会阻止主图生成。
+
 ### 3. 验证 CUDA Open3D 与 ORB-SLAM3
 
 正式并行位姿前端要求 Open3D 相邻边实际使用 `open3d_tensor_cuda_rgbd`。先执行：

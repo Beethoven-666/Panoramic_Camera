@@ -1,0 +1,40 @@
+{
+  "diagnostics": {
+    "missing_count": 3,
+    "ransac_soft_prior_used": true,
+    "window_count": 29
+  },
+  "elapsed_seconds": 0.6585713000022224,
+  "gain_blocks": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "left_frame_id": 95,
+  "overlap": {
+    "left_frame_id": 95,
+    "overlap_width_p5": 128.0,
+    "overlap_width_p50": 128.0,
+    "overlap_width_p95": 128.0,
+    "owner_boundary_x": 1422,
+    "pair_index": 25,
+    "right_frame_id": 97,
+    "roi_left_x": 1358,
+    "roi_right_x": 1486,
+    "s1_evaluable_fraction": 1.0
+  },
+  "pair_index": 25,
+  "pair_status": "s1_ok",
+  "ransac": {
+    "available": true,
+    "inlier_count": 21,
+    "intercept": -1.928857897294636,
+    "slope": 0.0018274772977959223
+  },
+  "right_frame_id": 97
+}
