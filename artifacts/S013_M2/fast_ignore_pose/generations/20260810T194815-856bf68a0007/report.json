@@ -1,0 +1,30 @@
+{
+  "diagnostic_only": true,
+  "direct_local_delta_is_fatal": false,
+  "generation_id": "20260810T194815-856bf68a0007",
+  "manual_review_required": true,
+  "motion_graph_connected_telemetry": false,
+  "motion_graph_disconnection_is_fatal": false,
+  "optimizer_state": "not_started_m2",
+  "p0_parent": "P0/P0_completion.json",
+  "pair_count": 128,
+  "panorama_claim": "visual_nonmetric",
+  "performance": {
+    "stage_seconds": {
+      "input_and_preflight": 0.5320246999908704,
+      "motion_measurement": 1.8517838999978267,
+      "p0_render_and_export": 1.2131410999863874,
+      "progress_and_layout": 0.00019069999689236283,
+      "trajectory": 2.3300002794712782e-05
+    }
+  },
+  "production_eligible": false,
+  "production_lock_eligible": false,
+  "render_state": "base_generated",
+  "schema": "gemini305-video-s13-output-first-report/v1",
+  "trajectory": {
+    "direct_pose_count": 0,
+    "pose_supported": false,
+    "source": "ignore_pose"
+  }
+}

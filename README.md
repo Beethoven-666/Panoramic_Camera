@@ -854,3 +854,19 @@ model purity while exposing feature loss separately; it does not bypass the
 0.45 secondary-motion/parallax rejection. The legacy
 `minimum_inlier_count=16` and `minimum_inlier_ratio=0.45` keys are retained only
 as fixed compatibility/audit aliases and are not additional reliability gates.
+
+## S1.3 output-first M0–M2 diagnostic candidate
+
+`S013_output_first_progressive_dense_central_slit_v3` is an isolated,
+development-only route selected through `g305-video-experiment --algorithm
+candidate`. Its config and hash-bound sibling manifest live under
+`configs/video_candidates/s013/`. The route dispatches before the shared video
+pipeline and never reads S1/S1.1/S1.2 bundles or a production lock.
+
+Exactly one trajectory policy must be explicit: `--trajectory-cache`,
+`--reuse-online-trajectory`, `--run-offline-orb`, or `--ignore-pose`. Missing
+or partial direct pose never blocks an RGB-motion P0 and never becomes an
+invented pose. P0 is a fixed-midpoint hard-owner panorama sampled once from
+each contributing real RGB source; it is hash-sealed before `current_base.json`
+is atomically replaced. M3 and later optimization stages remain intentionally
+unimplemented until the base layout is reviewed.

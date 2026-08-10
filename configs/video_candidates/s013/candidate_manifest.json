@@ -1,0 +1,12 @@
+{
+  "candidates": {
+    "S013_output_first_progressive_dense_central_slit_v3": {
+      "config_sha256": "13f669495f4b345df71ac3f7077f7255f15120aa04c405cac99a55b6ca8d27dc",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry"],
+      "required_output_components": ["s013_p0_owner_only"]
+    }
+  },
+  "manifest_sha256": "4238138c2d953f5d7a57dc37df22c27f014c03fcb86603e7e14ce22dd9c070ca",
+  "schema": "gemini305-video-candidate-manifest/v1"
+}

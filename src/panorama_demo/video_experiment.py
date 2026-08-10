@@ -17,7 +17,7 @@ from .video_dataset_lock import (
     write_or_verify_experiment_dataset_lock,
 )
 from .video_observability import ObservabilitySpec
-from .video_algorithm import load_algorithm_config
+from .video_algorithm import build_algorithm_spec, load_algorithm_config
 from .video_pipeline import run_video_algorithm
 from .video_panorama import run_direct_orb_tracking_gate
 from .video_split import SPLIT_DEFINITION, write_or_verify_split
@@ -45,6 +45,21 @@ def _parser() -> argparse.ArgumentParser:
         "--trajectory-cache",
         type=Path,
         help="Verified real ORB trajectory cache produced by g305-video-freeze-trajectory.",
+    )
+    parser.add_argument(
+        "--run-offline-orb",
+        action="store_true",
+        help="S1.3 candidate only: explicitly run a new complete offline ORB trajectory.",
+    )
+    parser.add_argument(
+        "--ignore-pose",
+        action="store_true",
+        help="S1.3 candidate only: do not read any trajectory and use RGB evidence alone.",
+    )
+    parser.add_argument(
+        "--simulate-optimizer-all-fail",
+        action="store_true",
+        help="S1.3 test hook: fail all post-P0 optimizers after the immutable base seal.",
     )
     parser.add_argument("--config", type=Path)
     parser.add_argument(
@@ -112,6 +127,30 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("candidate requires --candidate-config")
     if args.algorithm == "baseline" and args.candidate_config is not None:
         raise ValueError("baseline does not accept --candidate-config")
+    run_offline_orb = bool(getattr(args, "run_offline_orb", False))
+    ignore_pose = bool(getattr(args, "ignore_pose", False))
+    simulate_optimizer_all_fail = bool(getattr(args, "simulate_optimizer_all_fail", False))
+    s13_spec = None
+    if args.algorithm == "candidate" and args.candidate_config is not None:
+        from .video_s13_contract import S13_ALGORITHM_ID, S13_IMPLEMENTATION_ID, is_s13_identity, load_s13_config
+
+        candidate_path = Path(args.candidate_config).expanduser().resolve()
+        try:
+            candidate_text = candidate_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            candidate_text = ""
+        claims_s13 = S13_ALGORITHM_ID in candidate_text or S13_IMPLEMENTATION_ID in candidate_text
+        if claims_s13:
+            # The sibling manifest, self hashes, and exact identity are all
+            # verified before any shared lock, facade, renderer, or publisher.
+            s13_spec = build_algorithm_spec(args.candidate_config, expected_role="candidate")
+            load_s13_config(args.candidate_config)
+            if not is_s13_identity(
+                algorithm_id=s13_spec.algorithm_id,
+                implementation_id=s13_spec.implementation_id,
+                role=s13_spec.role,
+            ):
+                raise ValueError("S1.3 claimed identity is incomplete")
     reuse_online_trajectory = bool(getattr(args, "reuse_online_trajectory", False))
     if reuse_online_trajectory and args.algorithm != "candidate":
         raise ValueError("--reuse-online-trajectory is candidate-only")
@@ -119,7 +158,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     split = getattr(args, "split", None)
     if (progress_range is None) != (split is None):
         raise ValueError("--progress-range and --split must be provided together")
-    if args.algorithm == "candidate" and progress_range is None:
+    if args.algorithm == "candidate" and progress_range is None and s13_spec is None:
         raise ValueError(
             "candidate experiments require an immutable non-holdout --split and --progress-range"
         )
@@ -137,6 +176,28 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("--tracking-gate-only always reruns direct ORB and cannot reuse a trajectory")
         if progress_range is not None:
             raise ValueError("--tracking-gate-only requires the complete real scan")
+    if s13_spec is not None:
+        from .video_s13_experiment import run_s13_experiment
+
+        report = run_s13_experiment(
+            input_path=args.input,
+            output=args.output,
+            candidate_config=args.candidate_config,
+            algorithm_spec=s13_spec,
+            trajectory_cache=getattr(args, "trajectory_cache", None),
+            reuse_online_trajectory=reuse_online_trajectory,
+            run_offline_orb=run_offline_orb,
+            ignore_pose=ignore_pose,
+            config_path=getattr(args, "config", None),
+            simulate_optimizer_all_fail=simulate_optimizer_all_fail,
+        )
+        args.output.mkdir(parents=True, exist_ok=True)
+        (args.output / "experiment_environment.json").write_text(
+            json.dumps(_seed(), indent=2, sort_keys=True), encoding="utf-8"
+        )
+        return report
+    if run_offline_orb or ignore_pose or simulate_optimizer_all_fail:
+        raise ValueError("S1.3-only flags cannot be used by legacy baseline/candidates")
     observe = ObservabilitySpec.from_values(
         report_level=args.report_level, artifact_level=args.artifact_level
     )
