@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import cv2
+import numpy as np
 import panorama_demo.video_s12_experiment as experiment
 from panorama_demo.synthetic import generate_sequence
 import pytest
@@ -101,12 +104,9 @@ def test_s12_runs_synthetic_stage_a_without_any_s1_artifact(
     config["anchors"]["minimum_spacing_px"] = 40
     config["anchors"]["maximum_spacing_px"] = 80
     config["anchors"]["target_search_radius_px"] = 20
-    config["motion_graph"]["minimum_inlier_ratio"] = 0.05
-    config["motion_graph"]["minimum_inlier_count"] = 4
-    config["motion_graph"]["minimum_grid_coverage"] = 0.05
-    config["motion_graph"]["minimum_vertical_span_fraction"] = 0.10
-    config["motion_graph"]["lk_forward_backward_max_px"] = 2.0
-    config["motion_graph"]["maximum_parallax_cluster_ratio"] = 0.99
+    config["anchors"]["maximum_direct_local_path_difference_px"] = 20.0
+    config["motion_graph"]["anchor_long"]["minimum_spacing_px"] = 1.0
+    config["motion_graph"]["anchor_long"]["maximum_spacing_px"] = 80.0
     config_path = tmp_path / "s12.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     output = tmp_path / "stage_a"
@@ -157,6 +157,10 @@ def test_write_failure_preserves_old_bundle_and_writes_sibling_failure(
     assert marker.read_text(encoding="utf-8") == "keep"
     failure = tmp_path / "stage_a.failure.json"
     assert json.loads(failure.read_text(encoding="utf-8"))["structural_fatal"] is True
+    failure_bundle = tmp_path / "stage_a.failure_bundle"
+    assert json.loads((failure_bundle / "failure.json").read_text(encoding="utf-8"))[
+        "structural_valid"
+    ] is False
 
 
 def test_atomic_publish_replaces_old_bundle(tmp_path: Path) -> None:
@@ -195,3 +199,124 @@ def test_atomic_publish_rename_failure_restores_old_bundle(
         experiment._publish(staging, output)
     assert (output / "old.txt").read_text(encoding="utf-8") == "old"
     assert staging.exists()
+
+
+def test_fixed_region_uses_full_solution_when_reference_is_not_selected(
+    tmp_path: Path, monkeypatch
+) -> None:
+    reference = np.full((80, 120, 3), 127, dtype=np.uint8)
+    reference_path = tmp_path / "frame_480.png"
+    assert cv2.imwrite(str(reference_path), reference)
+    monkeypatch.setattr(
+        experiment,
+        "_load_validation_regions",
+        lambda _run: {
+            "box_and_flaps": {
+                "reference_frame_id": 480,
+                "source_bbox": [40, 20, 70, 50],
+            }
+        },
+    )
+    assignment = SimpleNamespace(
+        frame_id=481, center_x=90.0, left_x=0, right_x=180, width=180, zero_width=False
+    )
+    schedule = SimpleNamespace(assignments=(assignment,))
+    graph = SimpleNamespace(nodes=(SimpleNamespace(frame_id=480), SimpleNamespace(frame_id=481)))
+    render = SimpleNamespace(
+        image=np.full((80, 180, 3), 64, dtype=np.uint8),
+        owner_frame_id=np.full((80, 180), 481, dtype=np.int32),
+        column_frame_id=np.full(180, 481, dtype=np.int32),
+    )
+    session = SimpleNamespace(
+        video=SimpleNamespace(
+            rgbd=SimpleNamespace(
+                frames=(SimpleNamespace(frame_id=480, color_path=reference_path),)
+            )
+        )
+    )
+    rows, failures = experiment._write_region_crops(
+        tmp_path / "bundle",
+        render,
+        schedule,
+        graph,
+        (100.0, 110.0),
+        session,
+        SimpleNamespace(cx=60.0),
+        "run",
+    )
+    region = tmp_path / "bundle" / "fixed_regions" / "box_and_flaps"
+    assert not failures
+    assert rows[0]["available"] is True
+    assert (region / "reference.png").is_file()
+    assert (region / "panorama.png").is_file()
+    assert (region / "owner_overlay.png").is_file()
+    provenance = json.loads((region / "provenance.json").read_text(encoding="utf-8"))
+    assert provenance["canvas_bbox"] == [80, 20, 110, 50]
+    assert provenance["manual_review"]["status"] == "pending"
+    assert provenance["lock_eligible"] is False
+
+
+def _unfinished_report() -> dict:
+    return {
+        "performance": {
+            "algorithm_seconds": 10.0,
+            "audit_export_seconds": 6.0,
+            "atomic_publish_seconds": 0.0,
+            "final_wall_seconds": 0.0,
+            "runtime_finalized": False,
+            "target_seconds": 20.0,
+            "target_pass": False,
+        },
+        "acceptance": {"pass": True, "structural_fatal": False, "reasons": []},
+        "lock_eligible": False,
+    }
+
+
+def test_target_pass_includes_audit_export_and_atomic_publish(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output = tmp_path / "bundle"
+    output.mkdir()
+    monkeypatch.setattr(experiment.time, "perf_counter", lambda: 21.0)
+    report = experiment._finalize_completion(
+        output, _unfinished_report(), run_started=0.0, atomic_publish_seconds=3.0
+    )
+    marker = json.loads(
+        (output / "S012_stage_a_completion.json").read_text(encoding="utf-8")
+    )
+    assert report["performance"]["audit_export_seconds"] == 6.0
+    assert marker["atomic_publish_seconds"] == 3.0
+    assert marker["final_wall_seconds"] == 21.0
+    assert marker["target_pass"] is False
+    assert marker["bundle_report_sha256"] == experiment._sha256(output / "report.json")
+
+
+def test_completion_marker_failure_leaves_lock_ineligible(tmp_path: Path, monkeypatch) -> None:
+    output = tmp_path / "bundle"
+    output.mkdir()
+    real_atomic = experiment._atomic_write_json
+
+    def fail_marker(path, payload):
+        if Path(path).name == "S012_stage_a_completion.json":
+            raise OSError("marker failure")
+        return real_atomic(path, payload)
+
+    monkeypatch.setattr(experiment, "_atomic_write_json", fail_marker)
+    with pytest.raises(OSError, match="marker failure"):
+        experiment._finalize_completion(
+            output, _unfinished_report(), run_started=0.0, atomic_publish_seconds=1.0
+        )
+    assert not (output / "S012_stage_a_completion.json").exists()
+    report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    assert report["lock_eligible"] is False
+
+
+def test_stage_a_rejects_stage_a_lock(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="future Stage B"):
+        experiment.run(
+            tmp_path,
+            trajectory_path=tmp_path / "trajectory.json",
+            output=tmp_path / "out",
+            stage="a",
+            stage_a_lock=tmp_path / "S012_stage_a.lock.json",
+        )

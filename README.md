@@ -478,7 +478,7 @@ ORB-SLAM3 未安装、进程失败或未跟踪全部正式帧时，程序失败�
   --output 'D:\central_strip_Panoramic_Camera\outputs\orbslam3_trajectory.json'
 ```
 
-输出 schema 为 `gemini305-orbslam3-trajectory/v1`；该命令不读取历史 pose sidecar，也不以 Open3D 替代缺失 ORB-SLAM3 pose。
+输出 schema 为 `gemini305-orbslam3-trajectory/v2`，每条记录显式包含时间戳、`pose_status`、`pose_kind=direct_orbslam3`、统一 `pose_origin`、tracking state 和 `camera_to_world`。命令同时保存 stdout、stderr 与 trajectory audit（输入/跟踪数量、未跟踪帧、trajectory/config/log SHA-256）；它不读取历史 pose sidecar，也不以 Open3D 替代缺失 ORB-SLAM3 pose。
 
 ## Unified calibrated central-strip renderer
 
@@ -831,3 +831,26 @@ manual_review_required=true
 ## 开发说明
 
 开发代理约束见 [AGENTS.md](AGENTS.md)，SDK/API 说明见 [docs/SDK.md](docs/SDK.md)，版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+## S1.2 standalone Stage A experiment
+
+`g305-video-s12-experiment` is an isolated, diagnostic-only Stage A path. It
+requires an explicit `gemini305-orbslam3-trajectory/v2` file, never reads S1
+artifacts, never interpolates poses, and rejects Stage B until a separately
+reviewed Stage A bundle exists. The frozen candidate configuration is
+`configs/video_candidates/S012_standalone_auto_anchor_dense_central_slit_v1.yaml`.
+
+Stage A records local and direct-long image-motion evidence separately. A
+successful audit bundle is committed only by the final hash-bound
+`S012_stage_a_completion.json`; a structural failure is preserved in a sibling
+`.failure_bundle` with candidate, endpoint, motion-graph, configuration, and
+trajectory provenance. Neither outcome creates a production lock.
+
+Motion-edge reliability uses the frozen `split_v1` gate for every adjacent,
+skip, and direct-long edge: at least 16 model inliers, forward/backward
+retention at least 0.45, model purity among retained tracks at least 0.45, and
+effective model support among all detected features at least 0.25. The split
+keeps the original 0.45 evidence requirement on both tracking retention and
+model purity while exposing feature loss separately; it does not bypass the
+0.45 secondary-motion/parallax rejection. The legacy
+`minimum_inlier_count=16` and `minimum_inlier_ratio=0.45` keys are retained only
+as fixed compatibility/audit aliases and are not additional reliability gates.

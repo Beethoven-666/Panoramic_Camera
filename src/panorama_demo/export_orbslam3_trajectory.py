@@ -8,8 +8,10 @@ never substitutes Open3D odometry for a missing ORB-SLAM3 pose.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -19,6 +21,24 @@ import numpy as np
 from .config import load_config
 from .orbslam3_bridge import ORBSLAM3Config, run_orbslam3_rgbd
 from .session import load_rgbd_session
+
+
+TRAJECTORY_SCHEMA = "gemini305-orbslam3-trajectory/v2"
+TRAJECTORY_AUDIT_SCHEMA = "gemini305-orbslam3-trajectory-audit/v1"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _atomic_copy(source: Path, destination: Path) -> None:
+    pending = destination.with_name(f".{destination.name}.pending")
+    shutil.copyfile(source, pending)
+    os.replace(pending, destination)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -52,6 +72,9 @@ def export_trajectory(
     orb_config = ORBSLAM3Config.from_mapping(stitch.get("orbslam3_rgbd"))
     destination = Path(output_path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
+    stdout_output = destination.with_suffix(".stdout.txt")
+    stderr_output = destination.with_suffix(".stderr.txt")
+    audit_output = destination.with_suffix(".audit.json")
     # Staging is deliberately independent from the final artifact.  It may
     # contain ORB's temporary undistorted inputs, while the output contains
     # only scalar audit data and complete metric camera-to-world transforms.
@@ -87,16 +110,54 @@ def export_trajectory(
         payload = trajectory.as_dict(input_frame_count=len(session.frames))
         payload.update(
             {
-                "schema": "gemini305-orbslam3-trajectory/v2",
+                "schema": TRAJECTORY_SCHEMA,
                 "session": str(session.root),
                 "complete_tracking_required": True,
                 "pose_record_contract": "explicit-direct-orbslam3-camera-to-world/v1",
+                "untracked_frame_ids": [],
+                "stdout_file": stdout_output.name,
+                "stderr_file": stderr_output.name,
                 "poses": matrices,
             }
         )
+        stdout_source = Path(trajectory.stdout_path)
+        stderr_source = Path(trajectory.stderr_path)
+        if not stdout_source.is_file() or not stderr_source.is_file():
+            raise RuntimeError("ORB-SLAM3 did not preserve stdout/stderr audit files")
+        _atomic_copy(stdout_source, stdout_output)
+        _atomic_copy(stderr_source, stderr_output)
         pending = destination.parent / f".{destination.name}.pending"
         pending.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(pending, destination)
+        config_resolved = (
+            Path(config_path).expanduser().resolve() if config_path is not None else None
+        )
+        effective_config = json.dumps(
+            stitch.get("orbslam3_rgbd"), sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        audit = {
+            "schema": TRAJECTORY_AUDIT_SCHEMA,
+            "trajectory": destination.name,
+            "trajectory_schema": TRAJECTORY_SCHEMA,
+            "trajectory_sha256": _sha256(destination),
+            "input_frame_count": len(session.frames),
+            "tracked_frame_count": len(trajectory.tracked_frame_ids),
+            "untracked_frame_ids": [],
+            "config_path": str(config_resolved) if config_resolved is not None else None,
+            "config_sha256": (
+                _sha256(config_resolved) if config_resolved is not None else None
+            ),
+            "effective_orbslam3_config_sha256": hashlib.sha256(
+                effective_config
+            ).hexdigest(),
+            "stdout_file": stdout_output.name,
+            "stdout_sha256": _sha256(stdout_output),
+            "stderr_file": stderr_output.name,
+            "stderr_sha256": _sha256(stderr_output),
+        }
+        audit_pending = audit_output.with_name(f".{audit_output.name}.pending")
+        audit_pending.write_text(json.dumps(audit, indent=2), encoding="utf-8")
+        os.replace(audit_pending, audit_output)
     return payload
 
 

@@ -63,6 +63,8 @@ def load_s12_session(
     if validate_rgb_files:
         _validate_rgb_files(video)
     trajectory = load_s12_trajectory(trajectory_path)
+    if trajectory.schema != "gemini305-orbslam3-trajectory/v2":
+        raise ValueError("S1.2 Stage A requires gemini305-orbslam3-trajectory/v2")
     session_ids = {frame.frame_id for frame in video.rgbd.frames}
     unknown = sorted(record.frame_id for record in trajectory.records if record.frame_id not in session_ids)
     if unknown:

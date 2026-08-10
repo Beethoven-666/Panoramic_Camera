@@ -131,6 +131,66 @@ def parse_s12_config(document: Mapping[str, Any]) -> S12Config:
         },
         "motion_graph",
     )
+    motion = sections["motion_graph"]
+    local_edge = _mapping(motion.get("local_edge"), "motion_graph.local_edge")
+    anchor_long = _mapping(motion.get("anchor_long"), "motion_graph.anchor_long")
+    _require_fixed(
+        anchor_long,
+        {
+            "use_local_frame_gap": False,
+            "require_timestamp_audit": True,
+            "require_predicted_overlap": True,
+            "require_direct_image_match": True,
+            "use_provisional_initial_flow": False,
+            "initial_flow_source": "endpoint_phase_correlation",
+            "feature_domain": "fixed_calibrated_cx_slit",
+            "preprocessing": "sobel_gradient_magnitude",
+            "phase_correlation_window": "none",
+        },
+        "motion_graph.anchor_long",
+    )
+    if _integer(local_edge, "maximum_frame_gap", minimum=1) != 64:
+        raise ValueError("S1.2 motion_graph.local_edge.maximum_frame_gap is fixed at 64")
+    _integer(local_edge, "lk_window_size", minimum=3)
+    _integer(local_edge, "lk_max_level")
+    _integer(anchor_long, "maximum_frame_gap", minimum=65)
+    if _integer(anchor_long, "lk_window_size", minimum=3) != 91:
+        raise ValueError("S1.2 motion_graph.anchor_long.lk_window_size is fixed at 91")
+    if _integer(anchor_long, "lk_max_level") != 4:
+        raise ValueError("S1.2 motion_graph.anchor_long.lk_max_level is fixed at 4")
+    if _integer(anchor_long, "feature_slit_width_px", minimum=1) != 48:
+        raise ValueError("S1.2 motion_graph.anchor_long.feature_slit_width_px is fixed at 48")
+    if _integer(motion, "minimum_model_inlier_count", minimum=4) != 16:
+        raise ValueError("S1.2 motion_graph.minimum_model_inlier_count is fixed at 16")
+    for key, expected in (
+        ("minimum_fb_retention_ratio", 0.45),
+        ("minimum_model_inlier_ratio_retained", 0.45),
+        ("minimum_effective_inlier_ratio_detected", 0.25),
+    ):
+        if _number(motion, key, minimum=1e-12) != expected:
+            raise ValueError(f"S1.2 motion_graph.{key} is fixed at {expected}")
+    _require_fixed(
+        motion,
+        {
+            "reliability_gate_mode": "split_v1",
+            "minimum_inlier_count": 16,
+            "minimum_inlier_ratio": 0.45,
+        },
+        "motion_graph",
+    )
+    minimum_anchor_spacing = _number(anchor_long, "minimum_spacing_px", minimum=1e-12)
+    maximum_anchor_spacing = _number(anchor_long, "maximum_spacing_px", minimum=1e-12)
+    if minimum_anchor_spacing > maximum_anchor_spacing:
+        raise ValueError("S1.2 motion_graph.anchor_long spacing limits are reversed")
+    minimum_anchor_time = _number(anchor_long, "minimum_timestamp_gap_ms")
+    maximum_anchor_time = _number(anchor_long, "maximum_timestamp_gap_ms", minimum=1e-12)
+    if minimum_anchor_time > maximum_anchor_time:
+        raise ValueError("S1.2 motion_graph.anchor_long timestamp limits are reversed")
+    overlap = _number(anchor_long, "minimum_predicted_overlap_fraction", minimum=1e-12)
+    if overlap > 1.0:
+        raise ValueError("S1.2 anchor_long predicted overlap fraction cannot exceed one")
+    anchors = sections["anchors"]
+    _number(anchors, "maximum_direct_local_path_difference_px", minimum=1e-12)
     _require_fixed(
         sections["source_selection"],
         {"permit_virtual_rgb_source": False},
