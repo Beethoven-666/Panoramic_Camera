@@ -38,10 +38,15 @@ def test_exporter_writes_only_complete_real_orbslam3_pose_payload(
     payload = exporter.export_trajectory(session_root, output)
 
     assert output.is_file()
-    assert payload["schema"] == "gemini305-orbslam3-trajectory/v1"
+    assert payload["schema"] == "gemini305-orbslam3-trajectory/v2"
     assert payload["complete_tracking_required"] is True
     assert [row["frame_id"] for row in payload["poses"]] == [0, 1, 2]
     assert payload["poses"][1]["camera_to_world"][0][3] == 10.0
+    assert payload["poses"][1]["pose_kind"] == "direct_orbslam3"
+    assert payload["poses"][1]["pose_status"] == "valid"
+    assert payload["poses"][1]["pose_origin"] == "offline_orbslam3_rgbd_full_session"
+    assert payload["poses"][1]["tracking_state"] == "tracked"
+    assert isinstance(payload["poses"][1]["timestamp_us"], int)
     assert not list(tmp_path.glob(".trajectory.json.pending"))
 
 

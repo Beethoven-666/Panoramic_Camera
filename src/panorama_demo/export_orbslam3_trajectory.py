@@ -69,13 +69,28 @@ def export_trajectory(
             matrix = np.asarray(trajectory.poses_by_frame_id.get(frame.frame_id), dtype=np.float64)
             if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
                 raise RuntimeError(f"ORB-SLAM3 returned no finite pose for frame {frame.frame_id}")
-            matrices.append({"frame_id": frame.frame_id, "camera_to_world": matrix.tolist()})
+            if frame.timestamp_us is None or frame.timestamp_us < 0:
+                raise RuntimeError(
+                    f"ORB-SLAM3 source frame {frame.frame_id} has no valid timestamp"
+                )
+            matrices.append(
+                {
+                    "frame_id": frame.frame_id,
+                    "timestamp_us": int(frame.timestamp_us),
+                    "pose_status": "valid",
+                    "pose_kind": "direct_orbslam3",
+                    "pose_origin": "offline_orbslam3_rgbd_full_session",
+                    "tracking_state": "tracked",
+                    "camera_to_world": matrix.tolist(),
+                }
+            )
         payload = trajectory.as_dict(input_frame_count=len(session.frames))
         payload.update(
             {
-                "schema": "gemini305-orbslam3-trajectory/v1",
+                "schema": "gemini305-orbslam3-trajectory/v2",
                 "session": str(session.root),
                 "complete_tracking_required": True,
+                "pose_record_contract": "explicit-direct-orbslam3-camera-to-world/v1",
                 "poses": matrices,
             }
         )
