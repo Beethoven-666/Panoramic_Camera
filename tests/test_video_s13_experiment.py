@@ -233,6 +233,7 @@ def test_l3_writes_only_nonpanorama_completion(tmp_path: Path, monkeypatch) -> N
     completion = json.loads((generation / "nonpanorama/completion.json").read_text(encoding="utf-8"))
     assert completion["layout"]["layout_level"] == "L3_temporal_slit"
     assert completion["layout"]["spatial"] is False
+    assert not (tmp_path / "out/current_preview.json").exists()
 
 
 def test_reverse_segments_publish_panel_set_not_first_panel_panorama(tmp_path: Path, monkeypatch) -> None:
@@ -249,6 +250,8 @@ def test_reverse_segments_publish_panel_set_not_first_panel_panorama(tmp_path: P
     assert Path(report["spatial_panel_set"]).is_dir()
     assert not (p0 / "base_panorama_owner_only.png").exists()
     assert (p0 / "panel_navigation_overview_explicit_gaps.png").is_file()
+    assert report["m4"]["state"] == "not_run"
+    assert report["m4"]["reason"] == "spatial_panel_set_requires_independent_panels"
 
 
 def test_report_separates_motion_and_render_counts(tmp_path: Path) -> None:
@@ -261,3 +264,32 @@ def test_report_separates_motion_and_render_counts(tmp_path: Path) -> None:
     assert required.issubset(report)
     assert set(report["fallback_counts"]) == {f"F{index}" for index in range(8)}
     assert report["render_pair_count"] == report["render_source_count"] - 1
+
+
+def test_m4_appends_sealed_p1_and_preserves_immutable_p0(tmp_path: Path) -> None:
+    output = tmp_path / "out"
+    report = _run(_video_session(tmp_path), output)
+    assert report["m4"]["state"] == "P1_vertical_generated"
+    p0_completion = Path(report["completion"])
+    p1_completion = Path(report["m4"]["completion"])
+    p1 = json.loads(p1_completion.read_text(encoding="utf-8"))
+    assert p1["p0_parent_sha256"] == sha256_file(p0_completion)
+    assert p1["models"] == ["global_scalar_dy", "pair_local_row_residual"]
+    assert "translation" in p1["excluded_models"]
+    assert p1["formal_raw_rgb_remap_invocations"] == report["render_source_count"]
+    assert report["optimizer"]["p0_hash_unchanged_after_m4"] is True
+    assert (output / "current_preview.json").is_file()
+
+
+def test_m4_level_failure_keeps_p0_and_does_not_publish_preview(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "panorama_demo.video_s13_experiment.estimate_s13_vertical",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected vertical failure")),
+    )
+    output = tmp_path / "out"
+    report = _run(_video_session(tmp_path), output)
+    assert report["m4"]["state"] == "failed_p0_preserved"
+    assert verify_p0_completion(Path(report["completion"]).parent)["sealed"] is True
+    assert report["optimizer"]["p0_hash_unchanged_after_m4"] is True
+    assert not (output / "current_preview.json").exists()
+    assert (Path(report["generation"]) / "M4_failure.json").is_file()

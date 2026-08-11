@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
+import uuid
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
@@ -32,6 +34,7 @@ from .video_s13_progress import S13M3Layout, build_s13_m3_layout
 from .video_s13_schedule import S13SchedulePlan, plan_s13_m3_schedule
 from .video_s13_session import S13Session, load_s13_session, read_s13_rgb
 from .video_s13_trajectory import S13Trajectory, load_s13_trajectory
+from .video_s13_vertical import estimate_s13_vertical, render_s13_p1_from_raw
 
 
 REPORT_SCHEMA = "gemini305-video-s13-output-first-report/v1"
@@ -128,6 +131,99 @@ def _m31_report_statistics(
     }
 
 
+def _run_m4_vertical(
+    generation: Path,
+    root: Path,
+    generation_id: str,
+    schedule: object,
+    calibration: object,
+    image_loader: object,
+) -> dict[str, object]:
+    from .video_s12_schedule import S012Schedule
+
+    if not isinstance(schedule, S012Schedule):
+        raise TypeError("S1.3 M4 requires one immutable P0 schedule")
+    pending = generation / f".P1.{uuid.uuid4().hex}.pending"
+    final = generation / "P1"
+    if final.exists():
+        raise FileExistsError(f"S1.3 M4 P1 already exists: {final}")
+    pending.mkdir()
+    try:
+        solution = estimate_s13_vertical(schedule, calibration, image_loader)  # type: ignore[arg-type]
+        result = render_s13_p1_from_raw(schedule, calibration, image_loader, solution)  # type: ignore[arg-type]
+        write_image(pending / "vertical_panorama_owner_only.png", result.image)
+        write_image(pending / "vertical_panorama_owner_only.jpg", result.image)
+        write_image(pending / "vertical_valid_mask.png", result.valid_mask.astype(np.uint8) * 255)
+        write_image(pending / "vertical_owner_boundary_overlay.png", _owner_overlay(
+            result.image, result.pixel_provenance["owner_frame_id"]
+        ))
+        write_npz(pending / "vertical_pixel_provenance.npz", result.pixel_provenance)
+        write_npz(pending / "vertical_solution.npz", {
+            "global_offsets_px": np.asarray(solution.global_offsets_px, dtype=np.float32),
+            **{
+                f"pair_{index:04d}_local_row_residual_px": rows
+                for index, rows in enumerate(solution.local_row_residuals)
+            },
+        })
+        atomic_write_json(pending / "pair_report.json", {
+            "schema": "gemini305-video-s13-m4-pair-report/v1",
+            "pairs": [asdict(pair) for pair in solution.pairs],
+            "audit": dict(solution.audit),
+        })
+        p0_completion = generation / "P0" / "P0_completion.json"
+        p0_completion_sha = sha256_file(p0_completion)
+        assets = sorted(path for path in pending.rglob("*") if path.is_file())
+        completion = {
+            "schema": "gemini305-video-s13-p1-vertical-completion/v1",
+            "generation_id": generation_id,
+            "stage": "P1",
+            "sealed": True,
+            "p0_parent": "../P0/P0_completion.json",
+            "p0_parent_sha256": p0_completion_sha,
+            "models": ["global_scalar_dy", "pair_local_row_residual"],
+            "excluded_models": [
+                "translation", "rotation", "affine", "seam", "graphcut", "photometric", "blend", "depth", "mesh",
+            ],
+            "formal_raw_rgb_remap_invocations": result.remap_invocations,
+            "formal_raw_rgb_unique_sources": len(result.decoded_frame_ids),
+            "selected_global_gain": solution.selected_gain,
+            "assets_sha256": {path.relative_to(pending).as_posix(): sha256_file(path) for path in assets},
+        }
+        atomic_write_json(pending / "P1_completion.json", completion)
+        os.replace(pending, final)
+        for name, expected in completion["assets_sha256"].items():
+            asset = final / str(name)
+            if not asset.is_file() or sha256_file(asset) != expected:
+                raise ValueError(f"S1.3 M4 sealed P1 asset hash mismatch: {name}")
+        if sha256_file(generation / "P0" / "P0_completion.json") != p0_completion_sha:
+            raise ValueError("S1.3 M4 immutable P0 parent changed during P1 commit")
+        pointer = {
+            "schema": "gemini305-video-s13-current-preview/v1",
+            "generation_id": generation_id,
+            "generation": str(generation.relative_to(root)).replace("\\", "/"),
+            "stage": "P1",
+            "completion": "P1/P1_completion.json",
+            "completion_sha256": sha256_file(final / "P1_completion.json"),
+            "p0_parent_sha256": p0_completion_sha,
+        }
+        atomic_write_json(root / "current_preview.json", pointer)
+        return {
+            "state": "P1_vertical_generated",
+            "panorama": str(final / "vertical_panorama_owner_only.png"),
+            "owner_overlay": str(final / "vertical_owner_boundary_overlay.png"),
+            "pixel_provenance": str(final / "vertical_pixel_provenance.npz"),
+            "completion": str(final / "P1_completion.json"),
+            "current_preview": str(root / "current_preview.json"),
+            "selected_global_gain": solution.selected_gain,
+            "pair_count": len(solution.pairs),
+            "applied_pair_count": sum(pair.status == "applied" for pair in solution.pairs),
+            "formal_raw_rgb_remap_invocations": result.remap_invocations,
+        }
+    except BaseException:
+        discard_staging(pending)
+        raise
+
+
 def _write_nonpanorama(
     staging: Path,
     session: S13Session,
@@ -206,6 +302,7 @@ def run_s13_experiment(
     ignore_pose: bool,
     config_path: Path | None,
     simulate_optimizer_all_fail: bool = False,
+    run_m4: bool = True,
 ) -> dict[str, Any]:
     run_started = time.perf_counter()
     config = load_s13_config(candidate_config)
@@ -282,8 +379,9 @@ def run_s13_experiment(
             "schema": GENERATION_SCHEMA,
             "generation_id": generation_id,
             "algorithm": algorithm_spec.as_dict(),
-            "implemented_milestones": ["M0", "M1", "M2", "M3"],
-            "excluded_milestones": ["M4", "M5", "M6", "M7", "M8", "M9"],
+            "implemented_milestones": ["M0", "M1", "M2", "M3", *(("M4",) if run_m4 else ())],
+            "excluded_milestones": (["M5", "M6", "M7", "M8", "M9"] if run_m4
+                                      else ["M4", "M5", "M6", "M7", "M8", "M9"]),
             "reads_historical_s1_artifacts": False,
             "writes_production_delivery": False,
         })
@@ -498,7 +596,11 @@ def run_s13_experiment(
             "schema": REPORT_SCHEMA, "generation_id": generation_id, "render_state": render_state,
             "panorama_claim": layout["panorama_claim"], "diagnostic_only": True, "production_eligible": False,
             "production_lock_eligible": False, "manual_review_required": True,
-            "optimizer_state": "all_failed_after_p0" if simulate_optimizer_all_fail else "m3_complete_m4_not_started",
+            "optimizer_state": (
+                "all_failed_after_p0" if simulate_optimizer_all_fail
+                else "m4_pending_after_p0" if run_m4 and not is_panel_set
+                else "m3_complete_m4_not_started"
+            ),
             "p0_parent": "P0/P0_completion.json", "raw_rgb_motion_pair_count": len(session.frames) - 1,
             "motion_graph_connected_telemetry": progress.adjacent_reliable_graph_connected,
             "motion_graph_disconnection_is_fatal": False, "direct_local_delta_is_fatal": False,
@@ -519,6 +621,33 @@ def run_s13_experiment(
         optimizer = _optimizer_all_fail_probe(simulate_optimizer_all_fail)
         p0_hashes_after = verify_p0_completion(generation / "P0")["assets_sha256"]
         optimizer["p0_hash_unchanged"] = p0_hashes_before == p0_hashes_after
+        m4: dict[str, object] = {
+            "state": "not_run",
+            "reason": "optimizer_all_fail_probe" if simulate_optimizer_all_fail
+            else "spatial_panel_set_requires_independent_panels" if is_panel_set
+            else "disabled",
+        }
+        if run_m4 and not simulate_optimizer_all_fail and not is_panel_set:
+            try:
+                m4 = _run_m4_vertical(
+                    generation, root, generation_id, schedule, session.calibration,
+                    lambda frame_id: read_s13_rgb(by_id[frame_id]),
+                )
+            except Exception as exc:
+                m4 = {
+                    "state": "failed_p0_preserved",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+                atomic_write_json(generation / "M4_failure.json", {
+                    "schema": "gemini305-video-s13-m4-failure/v1",
+                    "generation_id": generation_id,
+                    "p0_parent_preserved": True,
+                    **m4,
+                })
+        optimizer["p0_hash_unchanged_after_m4"] = (
+            p0_hashes_before == verify_p0_completion(generation / "P0")["assets_sha256"]
+        )
         report = {
             "schema": REPORT_SCHEMA, "algorithm_id": S13_ALGORITHM_ID, "generation_id": generation_id,
             "generation": str(generation),
@@ -537,6 +666,7 @@ def run_s13_experiment(
             "render_state": render_state, "panorama_claim": layout["panorama_claim"],
             "diagnostic_only": True, "production_eligible": False, "production_lock_eligible": False,
             "manual_review_required": True, "optimizer": optimizer,
+            "m4": m4,
             "motion_graph_connected_telemetry": progress.adjacent_reliable_graph_connected,
             "motion_graph_disconnection_is_fatal": False, "direct_local_delta_is_fatal": False,
             **report_statistics,
