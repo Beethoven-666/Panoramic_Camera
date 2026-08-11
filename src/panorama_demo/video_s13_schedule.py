@@ -88,6 +88,7 @@ def plan_s13_m3_schedule(
     normal_target_advance_px: float = 8.0,
     risky_target_advance_px: float = 5.0,
     source_u_fraction_cap: float = 0.20,
+    segment_break_pairs: Sequence[tuple[int, int]] = (),
 ) -> S13SchedulePlan:
     """Rescue real frames, reduce canvas density, then split panels if needed."""
 
@@ -100,6 +101,11 @@ def plan_s13_m3_schedule(
     selected_ids = list(base.frame_ids)
     rescued: list[int] = []
     progress_index = {frame_id: index for index, frame_id in enumerate(progress.frame_ids)}
+    for left_id, right_id in segment_break_pairs:
+        if left_id in progress_index and left_id not in selected_ids:
+            selected_ids.append(left_id)
+        if right_id in progress_index and right_id not in selected_ids:
+            selected_ids.append(right_id)
 
     def rebuild(ids: Sequence[int]) -> S13SourceSelection:
         indices = sorted(progress_index[frame_id] for frame_id in ids)
@@ -142,10 +148,17 @@ def plan_s13_m3_schedule(
             selection = _scaled_selection(selection, calibration, density_scale)
             schedule = build_s13_midpoint_schedule(selection, calibration)
             unsafe = _unsafe_internal(schedule, cap)
-    if not unsafe:
+    forced_split_indices = tuple(
+        sorted({
+            selection.frame_ids.index(right_id)
+            for _left_id, right_id in segment_break_pairs
+            if right_id in selection.frame_ids and selection.frame_ids.index(right_id) > 0
+        })
+    )
+    if not unsafe and not forced_split_indices:
         return S13SchedulePlan((selection,), (schedule,), tuple(sorted(rescued)), density_scale, cap, (), True)
 
-    split_indices = tuple(sorted(set(unsafe)))
+    split_indices = tuple(sorted(set(unsafe) | set(forced_split_indices)))
     boundaries = (0, *split_indices, len(selection.frame_ids))
     panel_selections: list[S13SourceSelection] = []
     panel_schedules: list[S012Schedule] = []

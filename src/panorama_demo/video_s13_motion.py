@@ -230,8 +230,9 @@ def _extract_hypotheses(
 
     if len(observations) < _MIN_LK_OBSERVATIONS or max_hypotheses <= 0:
         return ()
-    direction = -1.0 if selected_advance_px is not None and selected_advance_px < 0 else 1.0
-    advance = np.asarray([item.advance_px * direction for item in observations], dtype=np.float64)
+    # Preserve the measured sign. Canonical scan direction is a sequence-level
+    # decision and must never be re-derived independently for each pair.
+    advance = np.asarray([item.advance_px for item in observations], dtype=np.float64)
     vertical = np.asarray([item.vertical_px for item in observations], dtype=np.float64)
     weight = np.asarray([item.weight for item in observations], dtype=np.float64)
     finite = np.isfinite(advance) & np.isfinite(vertical) & np.isfinite(weight) & (weight > 0)

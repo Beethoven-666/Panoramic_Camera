@@ -11,6 +11,7 @@ from panorama_demo.synthetic import generate_sequence
 from panorama_demo.video_algorithm import build_algorithm_spec
 from panorama_demo.video_s13_bundle import sha256_file, verify_p0_completion
 from panorama_demo.video_s13_experiment import run_s13_experiment
+from panorama_demo.video_s13_motion import S13MotionEdge, S13MotionHypothesis
 from panorama_demo.video_s13_session import load_s13_session
 from panorama_demo.video_s13_trajectory import load_s13_trajectory
 from panorama_demo.video_trajectory_cache import session_input_sha256
@@ -208,3 +209,55 @@ def test_online_trajectory_is_bound_to_committed_current_source_files(tmp_path: 
         assert "source hashes" in str(exc)
     else:
         raise AssertionError("changed online RGB source was not rejected")
+
+
+def _signed_edge(left: int, right: int, value: float) -> S13MotionEdge:
+    hypothesis = S13MotionHypothesis(
+        0, value, 0.0, 10.0, 0.1, 0.5, 0.5, 1.0, 0.8, 0.5, 0.5,
+        f"signature-{left}", "grid_lk_weighted_histogram", 0.9, ("0:0",),
+    )
+    return S13MotionEdge(
+        left, right, 1, value, 0.0, 12.0, 20, value, 0.0, 1.0, value, "grid_lk", False, (),
+        motion_hypotheses=(hypothesis,),
+    )
+
+
+def test_l3_writes_only_nonpanorama_completion(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("panorama_demo.video_s13_experiment.measure_s13_motion", lambda *_args, **_kwargs: ())
+    report = _run(_video_session(tmp_path, frame_count=4), tmp_path / "out")
+    generation = Path(report["generation"])
+    assert report["render_state"] == "temporal_preview_only"
+    assert report["panorama"] is None
+    assert (generation / "nonpanorama/completion.json").is_file()
+    assert not (generation / "P0").exists()
+    completion = json.loads((generation / "nonpanorama/completion.json").read_text(encoding="utf-8"))
+    assert completion["layout"]["layout_level"] == "L3_temporal_slit"
+    assert completion["layout"]["spatial"] is False
+
+
+def test_reverse_segments_publish_panel_set_not_first_panel_panorama(tmp_path: Path, monkeypatch) -> None:
+    values = (8.0, 8.0, 8.0, -8.0, -8.0)
+    monkeypatch.setattr(
+        "panorama_demo.video_s13_experiment.measure_s13_motion",
+        lambda *_args, **_kwargs: tuple(_signed_edge(index, index + 1, value) for index, value in enumerate(values)),
+    )
+    report = _run(_video_session(tmp_path, frame_count=6), tmp_path / "out")
+    p0 = Path(report["completion"]).parent
+    assert report["render_state"] == "spatial_panel_set"
+    assert report["panorama_claim"] == "none"
+    assert report["panorama"] is None
+    assert Path(report["spatial_panel_set"]).is_dir()
+    assert not (p0 / "base_panorama_owner_only.png").exists()
+    assert (p0 / "panel_navigation_overview_explicit_gaps.png").is_file()
+
+
+def test_report_separates_motion_and_render_counts(tmp_path: Path) -> None:
+    report = _run(_video_session(tmp_path), tmp_path / "out")
+    required = {
+        "raw_rgb_motion_edge_count", "raw_rgb_adjacent_edge_count", "render_source_count",
+        "render_pair_count", "lineage_switch_count", "hypothesis_count_histogram",
+        "fallback_counts", "source_u_statistics",
+    }
+    assert required.issubset(report)
+    assert set(report["fallback_counts"]) == {f"F{index}" for index in range(8)}
+    assert report["render_pair_count"] == report["render_source_count"] - 1

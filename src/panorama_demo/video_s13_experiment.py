@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
@@ -27,8 +28,8 @@ from .video_s13_bundle import (
 )
 from .video_s13_contract import S13_ALGORITHM_ID, load_s13_config
 from .video_s13_motion import measure_s13_motion
-from .video_s13_progress import build_s13_m3_layout
-from .video_s13_schedule import plan_s13_m3_schedule
+from .video_s13_progress import S13M3Layout, build_s13_m3_layout
+from .video_s13_schedule import S13SchedulePlan, plan_s13_m3_schedule
 from .video_s13_session import S13Session, load_s13_session, read_s13_rgb
 from .video_s13_trajectory import S13Trajectory, load_s13_trajectory
 
@@ -75,6 +76,58 @@ def _optimizer_all_fail_probe(enabled: bool) -> dict[str, object]:
     }
 
 
+def _m31_report_statistics(
+    motion: tuple[object, ...], layout: S13M3Layout, schedule_plan: S13SchedulePlan
+) -> dict[str, object]:
+    methods = Counter()
+    for method in layout.progress.placement_methods[1:]:
+        if method.startswith("motion_hypothesis") or method.startswith("F0_"):
+            methods["F0"] += 1
+        else:
+            matched = next((f"F{index}" for index in range(1, 8) if method.startswith(f"F{index}_")), None)
+            methods[matched or "unclassified"] += 1
+    hypothesis_histogram = Counter(len(getattr(edge, "motion_hypotheses")) for edge in motion)
+    render_source_count = sum(
+        not assignment.zero_width for schedule in schedule_plan.schedules for assignment in schedule.assignments
+    )
+    render_pair_count = sum(
+        max(0, sum(not assignment.zero_width for assignment in schedule.assignments) - 1)
+        for schedule in schedule_plan.schedules
+    )
+    finite_source_u = [
+        float(value)
+        for schedule in schedule_plan.schedules
+        for value in schedule.column_source_u[np.isfinite(schedule.column_source_u)]
+    ]
+    switch_count = sum(
+        left.support_signature_sha256 != right.support_signature_sha256
+        for left, right in zip(layout.lineage[:-1], layout.lineage[1:])
+        if left.support_signature_sha256 is not None and right.support_signature_sha256 is not None
+    )
+    return {
+        "raw_rgb_motion_edge_count": len(motion),
+        "raw_rgb_adjacent_edge_count": sum(getattr(edge, "step") == 1 for edge in motion),
+        "render_source_count": render_source_count,
+        "render_pair_count": render_pair_count,
+        "lineage_switch_count": switch_count,
+        "fallback_counts": {f"F{index}": int(methods.get(f"F{index}", 0)) for index in range(8)},
+        "fallback_unclassified_count": int(methods.get("unclassified", 0)),
+        "hypothesis_count_histogram": {
+            str(count): int(hypothesis_histogram.get(count, 0)) for count in range(4)
+        },
+        "source_u_statistics": {
+            "minimum": min(finite_source_u) if finite_source_u else None,
+            "maximum": max(finite_source_u) if finite_source_u else None,
+            "span": max(finite_source_u) - min(finite_source_u) if finite_source_u else None,
+            "maximum_internal_owner_width_px": max(
+                (assignment.width for schedule in schedule_plan.schedules for assignment in schedule.assignments[1:-1]),
+                default=0,
+            ),
+            "configured_cap_px": schedule_plan.source_u_cap_px,
+        },
+    }
+
+
 def _write_nonpanorama(
     staging: Path,
     session: S13Session,
@@ -82,6 +135,7 @@ def _write_nonpanorama(
     generation_id: str,
     trajectory_audit: Mapping[str, Any],
     run_started: float,
+    layout_audit: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     target = staging / "nonpanorama"
     target.mkdir(parents=True)
@@ -134,6 +188,7 @@ def _write_nonpanorama(
         "assets_sha256": {name: sha256_file(target / name) for name in ("preview.png", "preview.jpg", "pixel_provenance.npz")},
         "time_to_visible_asset_seconds": time.perf_counter() - run_started,
         "trajectory": dict(trajectory_audit),
+        "layout": dict(layout_audit or {}),
     }
     atomic_write_json(target / "completion.json", completion)
     return completion
@@ -255,7 +310,7 @@ def run_s13_experiment(
         stage_seconds["progress_and_layout"] = time.perf_counter() - tick
         placement_methods = progress.placement_methods[1:]
         progress_deltas = np.diff(np.asarray(progress.centers_x, dtype=np.float64))
-        pause_mask = np.asarray([method == "zero_duplicate" for method in placement_methods], dtype=bool)
+        pause_mask = np.asarray([method.startswith("F5_zero_duplicate") for method in placement_methods], dtype=bool)
         pause_expansion_count = int(np.count_nonzero(progress_deltas[pause_mask] > 1e-9))
         pause_expansion_px = float(np.maximum(progress_deltas[pause_mask], 0.0).sum())
         if pause_expansion_count or pause_expansion_px > 1e-9:
@@ -263,10 +318,19 @@ def run_s13_experiment(
         zero_duplicate_edge_count = int(np.count_nonzero(pause_mask))
         subpixel_motion_edge_count = sum(method.endswith("_subpixel") for method in placement_methods)
         fallback_progress_edge_count = sum(
-            method in {"session_median", "temporal_order"} for method in placement_methods
+            method.startswith(("F3_", "F4_", "F7_")) for method in placement_methods
         )
         if not progress.spatial:
-            completion = _write_nonpanorama(staging, session, generation_id=generation_id, trajectory_audit=trajectory.audit, run_started=run_started)
+            completion = _write_nonpanorama(
+                staging, session, generation_id=generation_id, trajectory_audit=trajectory.audit,
+                run_started=run_started,
+                layout_audit={
+                    "layout_level": m3_layout.layout_level,
+                    "spatial": False,
+                    "canonical_scan_direction": m3_layout.canonical_scan_direction,
+                    **dict(m3_layout.audit),
+                },
+            )
             atomic_write_json(staging / "motion_telemetry.json", {"edges": [_plain_edge(edge) for edge in motion]})
             publish_generation(staging, generation)
             pointer = {"schema": "gemini305-video-s13-current-nonpanorama/v1", "generation_id": generation_id, "generation": str(generation.relative_to(root)).replace("\\", "/"), "completion_sha256": sha256_file(generation / "nonpanorama" / "completion.json")}
@@ -277,6 +341,7 @@ def run_s13_experiment(
             progress, motion, session.calibration,
             normal_target_advance_px=config.normal_target_advance_px,
             risky_target_advance_px=config.risky_target_advance_px,
+            segment_break_pairs=m3_layout.segment_break_pairs,
         )
         selection = schedule_plan.selections[0]
         schedule = schedule_plan.schedules[0]
@@ -285,21 +350,10 @@ def run_s13_experiment(
         by_id = session.frame_by_id
         tick = time.perf_counter()
         hypothesis_by_frame = {step.target_frame_id: step.selected_hypothesis_id for step in m3_layout.lineage}
-        result = render_s13_p0(
-            schedule, session.calibration, lambda frame_id: read_s13_rgb(by_id[frame_id]),
-            placement_methods=selection.placement_methods,
-            selected_hypothesis_ids=tuple(hypothesis_by_frame.get(frame_id, -1) for frame_id in selection.frame_ids),
-        )
-        write_image(p0 / "base_panorama_owner_only.png", result.image)
-        write_image(p0 / "base_panorama_owner_only.jpg", result.image)
-        write_image(p0 / "base_valid_mask.png", result.valid_mask.astype(np.uint8) * 255)
-        write_image(p0 / "owner_boundary_overlay.png", _owner_overlay(result.image, result.pixel_provenance["owner_frame_id"]))
-        write_npz(p0 / "base_pixel_provenance.npz", result.pixel_provenance)
-        write_npz(p0 / "base_column_provenance.npz", result.column_provenance)
-        panel_results = [result]
-        panel_images = [result.image]
+        panel_results = []
+        panel_images = []
         for panel_index, (panel_selection, panel_schedule) in enumerate(
-            zip(schedule_plan.selections[1:], schedule_plan.schedules[1:], strict=True), start=1
+            zip(schedule_plan.selections, schedule_plan.schedules, strict=True)
         ):
             panel_result = render_s13_p0(
                 panel_schedule, session.calibration, lambda frame_id: read_s13_rgb(by_id[frame_id]),
@@ -308,15 +362,26 @@ def run_s13_experiment(
                     hypothesis_by_frame.get(frame_id, -1) for frame_id in panel_selection.frame_ids
                 ),
             )
-            panel_root = p0 / "panels" / f"panel_{panel_index:02d}"
-            write_image(panel_root / "panorama_owner_only.png", panel_result.image)
-            write_image(panel_root / "owner_boundary_overlay.png", _owner_overlay(
-                panel_result.image, panel_result.pixel_provenance["owner_frame_id"]
-            ))
-            write_npz(panel_root / "pixel_provenance.npz", panel_result.pixel_provenance)
-            write_npz(panel_root / "column_provenance.npz", panel_result.column_provenance)
             panel_results.append(panel_result)
             panel_images.append(panel_result.image)
+            if len(schedule_plan.schedules) > 1:
+                panel_root = p0 / "panels" / f"panel_{panel_index:02d}"
+                write_image(panel_root / "panorama_owner_only.png", panel_result.image)
+                write_image(panel_root / "owner_boundary_overlay.png", _owner_overlay(
+                    panel_result.image, panel_result.pixel_provenance["owner_frame_id"]
+                ))
+                write_npz(panel_root / "pixel_provenance.npz", panel_result.pixel_provenance)
+                write_npz(panel_root / "column_provenance.npz", panel_result.column_provenance)
+        result = panel_results[0]
+        if len(panel_results) == 1:
+            write_image(p0 / "base_panorama_owner_only.png", result.image)
+            write_image(p0 / "base_panorama_owner_only.jpg", result.image)
+            write_image(p0 / "base_valid_mask.png", result.valid_mask.astype(np.uint8) * 255)
+            write_image(p0 / "owner_boundary_overlay.png", _owner_overlay(
+                result.image, result.pixel_provenance["owner_frame_id"]
+            ))
+            write_npz(p0 / "base_pixel_provenance.npz", result.pixel_provenance)
+            write_npz(p0 / "base_column_provenance.npz", result.column_provenance)
         if len(panel_images) > 1:
             gap_marker = np.zeros((panel_images[0].shape[0], 12, 3), dtype=np.uint8)
             gap_marker[:, :, 2] = 255
@@ -328,26 +393,44 @@ def run_s13_experiment(
             write_image(p0 / "panel_navigation_overview_explicit_gaps.png", np.concatenate(overview_parts, axis=1))
         source_rows = [
             {
+                "panel_index": panel_index,
                 "assignment_index": assignment.assignment_index, "source_index": assignment.source_index,
                 "frame_id": assignment.frame_id, "center_x": assignment.center_x, "left_x": assignment.left_x,
                 "right_x": assignment.right_x, "width": assignment.width, "zero_width": assignment.zero_width,
-                "placement_method": selection.placement_methods[assignment.source_index],
-                "risky": selection.risk_by_frame_id.get(assignment.frame_id, False),
+                "placement_method": panel_selection.placement_methods[assignment.source_index],
+                "risky": panel_selection.risk_by_frame_id.get(assignment.frame_id, False),
             }
-            for assignment in schedule.assignments
+            for panel_index, (panel_selection, panel_schedule) in enumerate(
+                zip(schedule_plan.selections, schedule_plan.schedules, strict=True)
+            )
+            for assignment in panel_schedule.assignments
         ]
         write_csv(p0 / "base_sources.csv", source_rows, tuple(source_rows[0]))
+        is_panel_set = len(schedule_plan.schedules) > 1
+        render_state = "spatial_panel_set" if is_panel_set else "base_generated"
+        panorama_claim = "none" if is_panel_set else (
+            "pose_supported" if m3_layout.pose_supported else "visual_nonmetric"
+        )
+        report_statistics = _m31_report_statistics(motion, m3_layout, schedule_plan)
         layout = {
             "schema": "gemini305-video-s13-p0-layout/v1", "layout_level": m3_layout.layout_level,
-            "panorama_claim": "pose_supported" if m3_layout.pose_supported else "visual_nonmetric",
+            "render_state": render_state, "panorama_claim": panorama_claim,
             "metric_scale_claim": False, "pose_used_as_pixel_scale": False,
             "frame_ids": list(progress.frame_ids), "centers_x": list(progress.centers_x),
-            "placement_methods": list(progress.placement_methods), "selected_frame_ids": list(selection.frame_ids),
-            "selected_centers_x": list(selection.centers_x), "boundaries": list(schedule.boundaries),
-            "canvas_width": schedule.canvas_width, "canvas_height": schedule.canvas_height,
+            "placement_methods": list(progress.placement_methods),
+            "selected_frame_ids": [
+                frame_id for panel_selection in schedule_plan.selections for frame_id in panel_selection.frame_ids
+            ],
+            "selected_centers_x": None if is_panel_set else list(selection.centers_x),
+            "boundaries": None if is_panel_set else list(schedule.boundaries),
+            "canvas_width": None if is_panel_set else schedule.canvas_width,
+            "canvas_height": session.calibration.height,
             "pixels_per_meter_rgb_calibrated": m3_layout.pixels_per_meter,
             "pose_calibration_pairs": m3_layout.pose_calibration_pairs,
+            "pose_calibration_reason": m3_layout.audit.get("pose_calibration_reason"),
             "pose_role": "direction_and_low_frequency_soft_prior_only",
+            "canonical_scan_direction": m3_layout.canonical_scan_direction,
+            "segment_break_pairs": [list(pair) for pair in m3_layout.segment_break_pairs],
             "motion_hypothesis_count_by_pair": {
                 f"{edge.source_frame_id}:{edge.target_frame_id}": len(edge.motion_hypotheses) for edge in motion
             },
@@ -357,6 +440,19 @@ def run_s13_experiment(
             "rescued_real_frame_ids": list(schedule_plan.rescued_frame_ids),
             "canvas_density_scale": schedule_plan.density_scale,
             "panel_count": len(schedule_plan.schedules),
+            "panels": [
+                {
+                    "panel_index": index,
+                    "frame_ids": list(panel_selection.frame_ids),
+                    "centers_x": list(panel_selection.centers_x),
+                    "canvas_width": panel_schedule.canvas_width,
+                    "canvas_height": panel_schedule.canvas_height,
+                    "artifact_root": f"panels/panel_{index:02d}" if is_panel_set else ".",
+                }
+                for index, (panel_selection, panel_schedule) in enumerate(
+                    zip(schedule_plan.selections, schedule_plan.schedules, strict=True)
+                )
+            ],
             "panel_gap_frame_ids": [list(gap) for gap in schedule_plan.panel_gap_frame_ids],
             "source_u_cap_satisfied": schedule_plan.cap_satisfied,
             "panel_fallback_used": len(schedule_plan.schedules) > 1,
@@ -370,6 +466,7 @@ def run_s13_experiment(
             "fallback_progress_edge_count": fallback_progress_edge_count,
             "observed_pause_expansion_count": pause_expansion_count,
             "observed_pause_expansion_px": pause_expansion_px,
+            **report_statistics,
         }
         atomic_write_json(p0 / "base_layout.json", layout)
         atomic_write_json(staging / "motion_telemetry.json", {"edges": [_plain_edge(edge) for edge in motion]})
@@ -386,7 +483,8 @@ def run_s13_experiment(
         })
         stage_seconds["p0_render_and_export"] = time.perf_counter() - tick
         seal_p0(p0, generation_id=generation_id, metadata={
-            "render_state": "base_generated", "panorama_claim": layout["panorama_claim"],
+            "render_state": render_state, "panorama_claim": layout["panorama_claim"],
+            "asset_semantics": "spatial_panel_set" if is_panel_set else "spatial_panorama",
             "trust_state": session.trust_state, "manual_review_required": True,
             "owner_policy": "fixed_midpoint", "remap_invocations": result.remap_invocations,
             "contributor_source_count": sum(
@@ -397,11 +495,11 @@ def run_s13_experiment(
             "duplicate_write_count": sum(item.duplicate_write_count for item in panel_results),
         })
         atomic_write_json(staging / "report.json", {
-            "schema": REPORT_SCHEMA, "generation_id": generation_id, "render_state": "base_generated",
+            "schema": REPORT_SCHEMA, "generation_id": generation_id, "render_state": render_state,
             "panorama_claim": layout["panorama_claim"], "diagnostic_only": True, "production_eligible": False,
             "production_lock_eligible": False, "manual_review_required": True,
             "optimizer_state": "all_failed_after_p0" if simulate_optimizer_all_fail else "m3_complete_m4_not_started",
-            "p0_parent": "P0/P0_completion.json", "pair_count": len(session.frames) - 1,
+            "p0_parent": "P0/P0_completion.json", "raw_rgb_motion_pair_count": len(session.frames) - 1,
             "motion_graph_connected_telemetry": progress.adjacent_reliable_graph_connected,
             "motion_graph_disconnection_is_fatal": False, "direct_local_delta_is_fatal": False,
             "zero_duplicate_edge_count": layout["zero_duplicate_edge_count"],
@@ -410,6 +508,7 @@ def run_s13_experiment(
             "observed_pause_expansion_count": layout["observed_pause_expansion_count"],
             "observed_pause_expansion_px": layout["observed_pause_expansion_px"],
             "trajectory": dict(trajectory.audit), "performance": {"stage_seconds": stage_seconds},
+            **report_statistics,
         })
         publish_generation(staging, generation)
         pointer = update_current_base(root, generation)
@@ -422,19 +521,25 @@ def run_s13_experiment(
         optimizer["p0_hash_unchanged"] = p0_hashes_before == p0_hashes_after
         report = {
             "schema": REPORT_SCHEMA, "algorithm_id": S13_ALGORITHM_ID, "generation_id": generation_id,
-            "generation": str(generation), "panorama": str(generation / "P0" / "base_panorama_owner_only.png"),
+            "generation": str(generation),
+            "panorama": None if is_panel_set else str(generation / "P0" / "base_panorama_owner_only.png"),
+            "spatial_panel_set": str(generation / "P0" / "panels") if is_panel_set else None,
+            "panel_navigation_overview": (
+                str(generation / "P0" / "panel_navigation_overview_explicit_gaps.png") if is_panel_set else None
+            ),
             "layout": str(generation / "P0" / "base_layout.json"),
-            "owner_overlay": str(generation / "P0" / "owner_boundary_overlay.png"),
-            "pixel_provenance": str(generation / "P0" / "base_pixel_provenance.npz"),
-            "column_provenance": str(generation / "P0" / "base_column_provenance.npz"),
+            "owner_overlay": None if is_panel_set else str(generation / "P0" / "owner_boundary_overlay.png"),
+            "pixel_provenance": None if is_panel_set else str(generation / "P0" / "base_pixel_provenance.npz"),
+            "column_provenance": None if is_panel_set else str(generation / "P0" / "base_column_provenance.npz"),
             "completion": str(generation / "P0" / "P0_completion.json"),
             "current_base": str(root / "current_base.json"), "time_to_P0_seconds": time_to_p0,
             "total_wall_seconds": time.perf_counter() - run_started, "stage_seconds": stage_seconds,
-            "render_state": "base_generated", "panorama_claim": layout["panorama_claim"],
+            "render_state": render_state, "panorama_claim": layout["panorama_claim"],
             "diagnostic_only": True, "production_eligible": False, "production_lock_eligible": False,
             "manual_review_required": True, "optimizer": optimizer,
             "motion_graph_connected_telemetry": progress.adjacent_reliable_graph_connected,
             "motion_graph_disconnection_is_fatal": False, "direct_local_delta_is_fatal": False,
+            **report_statistics,
         }
         atomic_write_json(root / "latest_run.json", report)
         return report

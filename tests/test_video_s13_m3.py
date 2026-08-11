@@ -103,3 +103,52 @@ def test_extreme_gaps_use_explicit_panel_fallback() -> None:
 
 def test_pose_islands_split_only_on_explicit_epoch_not_missing_pose() -> None:
     assert _islands((0, 1, 2, 3), {0, 2, 3}, {0: "a", 2: "a", 3: "b"}) == ((0, 2), (3,))
+
+
+def test_l3_temporal_slit_is_nonspatial() -> None:
+    frames = tuple(_frame(index) for index in range(4))
+    layout = build_s13_m3_layout(frames, (), S13Trajectory("ignore_pose", None, {}, {}, (), {}))
+    assert layout.layout_level == "L3_temporal_slit"
+    assert layout.progress.spatial is False
+    assert set(layout.progress.centers_x) == {0.0}
+    assert all(method == "F7_temporal_order" for method in layout.progress.placement_methods[1:])
+
+
+def test_signed_reverse_run_creates_panel_segment_break() -> None:
+    frames = tuple(_frame(index) for index in range(6))
+    values = (8.0, 9.0, 8.0, -7.0, -8.0)
+    edges = tuple(
+        S13MotionEdge(
+            index, index + 1, 1, value, 0.0, 12.0, 20, value, 0.0, 1.0, value,
+            "grid_lk", False, (), motion_hypotheses=(_hypothesis(0, value, "a"),),
+        )
+        for index, value in enumerate(values)
+    )
+    layout = build_s13_m3_layout(frames, edges, S13Trajectory("ignore_pose", None, {}, {}, (), {}))
+    assert layout.canonical_scan_direction == 1
+    assert layout.segment_break_pairs == ((3, 4),)
+    assert layout.progress.centers_x[-1] == layout.progress.centers_x[3]
+    plan = plan_s13_m3_schedule(
+        layout.progress, edges, CameraIntrinsics(100, 40, 80.0, 80.0, 49.5, 19.5, ()),
+        segment_break_pairs=layout.segment_break_pairs,
+    )
+    assert len(plan.schedules) == 2
+
+
+def test_sparse_direct_pose_uses_cumulative_rgb_between_endpoints() -> None:
+    frames = tuple(_frame(index) for index in range(7))
+    edges = tuple(_edge(index, index + 1, (_hypothesis(0, 8.0, "a"),)) for index in range(6))
+    poses = {}
+    for index in (0, 2, 4, 6):
+        pose = np.eye(4)
+        pose[0, 3] = index * 100.0
+        poses[index] = pose
+    trajectory = S13Trajectory(
+        "cache", None, poses, {index: "direct" for index in poses}, ((0, 2, 4, 6),), {},
+        {index: "epoch-a" for index in poses},
+    )
+    layout = build_s13_m3_layout(frames, edges, trajectory)
+    assert layout.pose_calibration_pairs == 3
+    assert layout.pixels_per_meter == 80.0
+    assert layout.audit["pose_interpolation_used"] is False
+    assert layout.audit["pose_calibration_reason"] is None

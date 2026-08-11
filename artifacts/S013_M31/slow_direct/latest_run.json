@@ -1,0 +1,70 @@
+{
+  "algorithm_id": "S013_output_first_progressive_dense_central_slit_v3",
+  "column_provenance": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\slow_direct\\generations\\20260811T143052-d74a9d1a594d\\P0\\base_column_provenance.npz",
+  "completion": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\slow_direct\\generations\\20260811T143052-d74a9d1a594d\\P0\\P0_completion.json",
+  "current_base": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\slow_direct\\current_base.json",
+  "diagnostic_only": true,
+  "direct_local_delta_is_fatal": false,
+  "fallback_counts": {
+    "F0": 794,
+    "F1": 0,
+    "F2": 0,
+    "F3": 0,
+    "F4": 0,
+    "F5": 54,
+    "F6": 0,
+    "F7": 0
+  },
+  "fallback_unclassified_count": 0,
+  "generation": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\slow_direct\\generations\\20260811T143052-d74a9d1a594d",
+  "generation_id": "20260811T143052-d74a9d1a594d",
+  "hypothesis_count_histogram": {
+    "0": 0,
+    "1": 2341,
+    "2": 196,
+    "3": 3
+  },
+  "layout": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\slow_direct\\generations\\20260811T143052-d74a9d1a594d\\P0\\base_layout.json",
+  "lineage_switch_count": 793,
+  "manual_review_required": true,
+  "motion_graph_connected_telemetry": false,
+  "motion_graph_disconnection_is_fatal": false,
+  "optimizer": {
+    "all_failed": false,
+    "attempt_count": 0,
+    "failures": [],
+    "p0_hash_unchanged": true,
+    "p0_parent_preserved": true,
+    "requested": false
+  },
+  "owner_overlay": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\slow_direct\\generations\\20260811T143052-d74a9d1a594d\\P0\\owner_boundary_overlay.png",
+  "panel_navigation_overview": null,
+  "panorama": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\slow_direct\\generations\\20260811T143052-d74a9d1a594d\\P0\\base_panorama_owner_only.png",
+  "panorama_claim": "visual_nonmetric",
+  "pixel_provenance": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\slow_direct\\generations\\20260811T143052-d74a9d1a594d\\P0\\base_pixel_provenance.npz",
+  "production_eligible": false,
+  "production_lock_eligible": false,
+  "raw_rgb_adjacent_edge_count": 848,
+  "raw_rgb_motion_edge_count": 2540,
+  "render_pair_count": 108,
+  "render_source_count": 109,
+  "render_state": "base_generated",
+  "schema": "gemini305-video-s13-output-first-report/v1",
+  "source_u_statistics": {
+    "configured_cap_px": 169,
+    "maximum": 847.3604125976562,
+    "maximum_internal_owner_width_px": 10,
+    "minimum": 0.0,
+    "span": 847.3604125976562
+  },
+  "spatial_panel_set": null,
+  "stage_seconds": {
+    "input_and_preflight": 4.481722300000911,
+    "motion_measurement": 17.69978639999863,
+    "p0_render_and_export": 3.8713102000001527,
+    "progress_and_layout": 0.03163150000000314,
+    "trajectory": 0.008640199999717879
+  },
+  "time_to_P0_seconds": 26.14145550000103,
+  "total_wall_seconds": 26.15076880000015
+}
