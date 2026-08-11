@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
 import uuid
@@ -18,27 +19,34 @@ from .video_s13_base_renderer import render_s13_p0
 from .video_s13_bundle import (
     atomic_write_json,
     discard_staging,
+    invalidate_current_preview,
     new_generation_staging,
     publish_generation,
     seal_p0,
+    seal_stage,
     sha256_file,
     update_current_base,
+    update_current_preview,
     verify_p0_completion,
+    verify_stage,
     write_csv,
     write_image,
     write_npz,
 )
 from .video_s13_contract import S13_ALGORITHM_ID, load_s13_config
 from .video_s13_motion import measure_s13_motion
+from .video_s13_m5 import run_s13_m5
 from .video_s13_progress import S13M3Layout, build_s13_m3_layout
 from .video_s13_schedule import S13SchedulePlan, plan_s13_m3_schedule
 from .video_s13_session import S13Session, load_s13_session, read_s13_rgb
 from .video_s13_trajectory import S13Trajectory, load_s13_trajectory
 from .video_s13_vertical import estimate_s13_vertical, render_s13_p1_from_raw
+from .video_s13_selection import select_s13_vertical_parent
 
 
 REPORT_SCHEMA = "gemini305-video-s13-output-first-report/v1"
 GENERATION_SCHEMA = "gemini305-video-s13-generation/v1"
+P2_COMPLETION_SCHEMA = "gemini305-video-s13-p2-completion/v1"
 
 
 def _generation_id(session: S13Session, config_sha: str) -> str:
@@ -65,7 +73,7 @@ def _optimizer_all_fail_probe(enabled: bool) -> dict[str, object]:
 
     failures: list[dict[str, str]] = []
     if enabled:
-        for name in ("future_geometry", "future_seam", "future_photometric"):
+        for name in ("vertical_selection", "geometry", "seam_transaction"):
             try:
                 raise RuntimeError("injected optimizer failure after immutable P0")
             except RuntimeError as exc:
@@ -197,27 +205,184 @@ def _run_m4_vertical(
                 raise ValueError(f"S1.3 M4 sealed P1 asset hash mismatch: {name}")
         if sha256_file(generation / "P0" / "P0_completion.json") != p0_completion_sha:
             raise ValueError("S1.3 M4 immutable P0 parent changed during P1 commit")
-        pointer = {
-            "schema": "gemini305-video-s13-current-preview/v1",
-            "generation_id": generation_id,
-            "generation": str(generation.relative_to(root)).replace("\\", "/"),
-            "stage": "P1",
-            "completion": "P1/P1_completion.json",
-            "completion_sha256": sha256_file(final / "P1_completion.json"),
-            "p0_parent_sha256": p0_completion_sha,
-        }
-        atomic_write_json(root / "current_preview.json", pointer)
         return {
-            "state": "P1_vertical_generated",
+            "state": "P1_vertical_candidate_generated",
             "panorama": str(final / "vertical_panorama_owner_only.png"),
             "owner_overlay": str(final / "vertical_owner_boundary_overlay.png"),
             "pixel_provenance": str(final / "vertical_pixel_provenance.npz"),
             "completion": str(final / "P1_completion.json"),
-            "current_preview": str(root / "current_preview.json"),
+            "current_preview": None,
             "selected_global_gain": solution.selected_gain,
             "pair_count": len(solution.pairs),
             "applied_pair_count": sum(pair.status == "applied" for pair in solution.pairs),
             "formal_raw_rgb_remap_invocations": result.remap_invocations,
+        }
+    except BaseException:
+        discard_staging(pending)
+        raise
+
+
+def _run_m5(
+    generation: Path,
+    root: Path,
+    generation_id: str,
+    schedule: object,
+    calibration: object,
+    image_loader: object,
+    p0_image: np.ndarray,
+    *,
+    selected_hypothesis_ids: tuple[int, ...],
+    placement_methods: tuple[str, ...],
+) -> dict[str, object]:
+    from .session import CameraIntrinsics
+    from .video_s12_schedule import S012Schedule
+
+    if not isinstance(schedule, S012Schedule) or not isinstance(calibration, CameraIntrinsics):
+        raise TypeError("S1.3 M5 requires one immutable P0 schedule and calibration")
+    pending = generation / f".P2.{uuid.uuid4().hex}.pending"
+    final = generation / "P2"
+    if final.exists():
+        raise FileExistsError(f"S1.3 M5 P2 already exists: {final}")
+    pending.mkdir()
+    p0_completion_path = generation / "P0" / "P0_completion.json"
+    p1_completion_path = generation / "P1" / "P1_completion.json"
+    p0_completion_sha = sha256_file(p0_completion_path)
+    p1_completion_sha = sha256_file(p1_completion_path)
+    try:
+        started = time.perf_counter()
+        base_solution = estimate_s13_vertical(schedule, calibration, image_loader)  # type: ignore[arg-type]
+        selection = select_s13_vertical_parent(
+            schedule, calibration, image_loader, base_solution, p0_image  # type: ignore[arg-type]
+        )
+        write_image(pending / "selected_vertical_parent.png", selection.result.image)
+        write_image(pending / "selected_vertical_parent.jpg", selection.result.image)
+        write_npz(pending / "selected_vertical_parent_provenance.npz", selection.result.pixel_provenance)
+        atomic_write_json(pending / "vertical_selection.json", dict(selection.audit))
+        parent_stage_sha = sha256_file(pending / "vertical_selection.json")
+        m5 = run_s13_m5(
+            schedule, calibration, image_loader, selection.solution, selection.result.image,  # type: ignore[arg-type]
+            parent_stage_sha256=parent_stage_sha,
+            selected_hypothesis_ids=selected_hypothesis_ids,
+            placement_methods=placement_methods,
+        )
+        write_image(pending / "geometry_panorama_owner_only.png", m5.geometry_result.image)
+        write_image(pending / "geometry_and_seam_panorama_owner_only.png", m5.final_result.image)
+        write_image(pending / "geometry_and_seam_panorama_owner_only.jpg", m5.final_result.image)
+        write_image(pending / "seam_overlay.png", m5.seam_overlay)
+        write_image(pending / "p2_valid_mask.png", m5.final_result.valid_mask.astype(np.uint8) * 255)
+        write_npz(pending / "p2_pixel_provenance.npz", m5.final_result.pixel_provenance)
+        transaction_rows = [dict(pair.transaction) for pair in m5.pairs]
+        atomic_write_json(pending / "pair_transactions.json", {
+            "schema": "gemini305-video-s13-m5-pair-transactions/v1",
+            "all_pairs_reported": len(transaction_rows) == len(schedule.assignments) - 1,
+            "pairs": transaction_rows,
+        })
+        atomic_write_json(pending / "p2_selection.json", dict(m5.selection_audit))
+        for pair in m5.pairs:
+            atomic_write_json(
+                pending / "pair_transactions" / f"pair_{int(pair.transaction['transaction_id'].split('-')[-1]):04d}.json",
+                dict(pair.transaction),
+            )
+        ranked = sorted(
+            enumerate(m5.pairs),
+            key=lambda item: float(item[1].transaction.get("after_metrics", {}).get("score") or -1.0),
+            reverse=True,
+        )[:10]
+        crop_rows: list[dict[str, object]] = []
+        for rank, (pair_index, pair) in enumerate(ranked):
+            seam = np.asarray(pair.seam_x_by_row, dtype=np.int32)
+            left = max(0, int(seam.min()) - 48)
+            right = min(schedule.canvas_width, int(seam.max()) + 49)
+            crop = m5.seam_overlay[:, left:right]
+            name = f"rank_{rank:02d}_pair_{pair_index:04d}.png"
+            write_image(pending / "worst_seam_crops" / name, crop)
+            crop_rows.append({
+                "rank": rank, "pair_index": pair_index, "left_x": left, "right_x": right,
+                "after_score": pair.transaction.get("after_metrics", {}).get("score"), "asset": name,
+            })
+        atomic_write_json(pending / "worst_seam_crops" / "manifest.json", {
+            "schema": "gemini305-video-s13-m5-worst-seam-crops/v1", "crops": crop_rows,
+        })
+        performance = {
+            "input_and_preflight": 0.0,
+            "trajectory": 0.0,
+            "motion_measurement": 0.0,
+            "motion_hypotheses": 0.0,
+            "progress_and_layout": 0.0,
+            "time_to_P0": None,
+            "vertical": time.perf_counter() - started - float(m5.performance["total_m5"]),
+            "geometry": float(m5.performance["geometry"]),
+            "seam": float(m5.performance["seam_and_p2_render"]),
+            "photometric": None,
+            "blend": None,
+            "repair": None,
+            "artifact_export": None,
+            "total_wall_time": time.perf_counter() - started,
+            "peak_memory": None,
+            "excluded_after_m5": ["photometric", "luminance_field", "feather", "multiband", "depth", "mesh", "source_rescue"],
+        }
+        atomic_write_json(pending / "performance.json", performance)
+        completion = seal_stage(
+            pending,
+            completion_name="P2_completion.json",
+            schema=P2_COMPLETION_SCHEMA,
+            metadata={
+                "generation_id": generation_id,
+                "stage": "P2",
+                "selected_as_best": bool(m5.selected_as_best),
+                "selected_vertical_parent": selection.stage,
+                "selected_global_gain": selection.selected_gain,
+                "p0_parent": "../P0/P0_completion.json",
+                "p0_parent_sha256": p0_completion_sha,
+                "p1_candidate_parent": "../P1/P1_completion.json",
+                "p1_candidate_parent_sha256": p1_completion_sha,
+                "formal_raw_rgb_remap_invocations": m5.final_result.remap_invocations,
+                "formal_raw_rgb_unique_sources": len(m5.final_result.decoded_frame_ids),
+                "all_pair_transaction_count": len(m5.pairs),
+                "applied_pair_transaction_count": sum(pair.transaction["decision"] == "applied" for pair in m5.pairs),
+                "before_mean_structure_score": m5.before_mean_score,
+                "after_mean_structure_score": m5.after_mean_score,
+                "selection_audit": dict(m5.selection_audit),
+                "comparison_coordinate_policy": m5.selection_audit[
+                    "comparison_coordinate_policy"
+                ],
+                "models": ["C0", "C1", "C2", "C3", "C4", "S0", "S1", "S2"],
+                "excluded_models": [
+                    "graphcut", "photometric_gain_bias", "luminance_field", "feather", "multiband",
+                    "depth", "mesh", "source_rescue", "production_renderer",
+                ],
+            },
+        )
+        os.replace(pending, final)
+        verify_stage(final, completion_name="P2_completion.json", schema=P2_COMPLETION_SCHEMA)
+        if sha256_file(p0_completion_path) != p0_completion_sha:
+            raise ValueError("S1.3 M5 immutable P0 completion changed")
+        if sha256_file(p1_completion_path) != p1_completion_sha:
+            raise ValueError("S1.3 M5 immutable original P1 completion changed")
+        pointer = None
+        if completion["selected_as_best"] is True:
+            pointer = update_current_preview(
+                root, generation, stage="P2", completion_name="P2_completion.json",
+                completion_schema=P2_COMPLETION_SCHEMA, p0_parent_sha256=p0_completion_sha,
+            )
+        return {
+            "state": "P2_selected" if completion["selected_as_best"] else "P2_generated_parent_retained",
+            "panorama": str(final / "geometry_and_seam_panorama_owner_only.png"),
+            "geometry": str(final / "geometry_panorama_owner_only.png"),
+            "vertical_parent": str(final / "selected_vertical_parent.png"),
+            "seam_overlay": str(final / "seam_overlay.png"),
+            "pixel_provenance": str(final / "p2_pixel_provenance.npz"),
+            "pair_transactions": str(final / "pair_transactions.json"),
+            "worst_seam_crops": str(final / "worst_seam_crops"),
+            "performance": str(final / "performance.json"),
+            "completion": str(final / "P2_completion.json"),
+            "current_preview": str(root / "current_preview.json") if pointer is not None else None,
+            "selected_as_best": bool(completion["selected_as_best"]),
+            "selected_vertical_parent": selection.stage,
+            "selected_global_gain": selection.selected_gain,
+            "pair_count": len(m5.pairs),
+            "applied_pair_count": sum(pair.transaction["decision"] == "applied" for pair in m5.pairs),
+            "formal_raw_rgb_remap_invocations": m5.final_result.remap_invocations,
         }
     except BaseException:
         discard_staging(pending)
@@ -303,12 +468,15 @@ def run_s13_experiment(
     config_path: Path | None,
     simulate_optimizer_all_fail: bool = False,
     run_m4: bool = True,
+    run_m5: bool = True,
 ) -> dict[str, Any]:
     run_started = time.perf_counter()
     config = load_s13_config(candidate_config)
     if algorithm_spec.algorithm_id != S13_ALGORITHM_ID or algorithm_spec.config_sha256 != candidate_config_sha(config.document):
         raise ValueError("S1.3 dispatch identity/config binding changed after validation")
     root = output.expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    invalidate_current_preview(root)
     stage_seconds: dict[str, float] = {}
     tick = time.perf_counter()
     try:
@@ -379,9 +547,15 @@ def run_s13_experiment(
             "schema": GENERATION_SCHEMA,
             "generation_id": generation_id,
             "algorithm": algorithm_spec.as_dict(),
-            "implemented_milestones": ["M0", "M1", "M2", "M3", *(("M4",) if run_m4 else ())],
-            "excluded_milestones": (["M5", "M6", "M7", "M8", "M9"] if run_m4
-                                      else ["M4", "M5", "M6", "M7", "M8", "M9"]),
+            "implemented_milestones": [
+                "M0", "M1", "M2", "M3", *(("M4",) if run_m4 else ()),
+                *(("M5",) if run_m4 and run_m5 else ()),
+            ],
+            "excluded_milestones": (
+                ["M6", "M7", "M8", "M9"] if run_m4 and run_m5
+                else ["M5", "M6", "M7", "M8", "M9"] if run_m4
+                else ["M4", "M5", "M6", "M7", "M8", "M9"]
+            ),
             "reads_historical_s1_artifacts": False,
             "writes_production_delivery": False,
         })
@@ -598,6 +772,7 @@ def run_s13_experiment(
             "production_lock_eligible": False, "manual_review_required": True,
             "optimizer_state": (
                 "all_failed_after_p0" if simulate_optimizer_all_fail
+                else "m5_pending_after_p0" if run_m4 and run_m5 and not is_panel_set
                 else "m4_pending_after_p0" if run_m4 and not is_panel_set
                 else "m3_complete_m4_not_started"
             ),
@@ -645,9 +820,71 @@ def run_s13_experiment(
                     "p0_parent_preserved": True,
                     **m4,
                 })
+        m5: dict[str, object] = {
+            "state": "not_run",
+            "reason": "optimizer_all_fail_probe" if simulate_optimizer_all_fail
+            else "spatial_panel_set_requires_independent_panels" if is_panel_set
+            else "m4_failed" if str(m4.get("state", "")).startswith("failed")
+            else "disabled",
+        }
+        if (
+            run_m4 and run_m5 and not simulate_optimizer_all_fail and not is_panel_set
+            and m4.get("state") == "P1_vertical_candidate_generated"
+        ):
+            try:
+                m5 = _run_m5(
+                    generation, root, generation_id, schedule, session.calibration,
+                    lambda frame_id: read_s13_rgb(by_id[frame_id]), result.image,
+                    selected_hypothesis_ids=tuple(
+                        hypothesis_by_frame.get(frame_id, -1) for frame_id in selection.frame_ids
+                    ),
+                    placement_methods=selection.placement_methods,
+                )
+            except Exception as exc:
+                m5 = {
+                    "state": "failed_parent_preserved",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+                atomic_write_json(generation / "M5_failure.json", {
+                    "schema": "gemini305-video-s13-m5-failure/v1",
+                    "generation_id": generation_id,
+                    "p0_parent_preserved": True,
+                    "p1_candidate_parent_preserved": True,
+                    **m5,
+                })
+        optimizer["p0_hash_unchanged_after_m5"] = (
+            p0_hashes_before == verify_p0_completion(generation / "P0")["assets_sha256"]
+        )
+        if (generation / "P1" / "P1_completion.json").is_file():
+            p1_document = json.loads(
+                (generation / "P1" / "P1_completion.json").read_text(encoding="utf-8")
+            )
+            optimizer["p1_hash_unchanged_after_m5"] = all(
+                (generation / "P1" / str(name)).is_file()
+                and sha256_file(generation / "P1" / str(name)) == expected
+                for name, expected in p1_document.get("assets_sha256", {}).items()
+            )
         optimizer["p0_hash_unchanged_after_m4"] = (
             p0_hashes_before == verify_p0_completion(generation / "P0")["assets_sha256"]
         )
+        optimizer_state = (
+            "m5_selected" if m5.get("state") == "P2_selected"
+            else "m5_generated_parent_retained" if m5.get("state") == "P2_generated_parent_retained"
+            else "m5_failed" if str(m5.get("state", "")).startswith("failed")
+            else "m4_candidate_generated" if m4.get("state") == "P1_vertical_candidate_generated"
+            else "post_p0_not_run"
+        )
+        generation_report_path = generation / "report.json"
+        generation_report = json.loads(generation_report_path.read_text(encoding="utf-8"))
+        generation_report.update({
+            "optimizer_state": optimizer_state,
+            "m4": m4,
+            "m5": m5,
+            "optimizer": optimizer,
+            "performance": {"stage_seconds": stage_seconds},
+        })
+        atomic_write_json(generation_report_path, generation_report)
         report = {
             "schema": REPORT_SCHEMA, "algorithm_id": S13_ALGORITHM_ID, "generation_id": generation_id,
             "generation": str(generation),
@@ -666,7 +903,9 @@ def run_s13_experiment(
             "render_state": render_state, "panorama_claim": layout["panorama_claim"],
             "diagnostic_only": True, "production_eligible": False, "production_lock_eligible": False,
             "manual_review_required": True, "optimizer": optimizer,
+            "optimizer_state": optimizer_state,
             "m4": m4,
+            "m5": m5,
             "motion_graph_connected_telemetry": progress.adjacent_reliable_graph_connected,
             "motion_graph_disconnection_is_fatal": False, "direct_local_delta_is_fatal": False,
             **report_statistics,

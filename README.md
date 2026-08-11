@@ -855,7 +855,7 @@ model purity while exposing feature loss separately; it does not bypass the
 `minimum_inlier_count=16` and `minimum_inlier_ratio=0.45` keys are retained only
 as fixed compatibility/audit aliases and are not additional reliability gates.
 
-## S1.3 output-first M0–M2 diagnostic candidate
+## S1.3 output-first M0–M5 diagnostic candidate
 
 `S013_output_first_progressive_dense_central_slit_v3` is an isolated,
 development-only route selected through `g305-video-experiment --algorithm
@@ -868,8 +868,28 @@ Exactly one trajectory policy must be explicit: `--trajectory-cache`,
 or partial direct pose never blocks an RGB-motion P0 and never becomes an
 invented pose. P0 is a fixed-midpoint hard-owner panorama sampled once from
 each contributing real RGB source; it is hash-sealed before `current_base.json`
-is atomically replaced. M3 and later optimization stages remain intentionally
-unimplemented until the base layout is reviewed.
+is atomically replaced. M3 adds coherent motion lineage and dense scheduling.
+M4 appends a sealed vertical P1 candidate without publishing it as the best
+stage. M5 first compares P0 and rendered gain/local-residual variants, then
+estimates C0–C4 pair-local geometry and S0–S2 ordered monotone seams. A moved
+seam forces geometry re-estimation from the immutable P0 grid in its final
+corridor; geometry and seam are accepted or rolled back as one transaction.
+The vertical parent requires a measurable sequence-mean improvement, permits
+at most 10% non-catastrophic protected-component outliers and 2% non-catastrophic
+pair-total outliers, and retains hard catastrophic guards for both. M5 compares
+before/after geometry on the same selected seam owner topology, then separately
+compares each moved owner seam against its simpler straight predecessor on both
+the base and candidate paths. Both comparisons include held-out long
+horizontal-edge continuity. Estimated C2–C4 models above the absolute held-out
+P95 bound are rejected. A curved DP seam requires an evaluable shifted-straight
+comparator, at least a 2% cost margin, and independent symmetric/long-structure
+evidence at preliminary geometry, final geometry, and the full rendered output;
+otherwise it falls back to shifted-straight or the immutable midpoint.
+P2 is remapped once per real contributor from raw RGB and updates
+`current_preview.json` only after its completion is verified and it is selected
+as better. GraphCut, photometric correction, luminance fields, feather,
+MultiBand, depth, mesh, source rescue, M6+, and production publication remain
+outside this implementation.
 
 An adjacent RGB motion below `0.25 px` contributes zero layout progress
 (`zero_duplicate`) only when supported grid LK and phase correlation agree on

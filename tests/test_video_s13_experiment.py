@@ -269,7 +269,7 @@ def test_report_separates_motion_and_render_counts(tmp_path: Path) -> None:
 def test_m4_appends_sealed_p1_and_preserves_immutable_p0(tmp_path: Path) -> None:
     output = tmp_path / "out"
     report = _run(_video_session(tmp_path), output)
-    assert report["m4"]["state"] == "P1_vertical_generated"
+    assert report["m4"]["state"] == "P1_vertical_candidate_generated"
     p0_completion = Path(report["completion"])
     p1_completion = Path(report["m4"]["completion"])
     p1 = json.loads(p1_completion.read_text(encoding="utf-8"))
@@ -278,7 +278,13 @@ def test_m4_appends_sealed_p1_and_preserves_immutable_p0(tmp_path: Path) -> None
     assert "translation" in p1["excluded_models"]
     assert p1["formal_raw_rgb_remap_invocations"] == report["render_source_count"]
     assert report["optimizer"]["p0_hash_unchanged_after_m4"] is True
-    assert (output / "current_preview.json").is_file()
+    assert report["m4"]["current_preview"] is None
+    generation_report = json.loads(
+        (Path(report["generation"]) / "report.json").read_text(encoding="utf-8")
+    )
+    assert generation_report["optimizer_state"] != "m5_pending_after_p0"
+    assert generation_report["m4"] == report["m4"]
+    assert generation_report["m5"] == report["m5"]
 
 
 def test_m4_level_failure_keeps_p0_and_does_not_publish_preview(tmp_path: Path, monkeypatch) -> None:
@@ -293,3 +299,43 @@ def test_m4_level_failure_keeps_p0_and_does_not_publish_preview(tmp_path: Path, 
     assert report["optimizer"]["p0_hash_unchanged_after_m4"] is True
     assert not (output / "current_preview.json").exists()
     assert (Path(report["generation"]) / "M4_failure.json").is_file()
+
+
+def test_m5_failure_preserves_p0_and_p1_and_does_not_publish_preview(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output = tmp_path / "out"
+    output.mkdir(parents=True)
+    (output / "current_preview.json").write_text(
+        '{"generation_id":"stale-generation"}\n', encoding="utf-8"
+    )
+    hashes_before_failure: dict[str, str] = {}
+
+    def fail_m5(*_args, **_kwargs):
+        generation = next((output / "generations").iterdir())
+        hashes_before_failure["p0"] = _sha256(generation / "P0/P0_completion.json")
+        hashes_before_failure["p1"] = _sha256(generation / "P1/P1_completion.json")
+        raise RuntimeError("injected M5 failure")
+
+    monkeypatch.setattr(
+        "panorama_demo.video_s13_experiment.run_s13_m5",
+        fail_m5,
+    )
+    report = _run(_video_session(tmp_path), output)
+    generation = Path(report["generation"])
+    p0_completion = generation / "P0/P0_completion.json"
+    p1_completion = generation / "P1/P1_completion.json"
+    p0_hash = hashes_before_failure["p0"]
+    p1_hash = hashes_before_failure["p1"]
+    p1 = json.loads(p1_completion.read_text(encoding="utf-8"))
+
+    assert report["m5"]["state"] == "failed_parent_preserved"
+    assert report["m5"]["error"] == "injected M5 failure"
+    assert p1["p0_parent_sha256"] == p0_hash
+    assert _sha256(p0_completion) == p0_hash
+    assert _sha256(p1_completion) == p1_hash
+    assert verify_p0_completion(p0_completion.parent)["sealed"] is True
+    assert not (output / "current_preview.json").exists()
+    failure = json.loads((generation / "M5_failure.json").read_text(encoding="utf-8"))
+    assert failure["p0_parent_preserved"] is True
+    assert failure["p1_candidate_parent_preserved"] is True

@@ -29,7 +29,9 @@ def sha256_file(path: Path) -> str:
 
 def atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    pending = path.with_name(f".{path.name}.{uuid.uuid4().hex}.pending")
+    # Keep the sibling name short enough for deeply nested Windows audit
+    # artifacts while retaining atomic same-directory replacement.
+    pending = path.with_name(f".j-{uuid.uuid4().hex[:12]}.tmp")
     encoded = (json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
     try:
         with pending.open("wb") as handle:
@@ -105,6 +107,81 @@ def verify_p0_completion(p0: Path) -> dict[str, Any]:
     return completion
 
 
+def seal_stage(
+    stage: Path,
+    *,
+    completion_name: str,
+    schema: str,
+    metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Seal an append-only post-P0 stage without changing any parent seal."""
+
+    assets = sorted(path for path in stage.rglob("*") if path.is_file() and path.name != completion_name)
+    completion = {
+        "schema": schema,
+        "sealed": True,
+        **dict(metadata),
+        "assets_sha256": {path.relative_to(stage).as_posix(): sha256_file(path) for path in assets},
+    }
+    atomic_write_json(stage / completion_name, completion)
+    verify_stage(stage, completion_name=completion_name, schema=schema)
+    return completion
+
+
+def verify_stage(stage: Path, *, completion_name: str, schema: str) -> dict[str, Any]:
+    try:
+        completion = json.loads((stage / completion_name).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"S1.3 stage completion is missing or invalid: {stage}") from exc
+    if completion.get("schema") != schema or completion.get("sealed") is not True:
+        raise ValueError("S1.3 stage completion is not sealed")
+    hashes = completion.get("assets_sha256")
+    if not isinstance(hashes, Mapping) or not hashes:
+        raise ValueError("S1.3 stage completion has no asset hashes")
+    for relative, expected in hashes.items():
+        asset = stage / str(relative)
+        if not asset.is_file() or sha256_file(asset) != expected:
+            raise ValueError(f"S1.3 stage asset hash mismatch: {relative}")
+    return completion
+
+
+def update_current_preview(
+    root: Path,
+    generation: Path,
+    *,
+    stage: str,
+    completion_name: str,
+    completion_schema: str,
+    p0_parent_sha256: str,
+) -> dict[str, Any]:
+    """Publish only a verified selected P2 stage as the preview pointer."""
+
+    if stage != "P2":
+        raise ValueError("S1.3 current_preview may only publish a selected P2 stage")
+    stage_root = generation / stage
+    completion = verify_stage(stage_root, completion_name=completion_name, schema=completion_schema)
+    if completion.get("selected_as_best") is not True:
+        raise ValueError("S1.3 P2 was not selected as the best stage")
+    completion_path = stage_root / completion_name
+    pointer = {
+        "schema": "gemini305-video-s13-current-preview/v2",
+        "generation_id": completion["generation_id"],
+        "generation": str(generation.relative_to(root)).replace("\\", "/"),
+        "stage": stage,
+        "completion": f"{stage}/{completion_name}",
+        "completion_sha256": sha256_file(completion_path),
+        "p0_parent_sha256": p0_parent_sha256,
+    }
+    atomic_write_json(root / "current_preview.json", pointer)
+    return pointer
+
+
+def invalidate_current_preview(root: Path) -> None:
+    """Invalidate a prior generation before a new S1.3 run can publish output."""
+
+    (root / "current_preview.json").unlink(missing_ok=True)
+
+
 def publish_generation(staging: Path, generation: Path) -> None:
     if generation.exists():
         raise FileExistsError(f"S1.3 generation already exists: {generation}")
@@ -141,6 +218,8 @@ def discard_staging(staging: Path) -> None:
 
 
 __all__ = [
-    "atomic_write_json", "discard_staging", "new_generation_staging", "publish_generation", "seal_p0",
-    "sha256_file", "update_current_base", "verify_p0_completion", "write_csv", "write_image", "write_npz",
+    "atomic_write_json", "discard_staging", "invalidate_current_preview", "new_generation_staging",
+    "publish_generation", "seal_p0",
+    "seal_stage", "sha256_file", "update_current_base", "update_current_preview", "verify_p0_completion",
+    "verify_stage", "write_csv", "write_image", "write_npz",
 ]

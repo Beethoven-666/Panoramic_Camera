@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Callable, Mapping
 
 import cv2
@@ -43,6 +43,8 @@ class S13VerticalSolution:
     gain_scores: Mapping[str, float]
     shoulder_width_px: int
     audit: Mapping[str, object]
+    gain_global_offsets_px: Mapping[str, tuple[float, ...]]
+    gain_local_row_residuals: Mapping[str, tuple[np.ndarray, ...]]
 
 
 @dataclass(frozen=True)
@@ -250,35 +252,45 @@ def estimate_s13_vertical(
         gain_scores[str(gain)] = score
         candidates[gain] = offsets
     selected_gain = min(gain_candidates, key=lambda gain: (gain_scores[str(gain)], gain))
+    candidate_rows: dict[str, tuple[np.ndarray, ...]] = {}
+    candidate_reports: dict[str, tuple[S13VerticalPair, ...]] = {}
+    for gain in gain_candidates:
+        gain_offsets = candidates[gain]
+        local_rows: list[np.ndarray] = []
+        reports: list[S13VerticalPair] = []
+        for pair_index, ((left_gray, right_gray, common, left_x, right_x), response) in enumerate(
+            zip(sampled_pairs, responses, strict=True)
+        ):
+            left_assignment = schedule.assignments[pair_index]
+            right_assignment = schedule.assignments[pair_index + 1]
+            relative = float(gain_offsets[pair_index + 1] - gain_offsets[pair_index])
+            rows, supported = _local_rows(left_gray, right_gray, common, relative) if response >= 0.05 else (
+                np.zeros(schedule.canvas_height, dtype=np.float32), 0
+            )
+            boundary = schedule.boundaries[pair_index + 1]
+            application_width = min(16, max(0, right_assignment.right_x - boundary))
+            application_right = boundary + application_width
+            # This is only an evidence-bearing candidate.  M5's rendered
+            # relative audit, not support count, decides whether it is used.
+            candidate_available = supported > 0 and application_width > 0
+            if not candidate_available:
+                rows[...] = 0.0
+            local_rows.append(rows)
+            reports.append(S13VerticalPair(
+                pair_index=pair_index, left_frame_id=left_assignment.frame_id,
+                right_frame_id=right_assignment.frame_id, boundary_x=boundary,
+                shoulder_left_x=left_x, shoulder_right_x=right_x,
+                application_left_x=boundary, application_right_x=application_right,
+                measured_correction_dy_px=float(measurements[pair_index]), phase_response=float(response),
+                supported_row_count=supported, local_residual_min_px=float(rows.min()),
+                local_residual_max_px=float(rows.max()), status="candidate" if candidate_available else "local_zero",
+                failure_reason=None if candidate_available else "insufficient_supported_rows_or_band",
+            ))
+        candidate_rows[str(gain)] = tuple(local_rows)
+        candidate_reports[str(gain)] = tuple(reports)
     offsets = candidates[selected_gain]
-    local_rows: list[np.ndarray] = []
-    reports: list[S13VerticalPair] = []
-    for pair_index, ((left_gray, right_gray, common, left_x, right_x), response) in enumerate(
-        zip(sampled_pairs, responses, strict=True)
-    ):
-        left_assignment = schedule.assignments[pair_index]
-        right_assignment = schedule.assignments[pair_index + 1]
-        relative = float(offsets[pair_index + 1] - offsets[pair_index])
-        rows, supported = _local_rows(left_gray, right_gray, common, relative) if response >= 0.05 else (
-            np.zeros(schedule.canvas_height, dtype=np.float32), 0
-        )
-        boundary = schedule.boundaries[pair_index + 1]
-        application_width = min(16, max(0, right_assignment.right_x - boundary))
-        application_right = boundary + application_width
-        applied = supported > 0 and application_width > 0
-        if not applied:
-            rows[...] = 0.0
-        local_rows.append(rows)
-        reports.append(S13VerticalPair(
-            pair_index=pair_index, left_frame_id=left_assignment.frame_id,
-            right_frame_id=right_assignment.frame_id, boundary_x=boundary,
-            shoulder_left_x=left_x, shoulder_right_x=right_x,
-            application_left_x=boundary, application_right_x=application_right,
-            measured_correction_dy_px=float(measurements[pair_index]), phase_response=float(response),
-            supported_row_count=supported, local_residual_min_px=float(rows.min()),
-            local_residual_max_px=float(rows.max()), status="applied" if applied else "local_zero",
-            failure_reason=None if applied else "insufficient_supported_rows_or_band",
-        ))
+    local_rows = list(candidate_rows[str(selected_gain)])
+    reports = list(candidate_reports[str(selected_gain)])
     return S13VerticalSolution(
         global_offsets_px=tuple(float(value) for value in offsets),
         local_row_residuals=tuple(local_rows), pairs=tuple(reports), selected_gain=float(selected_gain),
@@ -294,6 +306,50 @@ def estimate_s13_vertical(
             "translation_rotation_affine_seam_photometric_blend_depth_mesh_enabled": False,
             "pairs": [asdict(pair) for pair in reports],
         },
+        gain_global_offsets_px={
+            str(gain): tuple(float(value) for value in candidates[gain]) for gain in gain_candidates
+        },
+        gain_local_row_residuals=candidate_rows,
+    )
+
+
+def vertical_candidate_solution(
+    solution: S13VerticalSolution,
+    gain: float,
+    *,
+    accepted_local_pairs: tuple[bool, ...] | None,
+) -> S13VerticalSolution:
+    """Materialize one immutable-P0 vertical candidate after relative audits."""
+
+    key = str(float(gain))
+    offsets = solution.gain_global_offsets_px.get(key)
+    rows = solution.gain_local_row_residuals.get(key)
+    if offsets is None or rows is None:
+        raise ValueError(f"S1.3 vertical gain candidate is unavailable: {gain}")
+    if accepted_local_pairs is None:
+        accepted_local_pairs = tuple(False for _ in solution.pairs)
+    if len(accepted_local_pairs) != len(solution.pairs):
+        raise ValueError("S1.3 local vertical decisions do not align with pairs")
+    selected_rows: list[np.ndarray] = []
+    selected_pairs: list[S13VerticalPair] = []
+    for pair, candidate_rows, accepted in zip(solution.pairs, rows, accepted_local_pairs, strict=True):
+        apply = bool(accepted and pair.supported_row_count > 0 and np.any(candidate_rows != 0.0))
+        selected = np.asarray(candidate_rows, dtype=np.float32).copy() if apply else np.zeros_like(candidate_rows)
+        selected_rows.append(selected)
+        selected_pairs.append(replace(
+            pair,
+            local_residual_min_px=float(selected.min()),
+            local_residual_max_px=float(selected.max()),
+            status="applied" if apply else "rolled_back",
+            failure_reason=None if apply else "local_structure_non_degradation_not_proven",
+        ))
+    return replace(
+        solution,
+        global_offsets_px=tuple(offsets),
+        local_row_residuals=tuple(selected_rows),
+        pairs=tuple(selected_pairs),
+        selected_gain=float(gain),
+        audit={**dict(solution.audit), "selected_gain": float(gain), "selection": "rendered_relative_structure"},
     )
 
 
@@ -369,5 +425,5 @@ def render_s13_p1_from_raw(
 
 __all__ = [
     "S13P1Result", "S13VerticalPair", "S13VerticalSolution", "estimate_s13_vertical",
-    "render_s13_p1_from_raw",
+    "render_s13_p1_from_raw", "vertical_candidate_solution",
 ]
