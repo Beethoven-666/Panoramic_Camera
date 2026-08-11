@@ -250,6 +250,18 @@ def run_s13_experiment(
         tick = time.perf_counter()
         progress = build_basic_s13_progress(session.frames, motion)
         stage_seconds["progress_and_layout"] = time.perf_counter() - tick
+        placement_methods = progress.placement_methods[1:]
+        progress_deltas = np.diff(np.asarray(progress.centers_x, dtype=np.float64))
+        pause_mask = np.asarray([method == "zero_duplicate" for method in placement_methods], dtype=bool)
+        pause_expansion_count = int(np.count_nonzero(progress_deltas[pause_mask] > 1e-9))
+        pause_expansion_px = float(np.maximum(progress_deltas[pause_mask], 0.0).sum())
+        if pause_expansion_count or pause_expansion_px > 1e-9:
+            raise ValueError("S1.3 observed pause expanded the panorama layout")
+        zero_duplicate_edge_count = int(np.count_nonzero(pause_mask))
+        subpixel_motion_edge_count = sum(method.endswith("_subpixel") for method in placement_methods)
+        fallback_progress_edge_count = sum(
+            method in {"session_median", "temporal_order"} for method in placement_methods
+        )
         if not progress.spatial:
             completion = _write_nonpanorama(staging, session, generation_id=generation_id, trajectory_audit=trajectory.audit, run_started=run_started)
             atomic_write_json(staging / "motion_telemetry.json", {"edges": [_plain_edge(edge) for edge in motion]})
@@ -301,6 +313,11 @@ def run_s13_experiment(
             "motion_graph_connected_telemetry": progress.adjacent_reliable_graph_connected,
             "motion_graph_connected_used_as_structural_gate": False,
             "direct_local_delta_used_as_structural_gate": False,
+            "zero_duplicate_edge_count": zero_duplicate_edge_count,
+            "subpixel_motion_edge_count": subpixel_motion_edge_count,
+            "fallback_progress_edge_count": fallback_progress_edge_count,
+            "observed_pause_expansion_count": pause_expansion_count,
+            "observed_pause_expansion_px": pause_expansion_px,
         }
         atomic_write_json(p0 / "base_layout.json", layout)
         atomic_write_json(staging / "motion_telemetry.json", {"edges": [_plain_edge(edge) for edge in motion]})
@@ -320,6 +337,11 @@ def run_s13_experiment(
             "p0_parent": "P0/P0_completion.json", "pair_count": len(session.frames) - 1,
             "motion_graph_connected_telemetry": progress.adjacent_reliable_graph_connected,
             "motion_graph_disconnection_is_fatal": False, "direct_local_delta_is_fatal": False,
+            "zero_duplicate_edge_count": layout["zero_duplicate_edge_count"],
+            "subpixel_motion_edge_count": layout["subpixel_motion_edge_count"],
+            "fallback_progress_edge_count": layout["fallback_progress_edge_count"],
+            "observed_pause_expansion_count": layout["observed_pause_expansion_count"],
+            "observed_pause_expansion_px": layout["observed_pause_expansion_px"],
             "trajectory": dict(trajectory.audit), "performance": {"stage_seconds": stage_seconds},
         })
         publish_generation(staging, generation)

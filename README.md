@@ -870,3 +870,10 @@ invented pose. P0 is a fixed-midpoint hard-owner panorama sampled once from
 each contributing real RGB source; it is hash-sealed before `current_base.json`
 is atomically replaced. M3 and later optimization stages remain intentionally
 unimplemented until the base layout is reviewed.
+
+An adjacent RGB motion below `0.25 px` contributes zero layout progress
+(`zero_duplicate`) only when supported grid LK and phase correlation agree on
+the pause. Coherent step-2/4 evidence preserves a genuinely subpixel scan, and
+only a missing or low-confidence observation may borrow a fallback progress
+estimate. This prevents a stationary lead-in or tail from widening one
+physical object into repeated central slits.

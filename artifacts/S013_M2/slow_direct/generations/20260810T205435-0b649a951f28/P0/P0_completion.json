@@ -1,10 +1,5 @@
 {
-  "algorithm_id": "S013_output_first_progressive_dense_central_slit_v3",
-  "completion": "generations/20260810T205435-0b649a951f28/P0/P0_completion.json",
-  "completion_sha256": "6e0f176d6139156289f1772f13c40b1e776639eff86c902ab1769ecab10d7053",
-  "generation": "generations/20260810T205435-0b649a951f28",
-  "generation_id": "20260810T205435-0b649a951f28",
-  "p0_assets_sha256": {
+  "assets_sha256": {
     "base_column_provenance.npz": "0e1450b543ae335d8f2e41a72a17b65bea6d8d2da8f6585242041e46cc3b1447",
     "base_layout.json": "96a9b5764f2c74b0289d777e6c0eea0b3e9ec1de0bea3a08472bd2058c32edb4",
     "base_panorama_owner_only.jpg": "63b2d7641261bb90e8047bfcdf0266f50d1370a3b6a37b0d7fc262f37e2104ab",
@@ -14,5 +9,19 @@
     "base_valid_mask.png": "0cd3ba0351a17e42052a2b109fc96819ee4a5e8f4df2e9504b0f696cfa3ac700",
     "owner_boundary_overlay.png": "87c849fa32a1280d6a89fae904b39cd90ecd52cdadde62ddb757cd268830686f"
   },
-  "schema": "gemini305-video-s13-current-base/v1"
+  "contributor_source_count": 109,
+  "diagnostic_only": true,
+  "duplicate_write_count": 0,
+  "generation_id": "20260810T205435-0b649a951f28",
+  "manual_review_required": true,
+  "owner_policy": "fixed_midpoint",
+  "panorama_claim": "visual_nonmetric",
+  "production_eligible": false,
+  "production_lock_eligible": false,
+  "remap_invocations": 109,
+  "render_state": "base_generated",
+  "schema": "gemini305-video-s13-p0-completion/v1",
+  "sealed": true,
+  "stage": "P0",
+  "trust_state": "strict_session_rgb_motion"
 }

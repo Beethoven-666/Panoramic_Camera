@@ -12,6 +12,12 @@ import numpy as np
 from .video_s13_session import S13RenderFrame, read_s13_rgb
 
 
+_MIN_SPATIAL_ADVANCE_PX = 0.25
+_MIN_LK_OBSERVATIONS = 8
+_MIN_LK_WEIGHT = 2.0
+_MIN_PHASE_RESPONSE = 0.05
+
+
 @dataclass(frozen=True)
 class S13MotionEdge:
     source_frame_id: int
@@ -174,23 +180,112 @@ def measure_s13_motion(
     return tuple(edges)
 
 
+def _finite_selected_advance(edge: S13MotionEdge | None) -> float | None:
+    if edge is None or edge.selected_advance_px is None:
+        return None
+    value = float(edge.selected_advance_px)
+    return value if math.isfinite(value) else None
+
+
+def _is_confident_near_zero(edge: S13MotionEdge | None) -> bool:
+    """Return true only when independent RGB estimators agree on a pause."""
+
+    selected = _finite_selected_advance(edge)
+    if edge is None or selected is None or abs(selected) >= _MIN_SPATIAL_ADVANCE_PX or edge.risk:
+        return False
+    if edge.lk_advance_px is None or edge.phase_advance_px is None:
+        return False
+    lk = float(edge.lk_advance_px)
+    phase = float(edge.phase_advance_px)
+    return bool(
+        math.isfinite(lk)
+        and math.isfinite(phase)
+        and edge.lk_observation_count >= _MIN_LK_OBSERVATIONS
+        and edge.lk_total_weight >= _MIN_LK_WEIGHT
+        and edge.phase_response >= _MIN_PHASE_RESPONSE
+        and abs(lk) < _MIN_SPATIAL_ADVANCE_PX
+        and abs(phase) < _MIN_SPATIAL_ADVANCE_PX
+        and abs(lk - phase) < _MIN_SPATIAL_ADVANCE_PX
+    )
+
+
+def _subpixel_motion_supported_indices(
+    frames: Sequence[S13RenderFrame],
+    edges: Sequence[S13MotionEdge],
+    near_zero_indices: set[int],
+) -> set[int]:
+    """Use measured step-2/4 displacement to preserve coherent very slow scans."""
+
+    frame_index = {frame.frame_id: index for index, frame in enumerate(frames)}
+    supported: set[int] = set()
+    for edge in edges:
+        if edge.step <= 1 or edge.risk:
+            continue
+        source = frame_index.get(edge.source_frame_id)
+        target = frame_index.get(edge.target_frame_id)
+        advance = _finite_selected_advance(edge)
+        if (
+            source is None
+            or target is None
+            or target - source != edge.step
+            or advance is None
+            or abs(advance) < _MIN_SPATIAL_ADVANCE_PX
+        ):
+            continue
+        span = set(range(source, target))
+        # A skip edge may validate subpixel motion only when its complete span
+        # consists of independently confident near-zero adjacent edges. This
+        # prevents a skip edge crossing the start of movement from assigning
+        # that later movement to an earlier stationary frame.
+        if span and span.issubset(near_zero_indices):
+            supported.update(span)
+    return supported
+
+
 def build_basic_s13_progress(frames: Sequence[S13RenderFrame], edges: Sequence[S13MotionEdge]) -> S13Progress:
     adjacent_by_pair = {(edge.source_frame_id, edge.target_frame_id): edge for edge in edges if edge.step == 1}
     reliable = [
         abs(float(edge.selected_advance_px)) for edge in edges
-        if edge.step == 1 and edge.selected_advance_px is not None and abs(float(edge.selected_advance_px)) >= 0.25
+        if (
+            edge.step == 1
+            and edge.selected_advance_px is not None
+            and math.isfinite(float(edge.selected_advance_px))
+            and abs(float(edge.selected_advance_px)) >= _MIN_SPATIAL_ADVANCE_PX
+            and not edge.risk
+        )
     ]
     session_median = float(np.median(reliable)) if reliable else 1.0
+    near_zero_indices = {
+        index
+        for index, (left, right) in enumerate(zip(frames[:-1], frames[1:]))
+        if _is_confident_near_zero(adjacent_by_pair.get((left.frame_id, right.frame_id)))
+    }
+    subpixel_supported = _subpixel_motion_supported_indices(frames, edges, near_zero_indices)
     centers = [0.0]
     methods = ["origin"]
     measured_count = 0
     connected = True
-    for left, right in zip(frames[:-1], frames[1:]):
+    for index, (left, right) in enumerate(zip(frames[:-1], frames[1:])):
         edge = adjacent_by_pair.get((left.frame_id, right.frame_id))
-        if edge is not None and edge.selected_advance_px is not None and abs(edge.selected_advance_px) >= 0.25:
-            advance = abs(float(edge.selected_advance_px))
+        observed = _finite_selected_advance(edge)
+        if observed is not None and abs(observed) >= _MIN_SPATIAL_ADVANCE_PX:
+            advance = abs(observed)
             method = "grid_lk" if edge.selected_method == "grid_lk" else "phase_correlation"
             measured_count += 1
+        elif index in near_zero_indices and index in subpixel_supported:
+            advance = abs(float(observed))
+            base_method = "grid_lk" if edge is not None and edge.selected_method == "grid_lk" else "phase_correlation"
+            method = f"{base_method}_subpixel"
+            measured_count += 1
+        elif index in near_zero_indices:
+            # A finite, independently corroborated near-zero edge is evidence
+            # that the two real frames are near duplicates. Borrowing the
+            # session's moving median here invents distance during a
+            # stationary lead-in/out and repeatedly lays the same object
+            # across the canvas.
+            advance = 0.0
+            method = "zero_duplicate"
+            connected = False
         else:
             advance = session_median
             method = "session_median" if reliable else "temporal_order"

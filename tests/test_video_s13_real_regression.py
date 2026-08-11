@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -36,19 +37,33 @@ def _run_real(session: Path, output: Path) -> dict:
 @pytest.mark.skipif(not RUN_REAL, reason="set G305_RUN_REAL_S13_REGRESSION=1 for real RGB regression")
 def test_s13_real_slow_rgb_progress_is_not_blocked_by_legacy_delta(tmp_path: Path) -> None:
     report = _run_real(REAL_ROOT / "run_20260806_153033", tmp_path / "slow")
+    layout = json.loads((Path(report["generation"]) / "P0/base_layout.json").read_text(encoding="utf-8"))
     legacy = descriptive_delta_risk(7.43485)
     assert report["render_state"] == "base_generated"
     assert report["direct_local_delta_is_fatal"] is False
     assert legacy["risk"] is True
     assert legacy["structural_gate"] is False
+    assert layout["zero_duplicate_edge_count"] + layout["subpixel_motion_edge_count"] >= 54
+    assert layout["centers_x"][54] - layout["centers_x"][0] < 8.0
+    assert not set(range(1, 55)).intersection(layout["selected_frame_ids"])
+    assert layout["observed_pause_expansion_count"] == 0
+    assert layout["observed_pause_expansion_px"] == 0.0
+    assert layout["canvas_width"] < 1800
     assert verify_p0_completion(Path(report["completion"]).parent)["sealed"] is True
 
 
 @pytest.mark.skipif(not RUN_REAL, reason="set G305_RUN_REAL_S13_REGRESSION=1 for real RGB regression")
 def test_s13_real_fast_disconnected_telemetry_still_has_complete_progress(tmp_path: Path) -> None:
     report = _run_real(REAL_ROOT / "run_20260807_140140", tmp_path / "fast")
+    layout = json.loads((Path(report["generation"]) / "P0/base_layout.json").read_text(encoding="utf-8"))
     assert report["render_state"] == "base_generated"
     assert report["motion_graph_connected_telemetry"] is False
     assert report["motion_graph_disconnection_is_fatal"] is False
+    assert layout["zero_duplicate_edge_count"] + layout["subpixel_motion_edge_count"] >= 29
+    assert layout["centers_x"][29] - layout["centers_x"][0] < 8.0
+    assert not set(range(1, 30)).intersection(layout["selected_frame_ids"])
+    assert layout["observed_pause_expansion_count"] == 0
+    assert layout["observed_pause_expansion_px"] == 0.0
+    assert layout["canvas_width"] < 2150
     assert Path(report["current_base"]).is_file()
     assert verify_p0_completion(Path(report["completion"]).parent)["sealed"] is True
