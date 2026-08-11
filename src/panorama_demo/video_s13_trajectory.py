@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -23,26 +23,35 @@ class S13Trajectory:
     pose_origin_by_frame_id: Mapping[int, str]
     islands: tuple[tuple[int, ...], ...]
     audit: Mapping[str, Any]
+    pose_epoch_by_frame_id: Mapping[int, str] = field(default_factory=dict)
 
 
-def _islands(frame_ids: tuple[int, ...], posed: set[int]) -> tuple[tuple[int, ...], ...]:
+def _islands(
+    frame_ids: tuple[int, ...], posed: set[int], epochs: Mapping[int, str]
+) -> tuple[tuple[int, ...], ...]:
     result: list[tuple[int, ...]] = []
     current: list[int] = []
+    current_epoch: str | None = None
     for frame_id in frame_ids:
         if frame_id in posed:
+            epoch = epochs.get(frame_id, "default")
+            if current and epoch != current_epoch:
+                result.append(tuple(current))
+                current = []
             current.append(frame_id)
-        elif current:
-            result.append(tuple(current))
-            current = []
+            current_epoch = epoch
     if current:
         result.append(tuple(current))
     return tuple(result)
 
 
-def _parse_payload(payload: Mapping[str, Any], *, path: Path, session: S13Session) -> tuple[dict[int, np.ndarray], dict[int, str], str]:
+def _parse_payload(
+    payload: Mapping[str, Any], *, path: Path, session: S13Session
+) -> tuple[dict[int, np.ndarray], dict[int, str], dict[int, str], str]:
     schema = payload.get("schema")
     poses: dict[int, np.ndarray] = {}
     origins: dict[int, str] = {}
+    epochs: dict[int, str] = {}
     if schema in {
         "gemini305-orbslam3-trajectory/v1",
         "gemini305-orbslam3-trajectory/v2",
@@ -60,6 +69,18 @@ def _parse_payload(payload: Mapping[str, Any], *, path: Path, session: S13Sessio
                     raise ValueError(f"S1.3 direct pose timestamp mismatch for frame {record.frame_id}")
                 poses[record.frame_id] = record.camera_to_world
                 origins[record.frame_id] = record.pose_origin
+                epochs[record.frame_id] = "default"
+        rows = payload.get("poses")
+        if isinstance(rows, list):
+            epoch_counter = 0
+            for row in rows:
+                if not isinstance(row, Mapping) or not isinstance(row.get("frame_id"), int):
+                    continue
+                frame_id = int(row["frame_id"])
+                if row.get("reset") is True:
+                    epoch_counter += 1
+                explicit = row.get("epoch_id", row.get("reset_id"))
+                epochs[frame_id] = str(explicit) if explicit is not None else f"default:{epoch_counter}"
         contract = "explicit_direct_pose_records"
     else:
         if schema == "gemini305-video-experiment-trajectory-cache/v1":
@@ -92,12 +113,16 @@ def _parse_payload(payload: Mapping[str, Any], *, path: Path, session: S13Sessio
                 raise ValueError("S1.3 trajectory frame ids are not unique")
             poses[frame_id] = validate_se3(matrix, frame_id=frame_id)
             origins[frame_id] = origin
+            epochs[frame_id] = "default"
+        epoch_ids = orb.get("epoch_ids")
+        if isinstance(epoch_ids, list) and len(epoch_ids) == len(ids):
+            epochs.update({int(frame_id): str(epoch) for frame_id, epoch in zip(ids, epoch_ids, strict=True)})
         contract = "explicit_direct_pose_arrays"
     allowed = {frame.frame_id for frame in session.frames}
     unknown = sorted(set(poses) - allowed)
     if unknown:
         raise ValueError(f"S1.3 trajectory contains frames outside this session: {unknown[:8]}")
-    return poses, origins, contract
+    return poses, origins, epochs, contract
 
 
 def load_s13_trajectory(
@@ -139,12 +164,12 @@ def load_s13_trajectory(
             raise ValueError(f"Invalid S1.3 explicit trajectory: {path}") from exc
         if not isinstance(payload, Mapping):
             raise ValueError("S1.3 trajectory root must be an object")
-        poses, origins, contract = _parse_payload(payload, path=path, session=session)
+        poses, origins, epochs, contract = _parse_payload(payload, path=path, session=session)
     finally:
         if temporary is not None:
             temporary.cleanup()
     ordered_ids = tuple(frame.frame_id for frame in session.frames)
-    islands = _islands(ordered_ids, set(poses))
+    islands = _islands(ordered_ids, set(poses), epochs)
     return S13Trajectory(
         source=source,
         source_path=None if source == "offline_orbslam3" else path,
@@ -162,6 +187,7 @@ def load_s13_trajectory(
             "interpolated_pose_count": 0,
             "extrapolated_pose_count": 0,
         },
+        pose_epoch_by_frame_id=epochs,
     )
 
 
@@ -195,4 +221,3 @@ def _verify_online_sources(payload: Mapping[str, Any], session: S13Session) -> N
             or recorded.get("aligned_depth_sha256") != _sha256(strict_frame.aligned_depth_path)
         ):
             raise ValueError("S1.3 online trajectory source hashes do not match this session")
-

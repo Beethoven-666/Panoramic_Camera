@@ -66,8 +66,8 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, object]], fields: Sequence
 
 
 def seal_p0(p0: Path, *, generation_id: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
-    assets = sorted(path for path in p0.iterdir() if path.is_file() and path.name != "P0_completion.json")
-    hashes = {path.name: sha256_file(path) for path in assets}
+    assets = sorted(path for path in p0.rglob("*") if path.is_file() and path != p0 / "P0_completion.json")
+    hashes = {path.relative_to(p0).as_posix(): sha256_file(path) for path in assets}
     completion = {
         "schema": P0_COMPLETION_SCHEMA,
         "generation_id": generation_id,
@@ -96,7 +96,10 @@ def verify_p0_completion(p0: Path) -> dict[str, Any]:
     if not isinstance(hashes, dict) or not hashes:
         raise ValueError("S1.3 P0 completion has no asset hashes")
     for name, expected in hashes.items():
-        asset = p0 / str(name)
+        relative = Path(str(name))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"S1.3 sealed P0 asset path is unsafe: {name}")
+        asset = p0 / relative
         if not asset.is_file() or sha256_file(asset) != expected:
             raise ValueError(f"S1.3 sealed P0 asset hash mismatch: {name}")
     return completion

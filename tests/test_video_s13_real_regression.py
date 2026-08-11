@@ -43,7 +43,8 @@ def test_s13_real_slow_rgb_progress_is_not_blocked_by_legacy_delta(tmp_path: Pat
     assert report["direct_local_delta_is_fatal"] is False
     assert legacy["risk"] is True
     assert legacy["structural_gate"] is False
-    assert layout["zero_duplicate_edge_count"] + layout["subpixel_motion_edge_count"] >= 54
+    assert layout["layout_level"] == "L0_coherent_rgb"
+    assert sum(step["selected_hypothesis_id"] >= 0 for step in layout["coherent_lineage"]) >= 54
     assert layout["centers_x"][54] - layout["centers_x"][0] < 8.0
     assert not set(range(1, 55)).intersection(layout["selected_frame_ids"])
     assert layout["observed_pause_expansion_count"] == 0
@@ -59,7 +60,8 @@ def test_s13_real_fast_disconnected_telemetry_still_has_complete_progress(tmp_pa
     assert report["render_state"] == "base_generated"
     assert report["motion_graph_connected_telemetry"] is False
     assert report["motion_graph_disconnection_is_fatal"] is False
-    assert layout["zero_duplicate_edge_count"] + layout["subpixel_motion_edge_count"] >= 29
+    assert layout["layout_level"] in {"L0_coherent_rgb", "L1_rgb_pose_soft"}
+    assert sum(step["selected_hypothesis_id"] >= 0 for step in layout["coherent_lineage"]) >= 29
     assert layout["centers_x"][29] - layout["centers_x"][0] < 8.0
     assert not set(range(1, 30)).intersection(layout["selected_frame_ids"])
     assert layout["observed_pause_expansion_count"] == 0

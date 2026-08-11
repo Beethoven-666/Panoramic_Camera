@@ -1,0 +1,39 @@
+{
+  "algorithm_id": "S013_output_first_progressive_dense_central_slit_v3",
+  "column_provenance": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M3\\fast_direct\\generations\\20260811T130239-2c572337a9c8\\P0\\base_column_provenance.npz",
+  "completion": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M3\\fast_direct\\generations\\20260811T130239-2c572337a9c8\\P0\\P0_completion.json",
+  "current_base": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M3\\fast_direct\\current_base.json",
+  "diagnostic_only": true,
+  "direct_local_delta_is_fatal": false,
+  "generation": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M3\\fast_direct\\generations\\20260811T130239-2c572337a9c8",
+  "generation_id": "20260811T130239-2c572337a9c8",
+  "layout": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M3\\fast_direct\\generations\\20260811T130239-2c572337a9c8\\P0\\base_layout.json",
+  "manual_review_required": true,
+  "motion_graph_connected_telemetry": false,
+  "motion_graph_disconnection_is_fatal": false,
+  "optimizer": {
+    "all_failed": false,
+    "attempt_count": 0,
+    "failures": [],
+    "p0_hash_unchanged": true,
+    "p0_parent_preserved": true,
+    "requested": false
+  },
+  "owner_overlay": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M3\\fast_direct\\generations\\20260811T130239-2c572337a9c8\\P0\\owner_boundary_overlay.png",
+  "panorama": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M3\\fast_direct\\generations\\20260811T130239-2c572337a9c8\\P0\\base_panorama_owner_only.png",
+  "panorama_claim": "pose_supported",
+  "pixel_provenance": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M3\\fast_direct\\generations\\20260811T130239-2c572337a9c8\\P0\\base_pixel_provenance.npz",
+  "production_eligible": false,
+  "production_lock_eligible": false,
+  "render_state": "base_generated",
+  "schema": "gemini305-video-s13-output-first-report/v1",
+  "stage_seconds": {
+    "input_and_preflight": 0.6767068000003746,
+    "motion_measurement": 4.185139299999719,
+    "p0_render_and_export": 1.4161929999995664,
+    "progress_and_layout": 0.00575280000020939,
+    "trajectory": 0.009628100000099948
+  },
+  "time_to_P0_seconds": 6.354131500000221,
+  "total_wall_seconds": 6.365522900000087
+}

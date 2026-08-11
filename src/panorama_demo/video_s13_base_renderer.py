@@ -28,6 +28,7 @@ def render_s13_p0(
     image_loader: Callable[[int], np.ndarray],
     *,
     placement_methods: tuple[str, ...],
+    selected_hypothesis_ids: tuple[int, ...] | None = None,
 ) -> S13P0Result:
     result = render_s012_stage_a(schedule, calibration, image_loader)
     contributors = {assignment.frame_id for assignment in schedule.assignments if not assignment.zero_width}
@@ -39,6 +40,12 @@ def render_s13_p0(
     for index in range(len(schedule.assignments)):
         placement_codes[result.assignment_index == index] = index
     invalid_i32 = np.full((height, width), -1, dtype=np.int32)
+    hypothesis_ids = invalid_i32.copy()
+    if selected_hypothesis_ids is not None:
+        if len(selected_hypothesis_ids) != len(schedule.assignments):
+            raise ValueError("S1.3 motion hypothesis ids must align with source assignments")
+        for index, hypothesis_id in enumerate(selected_hypothesis_ids):
+            hypothesis_ids[result.assignment_index == index] = int(hypothesis_id)
     zeros = np.zeros((height, width), dtype=np.float32)
     pixel = {
         "owner_frame_id": result.owner_frame_id,
@@ -47,7 +54,7 @@ def render_s13_p0(
         "source_u": result.source_u,
         "source_v": result.source_v,
         "valid": result.valid_mask,
-        "selected_motion_hypothesis_id": invalid_i32.copy(),
+        "selected_motion_hypothesis_id": hypothesis_ids,
         "placement_method_code": placement_codes,
         "geometry_transaction_id": invalid_i32.copy(),
         "seam_transaction_id": invalid_i32.copy(),
