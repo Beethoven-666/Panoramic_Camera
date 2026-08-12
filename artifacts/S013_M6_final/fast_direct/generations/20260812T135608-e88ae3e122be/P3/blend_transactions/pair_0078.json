@@ -1,0 +1,46 @@
+{
+  "blended_pixel_count": 341,
+  "candidate_audits": [
+    {
+      "blended_pixel_count": 0,
+      "evaluable": true,
+      "hard_safe": true,
+      "model": "B0_owner_only",
+      "reason": null,
+      "selected": false
+    },
+    {
+      "blended_pixel_count": 360,
+      "evaluable": true,
+      "hard_safe": true,
+      "model": "B1_narrow_feather",
+      "reason": null,
+      "residual_median_linear": 0.01018239464610815,
+      "safe_fraction": 0.365625,
+      "selected": true,
+      "total_width_px": 2
+    },
+    {
+      "blended_pixel_count": 722,
+      "evaluable": true,
+      "hard_safe": false,
+      "model": "B2_safe_masked_multiband",
+      "pyramid_levels": 1,
+      "reason": "insufficient_safe_background_or_residual",
+      "residual_median_linear": 0.01018239464610815,
+      "safe_fraction": 0.365625,
+      "selected": false,
+      "total_width_px": 4
+    }
+  ],
+  "fallback_reason": "globally_protected_pixels_removed",
+  "hard_audit_passed": true,
+  "model": "B1_narrow_feather",
+  "pair_index": 78,
+  "parent_p2_pair_transaction_sha256": "7e4d187294e7e61914ba3101a392c413185c308c4239fa6835a477eea912ab49",
+  "protected_pixel_count": 8211,
+  "pyramid_levels": 0,
+  "schema": "gemini305-video-s13-blend-transaction/v1",
+  "total_width_px": 2,
+  "transaction_id": 78
+}

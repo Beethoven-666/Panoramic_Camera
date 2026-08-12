@@ -1,0 +1,46 @@
+{
+  "blended_pixel_count": 234,
+  "candidate_audits": [
+    {
+      "blended_pixel_count": 0,
+      "evaluable": true,
+      "hard_safe": true,
+      "model": "B0_owner_only",
+      "reason": null,
+      "selected": false
+    },
+    {
+      "blended_pixel_count": 436,
+      "evaluable": true,
+      "hard_safe": true,
+      "model": "B1_narrow_feather",
+      "reason": null,
+      "residual_median_linear": 0.009822813794016838,
+      "safe_fraction": 0.37083333333333335,
+      "selected": true,
+      "total_width_px": 2
+    },
+    {
+      "blended_pixel_count": 871,
+      "evaluable": true,
+      "hard_safe": false,
+      "model": "B2_safe_masked_multiband",
+      "pyramid_levels": 1,
+      "reason": "insufficient_safe_background_or_residual",
+      "residual_median_linear": 0.009822813794016838,
+      "safe_fraction": 0.37083333333333335,
+      "selected": false,
+      "total_width_px": 4
+    }
+  ],
+  "fallback_reason": "globally_protected_pixels_removed",
+  "hard_audit_passed": true,
+  "model": "B1_narrow_feather",
+  "pair_index": 66,
+  "parent_p2_pair_transaction_sha256": "ac05f93493156777d906e4a8199a1f3237bfbcb6eb5246290c650a699c5b6112",
+  "protected_pixel_count": 7685,
+  "pyramid_levels": 0,
+  "schema": "gemini305-video-s13-blend-transaction/v1",
+  "total_width_px": 2,
+  "transaction_id": 66
+}

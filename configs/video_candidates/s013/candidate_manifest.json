@@ -5,8 +5,14 @@
       "replaces_output_components": [],
       "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry"],
       "required_output_components": ["s013_p0_owner_only"]
+    },
+    "S013_output_first_progressive_dense_central_slit_m61_v2": {
+      "config_sha256": "237e8b5b71b6fb6b5ef4aa303a67a62070b603288051db50ca74890ca1d53c36",
+      "replaces_output_components": [],
+      "required_evidence_components": ["s013_p2_v4", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
     }
   },
-  "manifest_sha256": "8e6fa9e6b333b0b52d6963c711663556c84ed18e210481dd00ae5936cf4c08e7",
+  "manifest_sha256": "a8673428d070a0a2216687bb2e9397e5282cea25901384c26d53fe5b4113ec2b",
   "schema": "gemini305-video-candidate-manifest/v1"
 }

@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .video_algorithm import load_algorithm_config
+from .video_s13_m61_config import (
+    M61_ALGORITHM_ID,
+    M61_CONTRACT_SCHEMA,
+    M61_IMPLEMENTATION_ID,
+)
 
 
 S13_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v3"
@@ -161,12 +166,26 @@ def is_s13_identity(*, algorithm_id: str, implementation_id: str, role: str) -> 
     return role == "candidate" and algorithm_id == S13_ALGORITHM_ID and implementation_id == S13_IMPLEMENTATION_ID
 
 
+def is_s13_m61_identity(*, algorithm_id: str, implementation_id: str, role: str) -> bool:
+    """Recognize M6.1 without weakening the historical v3 identity."""
+
+    return (
+        role == "candidate"
+        and algorithm_id == M61_ALGORITHM_ID
+        and implementation_id == M61_IMPLEMENTATION_ID
+    )
+
+
 __all__ = [
     "S13_ALGORITHM_ID",
     "S13_CONTRACT_SCHEMA",
     "S13_IMPLEMENTATION_ID",
+    "M61_ALGORITHM_ID",
+    "M61_CONTRACT_SCHEMA",
+    "M61_IMPLEMENTATION_ID",
     "S13Config",
     "is_s13_identity",
+    "is_s13_m61_identity",
     "load_s13_config",
     "validate_s13_document",
 ]

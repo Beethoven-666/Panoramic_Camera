@@ -1,0 +1,2797 @@
+{
+  "blend_model": "B0_owner_only",
+  "branch": "fast_ignore_pose",
+  "generation": "20260812T140107-fb6aafb7f542",
+  "graph_topology": "photometric_replay/graph_topology/topology.json",
+  "graph_topology_sha256": "cb34e77c57ba7d557f5907f36245f982964db7a7103be1cbd677dd4ba74d71fb",
+  "note": "Written after the P2 seal to avoid a completion self-hash cycle.",
+  "owner_domain_manifest": "photometric_replay/owner_domain/manifest.json",
+  "owner_domain_manifest_sha256": "c0f1ba6907c8fc72eeab09c03adc9754740d27b63f95c5998dba11de8df72de8",
+  "p2_canonical_image_sha256": "16f5bec214209418d80f7f413cc4d691fd0dc2dae45923ee64f4f6fca8fba3ed",
+  "p2_completion_sha256": "e0d988cf52fa029c49214f162599d6871c02b1ffe842dbb8136dbcf06dbb7043",
+  "p2_root": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v5\\fast_ignore_pose\\P2",
+  "pair_evidence": [
+    {
+      "metadata": "photometric_replay/pair_0000.json",
+      "pair_index": 0,
+      "quality_class": "quality_insufficient_evidence",
+      "statistics": {
+        "common_audited_support_count": 12942,
+        "metric_validation_count": 993,
+        "quality_output_protected_count": 11146,
+        "quality_output_safe_count": 49911,
+        "quality_validation_safe_count": 1078,
+        "solver_matched_safe_count": 8349,
+        "solver_train_safe_count": 3434
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0001.json",
+      "pair_index": 1,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13412,
+        "metric_validation_count": 1763,
+        "quality_output_protected_count": 11286,
+        "quality_output_safe_count": 50219,
+        "quality_validation_safe_count": 2180,
+        "solver_matched_safe_count": 8594,
+        "solver_train_safe_count": 4840
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0002.json",
+      "pair_index": 2,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12933,
+        "metric_validation_count": 1799,
+        "quality_output_protected_count": 10930,
+        "quality_output_safe_count": 50186,
+        "quality_validation_safe_count": 2253,
+        "solver_matched_safe_count": 8680,
+        "solver_train_safe_count": 7068
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0003.json",
+      "pair_index": 3,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 8159,
+        "metric_validation_count": 1796,
+        "quality_output_protected_count": 10119,
+        "quality_output_safe_count": 46613,
+        "quality_validation_safe_count": 2253,
+        "solver_matched_safe_count": 5525,
+        "solver_train_safe_count": 5525
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0004.json",
+      "pair_index": 4,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 8160,
+        "metric_validation_count": 1782,
+        "quality_output_protected_count": 10022,
+        "quality_output_safe_count": 46646,
+        "quality_validation_safe_count": 2253,
+        "solver_matched_safe_count": 5262,
+        "solver_train_safe_count": 3829
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0005.json",
+      "pair_index": 5,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12000,
+        "metric_validation_count": 1562,
+        "quality_output_protected_count": 10674,
+        "quality_output_safe_count": 49667,
+        "quality_validation_safe_count": 1931,
+        "solver_matched_safe_count": 8010,
+        "solver_train_safe_count": 3804
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0006.json",
+      "pair_index": 6,
+      "quality_class": "quality_insufficient_evidence",
+      "statistics": {
+        "common_audited_support_count": 8160,
+        "metric_validation_count": 946,
+        "quality_output_protected_count": 9782,
+        "quality_output_safe_count": 46992,
+        "quality_validation_safe_count": 1102,
+        "solver_matched_safe_count": 5310,
+        "solver_train_safe_count": 2054
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0007.json",
+      "pair_index": 7,
+      "quality_class": "quality_insufficient_evidence",
+      "statistics": {
+        "common_audited_support_count": 8160,
+        "metric_validation_count": 1003,
+        "quality_output_protected_count": 9410,
+        "quality_output_safe_count": 47409,
+        "quality_validation_safe_count": 1105,
+        "solver_matched_safe_count": 5383,
+        "solver_train_safe_count": 2055
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0008.json",
+      "pair_index": 8,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12480,
+        "metric_validation_count": 1676,
+        "quality_output_protected_count": 9624,
+        "quality_output_safe_count": 51188,
+        "quality_validation_safe_count": 2093,
+        "solver_matched_safe_count": 8621,
+        "solver_train_safe_count": 4134
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0009.json",
+      "pair_index": 9,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13440,
+        "metric_validation_count": 1924,
+        "quality_output_protected_count": 10299,
+        "quality_output_safe_count": 51498,
+        "quality_validation_safe_count": 2381,
+        "solver_matched_safe_count": 8429,
+        "solver_train_safe_count": 6315
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0010.json",
+      "pair_index": 10,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12480,
+        "metric_validation_count": 1945,
+        "quality_output_protected_count": 9868,
+        "quality_output_safe_count": 50874,
+        "quality_validation_safe_count": 2381,
+        "solver_matched_safe_count": 8139,
+        "solver_train_safe_count": 8139
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0011.json",
+      "pair_index": 11,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13440,
+        "metric_validation_count": 1909,
+        "quality_output_protected_count": 9959,
+        "quality_output_safe_count": 51686,
+        "quality_validation_safe_count": 2381,
+        "solver_matched_safe_count": 9486,
+        "solver_train_safe_count": 7298
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0012.json",
+      "pair_index": 12,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12960,
+        "metric_validation_count": 1765,
+        "quality_output_protected_count": 9628,
+        "quality_output_safe_count": 51457,
+        "quality_validation_safe_count": 2080,
+        "solver_matched_safe_count": 9264,
+        "solver_train_safe_count": 4594
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0013.json",
+      "pair_index": 13,
+      "quality_class": "quality_insufficient_evidence",
+      "statistics": {
+        "common_audited_support_count": 13920,
+        "metric_validation_count": 1146,
+        "quality_output_protected_count": 9691,
+        "quality_output_safe_count": 52245,
+        "quality_validation_safe_count": 1186,
+        "solver_matched_safe_count": 9517,
+        "solver_train_safe_count": 3584
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0014.json",
+      "pair_index": 14,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13920,
+        "metric_validation_count": 1645,
+        "quality_output_protected_count": 9561,
+        "quality_output_safe_count": 52415,
+        "quality_validation_safe_count": 1892,
+        "solver_matched_safe_count": 9164,
+        "solver_train_safe_count": 3850
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0015.json",
+      "pair_index": 15,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14400,
+        "metric_validation_count": 2110,
+        "quality_output_protected_count": 9115,
+        "quality_output_safe_count": 53456,
+        "quality_validation_safe_count": 2365,
+        "solver_matched_safe_count": 9948,
+        "solver_train_safe_count": 7651
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0016.json",
+      "pair_index": 16,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13440,
+        "metric_validation_count": 2147,
+        "quality_output_protected_count": 8598,
+        "quality_output_safe_count": 53036,
+        "quality_validation_safe_count": 2365,
+        "solver_matched_safe_count": 9609,
+        "solver_train_safe_count": 9609
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0017.json",
+      "pair_index": 17,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13920,
+        "metric_validation_count": 2161,
+        "quality_output_protected_count": 8907,
+        "quality_output_safe_count": 53027,
+        "quality_validation_safe_count": 2365,
+        "solver_matched_safe_count": 10006,
+        "solver_train_safe_count": 6889
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0018.json",
+      "pair_index": 18,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14880,
+        "metric_validation_count": 1503,
+        "quality_output_protected_count": 9463,
+        "quality_output_safe_count": 53387,
+        "quality_validation_safe_count": 1689,
+        "solver_matched_safe_count": 10679,
+        "solver_train_safe_count": 4489
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0019.json",
+      "pair_index": 19,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13440,
+        "metric_validation_count": 1147,
+        "quality_output_protected_count": 9385,
+        "quality_output_safe_count": 52225,
+        "quality_validation_safe_count": 1196,
+        "solver_matched_safe_count": 9470,
+        "solver_train_safe_count": 3978
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0020.json",
+      "pair_index": 20,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15840,
+        "metric_validation_count": 1985,
+        "quality_output_protected_count": 9793,
+        "quality_output_safe_count": 54032,
+        "quality_validation_safe_count": 2216,
+        "solver_matched_safe_count": 11027,
+        "solver_train_safe_count": 7312
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0021.json",
+      "pair_index": 21,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14880,
+        "metric_validation_count": 1940,
+        "quality_output_protected_count": 9760,
+        "quality_output_safe_count": 53144,
+        "quality_validation_safe_count": 2291,
+        "solver_matched_safe_count": 10075,
+        "solver_train_safe_count": 9857
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0022.json",
+      "pair_index": 22,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15360,
+        "metric_validation_count": 1939,
+        "quality_output_protected_count": 10255,
+        "quality_output_safe_count": 53090,
+        "quality_validation_safe_count": 2291,
+        "solver_matched_safe_count": 10218,
+        "solver_train_safe_count": 7174
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0023.json",
+      "pair_index": 23,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15360,
+        "metric_validation_count": 1399,
+        "quality_output_protected_count": 11162,
+        "quality_output_safe_count": 51983,
+        "quality_validation_safe_count": 1679,
+        "solver_matched_safe_count": 10325,
+        "solver_train_safe_count": 4414
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0024.json",
+      "pair_index": 24,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12960,
+        "metric_validation_count": 1118,
+        "quality_output_protected_count": 10620,
+        "quality_output_safe_count": 50221,
+        "quality_validation_safe_count": 1252,
+        "solver_matched_safe_count": 9018,
+        "solver_train_safe_count": 3878
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0025.json",
+      "pair_index": 25,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14875,
+        "metric_validation_count": 1692,
+        "quality_output_protected_count": 11085,
+        "quality_output_safe_count": 51475,
+        "quality_validation_safe_count": 2147,
+        "solver_matched_safe_count": 9918,
+        "solver_train_safe_count": 6450
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0026.json",
+      "pair_index": 26,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15328,
+        "metric_validation_count": 1694,
+        "quality_output_protected_count": 11152,
+        "quality_output_safe_count": 51913,
+        "quality_validation_safe_count": 2224,
+        "solver_matched_safe_count": 10201,
+        "solver_train_safe_count": 9585
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0027.json",
+      "pair_index": 27,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15328,
+        "metric_validation_count": 1749,
+        "quality_output_protected_count": 11793,
+        "quality_output_safe_count": 51464,
+        "quality_validation_safe_count": 2224,
+        "solver_matched_safe_count": 9098,
+        "solver_train_safe_count": 6594
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0028.json",
+      "pair_index": 28,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15837,
+        "metric_validation_count": 1413,
+        "quality_output_protected_count": 12435,
+        "quality_output_safe_count": 51261,
+        "quality_validation_safe_count": 1661,
+        "solver_matched_safe_count": 10065,
+        "solver_train_safe_count": 3764
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0029.json",
+      "pair_index": 29,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15840,
+        "metric_validation_count": 1458,
+        "quality_output_protected_count": 12119,
+        "quality_output_safe_count": 51481,
+        "quality_validation_safe_count": 1684,
+        "solver_matched_safe_count": 11362,
+        "solver_train_safe_count": 4860
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0030.json",
+      "pair_index": 30,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14880,
+        "metric_validation_count": 1823,
+        "quality_output_protected_count": 11945,
+        "quality_output_safe_count": 50879,
+        "quality_validation_safe_count": 2331,
+        "solver_matched_safe_count": 9917,
+        "solver_train_safe_count": 7589
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0031.json",
+      "pair_index": 31,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 8160,
+        "metric_validation_count": 1845,
+        "quality_output_protected_count": 10058,
+        "quality_output_safe_count": 46837,
+        "quality_validation_safe_count": 2331,
+        "solver_matched_safe_count": 4789,
+        "solver_train_safe_count": 4789
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0032.json",
+      "pair_index": 32,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 8160,
+        "metric_validation_count": 1568,
+        "quality_output_protected_count": 10395,
+        "quality_output_safe_count": 46647,
+        "quality_validation_safe_count": 1858,
+        "solver_matched_safe_count": 4815,
+        "solver_train_safe_count": 1820
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0033.json",
+      "pair_index": 33,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14400,
+        "metric_validation_count": 1192,
+        "quality_output_protected_count": 11590,
+        "quality_output_safe_count": 51129,
+        "quality_validation_safe_count": 1271,
+        "solver_matched_safe_count": 9521,
+        "solver_train_safe_count": 3430
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0034.json",
+      "pair_index": 34,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14880,
+        "metric_validation_count": 1730,
+        "quality_output_protected_count": 11818,
+        "quality_output_safe_count": 51226,
+        "quality_validation_safe_count": 2188,
+        "solver_matched_safe_count": 10315,
+        "solver_train_safe_count": 5109
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0035.json",
+      "pair_index": 35,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12960,
+        "metric_validation_count": 2000,
+        "quality_output_protected_count": 11426,
+        "quality_output_safe_count": 49700,
+        "quality_validation_safe_count": 2428,
+        "solver_matched_safe_count": 8991,
+        "solver_train_safe_count": 7570
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0036.json",
+      "pair_index": 36,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14400,
+        "metric_validation_count": 2143,
+        "quality_output_protected_count": 11009,
+        "quality_output_safe_count": 51384,
+        "quality_validation_safe_count": 2428,
+        "solver_matched_safe_count": 10001,
+        "solver_train_safe_count": 9300
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0037.json",
+      "pair_index": 37,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14400,
+        "metric_validation_count": 1874,
+        "quality_output_protected_count": 10641,
+        "quality_output_safe_count": 51822,
+        "quality_validation_safe_count": 2369,
+        "solver_matched_safe_count": 9674,
+        "solver_train_safe_count": 6296
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0038.json",
+      "pair_index": 38,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15360,
+        "metric_validation_count": 1535,
+        "quality_output_protected_count": 10663,
+        "quality_output_safe_count": 52726,
+        "quality_validation_safe_count": 1738,
+        "solver_matched_safe_count": 10018,
+        "solver_train_safe_count": 3966
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0039.json",
+      "pair_index": 39,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14859,
+        "metric_validation_count": 1631,
+        "quality_output_protected_count": 10896,
+        "quality_output_safe_count": 51984,
+        "quality_validation_safe_count": 2013,
+        "solver_matched_safe_count": 9469,
+        "solver_train_safe_count": 4493
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0040.json",
+      "pair_index": 40,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15330,
+        "metric_validation_count": 2038,
+        "quality_output_protected_count": 10698,
+        "quality_output_safe_count": 52410,
+        "quality_validation_safe_count": 2310,
+        "solver_matched_safe_count": 10894,
+        "solver_train_safe_count": 9639
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0041.json",
+      "pair_index": 41,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13440,
+        "metric_validation_count": 2026,
+        "quality_output_protected_count": 10414,
+        "quality_output_safe_count": 50880,
+        "quality_validation_safe_count": 2310,
+        "solver_matched_safe_count": 9802,
+        "solver_train_safe_count": 8673
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0042.json",
+      "pair_index": 42,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14400,
+        "metric_validation_count": 2034,
+        "quality_output_protected_count": 11123,
+        "quality_output_safe_count": 51073,
+        "quality_validation_safe_count": 2238,
+        "solver_matched_safe_count": 10071,
+        "solver_train_safe_count": 5790
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0043.json",
+      "pair_index": 43,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14880,
+        "metric_validation_count": 1334,
+        "quality_output_protected_count": 11084,
+        "quality_output_safe_count": 51720,
+        "quality_validation_safe_count": 1413,
+        "solver_matched_safe_count": 10436,
+        "solver_train_safe_count": 4207
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0044.json",
+      "pair_index": 44,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14880,
+        "metric_validation_count": 1646,
+        "quality_output_protected_count": 11062,
+        "quality_output_safe_count": 51854,
+        "quality_validation_safe_count": 1911,
+        "solver_matched_safe_count": 10017,
+        "solver_train_safe_count": 4546
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0045.json",
+      "pair_index": 45,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15360,
+        "metric_validation_count": 1957,
+        "quality_output_protected_count": 11487,
+        "quality_output_safe_count": 52032,
+        "quality_validation_safe_count": 2309,
+        "solver_matched_safe_count": 10065,
+        "solver_train_safe_count": 7846
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0046.json",
+      "pair_index": 46,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14400,
+        "metric_validation_count": 1983,
+        "quality_output_protected_count": 11898,
+        "quality_output_safe_count": 50807,
+        "quality_validation_safe_count": 2309,
+        "solver_matched_safe_count": 8881,
+        "solver_train_safe_count": 8685
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0047.json",
+      "pair_index": 47,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14400,
+        "metric_validation_count": 1982,
+        "quality_output_protected_count": 11716,
+        "quality_output_safe_count": 51017,
+        "quality_validation_safe_count": 2227,
+        "solver_matched_safe_count": 9399,
+        "solver_train_safe_count": 5728
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0048.json",
+      "pair_index": 48,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12480,
+        "metric_validation_count": 1279,
+        "quality_output_protected_count": 11571,
+        "quality_output_safe_count": 49327,
+        "quality_validation_safe_count": 1386,
+        "solver_matched_safe_count": 8338,
+        "solver_train_safe_count": 3308
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0049.json",
+      "pair_index": 49,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14400,
+        "metric_validation_count": 1489,
+        "quality_output_protected_count": 12072,
+        "quality_output_safe_count": 50489,
+        "quality_validation_safe_count": 1544,
+        "solver_matched_safe_count": 9689,
+        "solver_train_safe_count": 3739
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0050.json",
+      "pair_index": 50,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15360,
+        "metric_validation_count": 1946,
+        "quality_output_protected_count": 12616,
+        "quality_output_safe_count": 50705,
+        "quality_validation_safe_count": 2206,
+        "solver_matched_safe_count": 10674,
+        "solver_train_safe_count": 6892
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0051.json",
+      "pair_index": 51,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15360,
+        "metric_validation_count": 2068,
+        "quality_output_protected_count": 12838,
+        "quality_output_safe_count": 50514,
+        "quality_validation_safe_count": 2283,
+        "solver_matched_safe_count": 10126,
+        "solver_train_safe_count": 9913
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0052.json",
+      "pair_index": 52,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15840,
+        "metric_validation_count": 1999,
+        "quality_output_protected_count": 12515,
+        "quality_output_safe_count": 51423,
+        "quality_validation_safe_count": 2210,
+        "solver_matched_safe_count": 9834,
+        "solver_train_safe_count": 6646
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0053.json",
+      "pair_index": 53,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13418,
+        "metric_validation_count": 1251,
+        "quality_output_protected_count": 11594,
+        "quality_output_safe_count": 50105,
+        "quality_validation_safe_count": 1307,
+        "solver_matched_safe_count": 8064,
+        "solver_train_safe_count": 3168
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0054.json",
+      "pair_index": 54,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14849,
+        "metric_validation_count": 1891,
+        "quality_output_protected_count": 11302,
+        "quality_output_safe_count": 51798,
+        "quality_validation_safe_count": 2108,
+        "solver_matched_safe_count": 9460,
+        "solver_train_safe_count": 4893
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0055.json",
+      "pair_index": 55,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14849,
+        "metric_validation_count": 2070,
+        "quality_output_protected_count": 11021,
+        "quality_output_safe_count": 52228,
+        "quality_validation_safe_count": 2360,
+        "solver_matched_safe_count": 9880,
+        "solver_train_safe_count": 8199
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0056.json",
+      "pair_index": 56,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15839,
+        "metric_validation_count": 2086,
+        "quality_output_protected_count": 9971,
+        "quality_output_safe_count": 54210,
+        "quality_validation_safe_count": 2360,
+        "solver_matched_safe_count": 11043,
+        "solver_train_safe_count": 9340
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0057.json",
+      "pair_index": 57,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14400,
+        "metric_validation_count": 1436,
+        "quality_output_protected_count": 10618,
+        "quality_output_safe_count": 51959,
+        "quality_validation_safe_count": 1991,
+        "solver_matched_safe_count": 10316,
+        "solver_train_safe_count": 4934
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0058.json",
+      "pair_index": 58,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15840,
+        "metric_validation_count": 1317,
+        "quality_output_protected_count": 10425,
+        "quality_output_safe_count": 53949,
+        "quality_validation_safe_count": 1431,
+        "solver_matched_safe_count": 11921,
+        "solver_train_safe_count": 5040
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0059.json",
+      "pair_index": 59,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 15331,
+        "metric_validation_count": 1768,
+        "quality_output_protected_count": 11632,
+        "quality_output_safe_count": 52756,
+        "quality_validation_safe_count": 2354,
+        "solver_matched_safe_count": 10109,
+        "solver_train_safe_count": 5785
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0060.json",
+      "pair_index": 60,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12454,
+        "metric_validation_count": 1926,
+        "quality_output_protected_count": 11084,
+        "quality_output_safe_count": 50843,
+        "quality_validation_safe_count": 2439,
+        "solver_matched_safe_count": 7472,
+        "solver_train_safe_count": 6577
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0061.json",
+      "pair_index": 61,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 10538,
+        "metric_validation_count": 1925,
+        "quality_output_protected_count": 10031,
+        "quality_output_safe_count": 50229,
+        "quality_validation_safe_count": 2439,
+        "solver_matched_safe_count": 7264,
+        "solver_train_safe_count": 4057
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0062.json",
+      "pair_index": 62,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12960,
+        "metric_validation_count": 1243,
+        "quality_output_protected_count": 10201,
+        "quality_output_safe_count": 52399,
+        "quality_validation_safe_count": 1367,
+        "solver_matched_safe_count": 9249,
+        "solver_train_safe_count": 3677
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0063.json",
+      "pair_index": 63,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12960,
+        "metric_validation_count": 1813,
+        "quality_output_protected_count": 10461,
+        "quality_output_safe_count": 52182,
+        "quality_validation_safe_count": 2173,
+        "solver_matched_safe_count": 9038,
+        "solver_train_safe_count": 4562
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0064.json",
+      "pair_index": 64,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12480,
+        "metric_validation_count": 1841,
+        "quality_output_protected_count": 9562,
+        "quality_output_safe_count": 52871,
+        "quality_validation_safe_count": 2384,
+        "solver_matched_safe_count": 9203,
+        "solver_train_safe_count": 9001
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0065.json",
+      "pair_index": 65,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12960,
+        "metric_validation_count": 1847,
+        "quality_output_protected_count": 10688,
+        "quality_output_safe_count": 52443,
+        "quality_validation_safe_count": 2384,
+        "solver_matched_safe_count": 7501,
+        "solver_train_safe_count": 6536
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0066.json",
+      "pair_index": 66,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13440,
+        "metric_validation_count": 1880,
+        "quality_output_protected_count": 9908,
+        "quality_output_safe_count": 53489,
+        "quality_validation_safe_count": 2308,
+        "solver_matched_safe_count": 9365,
+        "solver_train_safe_count": 5279
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0067.json",
+      "pair_index": 67,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12960,
+        "metric_validation_count": 1467,
+        "quality_output_protected_count": 8677,
+        "quality_output_safe_count": 54142,
+        "quality_validation_safe_count": 1601,
+        "solver_matched_safe_count": 9681,
+        "solver_train_safe_count": 3825
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0068.json",
+      "pair_index": 68,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13440,
+        "metric_validation_count": 1335,
+        "quality_output_protected_count": 8608,
+        "quality_output_safe_count": 54354,
+        "quality_validation_safe_count": 1428,
+        "solver_matched_safe_count": 9947,
+        "solver_train_safe_count": 3948
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0069.json",
+      "pair_index": 69,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 8160,
+        "metric_validation_count": 1836,
+        "quality_output_protected_count": 6751,
+        "quality_output_safe_count": 51189,
+        "quality_validation_safe_count": 1998,
+        "solver_matched_safe_count": 5722,
+        "solver_train_safe_count": 2513
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0070.json",
+      "pair_index": 70,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 8160,
+        "metric_validation_count": 2309,
+        "quality_output_protected_count": 6837,
+        "quality_output_safe_count": 51043,
+        "quality_validation_safe_count": 2487,
+        "solver_matched_safe_count": 5994,
+        "solver_train_safe_count": 5510
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0071.json",
+      "pair_index": 71,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12960,
+        "metric_validation_count": 2207,
+        "quality_output_protected_count": 6957,
+        "quality_output_safe_count": 55507,
+        "quality_validation_safe_count": 2487,
+        "solver_matched_safe_count": 9594,
+        "solver_train_safe_count": 9594
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0072.json",
+      "pair_index": 72,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12960,
+        "metric_validation_count": 2208,
+        "quality_output_protected_count": 6887,
+        "quality_output_safe_count": 55484,
+        "quality_validation_safe_count": 2487,
+        "solver_matched_safe_count": 9848,
+        "solver_train_safe_count": 7990
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0073.json",
+      "pair_index": 73,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12480,
+        "metric_validation_count": 2063,
+        "quality_output_protected_count": 7085,
+        "quality_output_safe_count": 54831,
+        "quality_validation_safe_count": 2335,
+        "solver_matched_safe_count": 9198,
+        "solver_train_safe_count": 5010
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0074.json",
+      "pair_index": 74,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12960,
+        "metric_validation_count": 1447,
+        "quality_output_protected_count": 7176,
+        "quality_output_safe_count": 55023,
+        "quality_validation_safe_count": 1561,
+        "solver_matched_safe_count": 9531,
+        "solver_train_safe_count": 3636
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0075.json",
+      "pair_index": 75,
+      "quality_class": "quality_insufficient_evidence",
+      "statistics": {
+        "common_audited_support_count": 11520,
+        "metric_validation_count": 1245,
+        "quality_output_protected_count": 6823,
+        "quality_output_safe_count": 53931,
+        "quality_validation_safe_count": 1277,
+        "solver_matched_safe_count": 8562,
+        "solver_train_safe_count": 3179
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0076.json",
+      "pair_index": 76,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13440,
+        "metric_validation_count": 1966,
+        "quality_output_protected_count": 7113,
+        "quality_output_safe_count": 55445,
+        "quality_validation_safe_count": 2167,
+        "solver_matched_safe_count": 10096,
+        "solver_train_safe_count": 4534
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0077.json",
+      "pair_index": 77,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 14880,
+        "metric_validation_count": 2289,
+        "quality_output_protected_count": 7438,
+        "quality_output_safe_count": 56341,
+        "quality_validation_safe_count": 2562,
+        "solver_matched_safe_count": 11117,
+        "solver_train_safe_count": 8482
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0078.json",
+      "pair_index": 78,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12960,
+        "metric_validation_count": 2365,
+        "quality_output_protected_count": 7210,
+        "quality_output_safe_count": 54766,
+        "quality_validation_safe_count": 2562,
+        "solver_matched_safe_count": 9495,
+        "solver_train_safe_count": 9495
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0079.json",
+      "pair_index": 79,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13920,
+        "metric_validation_count": 2362,
+        "quality_output_protected_count": 7576,
+        "quality_output_safe_count": 55310,
+        "quality_validation_safe_count": 2562,
+        "solver_matched_safe_count": 10222,
+        "solver_train_safe_count": 7527
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0080.json",
+      "pair_index": 80,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13440,
+        "metric_validation_count": 2073,
+        "quality_output_protected_count": 7527,
+        "quality_output_safe_count": 54956,
+        "quality_validation_safe_count": 2254,
+        "solver_matched_safe_count": 10169,
+        "solver_train_safe_count": 4781
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0081.json",
+      "pair_index": 81,
+      "quality_class": "quality_insufficient_evidence",
+      "statistics": {
+        "common_audited_support_count": 12960,
+        "metric_validation_count": 1230,
+        "quality_output_protected_count": 7757,
+        "quality_output_safe_count": 54260,
+        "quality_validation_safe_count": 1285,
+        "solver_matched_safe_count": 9497,
+        "solver_train_safe_count": 3491
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0082.json",
+      "pair_index": 82,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 12000,
+        "metric_validation_count": 1424,
+        "quality_output_protected_count": 7732,
+        "quality_output_safe_count": 53375,
+        "quality_validation_safe_count": 1519,
+        "solver_matched_safe_count": 8786,
+        "solver_train_safe_count": 3289
+      }
+    },
+    {
+      "metadata": "photometric_replay/pair_0083.json",
+      "pair_index": 83,
+      "quality_class": "quality_safe_evaluable",
+      "statistics": {
+        "common_audited_support_count": 13920,
+        "metric_validation_count": 2213,
+        "quality_output_protected_count": 8221,
+        "quality_output_safe_count": 54616,
+        "quality_validation_safe_count": 2405,
+        "solver_matched_safe_count": 10183,
+        "solver_train_safe_count": 5723
+      }
+    }
+  ],
+  "pairs": [
+    {
+      "classification": "quality_insufficient_evidence",
+      "independent_validation_tile_count": 6,
+      "metadata": "photometric_replay/pair_0000.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0050048828125,
+        "aggregate_linear_residual_p95": 0.0267333984375,
+        "clipping_fraction": 0.0,
+        "delta_e00": 0.8843611258793485,
+        "gradient_ghost": 0.08734557032585144,
+        "immediate_seam": 0.0050048828125,
+        "owner_plateau": 0.015594482421875,
+        "pair_linear_residual_p95": 0.0267333984375
+      },
+      "pair_index": 0,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1078,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0001.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.01531982421875,
+        "aggregate_linear_residual_p95": 0.12100829929113388,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.8918479236013697,
+        "gradient_ghost": 0.11687039583921432,
+        "immediate_seam": 0.01531982421875,
+        "owner_plateau": 0.0,
+        "pair_linear_residual_p95": 0.12100829929113388
+      },
+      "pair_index": 1,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2180,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0002.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0111083984375,
+        "aggregate_linear_residual_p95": 0.12426147609949112,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.5315476784624917,
+        "gradient_ghost": 0.12544523179531097,
+        "immediate_seam": 0.0111083984375,
+        "owner_plateau": 0.00018310546875,
+        "pair_linear_residual_p95": 0.12426147609949112
+      },
+      "pair_index": 2,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2253,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0003.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0067138671875,
+        "aggregate_linear_residual_p95": 0.33837890625,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.3553749719827615,
+        "gradient_ghost": 0.12219417095184326,
+        "immediate_seam": 0.0067138671875,
+        "owner_plateau": 0.00018310546875,
+        "pair_linear_residual_p95": 0.33837890625
+      },
+      "pair_index": 3,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2253,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0004.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00732421875,
+        "aggregate_linear_residual_p95": 0.14566345512866974,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.289429007373813,
+        "gradient_ghost": 0.10953881591558456,
+        "immediate_seam": 0.00732421875,
+        "owner_plateau": 0.00018310546875,
+        "pair_linear_residual_p95": 0.14566345512866974
+      },
+      "pair_index": 4,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2253,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0005.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00738525390625,
+        "aggregate_linear_residual_p95": 0.3178466856479645,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.3153147866604407,
+        "gradient_ghost": 0.11094910651445389,
+        "immediate_seam": 0.00738525390625,
+        "owner_plateau": 0.003662109375,
+        "pair_linear_residual_p95": 0.3178466856479645
+      },
+      "pair_index": 5,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1931,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_insufficient_evidence",
+      "independent_validation_tile_count": 6,
+      "metadata": "photometric_replay/pair_0006.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0040283203125,
+        "aggregate_linear_residual_p95": 0.0968780517578125,
+        "clipping_fraction": 0.0,
+        "delta_e00": 0.8433979220476204,
+        "gradient_ghost": 0.07079310715198517,
+        "immediate_seam": 0.0040283203125,
+        "owner_plateau": 0.0064697265625,
+        "pair_linear_residual_p95": 0.0968780517578125
+      },
+      "pair_index": 6,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1102,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_insufficient_evidence",
+      "independent_validation_tile_count": 6,
+      "metadata": "photometric_replay/pair_0007.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0042724609375,
+        "aggregate_linear_residual_p95": 0.04832763597369194,
+        "clipping_fraction": 0.0,
+        "delta_e00": 0.9382547338280409,
+        "gradient_ghost": 0.07847538590431213,
+        "immediate_seam": 0.0042724609375,
+        "owner_plateau": 0.00537109375,
+        "pair_linear_residual_p95": 0.04832763597369194
+      },
+      "pair_index": 7,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1105,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0008.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.008209228515625,
+        "aggregate_linear_residual_p95": 0.1201934814453125,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.3513839581764768,
+        "gradient_ghost": 0.11394228041172028,
+        "immediate_seam": 0.008209228515625,
+        "owner_plateau": 0.006927490234375,
+        "pair_linear_residual_p95": 0.1201934814453125
+      },
+      "pair_index": 8,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2093,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0009.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.011810302734375,
+        "aggregate_linear_residual_p95": 0.2782836854457855,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.5122015947792602,
+        "gradient_ghost": 0.11735177040100098,
+        "immediate_seam": 0.011810302734375,
+        "owner_plateau": 0.00689697265625,
+        "pair_linear_residual_p95": 0.2782836854457855
+      },
+      "pair_index": 9,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2381,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0010.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.01263427734375,
+        "aggregate_linear_residual_p95": 0.43603515625,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.5323716153646032,
+        "gradient_ghost": 0.10680165141820908,
+        "immediate_seam": 0.01263427734375,
+        "owner_plateau": 0.00689697265625,
+        "pair_linear_residual_p95": 0.43603515625
+      },
+      "pair_index": 10,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2381,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0011.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00933837890625,
+        "aggregate_linear_residual_p95": 0.769909679889679,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.5232456850404765,
+        "gradient_ghost": 0.11706771701574326,
+        "immediate_seam": 0.00933837890625,
+        "owner_plateau": 0.00689697265625,
+        "pair_linear_residual_p95": 0.769909679889679
+      },
+      "pair_index": 11,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2381,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0012.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00701904296875,
+        "aggregate_linear_residual_p95": 0.781445324420929,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.3180987057252949,
+        "gradient_ghost": 0.11405888944864273,
+        "immediate_seam": 0.00701904296875,
+        "owner_plateau": 0.00689697265625,
+        "pair_linear_residual_p95": 0.781445324420929
+      },
+      "pair_index": 12,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2080,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_insufficient_evidence",
+      "independent_validation_tile_count": 6,
+      "metadata": "photometric_replay/pair_0013.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00360107421875,
+        "aggregate_linear_residual_p95": 0.02117919921875,
+        "clipping_fraction": 0.0,
+        "delta_e00": 0.9808338500204377,
+        "gradient_ghost": 0.05950820818543434,
+        "immediate_seam": 0.00360107421875,
+        "owner_plateau": 0.0028076171875,
+        "pair_linear_residual_p95": 0.02117919921875
+      },
+      "pair_index": 13,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1186,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0014.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.005615234375,
+        "aggregate_linear_residual_p95": 0.06500244140625,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.1560338417026867,
+        "gradient_ghost": 0.09197060018777847,
+        "immediate_seam": 0.005615234375,
+        "owner_plateau": 0.00042724609375,
+        "pair_linear_residual_p95": 0.06500244140625
+      },
+      "pair_index": 14,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1892,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0015.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00592041015625,
+        "aggregate_linear_residual_p95": 0.25912779569625854,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.1357206951929864,
+        "gradient_ghost": 0.08880697190761566,
+        "immediate_seam": 0.00592041015625,
+        "owner_plateau": 0.00030517578125,
+        "pair_linear_residual_p95": 0.25912779569625854
+      },
+      "pair_index": 15,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2365,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0016.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00531005859375,
+        "aggregate_linear_residual_p95": 0.3376098573207855,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.0907346793827064,
+        "gradient_ghost": 0.07848092913627625,
+        "immediate_seam": 0.00531005859375,
+        "owner_plateau": 0.00030517578125,
+        "pair_linear_residual_p95": 0.3376098573207855
+      },
+      "pair_index": 16,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2365,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0017.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00732421875,
+        "aggregate_linear_residual_p95": 0.787109375,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.374433247250228,
+        "gradient_ghost": 0.07819314301013947,
+        "immediate_seam": 0.00732421875,
+        "owner_plateau": 0.00030517578125,
+        "pair_linear_residual_p95": 0.787109375
+      },
+      "pair_index": 17,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2365,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0018.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00677490234375,
+        "aggregate_linear_residual_p95": 0.4161132872104645,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.1731029780176212,
+        "gradient_ghost": 0.07479125261306763,
+        "immediate_seam": 0.00677490234375,
+        "owner_plateau": 0.001434326171875,
+        "pair_linear_residual_p95": 0.4161132872104645
+      },
+      "pair_index": 18,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1689,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0019.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0045166015625,
+        "aggregate_linear_residual_p95": 0.02191162109375,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.021955234544215,
+        "gradient_ghost": 0.05762716010212898,
+        "immediate_seam": 0.0045166015625,
+        "owner_plateau": 0.0218505859375,
+        "pair_linear_residual_p95": 0.02191162109375
+      },
+      "pair_index": 19,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1196,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0020.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0106201171875,
+        "aggregate_linear_residual_p95": 0.535473644733429,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.9575353265592808,
+        "gradient_ghost": 0.08847974240779877,
+        "immediate_seam": 0.0106201171875,
+        "owner_plateau": 0.18560791015625,
+        "pair_linear_residual_p95": 0.535473644733429
+      },
+      "pair_index": 20,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2216,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0021.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.007537841796875,
+        "aggregate_linear_residual_p95": 0.43353575468063354,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.697729941480255,
+        "gradient_ghost": 0.10419465601444244,
+        "immediate_seam": 0.007537841796875,
+        "owner_plateau": 0.18560791015625,
+        "pair_linear_residual_p95": 0.43353575468063354
+      },
+      "pair_index": 21,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2291,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0022.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.010009765625,
+        "aggregate_linear_residual_p95": 0.403106689453125,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.007252142451472,
+        "gradient_ghost": 0.11179772764444351,
+        "immediate_seam": 0.010009765625,
+        "owner_plateau": 0.18560791015625,
+        "pair_linear_residual_p95": 0.403106689453125
+      },
+      "pair_index": 22,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2291,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0023.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0086669921875,
+        "aggregate_linear_residual_p95": 0.436767578125,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.7194819656870008,
+        "gradient_ghost": 0.11057935655117035,
+        "immediate_seam": 0.0086669921875,
+        "owner_plateau": 0.166015625,
+        "pair_linear_residual_p95": 0.436767578125
+      },
+      "pair_index": 23,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1679,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0024.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0047607421875,
+        "aggregate_linear_residual_p95": 0.065673828125,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.124867062090452,
+        "gradient_ghost": 0.09318165481090546,
+        "immediate_seam": 0.0047607421875,
+        "owner_plateau": 0.1859130859375,
+        "pair_linear_residual_p95": 0.065673828125
+      },
+      "pair_index": 24,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1252,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0025.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.01116943359375,
+        "aggregate_linear_residual_p95": 0.2854553163051605,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.9085208468296109,
+        "gradient_ghost": 0.11626452952623367,
+        "immediate_seam": 0.01116943359375,
+        "owner_plateau": 0.16656494140625,
+        "pair_linear_residual_p95": 0.2854553163051605
+      },
+      "pair_index": 25,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2147,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0026.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.01678466796875,
+        "aggregate_linear_residual_p95": 0.441314697265625,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.1650667149096035,
+        "gradient_ghost": 0.12074688076972961,
+        "immediate_seam": 0.01678466796875,
+        "owner_plateau": 0.1671142578125,
+        "pair_linear_residual_p95": 0.441314697265625
+      },
+      "pair_index": 26,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2224,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0027.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0125732421875,
+        "aggregate_linear_residual_p95": 0.2817626893520355,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.0481176088444655,
+        "gradient_ghost": 0.11381363123655319,
+        "immediate_seam": 0.0125732421875,
+        "owner_plateau": 0.1671142578125,
+        "pair_linear_residual_p95": 0.2817626893520355
+      },
+      "pair_index": 27,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2224,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0028.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00604248046875,
+        "aggregate_linear_residual_p95": 0.3144775331020355,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.396304661096591,
+        "gradient_ghost": 0.11140944808721542,
+        "immediate_seam": 0.00604248046875,
+        "owner_plateau": 0.166748046875,
+        "pair_linear_residual_p95": 0.3144775331020355
+      },
+      "pair_index": 28,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1661,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0029.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00506591796875,
+        "aggregate_linear_residual_p95": 0.302011102437973,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.1103390483987292,
+        "gradient_ghost": 0.08645527809858322,
+        "immediate_seam": 0.00506591796875,
+        "owner_plateau": 0.101318359375,
+        "pair_linear_residual_p95": 0.302011102437973
+      },
+      "pair_index": 29,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1684,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0030.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0062255859375,
+        "aggregate_linear_residual_p95": 0.40999144315719604,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.2670831156632563,
+        "gradient_ghost": 0.10706990212202072,
+        "immediate_seam": 0.0062255859375,
+        "owner_plateau": 0.09442138671875,
+        "pair_linear_residual_p95": 0.40999144315719604
+      },
+      "pair_index": 30,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2331,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0031.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00750732421875,
+        "aggregate_linear_residual_p95": 0.4049926698207855,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.5260281764752088,
+        "gradient_ghost": 0.11562701314687729,
+        "immediate_seam": 0.00750732421875,
+        "owner_plateau": 0.09442138671875,
+        "pair_linear_residual_p95": 0.4049926698207855
+      },
+      "pair_index": 31,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2331,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0032.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.006805419921875,
+        "aggregate_linear_residual_p95": 0.3386596739292145,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.6331151056172488,
+        "gradient_ghost": 0.10243197530508041,
+        "immediate_seam": 0.006805419921875,
+        "owner_plateau": 0.09442138671875,
+        "pair_linear_residual_p95": 0.3386596739292145
+      },
+      "pair_index": 32,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1858,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0033.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00482177734375,
+        "aggregate_linear_residual_p95": 0.13680419325828552,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.0685984673512579,
+        "gradient_ghost": 0.08562465757131577,
+        "immediate_seam": 0.00482177734375,
+        "owner_plateau": 0.022552490234375,
+        "pair_linear_residual_p95": 0.13680419325828552
+      },
+      "pair_index": 33,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1271,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0034.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.009124755859375,
+        "aggregate_linear_residual_p95": 0.5584503412246704,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.4164908840803072,
+        "gradient_ghost": 0.09541800618171692,
+        "immediate_seam": 0.009124755859375,
+        "owner_plateau": 0.0997314453125,
+        "pair_linear_residual_p95": 0.5584503412246704
+      },
+      "pair_index": 34,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2188,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0035.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0101318359375,
+        "aggregate_linear_residual_p95": 0.5774078369140625,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.8464469737911826,
+        "gradient_ghost": 0.10043087601661682,
+        "immediate_seam": 0.0101318359375,
+        "owner_plateau": 0.10052490234375,
+        "pair_linear_residual_p95": 0.5774078369140625
+      },
+      "pair_index": 35,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2428,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0036.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0106201171875,
+        "aggregate_linear_residual_p95": 0.5752929449081421,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.7914736711076393,
+        "gradient_ghost": 0.1033724844455719,
+        "immediate_seam": 0.0106201171875,
+        "owner_plateau": 0.10052490234375,
+        "pair_linear_residual_p95": 0.5752929449081421
+      },
+      "pair_index": 36,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2428,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0037.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.008941650390625,
+        "aggregate_linear_residual_p95": 0.2260284423828125,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.4841615848171639,
+        "gradient_ghost": 0.10120745003223419,
+        "immediate_seam": 0.008941650390625,
+        "owner_plateau": 0.108795166015625,
+        "pair_linear_residual_p95": 0.2260284423828125
+      },
+      "pair_index": 37,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2369,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0038.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00665283203125,
+        "aggregate_linear_residual_p95": 0.08327026665210724,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.5128349886750108,
+        "gradient_ghost": 0.09466613829135895,
+        "immediate_seam": 0.00665283203125,
+        "owner_plateau": 0.0623779296875,
+        "pair_linear_residual_p95": 0.08327026665210724
+      },
+      "pair_index": 38,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1738,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0039.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00872802734375,
+        "aggregate_linear_residual_p95": 0.593658447265625,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.6829294134190589,
+        "gradient_ghost": 0.08923231810331345,
+        "immediate_seam": 0.00872802734375,
+        "owner_plateau": 0.202667236328125,
+        "pair_linear_residual_p95": 0.593658447265625
+      },
+      "pair_index": 39,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2013,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0040.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.01239013671875,
+        "aggregate_linear_residual_p95": 0.6683349609375,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.8331748323968626,
+        "gradient_ghost": 0.09630212187767029,
+        "immediate_seam": 0.01239013671875,
+        "owner_plateau": 0.20306396484375,
+        "pair_linear_residual_p95": 0.6683349609375
+      },
+      "pair_index": 40,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2310,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0041.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00775146484375,
+        "aggregate_linear_residual_p95": 0.6820831298828125,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.2385640541011098,
+        "gradient_ghost": 0.08345325291156769,
+        "immediate_seam": 0.00775146484375,
+        "owner_plateau": 0.20306396484375,
+        "pair_linear_residual_p95": 0.6820831298828125
+      },
+      "pair_index": 41,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2310,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0042.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.008056640625,
+        "aggregate_linear_residual_p95": 0.67828369140625,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.4645889057555377,
+        "gradient_ghost": 0.08003807812929153,
+        "immediate_seam": 0.008056640625,
+        "owner_plateau": 0.20306396484375,
+        "pair_linear_residual_p95": 0.67828369140625
+      },
+      "pair_index": 42,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2238,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0043.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00531005859375,
+        "aggregate_linear_residual_p95": 0.0665740966796875,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.0472113389792663,
+        "gradient_ghost": 0.06578259915113449,
+        "immediate_seam": 0.00531005859375,
+        "owner_plateau": 0.01202392578125,
+        "pair_linear_residual_p95": 0.0665740966796875
+      },
+      "pair_index": 43,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1413,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0044.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.006744384765625,
+        "aggregate_linear_residual_p95": 0.4733123779296875,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.33426182642707,
+        "gradient_ghost": 0.09577835351228714,
+        "immediate_seam": 0.006744384765625,
+        "owner_plateau": 0.006591796875,
+        "pair_linear_residual_p95": 0.4733123779296875
+      },
+      "pair_index": 44,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1911,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0045.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0093994140625,
+        "aggregate_linear_residual_p95": 0.0860595703125,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.6711678870118043,
+        "gradient_ghost": 0.09199406206607819,
+        "immediate_seam": 0.0093994140625,
+        "owner_plateau": 0.006195068359375,
+        "pair_linear_residual_p95": 0.0860595703125
+      },
+      "pair_index": 45,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2309,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0046.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.007568359375,
+        "aggregate_linear_residual_p95": 0.031524658203125,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.3931481053389096,
+        "gradient_ghost": 0.09643518179655075,
+        "immediate_seam": 0.007568359375,
+        "owner_plateau": 0.006195068359375,
+        "pair_linear_residual_p95": 0.031524658203125
+      },
+      "pair_index": 46,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2309,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0047.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00738525390625,
+        "aggregate_linear_residual_p95": 0.4742370545864105,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.3590441466103467,
+        "gradient_ghost": 0.09632329642772675,
+        "immediate_seam": 0.00738525390625,
+        "owner_plateau": 0.006561279296875,
+        "pair_linear_residual_p95": 0.4742370545864105
+      },
+      "pair_index": 47,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2227,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0048.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00506591796875,
+        "aggregate_linear_residual_p95": 0.6595458984375,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.1930234013234857,
+        "gradient_ghost": 0.06672273576259613,
+        "immediate_seam": 0.00506591796875,
+        "owner_plateau": 0.007965087890625,
+        "pair_linear_residual_p95": 0.6595458984375
+      },
+      "pair_index": 48,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1386,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0049.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.005126953125,
+        "aggregate_linear_residual_p95": 0.08747558295726776,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.2592863743355878,
+        "gradient_ghost": 0.07542574405670166,
+        "immediate_seam": 0.005126953125,
+        "owner_plateau": 0.019439697265625,
+        "pair_linear_residual_p95": 0.08747558295726776
+      },
+      "pair_index": 49,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1544,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0050.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0115966796875,
+        "aggregate_linear_residual_p95": 0.04052734375,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.688859955407783,
+        "gradient_ghost": 0.07763242721557617,
+        "immediate_seam": 0.0115966796875,
+        "owner_plateau": 0.0313720703125,
+        "pair_linear_residual_p95": 0.04052734375
+      },
+      "pair_index": 50,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2206,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0051.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0220947265625,
+        "aggregate_linear_residual_p95": 0.041046142578125,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.140511649172385,
+        "gradient_ghost": 0.061610348522663116,
+        "immediate_seam": 0.0220947265625,
+        "owner_plateau": 0.031829833984375,
+        "pair_linear_residual_p95": 0.041046142578125
+      },
+      "pair_index": 51,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2283,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0052.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0220947265625,
+        "aggregate_linear_residual_p95": 0.05556030198931694,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.3258061275486575,
+        "gradient_ghost": 0.07407339662313461,
+        "immediate_seam": 0.0220947265625,
+        "owner_plateau": 0.031829833984375,
+        "pair_linear_residual_p95": 0.05556030198931694
+      },
+      "pair_index": 52,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2210,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0053.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0067138671875,
+        "aggregate_linear_residual_p95": 0.047271728515625,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.2714785543521512,
+        "gradient_ghost": 0.05763402208685875,
+        "immediate_seam": 0.0067138671875,
+        "owner_plateau": 0.01568603515625,
+        "pair_linear_residual_p95": 0.047271728515625
+      },
+      "pair_index": 53,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1307,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0054.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.01446533203125,
+        "aggregate_linear_residual_p95": 0.05023193359375,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.9059351937391078,
+        "gradient_ghost": 0.06906019151210785,
+        "immediate_seam": 0.01446533203125,
+        "owner_plateau": 0.009521484375,
+        "pair_linear_residual_p95": 0.05023193359375
+      },
+      "pair_index": 54,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2108,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0055.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0152587890625,
+        "aggregate_linear_residual_p95": 0.03657226637005806,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.0224981087216802,
+        "gradient_ghost": 0.06805725395679474,
+        "immediate_seam": 0.0152587890625,
+        "owner_plateau": 0.01019287109375,
+        "pair_linear_residual_p95": 0.03657226637005806
+      },
+      "pair_index": 55,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2360,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0056.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0111083984375,
+        "aggregate_linear_residual_p95": 0.1453094482421875,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.8864132421153508,
+        "gradient_ghost": 0.07063880562782288,
+        "immediate_seam": 0.0111083984375,
+        "owner_plateau": 0.01019287109375,
+        "pair_linear_residual_p95": 0.1453094482421875
+      },
+      "pair_index": 56,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2360,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0057.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0074462890625,
+        "aggregate_linear_residual_p95": 0.3789520263671875,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.345787272403335,
+        "gradient_ghost": 0.09584048390388489,
+        "immediate_seam": 0.0074462890625,
+        "owner_plateau": 0.009033203125,
+        "pair_linear_residual_p95": 0.3789520263671875
+      },
+      "pair_index": 57,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1991,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0058.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0074462890625,
+        "aggregate_linear_residual_p95": 0.46656495332717896,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.3108192679748822,
+        "gradient_ghost": 0.07533157616853714,
+        "immediate_seam": 0.0074462890625,
+        "owner_plateau": 0.034912109375,
+        "pair_linear_residual_p95": 0.46656495332717896
+      },
+      "pair_index": 58,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1431,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0059.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.07855224609375,
+        "aggregate_linear_residual_p95": 0.646679699420929,
+        "clipping_fraction": 0.0,
+        "delta_e00": 7.080834253245543,
+        "gradient_ghost": 0.13023202121257782,
+        "immediate_seam": 0.07855224609375,
+        "owner_plateau": 0.46270751953125,
+        "pair_linear_residual_p95": 0.646679699420929
+      },
+      "pair_index": 59,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2354,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0060.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.212310791015625,
+        "aggregate_linear_residual_p95": 0.638427734375,
+        "clipping_fraction": 0.0,
+        "delta_e00": 32.01684160483972,
+        "gradient_ghost": 0.1276625394821167,
+        "immediate_seam": 0.212310791015625,
+        "owner_plateau": 0.46240234375,
+        "pair_linear_residual_p95": 0.638427734375
+      },
+      "pair_index": 60,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2439,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0061.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.17608642578125,
+        "aggregate_linear_residual_p95": 0.5425170660018921,
+        "clipping_fraction": 0.0,
+        "delta_e00": 20.528119234243558,
+        "gradient_ghost": 0.13379156589508057,
+        "immediate_seam": 0.17608642578125,
+        "owner_plateau": 0.46240234375,
+        "pair_linear_residual_p95": 0.5425170660018921
+      },
+      "pair_index": 61,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2439,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0062.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00927734375,
+        "aggregate_linear_residual_p95": 0.14159545302391052,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.1137727574123533,
+        "gradient_ghost": 0.11131048202514648,
+        "immediate_seam": 0.00927734375,
+        "owner_plateau": 0.23565673828125,
+        "pair_linear_residual_p95": 0.14159545302391052
+      },
+      "pair_index": 62,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1367,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0063.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0169677734375,
+        "aggregate_linear_residual_p95": 0.216064453125,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.3361285769807467,
+        "gradient_ghost": 0.10698796063661575,
+        "immediate_seam": 0.0169677734375,
+        "owner_plateau": 0.355865478515625,
+        "pair_linear_residual_p95": 0.216064453125
+      },
+      "pair_index": 63,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2173,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0064.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.17327880859375,
+        "aggregate_linear_residual_p95": 0.47991943359375,
+        "clipping_fraction": 0.0,
+        "delta_e00": 20.976250572706103,
+        "gradient_ghost": 0.1268114447593689,
+        "immediate_seam": 0.17327880859375,
+        "owner_plateau": 0.35052490234375,
+        "pair_linear_residual_p95": 0.47991943359375
+      },
+      "pair_index": 64,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2384,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0065.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.18560791015625,
+        "aggregate_linear_residual_p95": 0.571746826171875,
+        "clipping_fraction": 0.0,
+        "delta_e00": 27.448066421790656,
+        "gradient_ghost": 0.12965475022792816,
+        "immediate_seam": 0.18560791015625,
+        "owner_plateau": 0.35052490234375,
+        "pair_linear_residual_p95": 0.571746826171875
+      },
+      "pair_index": 65,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2384,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0066.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.16705322265625,
+        "aggregate_linear_residual_p95": 0.5066741704940796,
+        "clipping_fraction": 0.0,
+        "delta_e00": 21.056952583032537,
+        "gradient_ghost": 0.12992174923419952,
+        "immediate_seam": 0.16705322265625,
+        "owner_plateau": 0.3504638671875,
+        "pair_linear_residual_p95": 0.5066741704940796
+      },
+      "pair_index": 66,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2308,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0067.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00860595703125,
+        "aggregate_linear_residual_p95": 0.44793701171875,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.5573436584785953,
+        "gradient_ghost": 0.08739281445741653,
+        "immediate_seam": 0.00860595703125,
+        "owner_plateau": 0.349609375,
+        "pair_linear_residual_p95": 0.44793701171875
+      },
+      "pair_index": 67,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1601,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0068.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0068359375,
+        "aggregate_linear_residual_p95": 0.29725342988967896,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.2593817306573654,
+        "gradient_ghost": 0.07442040741443634,
+        "immediate_seam": 0.0068359375,
+        "owner_plateau": 0.00921630859375,
+        "pair_linear_residual_p95": 0.29725342988967896
+      },
+      "pair_index": 68,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1428,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0069.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.04638671875,
+        "aggregate_linear_residual_p95": 0.455780029296875,
+        "clipping_fraction": 0.0,
+        "delta_e00": 5.0953707705760305,
+        "gradient_ghost": 0.10102874785661697,
+        "immediate_seam": 0.04638671875,
+        "owner_plateau": 0.07745361328125,
+        "pair_linear_residual_p95": 0.455780029296875
+      },
+      "pair_index": 69,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1998,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0070.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.02435302734375,
+        "aggregate_linear_residual_p95": 0.4054931700229645,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.72226761304201,
+        "gradient_ghost": 0.08320429176092148,
+        "immediate_seam": 0.02435302734375,
+        "owner_plateau": 0.07745361328125,
+        "pair_linear_residual_p95": 0.4054931700229645
+      },
+      "pair_index": 70,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2487,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0071.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.03094482421875,
+        "aggregate_linear_residual_p95": 0.41032713651657104,
+        "clipping_fraction": 0.0,
+        "delta_e00": 3.1335921140416163,
+        "gradient_ghost": 0.07811777293682098,
+        "immediate_seam": 0.03094482421875,
+        "owner_plateau": 0.07745361328125,
+        "pair_linear_residual_p95": 0.41032713651657104
+      },
+      "pair_index": 71,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2487,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0072.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.033447265625,
+        "aggregate_linear_residual_p95": 0.396951287984848,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.991464593693437,
+        "gradient_ghost": 0.08893013745546341,
+        "immediate_seam": 0.033447265625,
+        "owner_plateau": 0.07745361328125,
+        "pair_linear_residual_p95": 0.396951287984848
+      },
+      "pair_index": 72,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2487,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0073.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.03045654296875,
+        "aggregate_linear_residual_p95": 0.2657531797885895,
+        "clipping_fraction": 0.0,
+        "delta_e00": 3.08098286979782,
+        "gradient_ghost": 0.09428790211677551,
+        "immediate_seam": 0.03045654296875,
+        "owner_plateau": 0.07745361328125,
+        "pair_linear_residual_p95": 0.2657531797885895
+      },
+      "pair_index": 73,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2335,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0074.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.01104736328125,
+        "aggregate_linear_residual_p95": 0.13294677436351776,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.5973401396058746,
+        "gradient_ghost": 0.07299279421567917,
+        "immediate_seam": 0.01104736328125,
+        "owner_plateau": 0.0567626953125,
+        "pair_linear_residual_p95": 0.13294677436351776
+      },
+      "pair_index": 74,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1561,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_insufficient_evidence",
+      "independent_validation_tile_count": 6,
+      "metadata": "photometric_replay/pair_0075.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0048828125,
+        "aggregate_linear_residual_p95": 0.02224121056497097,
+        "clipping_fraction": 0.0,
+        "delta_e00": 0.9731623012324164,
+        "gradient_ghost": 0.04654020443558693,
+        "immediate_seam": 0.0048828125,
+        "owner_plateau": 0.003662109375,
+        "pair_linear_residual_p95": 0.02224121056497097
+      },
+      "pair_index": 75,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1277,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0076.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0184326171875,
+        "aggregate_linear_residual_p95": 0.148284912109375,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.108150262197806,
+        "gradient_ghost": 0.09482250362634659,
+        "immediate_seam": 0.0184326171875,
+        "owner_plateau": 0.06829833984375,
+        "pair_linear_residual_p95": 0.148284912109375
+      },
+      "pair_index": 76,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2167,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0077.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0394287109375,
+        "aggregate_linear_residual_p95": 0.23543700575828552,
+        "clipping_fraction": 0.0,
+        "delta_e00": 3.532988750536285,
+        "gradient_ghost": 0.10719696432352066,
+        "immediate_seam": 0.0394287109375,
+        "owner_plateau": 0.069091796875,
+        "pair_linear_residual_p95": 0.23543700575828552
+      },
+      "pair_index": 77,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2562,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0078.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.030029296875,
+        "aggregate_linear_residual_p95": 0.13114014267921448,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.996334959569514,
+        "gradient_ghost": 0.08747676014900208,
+        "immediate_seam": 0.030029296875,
+        "owner_plateau": 0.069091796875,
+        "pair_linear_residual_p95": 0.13114014267921448
+      },
+      "pair_index": 78,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2562,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0079.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.02667236328125,
+        "aggregate_linear_residual_p95": 0.1419677734375,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.7576648604115537,
+        "gradient_ghost": 0.0950348898768425,
+        "immediate_seam": 0.02667236328125,
+        "owner_plateau": 0.069091796875,
+        "pair_linear_residual_p95": 0.1419677734375
+      },
+      "pair_index": 79,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2562,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0080.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.019775390625,
+        "aggregate_linear_residual_p95": 0.14273682236671448,
+        "clipping_fraction": 0.0,
+        "delta_e00": 2.244569772478723,
+        "gradient_ghost": 0.0915602296590805,
+        "immediate_seam": 0.019775390625,
+        "owner_plateau": 0.067779541015625,
+        "pair_linear_residual_p95": 0.14273682236671448
+      },
+      "pair_index": 80,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2254,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_insufficient_evidence",
+      "independent_validation_tile_count": 6,
+      "metadata": "photometric_replay/pair_0081.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00469970703125,
+        "aggregate_linear_residual_p95": 0.03558349609375,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.1726310852603767,
+        "gradient_ghost": 0.06157626956701279,
+        "immediate_seam": 0.00469970703125,
+        "owner_plateau": 0.016326904296875,
+        "pair_linear_residual_p95": 0.03558349609375
+      },
+      "pair_index": 81,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1285,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0082.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.00640869140625,
+        "aggregate_linear_residual_p95": 0.09747314453125,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.3411936247211313,
+        "gradient_ghost": 0.06731210649013519,
+        "immediate_seam": 0.00640869140625,
+        "owner_plateau": 0.0123291015625,
+        "pair_linear_residual_p95": 0.09747314453125
+      },
+      "pair_index": 82,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 1519,
+      "vertical_block_count": 6
+    },
+    {
+      "classification": "quality_safe_evaluable",
+      "independent_validation_tile_count": 12,
+      "metadata": "photometric_replay/pair_0083.json",
+      "metrics": {
+        "aggregate_linear_residual_median": 0.0106201171875,
+        "aggregate_linear_residual_p95": 0.1173095703125,
+        "clipping_fraction": 0.0,
+        "delta_e00": 1.8678775714114597,
+        "gradient_ghost": 0.08542048186063766,
+        "immediate_seam": 0.0106201171875,
+        "owner_plateau": 0.016845703125,
+        "pair_linear_residual_p95": 0.1173095703125
+      },
+      "pair_index": 83,
+      "train_validation_overlap_count": 0,
+      "validation_sample_count": 2405,
+      "vertical_block_count": 6
+    }
+  ],
+  "photometric_model": "Q0_identity",
+  "photometric_replay_manifest": "photometric_replay/manifest.json",
+  "photometric_replay_manifest_sha256": "39dab18dfadfa2b90ca520cb085afea66b62b095d15ec7a873558612de99cc05",
+  "q0_b0_only": true,
+  "q_solver_invocations": 0,
+  "run_id": "run_20260807_140140",
+  "schema": "gemini305-video-s13-m61-calibration-input/v1",
+  "sealed": true
+}

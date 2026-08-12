@@ -1,0 +1,48 @@
+{
+  "assets_sha256": {
+    "pair_report.json": "728c623fcb2518dc3754ac3cebeb854e5e21a014672143f12cc65a75dde1a8a2",
+    "vertical_owner_boundary_overlay.png": "25a0d067f02f4dd68bc2efdfc0875f0920e00dd13c2323fbf5a7cb862a7290aa",
+    "vertical_panorama_owner_only.jpg": "0f1b0687d3907ac304cc2923d9dc5c4f25c0dddc8ba34528522a2a3856667ab4",
+    "vertical_panorama_owner_only.png": "4aa6bde79e13a7bfef919afe689118cbe04a91e0744433c7bb211a116265141b",
+    "vertical_pixel_provenance.npz": "2c78ac8927d9d34f1f2c3c42693adc11cb93e965e2fe8327f0de1427de9bf288",
+    "vertical_selection.json": "1a4af18ec92684607396ecf36a655035a41f925e72c19c3518a6fe529145e665",
+    "vertical_solution.json": "2b052d02f0f869ff59acddd36de00f4b96e0b46b67a5ed3803559edbe79f507c",
+    "vertical_solution.npz": "9b13b6e5a0a5157953b99f4c7c4f071481b526127134fd74e50da1e74282d592",
+    "vertical_valid_mask.png": "d895beb2d58f4d1aba0427e665c9fe67a94710dcd0c3d4c2f86143e87d95ff8c"
+  },
+  "excluded_models": [
+    "translation",
+    "rotation",
+    "affine",
+    "seam",
+    "graphcut",
+    "photometric",
+    "blend",
+    "depth",
+    "mesh"
+  ],
+  "formal_raw_rgb_remap_invocations": 109,
+  "formal_raw_rgb_unique_sources": 109,
+  "generation_id": "20260812T121114-275a1f296e85",
+  "hard_audit_passed": true,
+  "models": [
+    "global_scalar_dy",
+    "pair_local_row_residual"
+  ],
+  "p0_parent": "../P0/P0_completion.json",
+  "p0_parent_sha256": "f6e915644d8efed4bd376d393b955098fa27950774777c9a644789c0b4ad511a",
+  "parent_completion_sha256": "f6e915644d8efed4bd376d393b955098fa27950774777c9a644789c0b4ad511a",
+  "parent_stage": "P0",
+  "pixel_provenance_sha256": "2c78ac8927d9d34f1f2c3c42693adc11cb93e965e2fe8327f0de1427de9bf288",
+  "result_asset": "vertical_panorama_owner_only.png",
+  "result_asset_sha256": "4aa6bde79e13a7bfef919afe689118cbe04a91e0744433c7bb211a116265141b",
+  "schema": "gemini305-video-s13-p1-vertical-completion/v2",
+  "sealed": true,
+  "selected_global_gain": 1.0,
+  "selected_vertical_parent": "vertical_parent",
+  "stage": "P1",
+  "vertical_solution_json": "vertical_solution.json",
+  "vertical_solution_json_sha256": "2b052d02f0f869ff59acddd36de00f4b96e0b46b67a5ed3803559edbe79f507c",
+  "vertical_solution_npz": "vertical_solution.npz",
+  "vertical_solution_npz_sha256": "9b13b6e5a0a5157953b99f4c7c4f071481b526127134fd74e50da1e74282d592"
+}

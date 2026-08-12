@@ -1,0 +1,66 @@
+algorithm_id: S013_output_first_progressive_dense_central_slit_m61_v2
+candidate_id: S013_output_first_progressive_dense_central_slit_m61_v2
+implementation_id: s013_output_first_progressive_dense_central_slit_m61_v2_preview
+config_schema: gemini305-video-candidate/v1
+role: candidate
+required_evidence_components: [s013_p2_v4, s013_m61_threshold_approval]
+required_output_components: [s013_m61_p3]
+replaces_output_components: []
+config_sha256: 237e8b5b71b6fb6b5ef4aa303a67a62070b603288051db50ca74890ca1d53c36
+m61_bootstrap:
+  blend:
+    b1_total_width_px: 2
+    eligible_models: [B0_owner_only, B1_narrow_feather_2px]
+    ineligible_models: [B2_safe_masked_multiband, B3, B4]
+    maximum_color_contributors_per_pixel: 2
+    minimum_immediate_seam_benefit_dn: 0.5
+    minimum_immediate_seam_benefit_mde_dn: 0.25
+    protected_structure_weight: 0.0
+  luminance_field:
+    canonical_field_value: 0.0
+    enabled: false
+    schema: gemini305-video-s13-source-u-luminance-field/v1
+    solver: disabled
+  photometric_evidence_config_sha256: c11540ec0a2d49845f683a8de256721f046bccebd111f1acb426adf78420923b
+  quality_thresholds_path: configs/video_candidates/s013/quality_thresholds_m61_v2.json
+  quality_thresholds_sha256: 73539ee4a8110a9ac00dfb40bfd05e9047e79a623b9e4746fdeb8452cf3575e2
+  selection:
+    aggregate_p95_nonreg_absolute_tolerance_linear: 0.0005
+    aggregate_p95_nonreg_relative_tolerance: 0.02
+    minimum_actionable_macro_p95_benefit_fraction: 0.05
+    minimum_aggregate_median_benefit_fraction: 0.01
+    minimum_composite_benefit_fraction: 0.03
+    require_macro_and_micro_nonregression: true
+    selection_score_mde_linear: 0.0005
+    worst_pair_p95_nonreg_absolute_tolerance_linear: 0.0005
+    worst_pair_p95_nonreg_relative_tolerance: 0.02
+  solver:
+    canonical_identity_epsilon: 0.0001
+    convergence_tolerance: 0.000001
+    first_difference_regularization: 0.05
+    huber_delta: 1.5
+    identity_regularization: 0.01
+    irls_iterations: 8
+    maximum_absolute_bias_linear: 0.03
+    maximum_condition_number: 100000000.0
+    maximum_gain: 1.25
+    minimum_gain: 0.8
+    minimum_inlier_fraction: 0.5
+    minimum_robust_scale_linear: 0.0001
+    rank_tolerance: 0.00000001
+    second_difference_regularization: 0.02
+  threshold_approval_path: artifacts/S013_M6_1_metrics_baseline_v2/threshold_approval.json
+  threshold_approval_sha256: 47aa86098dbfaed964406420db8059831316076774ff8e00e4b7534958c38939
+  visual_quality:
+    block_widths_px: [8, 16, 32, 64]
+    color_metric: CIEDE2000
+    gaussian_sigma_px: 1.0
+    low_gradient_minimum_reference_energy: 0.000001
+    maximum_canvas_megapixels: 200.0
+    maximum_live_array_bytes: 1500000000
+    maximum_post_seconds_soft_sla: 60.0
+    maximum_process_rss_bytes: 2000000000
+    maximum_quality_insufficient_safe_pair_fraction: 0.0
+    maximum_resident_source_rois: 5
+    minimum_required_metric_coverage_fraction: 0.95
+    owner_plateau_minimum_width_px: 16
