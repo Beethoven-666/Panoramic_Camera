@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import cv2
 import numpy as np
@@ -29,6 +29,120 @@ class S13SeamResult:
     candidate_seams: Mapping[str, np.ndarray]
     candidate_total_costs: Mapping[str, float]
     candidate_cost_components: Mapping[str, Mapping[str, float]]
+
+
+@dataclass(frozen=True)
+class S13SeamCandidate:
+    """One independently generated seam candidate for a single pair."""
+
+    candidate_id: str
+    model_code: str
+    model_name: str
+    seam_x_by_row: np.ndarray
+    local_objective: float
+    complexity_rank: int
+    generation_audit: Mapping[str, object]
+
+
+_MODEL_CODES = {
+    "midpoint_straight": ("S0", 0),
+    "shifted_straight": ("S1", 1),
+    "monotone_dp": ("S2", 2),
+}
+
+
+def build_s13_seam_candidates(
+    pair_index: int,
+    result: S13SeamResult,
+) -> tuple[tuple[S13SeamCandidate, ...], tuple[Mapping[str, object], ...]]:
+    """Expose S0/S1/S2 as peers, with an explicit status for every model."""
+
+    candidates: list[S13SeamCandidate] = []
+    statuses: list[Mapping[str, object]] = []
+    failures = tuple(str(value) for value in result.audit.get("fallback_reasons", ()))
+    for model_name, (model_code, complexity_rank) in _MODEL_CODES.items():
+        path = result.candidate_seams.get(model_name)
+        if path is None:
+            prefix = f"{model_name}:"
+            reason = next((value[len(prefix):] for value in failures if value.startswith(prefix)), None)
+            statuses.append({
+                "candidate_id": f"pair-{pair_index:04d}-{model_code}",
+                "model_code": model_code,
+                "model_name": model_name,
+                "generation_status": "generation_failed",
+                "reason": reason or "candidate_unavailable",
+            })
+            continue
+        objective = float(result.candidate_total_costs[model_name])
+        component_costs = dict(result.candidate_cost_components[model_name])
+        candidate = S13SeamCandidate(
+            candidate_id=f"pair-{pair_index:04d}-{model_code}",
+            model_code=model_code,
+            model_name=model_name,
+            seam_x_by_row=np.asarray(path, dtype=np.int32).copy(),
+            local_objective=objective,
+            complexity_rank=complexity_rank,
+            generation_audit={
+                "generation_status": "generated",
+                "seam_total_cost": objective,
+                "cost_components": component_costs,
+                "search_left_x": result.audit.get("search_left_x"),
+                "search_right_x": result.audit.get("search_right_x"),
+                "maximum_shift_px": result.audit.get("maximum_shift_px"),
+                "allowed_row_steps": (-1, 0, 1),
+                "seam_sha256": _sha_path(path),
+            },
+        )
+        candidates.append(candidate)
+        statuses.append({
+            "candidate_id": candidate.candidate_id,
+            "model_code": model_code,
+            "model_name": model_name,
+            "generation_status": "generated",
+            "reason": None,
+        })
+    if not any(candidate.model_code == "S0" for candidate in candidates):
+        raise RuntimeError("midpoint seam candidate was not generated")
+    return tuple(candidates), tuple(statuses)
+
+
+def _sha_path(path: np.ndarray) -> str:
+    import hashlib
+
+    value = np.ascontiguousarray(path)
+    digest = hashlib.sha256()
+    digest.update(str(value.dtype).encode("ascii"))
+    digest.update(str(value.shape).encode("ascii"))
+    digest.update(value.tobytes())
+    return digest.hexdigest()
+
+
+def rank_s13_seam_candidates(
+    candidates: Sequence[S13SeamCandidate],
+    *,
+    minimum_complex_improvement_fraction: float = 0.02,
+) -> tuple[S13SeamCandidate, ...]:
+    """Rank one pair locally; this ordering never authorizes a stage seal."""
+
+    if not 0.0 <= minimum_complex_improvement_fraction < 1.0:
+        raise ValueError("minimum_complex_improvement_fraction must be in [0, 1)")
+    straight_costs = [
+        candidate.local_objective for candidate in candidates
+        if candidate.model_name in {"midpoint_straight", "shifted_straight"}
+    ]
+    best_straight = min(straight_costs, default=math.inf)
+
+    def key(candidate: S13SeamCandidate) -> tuple[float, int, str]:
+        objective = float(candidate.local_objective)
+        if candidate.model_name == "monotone_dp" and math.isfinite(best_straight):
+            improvement = (best_straight - objective) / max(abs(best_straight), 1e-6)
+            if improvement < minimum_complex_improvement_fraction:
+                # Keep the objective as an offline fact, but put a near-tied
+                # complex path behind the simpler safe candidates.
+                objective = best_straight
+        return objective, candidate.complexity_rank, candidate.candidate_id
+
+    return tuple(sorted(candidates, key=key))
 
 
 @dataclass(frozen=True)
@@ -378,13 +492,11 @@ def select_s13_seam(
             selection_reason = "straight_preferred_without_dp_margin"
             failures.append("monotone_dp:insufficient_relative_cost_improvement")
     elif dp_result is not None:
-        # A curved path is never self-authorizing.  Without an evaluable
-        # straight comparator there is no relative margin proof, so retain the
-        # immutable midpoint instead of accepting DP on its own objective.
-        fallback_chain.append("midpoint_straight")
-        model, seam, total_cost = "midpoint_straight", midpoint_seam, midpoint_total_cost
-        selection_reason = "dp_rejected_without_straight_comparator"
-        failures.append("monotone_dp:straight_comparator_unavailable")
+        # Generation and local ordering are independent of the straight
+        # candidate.  The caller still applies the DP candidate's own geometry
+        # and hard safety audit before it can own pixels.
+        model, (seam, total_cost) = "monotone_dp", dp_result
+        selection_reason = "dp_ranked_by_independent_local_objective"
     elif straight_result is not None:
         model, (seam, total_cost) = "shifted_straight", straight_result
         selection_reason = "monotone_dp_unavailable"
@@ -461,4 +573,7 @@ def select_s13_seam(
     )
 
 
-__all__ = ["S13SeamResult", "seam_search_bounds", "select_s13_seam"]
+__all__ = [
+    "S13SeamCandidate", "S13SeamResult", "build_s13_seam_candidates",
+    "rank_s13_seam_candidates", "seam_search_bounds", "select_s13_seam",
+]

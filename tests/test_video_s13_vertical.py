@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from panorama_demo.session import CameraIntrinsics
 from panorama_demo.video_s12_schedule import build_s012_schedule
-from panorama_demo.video_s13_vertical import estimate_s13_vertical, render_s13_p1_from_raw
+from panorama_demo.video_s13_bundle import seal_stage, sha256_file
+from panorama_demo.video_s13_vertical import (
+    estimate_s13_vertical,
+    load_s13_vertical_solution,
+    render_s13_p1_from_raw,
+    save_s13_vertical_solution,
+)
 
 
 def _calibration() -> CameraIntrinsics:
@@ -64,3 +72,59 @@ def test_pair_application_bands_are_nonoverlapping_and_bounded() -> None:
     assert all(0 <= right - left <= 16 for left, right in bands)
     assert all(right <= next_left for (_left, right), (next_left, _next_right) in zip(bands[:-1], bands[1:]))
     assert solution.audit["translation_rotation_affine_seam_photometric_blend_depth_mesh_enabled"] is False
+
+
+def test_sealed_p1_solution_round_trip_is_exact(tmp_path: Path) -> None:
+    calibration = _calibration()
+    schedule = build_s012_schedule((0, 1, 2), (47.5, 55.5, 63.5), calibration,
+                                   hard_internal_width_px=None)
+    base = _textured_image(19)
+    images = {0: base, 1: _textured_image(19, 1), 2: _textured_image(19, 2)}
+    solution = estimate_s13_vertical(schedule, calibration, images.__getitem__)
+    before = render_s13_p1_from_raw(schedule, calibration, images.__getitem__, solution)
+    p1 = tmp_path / "P1"
+    document = save_s13_vertical_solution(p1, solution)
+    seal_stage(
+        p1,
+        completion_name="P1_completion.json",
+        schema="gemini305-video-s13-p1-vertical-completion/v2",
+        metadata={
+            "generation_id": "round-trip",
+            "stage": "P1",
+            "hard_audit_passed": True,
+            "selected_global_gain": solution.selected_gain,
+            "vertical_solution_json": "vertical_solution.json",
+            "vertical_solution_json_sha256": sha256_file(p1 / "vertical_solution.json"),
+            "vertical_solution_npz": "vertical_solution.npz",
+            "vertical_solution_npz_sha256": document["npz_sha256"],
+        },
+    )
+    loaded = load_s13_vertical_solution(
+        p1, expected_completion_sha256=sha256_file(p1 / "P1_completion.json")
+    )
+    after = render_s13_p1_from_raw(schedule, calibration, images.__getitem__, loaded)
+    assert loaded.global_offsets_px == solution.global_offsets_px
+    assert loaded.selected_gain == solution.selected_gain
+    assert loaded.pairs == solution.pairs
+    assert loaded.gain_scores == solution.gain_scores
+    assert loaded.shoulder_width_px == solution.shoulder_width_px
+    assert loaded.audit == solution.audit
+    assert loaded.gain_global_offsets_px == solution.gain_global_offsets_px
+    for expected, observed in zip(solution.local_row_residuals, loaded.local_row_residuals, strict=True):
+        assert np.array_equal(observed, expected)
+    for gain in solution.gain_local_row_residuals:
+        for expected, observed in zip(
+            solution.gain_local_row_residuals[gain], loaded.gain_local_row_residuals[gain], strict=True
+        ):
+            assert np.array_equal(observed, expected)
+    assert sha256_file(p1 / "vertical_solution.npz") == document["npz_sha256"]
+    assert np.array_equal(after.image, before.image)
+
+
+def test_legacy_p1_without_v2_metadata_is_not_replayed(tmp_path: Path) -> None:
+    p1 = tmp_path / "P1"
+    p1.mkdir()
+    with (p1 / "vertical_solution.npz").open("wb") as handle:
+        np.savez_compressed(handle, global_offsets_px=np.zeros(2, dtype=np.float32))
+    with np.testing.assert_raises_regex(ValueError, "legacy_p1_not_replayable"):
+        load_s13_vertical_solution(p1)

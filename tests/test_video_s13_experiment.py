@@ -269,7 +269,7 @@ def test_report_separates_motion_and_render_counts(tmp_path: Path) -> None:
 def test_m4_appends_sealed_p1_and_preserves_immutable_p0(tmp_path: Path) -> None:
     output = tmp_path / "out"
     report = _run(_video_session(tmp_path), output)
-    assert report["m4"]["state"] == "P1_vertical_candidate_generated"
+    assert report["m4"]["state"] == "P1_sealed"
     p0_completion = Path(report["completion"])
     p1_completion = Path(report["m4"]["completion"])
     p1 = json.loads(p1_completion.read_text(encoding="utf-8"))
@@ -278,7 +278,7 @@ def test_m4_appends_sealed_p1_and_preserves_immutable_p0(tmp_path: Path) -> None
     assert "translation" in p1["excluded_models"]
     assert p1["formal_raw_rgb_remap_invocations"] == report["render_source_count"]
     assert report["optimizer"]["p0_hash_unchanged_after_m4"] is True
-    assert report["m4"]["current_preview"] is None
+    assert report["m4"]["latest_stage"] == "P1"
     generation_report = json.loads(
         (Path(report["generation"]) / "report.json").read_text(encoding="utf-8")
     )
@@ -298,6 +298,8 @@ def test_m4_level_failure_keeps_p0_and_does_not_publish_preview(tmp_path: Path, 
     assert verify_p0_completion(Path(report["completion"]).parent)["sealed"] is True
     assert report["optimizer"]["p0_hash_unchanged_after_m4"] is True
     assert not (output / "current_preview.json").exists()
+    latest = json.loads((output / "current_latest.json").read_text(encoding="utf-8"))
+    assert latest["stage"] == "P0"
     assert (Path(report["generation"]) / "M4_failure.json").is_file()
 
 
@@ -335,7 +337,38 @@ def test_m5_failure_preserves_p0_and_p1_and_does_not_publish_preview(
     assert _sha256(p0_completion) == p0_hash
     assert _sha256(p1_completion) == p1_hash
     assert verify_p0_completion(p0_completion.parent)["sealed"] is True
-    assert not (output / "current_preview.json").exists()
+    legacy_preview = json.loads((output / "current_preview.json").read_text(encoding="utf-8"))
+    assert legacy_preview["generation_id"] == "stale-generation"
+    latest = json.loads((output / "current_latest.json").read_text(encoding="utf-8"))
+    assert latest["stage"] == "P1"
     failure = json.loads((generation / "M5_failure.json").read_text(encoding="utf-8"))
     assert failure["p0_parent_preserved"] is True
     assert failure["p1_candidate_parent_preserved"] is True
+
+
+def test_m5_never_reestimates_or_reselects_m4(tmp_path: Path, monkeypatch) -> None:
+    import panorama_demo.video_s13_experiment as experiment
+
+    calls = {"estimate": 0, "select": 0}
+    original_estimate = experiment.estimate_s13_vertical
+    original_select = experiment.select_s13_vertical_parent
+
+    def count_estimate(*args, **kwargs):
+        calls["estimate"] += 1
+        return original_estimate(*args, **kwargs)
+
+    def count_select(*args, **kwargs):
+        calls["select"] += 1
+        return original_select(*args, **kwargs)
+
+    monkeypatch.setattr(experiment, "estimate_s13_vertical", count_estimate)
+    monkeypatch.setattr(experiment, "select_s13_vertical_parent", count_select)
+    report = _run(_video_session(tmp_path), tmp_path / "out")
+
+    assert report["m5"]["state"] == "P2_sealed"
+    assert calls == {"estimate": 1, "select": 1}
+    performance = json.loads(Path(report["m5"]["performance"]).read_text(encoding="utf-8"))
+    assert performance["m4_reestimated_in_m5"] is False
+    assert performance["gain_enumeration_count_in_m5"] == 0
+    assert performance["m4_selection_full_resolution_render_count"] == 0
+    assert performance["p2_full_resolution_render_count"] == 2

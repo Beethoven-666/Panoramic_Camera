@@ -226,7 +226,7 @@ def test_seam_dp_requires_cost_margin_over_shifted_straight(monkeypatch) -> None
     assert curved.audit["dp_relative_improvement"] == 0.05
 
 
-def test_seam_dp_is_rejected_without_straight_comparator(monkeypatch) -> None:
+def test_dp_is_generated_and_ranked_when_shifted_straight_fails(monkeypatch) -> None:
     import panorama_demo.video_s13_seam as seam_module
 
     image = np.zeros((48, 64, 3), dtype=np.uint8)
@@ -241,9 +241,10 @@ def test_seam_dp_is_rejected_without_straight_comparator(monkeypatch) -> None:
 
     result = select_s13_seam(image, image, valid, valid, 32)
 
-    assert result.model == "midpoint_straight"
-    assert result.audit["selection_reason"] == "dp_rejected_without_straight_comparator"
-    assert np.all(result.seam_x_by_row == 32)
+    assert result.model == "monotone_dp"
+    assert result.audit["selection_reason"] == "dp_ranked_by_independent_local_objective"
+    assert "monotone_dp" in result.candidate_seams
+    assert np.array_equal(result.seam_x_by_row, dp)
 
 
 def test_long_horizontal_structure_rejects_vertical_step() -> None:
@@ -366,12 +367,15 @@ def test_transactions_cover_every_pair_and_p2_remaps_each_raw_source_once() -> N
             "same_owner_geometry_plus_symmetric_base_candidate_seam"
         )
         assert pair.transaction["parent_stage_sha256"] == "a" * 64
-        assert pair.transaction[
-            "final_corridor_geometry_reestimated_from_immutable_p0"
-        ] is True
         if pair.transaction["decision"] == "applied":
+            assert pair.transaction[
+                "final_corridor_geometry_reestimated_from_immutable_p0"
+            ] is True
             assert pair.alignment is not None
             assert pair.alignment.reestimated_for_final_seam is True
+        else:
+            assert pair.transaction["fallback_used"] is True
+            assert pair.transaction["selected_geometry_model"] == "C0_identity"
 
     calls: list[int] = []
 
@@ -413,14 +417,17 @@ def test_transactions_record_same_geometry_seam_and_independent_seam_audits() ->
         assert transaction["comparison_coordinate_policy"] == (
             "same_owner_geometry_plus_symmetric_base_candidate_seam"
         )
-        assert transaction["geometry_comparison_seam_sha256"] == (
-            transaction["selected_seam_sha256"]
-        )
-        assert transaction["held_out_seam_selection_audits"]
-        assert all(
-            audit["selected_seam_sha256"]
-            for audit in transaction["held_out_seam_selection_audits"]
-        )
+        if transaction["decision"] == "applied":
+            assert transaction["geometry_comparison_seam_sha256"] == (
+                transaction["selected_seam_sha256"]
+            )
+            assert transaction["held_out_seam_selection_audits"]
+            assert all(
+                audit["selected_seam_sha256"]
+                for audit in transaction["held_out_seam_selection_audits"]
+            )
+        else:
+            assert transaction["fallback_reason"]
 
 
 def test_run_m5_reports_same_seam_sequence_selection_policy() -> None:
@@ -440,3 +447,64 @@ def test_run_m5_reports_same_seam_sequence_selection_policy() -> None:
     assert result.selection_audit["applied_unevaluable_indices"] == []
     assert "seam_output_sequence_audit" in result.selection_audit
     assert len(result.selection_audit["seam_output_pair_audits"]) == 2
+
+
+def test_diagnostic_score_cannot_reject_hard_safe_p2(monkeypatch) -> None:
+    import panorama_demo.video_s13_m5 as m5_module
+
+    calibration, schedule, images, vertical = _m5_inputs()
+    parent = render_s13_p1_from_raw(schedule, calibration, images.__getitem__, vertical).image
+    monkeypatch.setattr(
+        m5_module,
+        "sequence_structure_decision",
+        lambda *_args, **_kwargs: (
+            False,
+            {"eligible": False, "reason": "aggregate_improvement_not_proven"},
+        ),
+    )
+
+    result = run_s13_m5(
+        schedule, calibration, images.__getitem__, vertical, parent,
+        parent_stage_sha256="d" * 64,
+    )
+
+    assert result.selected_as_best is False
+    assert result.diagnostic_quality["runtime_authority"] is False
+    assert result.hard_audit_passed is True
+
+
+def test_each_evaluated_candidate_reestimates_its_own_corridor(
+    monkeypatch,
+) -> None:
+    import panorama_demo.video_s13_m5 as m5_module
+
+    calibration, schedule, images, vertical = _m5_inputs()
+    original = m5_module.reestimate_s13_final_corridor_alignment
+    observed: list[str] = []
+
+    def recording_reestimate(*args, **kwargs):
+        seam = np.asarray(kwargs["final_seam_x_by_row"], dtype=np.int32)
+        observed.append(m5_module._sha_array(seam))
+        return original(*args, **kwargs)
+
+    monkeypatch.setenv("G305_S13_M5_AUDIT_ALL_CANDIDATES", "1")
+    monkeypatch.setattr(
+        m5_module, "reestimate_s13_final_corridor_alignment", recording_reestimate
+    )
+    pairs = estimate_s13_m5_transactions(
+        schedule, calibration, images.__getitem__, vertical,
+        parent_stage_sha256="e" * 64,
+    )
+
+    evaluated_hashes = [
+        evaluation["seam_sha256"]
+        for pair in pairs
+        for evaluation in pair.transaction["candidate_evaluations"]
+        if evaluation["evaluation_status"] != "skipped_after_higher_rank_safe_candidate"
+    ]
+    assert observed == evaluated_hashes
+    assert any(
+        evaluation["model_name"] == "monotone_dp"
+        for pair in pairs
+        for evaluation in pair.transaction["candidate_evaluations"]
+    )

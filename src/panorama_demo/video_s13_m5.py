@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import time
 from dataclasses import dataclass
 from typing import Callable, Mapping, Sequence
@@ -30,7 +31,13 @@ from .video_s13_quality import (
     structurally_non_degrading,
     symmetric_seam_structure_metrics,
 )
-from .video_s13_seam import S13SeamResult, select_s13_seam
+from .video_s13_seam import (
+    S13SeamCandidate,
+    S13SeamResult,
+    build_s13_seam_candidates,
+    rank_s13_seam_candidates,
+    select_s13_seam,
+)
 from .video_s13_vertical import S13VerticalSolution
 
 
@@ -48,6 +55,7 @@ class S13P2Result:
     pixel_provenance: dict[str, np.ndarray]
     remap_invocations: int
     decoded_frame_ids: tuple[int, ...]
+    expected_support_mask: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -56,6 +64,9 @@ class S13M5Result:
     geometry_result: S13P2Result
     final_result: S13P2Result
     seam_overlay: np.ndarray
+    hard_audit_passed: bool
+    hard_audit: Mapping[str, object]
+    diagnostic_quality: Mapping[str, object]
     selected_as_best: bool
     before_mean_score: float | None
     after_mean_score: float | None
@@ -206,13 +217,20 @@ def _fallback_pair(
     parent_sha: str,
     frame_ids: tuple[int, int],
     reason: str,
+    parent_result_sha256: str | None = None,
+    p0_ancestor_completion_sha256: str | None = None,
     before: Mapping[str, object] | None = None,
     after: Mapping[str, object] | None = None,
 ) -> S13M5Pair:
     seam = np.full(schedule.canvas_height, schedule.boundaries[pair_index + 1], dtype=np.int32)
     core: dict[str, object] = {
+        "schema": "gemini305-video-s13-m5-pair-transaction/v2",
         "transaction_id": f"m5-pair-{pair_index:04d}",
+        "parent_stage": "P1",
         "parent_stage_sha256": parent_sha,
+        "parent_completion_sha256": parent_sha,
+        "parent_result_sha256": parent_result_sha256,
+        "p0_ancestor_completion_sha256": p0_ancestor_completion_sha256,
         "pair_frame_ids": list(frame_ids),
         "motion_hypothesis_id": -1,
         "support_mask_sha256": None,
@@ -220,6 +238,15 @@ def _fallback_pair(
         "seam_model": "S0_midpoint_straight",
         "map_delta_sha256": None,
         "decision": "rolled_back",
+        "selection_policy": "minimum_local_objective_among_hard_safe_candidates",
+        "selected_candidate_id": f"pair-{pair_index:04d}-S0-fallback",
+        "selected_seam_model": "midpoint_straight",
+        "selected_geometry_model": "C0_identity",
+        "pair_hard_audit_passed": True,
+        "fallback_used": True,
+        "fallback_reason": reason,
+        "candidate_generation": [],
+        "candidate_evaluations": [],
         "before_metrics": dict(before) if before is not None else {"evaluable": False, "reason": reason, "score": None},
         "candidate_after_metrics": (
             dict(after) if after is not None else {"evaluable": False, "reason": reason, "score": None}
@@ -406,13 +433,16 @@ def estimate_s13_m5_transactions(
     vertical: S13VerticalSolution,
     *,
     parent_stage_sha256: str,
+    parent_result_sha256: str | None = None,
+    p0_ancestor_completion_sha256: str | None = None,
     maximum_seam_shift_px: int = 8,
 ) -> tuple[S13M5Pair, ...]:
-    """Estimate every pair independently and atomically from immutable P0 grids."""
+    """Evaluate peer seam candidates independently from immutable P1/P0 grids."""
 
     validate_s012_schedule(schedule)
     pairs: list[S13M5Pair] = []
     raw_cache: dict[int, np.ndarray] = {}
+    audit_all = os.environ.get("G305_S13_M5_AUDIT_ALL_CANDIDATES", "0") == "1"
 
     def raw(frame_id: int) -> np.ndarray:
         if frame_id not in raw_cache:
@@ -427,240 +457,275 @@ def estimate_s13_m5_transactions(
             x0, x1 = _pair_domain(schedule, pair_index)
             if x1 - x0 < 12:
                 raise ValueError("final_corridor_too_narrow")
-            left_maps = _map_crop(
-                schedule, calibration, pair_index, x0, x1,
-                vertical.global_offsets_px[pair_index], None,
-            )
-            right_maps = _map_crop(
-                schedule, calibration, pair_index + 1, x0, x1,
-                vertical.global_offsets_px[pair_index + 1], None,
-            )
+            left_maps = _map_crop(schedule, calibration, pair_index, x0, x1,
+                                  vertical.global_offsets_px[pair_index], None)
+            right_maps = _map_crop(schedule, calibration, pair_index + 1, x0, x1,
+                                   vertical.global_offsets_px[pair_index + 1], None)
             left_image, left_valid = _sample_crop(raw(frame_ids[0]), left_maps)
             right_image, right_valid = _sample_crop(raw(frame_ids[1]), right_maps)
             reference, moving = _pair_correspondences(
                 left_image, right_image, left_valid, right_valid, x_offset=x0
             )
-            p0_u, p0_v, p0_valid = _base_calibrated_map(schedule, calibration, pair_index + 1)
+            p0_u, p0_v, p0_valid = _base_calibrated_map(
+                schedule, calibration, pair_index + 1
+            )
             allowed_left, allowed_right = _allowed_application_bounds(schedule, pair_index)
-            base_seam = np.full(schedule.canvas_height, schedule.boundaries[pair_index + 1], dtype=np.int32)
             base_band = S13ApplicationBand.straight(
                 height=schedule.canvas_height, left_x=allowed_left, right_x=allowed_right
             )
             local_vertical = -np.asarray(vertical.local_row_residuals[pair_index], dtype=np.float64)
             preliminary = estimate_s13_pair_alignment(
-                pair_index=pair_index,
-                pair_frame_ids=frame_ids,
-                non_reference_side="right",
-                p0_source_u=p0_u,
-                p0_source_v=p0_v,
-                p0_valid=p0_valid,
+                pair_index=pair_index, pair_frame_ids=frame_ids, non_reference_side="right",
+                p0_source_u=p0_u, p0_source_v=p0_v, p0_valid=p0_valid,
                 source_size=(int(calibration.width), int(calibration.height)),
-                reference_points_xy=reference,
-                non_reference_points_xy=moving,
-                application_band=base_band,
-                accepted_vertical_dy_by_row=local_vertical,
+                reference_points_xy=reference, non_reference_points_xy=moving,
+                application_band=base_band, accepted_vertical_dy_by_row=local_vertical,
                 alignment_shoulder=(x0, x1),
                 vertical_accepted=bool(np.any(local_vertical != 0.0)),
             )
-            right_geometry_maps = _map_crop(
+            preliminary_maps = _map_crop(
                 schedule, calibration, pair_index + 1, x0, x1,
                 vertical.global_offsets_px[pair_index + 1], preliminary.selected,
             )
-            right_geometry, right_geometry_valid = _sample_crop(raw(frame_ids[1]), right_geometry_maps)
+            preliminary_right, preliminary_valid = _sample_crop(
+                raw(frame_ids[1]), preliminary_maps
+            )
             base_local = schedule.boundaries[pair_index + 1] - x0
             previous = schedule.boundaries[pair_index] - x0 if pair_index > 0 else None
-            following = schedule.boundaries[pair_index + 2] - x0 if pair_index + 2 < len(schedule.boundaries) else None
-            seam_result: S13SeamResult = select_s13_seam(
-                left_image, right_geometry, left_valid, right_geometry_valid, base_local,
+            following = (
+                schedule.boundaries[pair_index + 2] - x0
+                if pair_index + 2 < len(schedule.boundaries) else None
+            )
+            seam_result = select_s13_seam(
+                left_image, preliminary_right, left_valid, preliminary_valid, base_local,
                 maximum_shift_px=maximum_seam_shift_px,
-                previous_boundary_x=previous,
-                next_boundary_x=following,
+                previous_boundary_x=previous, next_boundary_x=following,
             )
-            selected_seam_model, selected_seam_local, preliminary_seam_audit = (
-                _select_held_out_safe_seam(
-                    left_image,
-                    right_geometry,
-                    seam_result,
-                    seam_result.model,
-                )
-            )
-            held_out_seam_audits: list[dict[str, object]] = [
-                {"geometry_stage": "preliminary", **preliminary_seam_audit}
-            ]
-            final_reference, final_moving = _pair_correspondences(
-                left_image, right_image, left_valid, right_valid, x_offset=x0
-            )
+            candidates, generation_statuses = build_s13_seam_candidates(pair_index, seam_result)
+            ordered = rank_s13_seam_candidates(candidates)
             allowed_left_rows = np.full(schedule.canvas_height, allowed_left, dtype=np.int32)
             allowed_right_rows = np.full(schedule.canvas_height, allowed_right, dtype=np.int32)
-            for geometry_iteration in range(3):
-                final_seam = selected_seam_local + x0
-                final_alignment = reestimate_s13_final_corridor_alignment(
-                    final_seam_x_by_row=final_seam,
-                    application_half_width_px=max(
-                        2, min(8, (allowed_right - allowed_left - 1) // 2)
+            evaluations: list[dict[str, object]] = []
+            selected_candidate: S13SeamCandidate | None = None
+            selected_alignment: S13PairAlignment | None = None
+            selected_before: Mapping[str, object] | None = None
+            selected_after: Mapping[str, object] | None = None
+            selected_before_horizontal: Mapping[str, object] | None = None
+            selected_after_horizontal: Mapping[str, object] | None = None
+            for candidate in ordered:
+                if selected_candidate is not None and not audit_all:
+                    evaluations.append({
+                        "candidate_id": candidate.candidate_id,
+                        "model_code": candidate.model_code,
+                        "model_name": candidate.model_name,
+                        "generation_status": "generated",
+                        "evaluation_status": "skipped_after_higher_rank_safe_candidate",
+                        "local_objective": candidate.local_objective,
+                        "hard_gate_passed": None,
+                        "hard_gate_failures": [],
+                        "generation_audit": dict(candidate.generation_audit),
+                    })
+                    continue
+                seam_local = np.asarray(candidate.seam_x_by_row, dtype=np.int32)
+                seam_global = seam_local + x0
+                failures: list[str] = []
+                if seam_local.shape != (schedule.canvas_height,):
+                    failures.append("seam_shape_invalid")
+                if not np.isfinite(seam_local).all():
+                    failures.append("seam_nonfinite")
+                if np.any(np.abs(np.diff(seam_local)) > 1):
+                    failures.append("seam_row_step_invalid")
+                search_left = int(seam_result.audit["search_left_x"])
+                search_right = int(seam_result.audit["search_right_x"])
+                if np.any((seam_local < search_left) | (seam_local > search_right)):
+                    failures.append("seam_out_of_search_bounds")
+                alignment: S13PairAlignment | None = None
+                before_metrics: Mapping[str, object] = {"evaluable": False, "score": None}
+                after_metrics: Mapping[str, object] = {"evaluable": False, "score": None}
+                before_horizontal: Mapping[str, object] = {"observed": False}
+                after_horizontal: Mapping[str, object] = {"observed": False}
+                geometry_candidates: list[dict[str, object]] = []
+                map_delta_sha: str | None = None
+                corridor_bounds: list[int] | None = None
+                if not failures:
+                    alignment = reestimate_s13_final_corridor_alignment(
+                        final_seam_x_by_row=seam_global,
+                        application_half_width_px=max(2, min(8, (allowed_right - allowed_left - 1) // 2)),
+                        allowed_left_x_by_row=allowed_left_rows,
+                        allowed_right_x_by_row=allowed_right_rows,
+                        pair_index=pair_index, pair_frame_ids=frame_ids, non_reference_side="right",
+                        p0_source_u=p0_u, p0_source_v=p0_v, p0_valid=p0_valid,
+                        source_size=(int(calibration.width), int(calibration.height)),
+                        reference_points_xy=reference, non_reference_points_xy=moving,
+                        accepted_vertical_dy_by_row=local_vertical, alignment_shoulder=(x0, x1),
+                        vertical_accepted=bool(np.any(local_vertical != 0.0)),
+                    )
+                    selected_map = alignment.selected
+                    geometry_candidates = [
+                        {"model": item.model, "accepted": item.accepted,
+                         "failure_reason": item.failure_reason, "metrics": dict(item.metrics),
+                         "audit": dict(item.audit)} for item in alignment.candidates
+                    ]
+                    for key, reason in (
+                        ("map_finite", "geometry_map_nonfinite"),
+                        ("map_in_source_bounds", "geometry_source_out_of_bounds"),
+                        ("positive_jacobian", "geometry_nonpositive_jacobian"),
+                    ):
+                        if selected_map.audit.get(key) is not True:
+                            failures.append(reason)
+                    if float(selected_map.audit.get("support_retention", 0.0)) < 0.95:
+                        failures.append("geometry_support_retention_insufficient")
+                    if float(selected_map.audit.get("maximum_map_displacement_px", math.inf)) > 8.0:
+                        failures.append("geometry_displacement_exceeded")
+                    final_maps = _map_crop(
+                        schedule, calibration, pair_index + 1, x0, x1,
+                        vertical.global_offsets_px[pair_index + 1], selected_map,
+                    )
+                    final_right, final_valid = _sample_crop(raw(frame_ids[1]), final_maps)
+                    before_preview = _compose_pair_preview(left_image, right_image, seam_local)
+                    after_preview = _compose_pair_preview(left_image, final_right, seam_local)
+                    before_metrics = seam_structure_metrics(before_preview, seam_local)
+                    after_metrics = seam_structure_metrics(after_preview, seam_local)
+                    before_horizontal = long_horizontal_structure_metrics(before_preview, seam_local)
+                    after_horizontal = long_horizontal_structure_metrics(after_preview, seam_local)
+                    # Only catastrophic horizontal damage is a runtime gate.
+                    from .video_s13_hard_audit import long_horizontal_structure_catastrophe_guard
+
+                    horizontal_safe, horizontal_reason, horizontal_audit = (
+                        long_horizontal_structure_catastrophe_guard(before_horizontal, after_horizontal)
+                    )
+                    if not horizontal_safe:
+                        failures.append(str(horizontal_reason or "horizontal_structure_catastrophe"))
+                    map_delta_sha = _sha_array(selected_map.target_delta_u, selected_map.target_delta_v)
+                    corridor_bounds = [
+                        int(alignment.application_band.left_x_by_row.min()),
+                        int(alignment.application_band.right_x_by_row.max()),
+                    ]
+                else:
+                    horizontal_audit = {"passed": False, "not_evaluated": True}
+                passed = not failures
+                evaluation = {
+                    "candidate_id": candidate.candidate_id,
+                    "model_code": candidate.model_code,
+                    "model_name": candidate.model_name,
+                    "generation_status": "generated",
+                    "evaluation_status": "selected" if passed and selected_candidate is None else (
+                        "hard_safe_not_selected" if passed else "rejected_hard_gate"
                     ),
-                    allowed_left_x_by_row=allowed_left_rows,
-                    allowed_right_x_by_row=allowed_right_rows,
-                    pair_index=pair_index,
-                    pair_frame_ids=frame_ids,
-                    non_reference_side="right",
-                    p0_source_u=p0_u,
-                    p0_source_v=p0_v,
-                    p0_valid=p0_valid,
-                    source_size=(int(calibration.width), int(calibration.height)),
-                    reference_points_xy=final_reference,
-                    non_reference_points_xy=final_moving,
-                    accepted_vertical_dy_by_row=local_vertical,
-                    alignment_shoulder=(x0, x1),
-                    vertical_accepted=bool(np.any(local_vertical != 0.0)),
-                )
-                final_right_maps = _map_crop(
-                    schedule,
-                    calibration,
-                    pair_index + 1,
-                    x0,
-                    x1,
-                    vertical.global_offsets_px[pair_index + 1],
-                    final_alignment.selected,
-                )
-                final_right, final_right_valid = _sample_crop(
-                    raw(frame_ids[1]), final_right_maps
-                )
-                audited_model, audited_seam, final_seam_audit = (
-                    _select_held_out_safe_seam(
-                        left_image,
-                        final_right,
-                        seam_result,
-                        selected_seam_model,
-                    )
-                )
-                held_out_seam_audits.append(
-                    {
-                        "geometry_stage": f"final_iteration_{geometry_iteration}",
-                        **final_seam_audit,
-                    }
-                )
-                if audited_model == selected_seam_model and np.array_equal(
-                    audited_seam, selected_seam_local
-                ):
-                    break
-                selected_seam_model, selected_seam_local = audited_model, audited_seam
-            else:
-                raise RuntimeError("held_out_seam_selection_did_not_converge")
-            # The before and after previews must use the exact same owner
-            # topology.  Otherwise the DP path can lower its own audit score
-            # merely by moving to easier pixels without improving alignment.
-            before_preview = _compose_pair_preview(
-                left_image, right_image, selected_seam_local
-            )
-            after_preview = _compose_pair_preview(
-                left_image, final_right, selected_seam_local
-            )
-            before_metrics = seam_structure_metrics(
-                before_preview, selected_seam_local
-            )
-            candidate_after_metrics = seam_structure_metrics(
-                after_preview, selected_seam_local
-            )
-            structure_ok, structure_reason = structurally_non_degrading(
-                before_metrics, candidate_after_metrics
-            )
-            before_horizontal = long_horizontal_structure_metrics(
-                before_preview, selected_seam_local
-            )
-            candidate_after_horizontal = long_horizontal_structure_metrics(
-                after_preview, selected_seam_local
-            )
-            horizontal_ok, horizontal_reason = long_horizontal_structure_nondegrading(
-                before_horizontal, candidate_after_horizontal
-            )
-            applied = bool(structure_ok and horizontal_ok)
-            rollback_reason = structure_reason if not structure_ok else horizontal_reason
-            after_metrics = candidate_after_metrics if applied else before_metrics
-            after_horizontal = candidate_after_horizontal if applied else before_horizontal
-            support = left_valid & final_right_valid
-            selected = final_alignment.selected
+                    "local_objective": candidate.local_objective,
+                    "seam_sha256": _sha_array(seam_global),
+                    "corridor_bounds": corridor_bounds,
+                    "geometry_input_grid_sha256": _sha_array(p0_u, p0_v, p0_valid),
+                    "geometry_model": None if alignment is None else alignment.selected.model,
+                    "geometry_candidates": geometry_candidates,
+                    "map_delta_sha256": map_delta_sha,
+                    "horizontal_hard_audit": horizontal_audit,
+                    "hard_gate_passed": passed,
+                    "hard_gate_failures": failures,
+                    "diagnostic_metrics": {"before": before_metrics, "after": after_metrics},
+                    "generation_audit": dict(candidate.generation_audit),
+                }
+                evaluations.append(evaluation)
+                if passed and selected_candidate is None:
+                    selected_candidate = candidate
+                    selected_alignment = alignment
+                    selected_before, selected_after = before_metrics, after_metrics
+                    selected_before_horizontal, selected_after_horizontal = before_horizontal, after_horizontal
+            if selected_candidate is None or selected_alignment is None:
+                raise RuntimeError("midpoint_identity_hard_gate_failed")
+            selected_seam = np.asarray(selected_candidate.seam_x_by_row, dtype=np.int32) + x0
+            selected_map = selected_alignment.selected
             core: dict[str, object] = {
+                "schema": "gemini305-video-s13-m5-pair-transaction/v2",
                 "transaction_id": f"m5-pair-{pair_index:04d}",
+                "parent_stage": "P1",
                 "parent_stage_sha256": parent_stage_sha256,
+                "parent_completion_sha256": parent_stage_sha256,
+                "parent_result_sha256": parent_result_sha256,
+                "p0_ancestor_completion_sha256": p0_ancestor_completion_sha256,
                 "pair_frame_ids": list(frame_ids),
+                "candidate_generation": [dict(item) for item in generation_statuses],
+                "candidate_evaluations": evaluations,
+                "selection_policy": "minimum_local_objective_among_hard_safe_candidates",
+                "selected_candidate_id": selected_candidate.candidate_id,
+                "selected_seam_model": selected_candidate.model_name,
+                "selected_geometry_model": selected_map.model,
+                "pair_hard_audit_passed": True,
+                "fallback_used": selected_candidate.model_code == "S0" and selected_map.model == "C0_identity",
+                "fallback_reason": (
+                    "complex_candidates_failed_or_ranked_later" if selected_candidate.model_code == "S0" else None
+                ),
                 "motion_hypothesis_id": -1,
-                "support_mask_sha256": _sha_array(support),
-                "geometry_model": selected.model if applied else "C1_accepted_vertical_parent",
-                "seam_model": selected_seam_model if applied else "S0_midpoint_straight",
-                "map_delta_sha256": _sha_array(selected.target_delta_u, selected.target_delta_v) if applied else None,
-                "decision": "applied" if applied else "rolled_back",
-                "before_metrics": before_metrics,
-                "candidate_after_metrics": candidate_after_metrics,
-                "after_metrics": after_metrics,
-                "before_horizontal_continuity": before_horizontal,
-                "candidate_after_horizontal_continuity": candidate_after_horizontal,
-                "after_horizontal_continuity": after_horizontal,
-                "rollback_reason": None if applied else rollback_reason,
-                "comparison_coordinate_policy": (
-                    "same_owner_geometry_plus_symmetric_base_candidate_seam"
-                ),
-                "geometry_comparison_seam_sha256": _sha_array(
-                    selected_seam_local + x0
-                ),
-                "geometry_before_preview_sha256": _sha_array(before_preview),
-                "geometry_after_preview_sha256": _sha_array(after_preview),
-                "final_corridor_geometry_reestimated_from_immutable_p0": True,
-                "reference_side": "left",
-                "non_reference_side": "right",
-                "alignment_shoulder_width_px": x1 - x0,
-                "application_band_left_min": int(final_alignment.application_band.left_x_by_row.min()),
-                "application_band_right_max": int(final_alignment.application_band.right_x_by_row.max()),
-                "geometry_candidates": [
+                "support_mask_sha256": _sha_array(left_valid & right_valid),
+                "geometry_model": selected_map.model,
+                "seam_model": selected_candidate.model_name,
+                "map_delta_sha256": _sha_array(selected_map.target_delta_u, selected_map.target_delta_v),
+                "decision": "applied",
+                "before_metrics": dict(selected_before or {}),
+                "candidate_after_metrics": dict(selected_after or {}),
+                "after_metrics": dict(selected_after or {}),
+                "before_horizontal_continuity": dict(selected_before_horizontal or {}),
+                "candidate_after_horizontal_continuity": dict(selected_after_horizontal or {}),
+                "after_horizontal_continuity": dict(selected_after_horizontal or {}),
+                "rollback_reason": None,
+                "comparison_coordinate_policy": "same_owner_geometry_plus_symmetric_base_candidate_seam",
+                "geometry_comparison_seam_sha256": _sha_array(selected_seam),
+                "selected_seam_sha256": _sha_array(selected_seam),
+                "result_seam_sha256": _sha_array(selected_seam),
+                "held_out_seam_selection_audits": [
                     {
-                        "model": candidate.model,
-                        "accepted": candidate.accepted,
-                        "failure_reason": candidate.failure_reason,
-                        "metrics": dict(candidate.metrics),
-                        "audit": dict(candidate.audit),
+                        "candidate_id": item.get("candidate_id"),
+                        "evaluation_status": item.get("evaluation_status"),
+                        "selected_seam_sha256": item.get("seam_sha256"),
+                        "hard_gate_passed": item.get("hard_gate_passed"),
+                        "hard_gate_failures": item.get("hard_gate_failures", []),
                     }
-                    for candidate in final_alignment.candidates
+                    for item in evaluations
+                    if item.get("evaluation_status") != "skipped_after_higher_rank_safe_candidate"
                 ],
-                "base_seam_sha256": _sha_array(
-                    seam_result.candidate_seams["midpoint_straight"] + x0
-                ),
-                "shifted_straight_seam_sha256": (
-                    None
-                    if "shifted_straight" not in seam_result.candidate_seams
-                    else _sha_array(
-                        seam_result.candidate_seams["shifted_straight"] + x0
-                    )
-                ),
-                "dp_seam_sha256": (
-                    None
-                    if "monotone_dp" not in seam_result.candidate_seams
-                    else _sha_array(seam_result.candidate_seams["monotone_dp"] + x0)
-                ),
-                "selected_seam_sha256": _sha_array(selected_seam_local + x0),
-                "result_seam_sha256": _sha_array(
-                    selected_seam_local + x0 if applied else base_seam
-                ),
-                "held_out_seam_selection_audits": held_out_seam_audits,
-                "seam_audit": {
-                    **dict(seam_result.audit),
-                    "held_out_selected_model": selected_seam_model,
-                },
+                "final_corridor_geometry_reestimated_from_immutable_p0": True,
+                "geometry_candidates": evaluations,
+                "seam_audit": dict(seam_result.audit),
                 "seam_cost_components": dict(
-                    seam_result.candidate_cost_components[selected_seam_model]
+                    seam_result.candidate_cost_components[selected_candidate.model_name]
                 ),
                 "seam_fallback_chain": list(seam_result.fallback_chain),
             }
             core["result_stage_sha256"] = _sha_json(core)
-            pairs.append(S13M5Pair(
-                transaction=core,
-                seam_x_by_row=selected_seam_local + x0 if applied else base_seam,
-                alignment=final_alignment if applied else None,
-            ))
+            pairs.append(S13M5Pair(core, selected_seam, selected_alignment))
         except Exception as exc:
-            pairs.append(_fallback_pair(
+            fallback = _fallback_pair(
                 schedule, pair_index, parent_stage_sha256, frame_ids,
                 f"{type(exc).__name__}:{exc}",
-            ))
+                parent_result_sha256,
+                p0_ancestor_completion_sha256,
+            )
+            pairs.append(fallback)
+    # One deterministic topology repair pass.  A local candidate may stay in
+    # its own ordered search domain yet meet its neighbour on a row; only the
+    # involved pairs fall back to their immutable P1 midpoint grids.
+    if len(pairs) > 1:
+        seams = np.stack([np.asarray(pair.seam_x_by_row, dtype=np.int32) for pair in pairs])
+        crossing = np.flatnonzero(np.any(np.diff(seams, axis=0) < 1, axis=1))
+        repair_indices = sorted({int(index) for value in crossing for index in (value, value + 1)})
+        for pair_index in repair_indices:
+            left = schedule.assignments[pair_index]
+            right = schedule.assignments[pair_index + 1]
+            original = pairs[pair_index]
+            fallback = _fallback_pair(
+                schedule, pair_index, parent_stage_sha256,
+                (left.frame_id, right.frame_id),
+                "seam_family_crossing_deterministic_midpoint_identity_repair",
+                parent_result_sha256,
+                p0_ancestor_completion_sha256,
+            )
+            transaction = {
+                **dict(fallback.transaction),
+                "candidate_generation": original.transaction.get("candidate_generation", []),
+                "candidate_evaluations": original.transaction.get("candidate_evaluations", []),
+            }
+            transaction["result_stage_sha256"] = _sha_json(transaction)
+            pairs[pair_index] = S13M5Pair(transaction, fallback.seam_x_by_row, None)
     return tuple(pairs)
 
 
@@ -713,15 +778,21 @@ def render_s13_p2_from_raw(
     hypothesis = np.full((height, width), -1, dtype=np.int32)
     placement = np.full((height, width), -1, dtype=np.int16)
     decoded: list[int] = []
+    expected_support = np.zeros((height, width), dtype=bool)
     for source_index, assignment in enumerate(schedule.assignments):
+        candidate = None
+        if source_index > 0 and pairs[source_index - 1].alignment is not None:
+            candidate = pairs[source_index - 1].alignment.selected
+        expected_maps = _map_crop(
+            schedule, calibration, source_index, 0, width,
+            vertical.global_offsets_px[source_index], candidate,
+        )
+        expected_support |= expected_maps[2]
         mask = owner_index == source_index
         if not np.any(mask):
             continue
         columns = np.flatnonzero(np.any(mask, axis=0))
         x0, x1 = int(columns[0]), int(columns[-1]) + 1
-        candidate = None
-        if source_index > 0 and pairs[source_index - 1].alignment is not None:
-            candidate = pairs[source_index - 1].alignment.selected
         maps = _map_crop(
             schedule, calibration, source_index, x0, x1,
             vertical.global_offsets_px[source_index], candidate,
@@ -772,7 +843,9 @@ def render_s13_p2_from_raw(
     finite = valid_full & (~np.isfinite(source_u_full) | ~np.isfinite(source_v_full))
     if np.any(finite):
         raise ValueError("S1.3 M5 valid source provenance is nonfinite")
-    return S13P2Result(output, valid_full, pixel, len(decoded), tuple(decoded))
+    return S13P2Result(
+        output, valid_full, pixel, len(decoded), tuple(decoded), expected_support
+    )
 
 
 def _overlay_seams(image: np.ndarray, pairs: Sequence[S13M5Pair]) -> np.ndarray:
@@ -793,13 +866,18 @@ def run_s13_m5(
     vertical_parent_image: np.ndarray,
     *,
     parent_stage_sha256: str,
+    parent_result_sha256: str | None = None,
+    p0_ancestor_completion_sha256: str | None = None,
     selected_hypothesis_ids: tuple[int, ...] | None = None,
     placement_methods: tuple[str, ...] | None = None,
 ) -> S13M5Result:
     started = time.perf_counter()
     tick = time.perf_counter()
     pairs = estimate_s13_m5_transactions(
-        schedule, calibration, image_loader, vertical, parent_stage_sha256=parent_stage_sha256
+        schedule, calibration, image_loader, vertical,
+        parent_stage_sha256=parent_stage_sha256,
+        parent_result_sha256=parent_result_sha256,
+        p0_ancestor_completion_sha256=p0_ancestor_completion_sha256,
     )
     geometry_seconds = time.perf_counter() - tick
     tick = time.perf_counter()
@@ -887,7 +965,7 @@ def run_s13_m5(
         else (False, {"eligible": False, "reason": "no_evaluable_seam_output_pairs"})
     )
 
-    selected = bool(
+    legacy_selected = bool(
         geometry_sequence_selected
         and not applied_unevaluable_indices
         and not horizontal_failure_indices
@@ -908,7 +986,7 @@ def run_s13_m5(
 
     selection_audit = {
         **dict(geometry_selection_audit),
-        "eligible": selected,
+        "eligible": legacy_selected,
         "reason": selection_reason,
         "comparison_coordinate_policy": (
             "same_owner_geometry_plus_symmetric_base_candidate_seam"
@@ -928,12 +1006,61 @@ def run_s13_m5(
     after_mean_value = selection_audit.get("after_mean_score")
     before_mean = float(before_mean_value) if isinstance(before_mean_value, (int, float)) else None
     after_mean = float(after_mean_value) if isinstance(after_mean_value, (int, float)) else None
+    from .video_s13_hard_audit import audit_s13_p2_stage
+
+    seams = _seams_array(schedule, pairs, final=True)
+    hard_audit = audit_s13_p2_stage(
+        valid_mask=final.valid_mask,
+        pixel_provenance=final.pixel_provenance,
+        seams_x_by_row=seams,
+        assignment_frame_ids=tuple(item.frame_id for item in schedule.assignments),
+        source_sizes=tuple(
+            (int(calibration.width), int(calibration.height)) for _item in schedule.assignments
+        ),
+        pair_transaction_count=len(pairs),
+        expected_support_mask=final.expected_support_mask,
+    )
+    hard_audit = {
+        **dict(hard_audit),
+        "parent_verification_deferred_to_stage_sealer": True,
+        "pair_fallback_count": sum(
+            bool(pair.transaction.get("fallback_used"))
+            or pair.transaction.get("decision") == "rolled_back"
+            for pair in pairs
+        ),
+        "horizontal_catastrophe_summary": {
+            "rejected_candidate_count": sum(
+                str(failure).startswith("horizontal_structure_")
+                for pair in pairs
+                for evaluation in pair.transaction.get("candidate_evaluations", [])
+                if isinstance(evaluation, Mapping)
+                for failure in evaluation.get("hard_gate_failures", [])
+            ),
+        },
+    }
+    diagnostic_quality = {
+        "schema": "gemini305-video-s13-m5-diagnostic-quality/v2",
+        "diagnostic_only": True,
+        "runtime_authority": False,
+        "legacy_minimum_improvement_fraction": 0.005,
+        "legacy_policy_result": legacy_selected,
+        "before_mean_score": before_mean,
+        "after_mean_score": after_mean,
+        "relative_change": (
+            None if before_mean is None or after_mean is None or abs(before_mean) < 1e-12
+            else (after_mean - before_mean) / abs(before_mean)
+        ),
+        "legacy_selection_audit": selection_audit,
+    }
     return S13M5Result(
         pairs=pairs,
         geometry_result=geometry,
         final_result=final,
         seam_overlay=_overlay_seams(final.image, pairs),
-        selected_as_best=selected,
+        hard_audit_passed=hard_audit.get("passed") is True,
+        hard_audit=hard_audit,
+        diagnostic_quality=diagnostic_quality,
+        selected_as_best=legacy_selected,
         before_mean_score=before_mean,
         after_mean_score=after_mean,
         selection_audit=selection_audit,

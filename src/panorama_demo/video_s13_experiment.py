@@ -12,6 +12,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
+import cv2
 import numpy as np
 
 from .video_algorithm import VideoAlgorithmSpec
@@ -19,14 +20,13 @@ from .video_s13_base_renderer import render_s13_p0
 from .video_s13_bundle import (
     atomic_write_json,
     discard_staging,
-    invalidate_current_preview,
     new_generation_staging,
     publish_generation,
     seal_p0,
     seal_stage,
     sha256_file,
     update_current_base,
-    update_current_preview,
+    update_current_latest,
     verify_p0_completion,
     verify_stage,
     write_csv,
@@ -40,13 +40,18 @@ from .video_s13_progress import S13M3Layout, build_s13_m3_layout
 from .video_s13_schedule import S13SchedulePlan, plan_s13_m3_schedule
 from .video_s13_session import S13Session, load_s13_session, read_s13_rgb
 from .video_s13_trajectory import S13Trajectory, load_s13_trajectory
-from .video_s13_vertical import estimate_s13_vertical, render_s13_p1_from_raw
+from .video_s13_vertical import (
+    estimate_s13_vertical,
+    load_s13_vertical_solution,
+    save_s13_vertical_solution,
+)
 from .video_s13_selection import select_s13_vertical_parent
 
 
 REPORT_SCHEMA = "gemini305-video-s13-output-first-report/v1"
 GENERATION_SCHEMA = "gemini305-video-s13-generation/v1"
-P2_COMPLETION_SCHEMA = "gemini305-video-s13-p2-completion/v1"
+P1_COMPLETION_SCHEMA = "gemini305-video-s13-p1-vertical-completion/v2"
+P2_COMPLETION_SCHEMA = "gemini305-video-s13-p2-completion/v2"
 
 
 def _generation_id(session: S13Session, config_sha: str) -> str:
@@ -146,6 +151,7 @@ def _run_m4_vertical(
     schedule: object,
     calibration: object,
     image_loader: object,
+    p0_image: np.ndarray,
 ) -> dict[str, object]:
     from .video_s12_schedule import S012Schedule
 
@@ -157,8 +163,12 @@ def _run_m4_vertical(
         raise FileExistsError(f"S1.3 M4 P1 already exists: {final}")
     pending.mkdir()
     try:
-        solution = estimate_s13_vertical(schedule, calibration, image_loader)  # type: ignore[arg-type]
-        result = render_s13_p1_from_raw(schedule, calibration, image_loader, solution)  # type: ignore[arg-type]
+        estimated = estimate_s13_vertical(schedule, calibration, image_loader)  # type: ignore[arg-type]
+        selection = select_s13_vertical_parent(
+            schedule, calibration, image_loader, estimated, p0_image  # type: ignore[arg-type]
+        )
+        solution = selection.solution
+        result = selection.result
         write_image(pending / "vertical_panorama_owner_only.png", result.image)
         write_image(pending / "vertical_panorama_owner_only.jpg", result.image)
         write_image(pending / "vertical_valid_mask.png", result.valid_mask.astype(np.uint8) * 255)
@@ -166,56 +176,67 @@ def _run_m4_vertical(
             result.image, result.pixel_provenance["owner_frame_id"]
         ))
         write_npz(pending / "vertical_pixel_provenance.npz", result.pixel_provenance)
-        write_npz(pending / "vertical_solution.npz", {
-            "global_offsets_px": np.asarray(solution.global_offsets_px, dtype=np.float32),
-            **{
-                f"pair_{index:04d}_local_row_residual_px": rows
-                for index, rows in enumerate(solution.local_row_residuals)
-            },
-        })
-        atomic_write_json(pending / "pair_report.json", {
-            "schema": "gemini305-video-s13-m4-pair-report/v1",
-            "pairs": [asdict(pair) for pair in solution.pairs],
-            "audit": dict(solution.audit),
+        solution_document = save_s13_vertical_solution(pending, solution)
+        atomic_write_json(pending / "vertical_selection.json", {
+            **dict(selection.audit),
+            "diagnostic_only": True,
+            "runtime_authority": False,
+            "forward_stage_selected": "P1",
         })
         p0_completion = generation / "P0" / "P0_completion.json"
         p0_completion_sha = sha256_file(p0_completion)
-        assets = sorted(path for path in pending.rglob("*") if path.is_file())
-        completion = {
-            "schema": "gemini305-video-s13-p1-vertical-completion/v1",
-            "generation_id": generation_id,
-            "stage": "P1",
-            "sealed": True,
-            "p0_parent": "../P0/P0_completion.json",
-            "p0_parent_sha256": p0_completion_sha,
-            "models": ["global_scalar_dy", "pair_local_row_residual"],
-            "excluded_models": [
-                "translation", "rotation", "affine", "seam", "graphcut", "photometric", "blend", "depth", "mesh",
-            ],
-            "formal_raw_rgb_remap_invocations": result.remap_invocations,
-            "formal_raw_rgb_unique_sources": len(result.decoded_frame_ids),
-            "selected_global_gain": solution.selected_gain,
-            "assets_sha256": {path.relative_to(pending).as_posix(): sha256_file(path) for path in assets},
-        }
-        atomic_write_json(pending / "P1_completion.json", completion)
+        result_asset = "vertical_panorama_owner_only.png"
+        seal_stage(
+            pending,
+            completion_name="P1_completion.json",
+            schema=P1_COMPLETION_SCHEMA,
+            metadata={
+                "generation_id": generation_id,
+                "stage": "P1",
+                "hard_audit_passed": True,
+                "parent_stage": "P0",
+                "parent_completion_sha256": p0_completion_sha,
+                "p0_parent": "../P0/P0_completion.json",
+                "p0_parent_sha256": p0_completion_sha,
+                "models": ["global_scalar_dy", "pair_local_row_residual"],
+                "excluded_models": [
+                    "translation", "rotation", "affine", "seam", "graphcut", "photometric",
+                    "blend", "depth", "mesh",
+                ],
+                "formal_raw_rgb_remap_invocations": result.remap_invocations,
+                "formal_raw_rgb_unique_sources": len(result.decoded_frame_ids),
+                "selected_global_gain": solution.selected_gain,
+                "selected_vertical_parent": selection.stage,
+                "vertical_solution_json": "vertical_solution.json",
+                "vertical_solution_json_sha256": sha256_file(pending / "vertical_solution.json"),
+                "vertical_solution_npz": "vertical_solution.npz",
+                "vertical_solution_npz_sha256": str(solution_document["npz_sha256"]),
+                "result_asset": result_asset,
+                "result_asset_sha256": sha256_file(pending / result_asset),
+                "pixel_provenance_sha256": sha256_file(pending / "vertical_pixel_provenance.npz"),
+            },
+        )
         os.replace(pending, final)
-        for name, expected in completion["assets_sha256"].items():
-            asset = final / str(name)
-            if not asset.is_file() or sha256_file(asset) != expected:
-                raise ValueError(f"S1.3 M4 sealed P1 asset hash mismatch: {name}")
+        verify_stage(final, completion_name="P1_completion.json", schema=P1_COMPLETION_SCHEMA)
         if sha256_file(generation / "P0" / "P0_completion.json") != p0_completion_sha:
             raise ValueError("S1.3 M4 immutable P0 parent changed during P1 commit")
+        pointer = update_current_latest(
+            root, generation, stage="P1", completion_name="P1_completion.json",
+            completion_schema=P1_COMPLETION_SCHEMA, result_asset=result_asset,
+        )
         return {
-            "state": "P1_vertical_candidate_generated",
+            "state": "P1_sealed",
             "panorama": str(final / "vertical_panorama_owner_only.png"),
             "owner_overlay": str(final / "vertical_owner_boundary_overlay.png"),
             "pixel_provenance": str(final / "vertical_pixel_provenance.npz"),
             "completion": str(final / "P1_completion.json"),
-            "current_preview": None,
+            "current_latest": str(root / "current_latest.json"),
             "selected_global_gain": solution.selected_gain,
             "pair_count": len(solution.pairs),
             "applied_pair_count": sum(pair.status == "applied" for pair in solution.pairs),
             "formal_raw_rgb_remap_invocations": result.remap_invocations,
+            "selected_vertical_parent": selection.stage,
+            "latest_stage": pointer["stage"],
         }
     except BaseException:
         discard_staging(pending)
@@ -250,18 +271,43 @@ def _run_m5(
     p1_completion_sha = sha256_file(p1_completion_path)
     try:
         started = time.perf_counter()
-        base_solution = estimate_s13_vertical(schedule, calibration, image_loader)  # type: ignore[arg-type]
-        selection = select_s13_vertical_parent(
-            schedule, calibration, image_loader, base_solution, p0_image  # type: ignore[arg-type]
+        verify_p0_completion(generation / "P0")
+        p1_completion = verify_stage(
+            generation / "P1", completion_name="P1_completion.json",
+            schema=P1_COMPLETION_SCHEMA,
         )
-        write_image(pending / "selected_vertical_parent.png", selection.result.image)
-        write_image(pending / "selected_vertical_parent.jpg", selection.result.image)
-        write_npz(pending / "selected_vertical_parent_provenance.npz", selection.result.pixel_provenance)
-        atomic_write_json(pending / "vertical_selection.json", dict(selection.audit))
-        parent_stage_sha = sha256_file(pending / "vertical_selection.json")
+        vertical = load_s13_vertical_solution(
+            generation / "P1", expected_completion_sha256=p1_completion_sha,
+        )
+        parent_asset_name = str(p1_completion["result_asset"])
+        parent_asset = generation / "P1" / parent_asset_name
+        if sha256_file(parent_asset) != p1_completion.get("result_asset_sha256"):
+            raise ValueError("S1.3 M5 sealed P1 result hash mismatch")
+        p1_image = cv2.imread(str(parent_asset), cv2.IMREAD_COLOR)
+        if p1_image is None or p1_image.shape != p0_image.shape:
+            raise ValueError("S1.3 M5 sealed P1 result image is unreadable")
+        provenance_name = "vertical_pixel_provenance.npz"
+        provenance_path = generation / "P1" / provenance_name
+        if sha256_file(provenance_path) != p1_completion.get("pixel_provenance_sha256"):
+            raise ValueError("S1.3 M5 sealed P1 provenance hash mismatch")
+        with np.load(provenance_path, allow_pickle=False) as archive:
+            p1_provenance = {name: np.asarray(archive[name]).copy() for name in archive.files}
+        write_image(pending / "selected_vertical_parent.png", p1_image)
+        write_image(pending / "selected_vertical_parent.jpg", p1_image)
+        write_npz(pending / "selected_vertical_parent_provenance.npz", p1_provenance)
+        atomic_write_json(pending / "p1_parent_reference.json", {
+            "schema": "gemini305-video-s13-p1-parent-reference/v1",
+            "parent_stage": "P1",
+            "completion": "../P1/P1_completion.json",
+            "completion_sha256": p1_completion_sha,
+            "result_asset": f"../P1/{parent_asset_name}",
+            "result_asset_sha256": p1_completion["result_asset_sha256"],
+        })
         m5 = run_s13_m5(
-            schedule, calibration, image_loader, selection.solution, selection.result.image,  # type: ignore[arg-type]
-            parent_stage_sha256=parent_stage_sha,
+            schedule, calibration, image_loader, vertical, p1_image,  # type: ignore[arg-type]
+            parent_stage_sha256=p1_completion_sha,
+            parent_result_sha256=str(p1_completion["result_asset_sha256"]),
+            p0_ancestor_completion_sha256=p0_completion_sha,
             selected_hypothesis_ids=selected_hypothesis_ids,
             placement_methods=placement_methods,
         )
@@ -278,6 +324,10 @@ def _run_m5(
             "pairs": transaction_rows,
         })
         atomic_write_json(pending / "p2_selection.json", dict(m5.selection_audit))
+        atomic_write_json(pending / "hard_audit.json", dict(m5.hard_audit))
+        atomic_write_json(
+            pending / "diagnostic_quality_report.json", dict(m5.diagnostic_quality)
+        )
         for pair in m5.pairs:
             atomic_write_json(
                 pending / "pair_transactions" / f"pair_{int(pair.transaction['transaction_id'].split('-')[-1]):04d}.json",
@@ -310,7 +360,8 @@ def _run_m5(
             "motion_hypotheses": 0.0,
             "progress_and_layout": 0.0,
             "time_to_P0": None,
-            "vertical": time.perf_counter() - started - float(m5.performance["total_m5"]),
+            "p1_verify_and_load": time.perf_counter() - started - float(m5.performance["total_m5"]),
+            "vertical": 0.0,
             "geometry": float(m5.performance["geometry"]),
             "seam": float(m5.performance["seam_and_p2_render"]),
             "photometric": None,
@@ -318,10 +369,28 @@ def _run_m5(
             "repair": None,
             "artifact_export": None,
             "total_wall_time": time.perf_counter() - started,
+            "total_m5": time.perf_counter() - started,
+            "m4_reestimated_in_m5": False,
+            "gain_enumeration_count_in_m5": 0,
+            "m4_selection_full_resolution_render_count": 0,
+            "p2_full_resolution_render_count": 2,
             "peak_memory": None,
             "excluded_after_m5": ["photometric", "luminance_field", "feather", "multiband", "depth", "mesh", "source_rescue"],
         }
         atomic_write_json(pending / "performance.json", performance)
+        if not m5.hard_audit_passed:
+            atomic_write_json(generation / "P2_hard_failure.json", {
+                "schema": "gemini305-video-s13-p2-hard-failure/v1",
+                "generation_id": generation_id,
+                "parent_stage": "P1",
+                "parent_completion_sha256": p1_completion_sha,
+                "hard_audit": dict(m5.hard_audit),
+            })
+            raise ValueError("S1.3 M5 P2 hard audit failed")
+        result_asset = "geometry_and_seam_panorama_owner_only.png"
+        selected_counts = Counter(
+            str(pair.transaction.get("seam_model")) for pair in m5.pairs
+        )
         completion = seal_stage(
             pending,
             completion_name="P2_completion.json",
@@ -329,9 +398,22 @@ def _run_m5(
             metadata={
                 "generation_id": generation_id,
                 "stage": "P2",
+                "hard_audit_passed": True,
+                "parent_stage": "P1",
+                "parent_completion_sha256": p1_completion_sha,
+                "parent_result_sha256": p1_completion["result_asset_sha256"],
+                "p0_ancestor_completion_sha256": p0_completion_sha,
+                "result_asset": result_asset,
+                "result_asset_sha256": sha256_file(pending / result_asset),
+                "hard_audit_sha256": sha256_file(pending / "hard_audit.json"),
+                "diagnostic_quality_report_sha256": sha256_file(
+                    pending / "diagnostic_quality_report.json"
+                ),
                 "selected_as_best": bool(m5.selected_as_best),
-                "selected_vertical_parent": selection.stage,
-                "selected_global_gain": selection.selected_gain,
+                "selected_as_best_deprecated": True,
+                "selected_as_best_runtime_authority": False,
+                "selected_vertical_parent": "P1",
+                "selected_global_gain": vertical.selected_gain,
                 "p0_parent": "../P0/P0_completion.json",
                 "p0_parent_sha256": p0_completion_sha,
                 "p1_candidate_parent": "../P1/P1_completion.json",
@@ -339,7 +421,13 @@ def _run_m5(
                 "formal_raw_rgb_remap_invocations": m5.final_result.remap_invocations,
                 "formal_raw_rgb_unique_sources": len(m5.final_result.decoded_frame_ids),
                 "all_pair_transaction_count": len(m5.pairs),
+                "pair_transaction_count": len(m5.pairs),
                 "applied_pair_transaction_count": sum(pair.transaction["decision"] == "applied" for pair in m5.pairs),
+                "selected_seam_model_counts": dict(selected_counts),
+                "pair_fallback_count": sum(
+                    bool(pair.transaction.get("fallback_used")) for pair in m5.pairs
+                ),
+                "source_count": len(schedule.assignments),
                 "before_mean_structure_score": m5.before_mean_score,
                 "after_mean_structure_score": m5.after_mean_score,
                 "selection_audit": dict(m5.selection_audit),
@@ -359,14 +447,12 @@ def _run_m5(
             raise ValueError("S1.3 M5 immutable P0 completion changed")
         if sha256_file(p1_completion_path) != p1_completion_sha:
             raise ValueError("S1.3 M5 immutable original P1 completion changed")
-        pointer = None
-        if completion["selected_as_best"] is True:
-            pointer = update_current_preview(
-                root, generation, stage="P2", completion_name="P2_completion.json",
-                completion_schema=P2_COMPLETION_SCHEMA, p0_parent_sha256=p0_completion_sha,
-            )
+        pointer = update_current_latest(
+            root, generation, stage="P2", completion_name="P2_completion.json",
+            completion_schema=P2_COMPLETION_SCHEMA, result_asset=result_asset,
+        )
         return {
-            "state": "P2_selected" if completion["selected_as_best"] else "P2_generated_parent_retained",
+            "state": "P2_sealed",
             "panorama": str(final / "geometry_and_seam_panorama_owner_only.png"),
             "geometry": str(final / "geometry_panorama_owner_only.png"),
             "vertical_parent": str(final / "selected_vertical_parent.png"),
@@ -376,10 +462,12 @@ def _run_m5(
             "worst_seam_crops": str(final / "worst_seam_crops"),
             "performance": str(final / "performance.json"),
             "completion": str(final / "P2_completion.json"),
-            "current_preview": str(root / "current_preview.json") if pointer is not None else None,
+            "current_latest": str(root / "current_latest.json"),
             "selected_as_best": bool(completion["selected_as_best"]),
-            "selected_vertical_parent": selection.stage,
-            "selected_global_gain": selection.selected_gain,
+            "selected_vertical_parent": "P1",
+            "selected_global_gain": vertical.selected_gain,
+            "hard_audit_passed": True,
+            "latest_stage": pointer["stage"],
             "pair_count": len(m5.pairs),
             "applied_pair_count": sum(pair.transaction["decision"] == "applied" for pair in m5.pairs),
             "formal_raw_rgb_remap_invocations": m5.final_result.remap_invocations,
@@ -476,7 +564,6 @@ def run_s13_experiment(
         raise ValueError("S1.3 dispatch identity/config binding changed after validation")
     root = output.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    invalidate_current_preview(root)
     stage_seconds: dict[str, float] = {}
     tick = time.perf_counter()
     try:
@@ -789,6 +876,12 @@ def run_s13_experiment(
         })
         publish_generation(staging, generation)
         pointer = update_current_base(root, generation)
+        if not is_panel_set:
+            update_current_latest(
+                root, generation, stage="P0", completion_name="P0_completion.json",
+                completion_schema="gemini305-video-s13-p0-completion/v1",
+                result_asset="base_panorama_owner_only.png",
+            )
         time_to_p0 = time.perf_counter() - run_started
         p0_hashes_before = dict(pointer["p0_assets_sha256"])
         # M2 has no optimizer. This injected path proves that any later optimizer
@@ -806,7 +899,7 @@ def run_s13_experiment(
             try:
                 m4 = _run_m4_vertical(
                     generation, root, generation_id, schedule, session.calibration,
-                    lambda frame_id: read_s13_rgb(by_id[frame_id]),
+                    lambda frame_id: read_s13_rgb(by_id[frame_id]), result.image,
                 )
             except Exception as exc:
                 m4 = {
@@ -829,7 +922,7 @@ def run_s13_experiment(
         }
         if (
             run_m4 and run_m5 and not simulate_optimizer_all_fail and not is_panel_set
-            and m4.get("state") == "P1_vertical_candidate_generated"
+            and m4.get("state") == "P1_sealed"
         ):
             try:
                 m5 = _run_m5(
@@ -869,10 +962,9 @@ def run_s13_experiment(
             p0_hashes_before == verify_p0_completion(generation / "P0")["assets_sha256"]
         )
         optimizer_state = (
-            "m5_selected" if m5.get("state") == "P2_selected"
-            else "m5_generated_parent_retained" if m5.get("state") == "P2_generated_parent_retained"
+            "m5_sealed" if m5.get("state") == "P2_sealed"
             else "m5_failed" if str(m5.get("state", "")).startswith("failed")
-            else "m4_candidate_generated" if m4.get("state") == "P1_vertical_candidate_generated"
+            else "m4_sealed" if m4.get("state") == "P1_sealed"
             else "post_p0_not_run"
         )
         generation_report_path = generation / "report.json"

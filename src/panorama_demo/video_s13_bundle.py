@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -17,6 +18,9 @@ import numpy as np
 
 P0_COMPLETION_SCHEMA = "gemini305-video-s13-p0-completion/v1"
 BASE_POINTER_SCHEMA = "gemini305-video-s13-current-base/v1"
+LATEST_POINTER_SCHEMA = "gemini305-video-s13-current-latest/v1"
+REVIEWED_POINTER_SCHEMA = "gemini305-video-s13-current-reviewed/v1"
+_STAGE_ORDER = {"P0": 0, "P1": 1, "P2": 2, "M6": 3}
 
 
 def sha256_file(path: Path) -> str:
@@ -129,8 +133,11 @@ def seal_stage(
 
 
 def verify_stage(stage: Path, *, completion_name: str, schema: str) -> dict[str, Any]:
+    completion_relative = Path(completion_name)
+    if completion_relative.is_absolute() or ".." in completion_relative.parts or len(completion_relative.parts) != 1:
+        raise ValueError("S1.3 stage completion path is unsafe")
     try:
-        completion = json.loads((stage / completion_name).read_text(encoding="utf-8"))
+        completion = json.loads((stage / completion_relative).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"S1.3 stage completion is missing or invalid: {stage}") from exc
     if completion.get("schema") != schema or completion.get("sealed") is not True:
@@ -139,10 +146,162 @@ def verify_stage(stage: Path, *, completion_name: str, schema: str) -> dict[str,
     if not isinstance(hashes, Mapping) or not hashes:
         raise ValueError("S1.3 stage completion has no asset hashes")
     for relative, expected in hashes.items():
-        asset = stage / str(relative)
+        asset_relative = Path(str(relative))
+        if asset_relative.is_absolute() or ".." in asset_relative.parts or asset_relative == Path("."):
+            raise ValueError(f"S1.3 sealed stage asset path is unsafe: {relative}")
+        if not isinstance(expected, str) or len(expected) != 64:
+            raise ValueError(f"S1.3 sealed stage asset hash is invalid: {relative}")
+        asset = stage / asset_relative
         if not asset.is_file() or sha256_file(asset) != expected:
             raise ValueError(f"S1.3 stage asset hash mismatch: {relative}")
     return completion
+
+
+def _relative_under(path: Path, root: Path, *, label: str) -> Path:
+    resolved_root = root.resolve()
+    resolved = path.resolve()
+    try:
+        relative = resolved.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"S1.3 {label} is outside the output root") from exc
+    if any(part.startswith(".") and part.endswith(".pending") for part in relative.parts):
+        raise ValueError(f"S1.3 {label} may not point into a pending directory")
+    return relative
+
+
+def _verified_pointer_payload(
+    root: Path,
+    generation: Path,
+    *,
+    stage: str,
+    completion_name: str,
+    completion_schema: str,
+    result_asset: str | Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if stage not in _STAGE_ORDER:
+        raise ValueError(f"S1.3 pointer stage is unsupported: {stage}")
+    generation_relative = _relative_under(generation, root, label="generation")
+    stage_root = generation / stage
+    _relative_under(stage_root, root, label="stage")
+    completion = verify_stage(stage_root, completion_name=completion_name, schema=completion_schema)
+    if completion.get("stage") != stage:
+        raise ValueError("S1.3 stage completion stage disagrees")
+    if stage != "P0" and completion.get("hard_audit_passed") is not True:
+        raise ValueError("S1.3 stage did not pass its hard audit")
+    completion_path = stage_root / completion_name
+    completion_sha = sha256_file(completion_path)
+    result_relative = Path(result_asset)
+    if result_relative.is_absolute() or ".." in result_relative.parts or result_relative == Path("."):
+        raise ValueError("S1.3 pointer result asset path is unsafe")
+    result_path = stage_root / result_relative
+    _relative_under(result_path, stage_root, label="result asset")
+    if not result_path.is_file():
+        raise ValueError("S1.3 pointer result asset is missing")
+    result_sha = sha256_file(result_path)
+    assets = completion.get("assets_sha256")
+    if not isinstance(assets, Mapping) or assets.get(result_relative.as_posix()) != result_sha:
+        raise ValueError("S1.3 pointer result asset is not bound by the completion")
+    if completion.get("result_asset") not in (None, result_relative.as_posix()):
+        raise ValueError("S1.3 pointer result asset disagrees with the completion")
+    if completion.get("result_asset_sha256") not in (None, result_sha):
+        raise ValueError("S1.3 pointer result asset hash disagrees with the completion")
+    parent_stage = completion.get("parent_stage")
+    parent_sha = completion.get("parent_completion_sha256")
+    if stage == "P1":
+        parent_stage = parent_stage or "P0"
+        parent_sha = parent_sha or completion.get("p0_parent_sha256")
+    expected_parent = {"P1": "P0", "P2": "P1", "M6": "P2"}.get(stage)
+    if expected_parent is not None:
+        if parent_stage != expected_parent or not isinstance(parent_sha, str):
+            raise ValueError("S1.3 stage parent binding is incomplete")
+        parent_completion_name = {
+            "P0": "P0_completion.json", "P1": "P1_completion.json", "P2": "P2_completion.json",
+        }[expected_parent]
+        parent_completion_path = generation / expected_parent / parent_completion_name
+        if not parent_completion_path.is_file() or sha256_file(parent_completion_path) != parent_sha:
+            raise ValueError("S1.3 stage parent completion hash mismatch")
+    payload = {
+        "generation_id": completion["generation_id"],
+        "generation": generation_relative.as_posix(),
+        "stage": stage,
+        "completion": _relative_under(completion_path, root, label="completion").as_posix(),
+        "completion_sha256": completion_sha,
+        "result_asset": _relative_under(result_path, root, label="result asset").as_posix(),
+        "result_asset_sha256": result_sha,
+        "parent_stage": parent_stage,
+        "parent_completion_sha256": parent_sha,
+    }
+    return payload, completion
+
+
+def update_current_latest(
+    root: Path,
+    generation: Path,
+    *,
+    stage: str,
+    completion_name: str,
+    completion_schema: str,
+    result_asset: str | Path,
+) -> dict[str, Any]:
+    """Atomically advance the runtime pointer using seals and hard gates only."""
+
+    payload, _completion = _verified_pointer_payload(
+        root, generation, stage=stage, completion_name=completion_name,
+        completion_schema=completion_schema, result_asset=result_asset,
+    )
+    current_path = root / "current_latest.json"
+    if current_path.is_file():
+        try:
+            current = json.loads(current_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("S1.3 current_latest is invalid") from exc
+        if current.get("generation_id") == payload["generation_id"]:
+            current_stage = current.get("stage")
+            if current_stage not in _STAGE_ORDER or _STAGE_ORDER[stage] < _STAGE_ORDER[str(current_stage)]:
+                raise ValueError("S1.3 current_latest may not regress within one generation")
+    pointer = {"schema": LATEST_POINTER_SCHEMA, **payload}
+    atomic_write_json(current_path, pointer)
+    return pointer
+
+
+def update_current_reviewed(
+    root: Path,
+    generation: Path,
+    *,
+    stage: str,
+    completion_name: str,
+    completion_schema: str,
+    result_asset: str | Path,
+    review_method: str,
+    reviewer: str,
+    note: str = "",
+    write_legacy_preview: bool = False,
+) -> dict[str, Any]:
+    """Explicitly publish a hash-verified human/offline recommendation."""
+
+    if review_method not in {"manual", "offline_dataset"} or not reviewer.strip():
+        raise ValueError("S1.3 reviewed pointer requires an explicit method and reviewer")
+    payload, _completion = _verified_pointer_payload(
+        root, generation, stage=stage, completion_name=completion_name,
+        completion_schema=completion_schema, result_asset=result_asset,
+    )
+    pointer = {
+        "schema": REVIEWED_POINTER_SCHEMA,
+        **payload,
+        "review_method": review_method,
+        "reviewer": reviewer.strip(),
+        "reviewed_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "note": note,
+    }
+    atomic_write_json(root / "current_reviewed.json", pointer)
+    if write_legacy_preview:
+        atomic_write_json(root / "current_preview.json", {
+            **pointer,
+            "schema": "gemini305-video-s13-current-preview/v3",
+            "deprecated": True,
+            "runtime_authority": False,
+        })
+    return pointer
 
 
 def update_current_preview(
@@ -220,6 +379,7 @@ def discard_staging(staging: Path) -> None:
 __all__ = [
     "atomic_write_json", "discard_staging", "invalidate_current_preview", "new_generation_staging",
     "publish_generation", "seal_p0",
-    "seal_stage", "sha256_file", "update_current_base", "update_current_preview", "verify_p0_completion",
+    "seal_stage", "sha256_file", "update_current_base", "update_current_latest",
+    "update_current_preview", "update_current_reviewed", "verify_p0_completion",
     "verify_stage", "write_csv", "write_image", "write_npz",
 ]
