@@ -1,0 +1,3388 @@
+{
+  "branch": "fast_direct",
+  "created_at_utc": "2026-08-12T15:09:50.283954Z",
+  "expected_counts": {
+    "m7_components": 2,
+    "p2_pair_transactions": 84,
+    "p2_replays": 84,
+    "p3_blend_transactions": 84
+  },
+  "generation_id": "20260812T140107-c4db600bf175",
+  "nodes": [
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_acceptance\\fast_direct\\generations\\20260812T140107-c4db600bf175\\P0\\P0_completion.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P0_completion",
+      "node_type": "completion",
+      "parent_node_ids": [],
+      "sha256": "3ebb7fb7733fde28ab07f31972cdebc22176ab2fad87d1f4c85c1a2f87cc089b",
+      "stage": "P0",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_acceptance\\fast_direct\\generations\\20260812T140107-c4db600bf175\\P1\\P1_completion.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P1_completion",
+      "node_type": "completion",
+      "parent_node_ids": [
+        "P0_completion"
+      ],
+      "sha256": "e753d7906e935b6eca3ff832fe88a4d4527b0f308d7d96c78e29ec9a678f9083",
+      "stage": "P1",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_acceptance\\fast_direct\\generations\\20260812T140107-c4db600bf175\\P1\\vertical_solution.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P1_vertical_solution",
+      "node_type": "solution",
+      "parent_node_ids": [
+        "P1_completion"
+      ],
+      "sha256": "063547d41a3be7da8204952d4ced5e7a5a9cd23f1e80626dad7f7ca0969709f4",
+      "stage": "P1",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\P2_completion.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_completion",
+      "node_type": "completion",
+      "parent_node_ids": [
+        "P1_completion"
+      ],
+      "sha256": "a6a50e324bf97ee676b6f78ff54e52637ad822e6430e85fdd4bb8271d06997e8",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0000.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0000",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "12247e9cb2ff10821fd19a05d53afc39234333711039b09726f6bc4b69a52102",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0000"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0001.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0001",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "860027d259973ffa9ded5fad8789614187cd65b90bb0d62ccff9f3bcf9371571",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0001"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0002.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0002",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "79768f15439e35f526b04f25cac08d63bc08625a16289f88c3c5fb3a11ac0136",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0002"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0003.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0003",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "b4c3d4a798378d2f4a9ed1dacbefb16005b198288ae46be84b8f8c50c2862657",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0003"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0004.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0004",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "ae8c7d7648dfbbedce8354b16cb277b9deadfdbbff78ecd67e5bc5f7958d1aae",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0004"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0005.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0005",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "f9eccf5a44a0eb7f05255d49f41c60ce5794ab77f338c145a334e4607e1ca3da",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0005"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0006.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0006",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "d5b39aebfd8be359d3775636961b22295896fc71a57bb40f51dc1b0e4f74995a",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0006"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0007.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0007",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "9582ae86a7e5fb1a5b29890bff6001c955b553bdfa8d7f79c76f51e51ae10d84",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0007"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0008.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0008",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "26b40dfa57a8a1342e571040a7fe0a87b81efe8edfcbcf341d58b658f80b02af",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0008"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0009.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0009",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "38fbc043f9526379b9674e8b18b5136666d0a8bab08c4e9606de696214033231",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0009"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0010.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0010",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "908e8376e6c788e8df960b6ea16a25629508c1f2908029da716b7e100623c0b4",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0010"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0011.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0011",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "ec383beb311b4961e8d7bff75c0b70258f646202e5ae2ac766ac30db37a68714",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0011"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0012.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0012",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "c724ccee432e2fcc314cd0781e886d9b697146c43806d46fc0b4ee1bdf3b5f5b",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0012"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0013.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0013",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "1a399481cc425b314d3f8ccf11c99c045e77d9766e1ce8f0ed81ca74f13622f3",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0013"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0014.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0014",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "4cf210b8ec09b0e3aaf5cfc63c1164bcec03511ca8d9fbdcad7d99867d9874ce",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0014"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0015.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0015",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "b946a5179533397754d1f6f2e8d63c60b9f8078f07b89efe776720def2f0be57",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0015"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0016.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0016",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "fb3898fa7cf8f4df8f23338a5c9a41868acea67e66450c7babf482abc36f9b9c",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0016"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0017.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0017",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "5c815855c0cff1ae5366fa83c5aad16af869afce0f399a2ca1cf5f3445a04a57",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0017"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0018.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0018",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "75db077c1c3ecbf1ae81820042c28102286a8e431db9e0df74bda13590cfdbad",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0018"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0019.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0019",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "e24d07f96d5161dc445ef661be99fc237421aaa3107f3b49147ca301daabe0c8",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0019"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0020.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0020",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "14000498c4c362a843a629a62e2cd0d00a96f266c11753de14d25f54710c0ab1",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0020"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0021.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0021",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "b4a331073ece41ff40040e5852b8c6b3bf27307eef970a86e16c1f9224634a44",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0021"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0022.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0022",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "d805b771d9402c9ff4132791de01ccdb40a6a76129dfebacb9c4b6ae972898c8",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0022"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0023.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0023",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "5b913e74cf1aa01c977e1455badc5a4c0dba0c0d70714755f7299428388c4271",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0023"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0024.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0024",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "b2042cdd9a41aa7675b67fb53570d5dde5ec1e7cea874eecca95e92d7fea8c5d",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0024"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0025.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0025",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "fd49ff4a1cd46b0ac3bb5bc614894ef41b65692acd1e94eda70ffcb22ad3da54",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0025"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0026.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0026",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "5e8d0cb9cd791c95f5b8ed3a59394f3bf5aa672cdc6106ef5fe04265c9bf68e1",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0026"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0027.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0027",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "d6f36bb3b2bcfb67324dcaa82bf65afab55546ac519b4b69a17fd338c99a540b",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0027"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0028.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0028",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "fdcc34f4d0a573d87da2cd047586c439419d2e139729864bfea3fc432dd0c46d",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0028"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0029.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0029",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "2af75c1af7b8cc4bda133edb2b989b63602a095acc5765ae250e806e2c69f150",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0029"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0030.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0030",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "558f2fffde0f01b372d020d5e7b0de49c7ff8874de6fa8736b078979266ce761",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0030"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0031.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0031",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "e4f79902594867f24f17724aac581780cccbb25450a78a3fd40f1cba8548b0f7",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0031"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0032.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0032",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "832cfcb6c9167185306788689dc48aedef0dc87f3cdce93d5cf6dd60fe1189dd",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0032"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0033.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0033",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "a7b80dfcb13a54144153762e4b1257f42e708de4bd82db6393e5737904b2cd95",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0033"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0034.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0034",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "11e686d3533517e137175d66401e438cf2d2ad020b1f54cd946f15775cb3183b",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0034"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0035.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0035",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "e2d1371c4bbb2c325737f9fffb780ffc52b39e928f3211799b01a96537456062",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0035"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0036.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0036",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "66f7aa41d3bef42a985cab4a12752243b25ada9eb73082a5bb832871a31ec436",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0036"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0037.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0037",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "1b107c6826eaa1675696e8ffc1dd8487602b66c235ea25d012f830b80944c6a2",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0037"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0038.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0038",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "99faf1504d035b9bd3d050b0aff71e0102b5e14f07b07a240516ba6eac082eff",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0038"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0039.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0039",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "3d8cccdc00a7e95f9cae0d2da5371ae93ab79873b3a1d63400b209f69a8638c5",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0039"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0040.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0040",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "3b33ec9ddd3400048f341c82877419f46a83c92099766beff5a5d464d5798a62",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0040"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0041.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0041",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "4881e00f3c86cbd5842ed1761e03b3917118bd5df98a12c2146bfaa3d54f22e9",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0041"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0042.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0042",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "016de1507ee4a7398fcbbf2f2fe3e152548aafc9b18dcd5d759f0ea3b6e27ce2",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0042"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0043.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0043",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "bd112508fb43ecf2996e8f5a8bd0249765ab9d3d8b85ed791d203b2daff3a64f",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0043"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0044.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0044",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "e0ceb98d9eef828cb1784deb338d5755e2f9d165fa275e533f0d0011a49ada53",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0044"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0045.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0045",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "593857a3902422a54798f2a774e39c9d59a81cfb9035450011b93898dcf9c9a6",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0045"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0046.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0046",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "5d3555be52a6c79bb8ca0b65bda7e5318b1a17220d41396204deba628175cc3c",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0046"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0047.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0047",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "916813906fb7492dfcc6c9e73484acf65697caaf33d439a72b9a4dc2928ff4a6",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0047"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0048.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0048",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "f9d1feeba297928a4747c593f9893c94ced1965a0735c9fd297926190ccb142f",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0048"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0049.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0049",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "c34465de12c62f9f3e73fd439361d4c2206336546592831534d2e03b0cedb226",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0049"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0050.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0050",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "c796495e2e75255a55b945e9f6672e7d43e041d6df2febefe2347e28045b023f",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0050"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0051.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0051",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "95d8379e013cb0c513c2f087bade046d237e617aa9b14f5c8994a4fdc2895524",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0051"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0052.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0052",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "90c85d27855bf65d50636ffe6af3790ab542e48f5d1c83a2d0d0ac28b0df69a2",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0052"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0053.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0053",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "204f715fb3976815ccf4535e0758825c068dd39bb6fba44fd8940aacb9a2b334",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0053"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0054.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0054",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "ece9d820ea8527a8401afad50d34c72f33e37a37dc9bfd1af04a0d84439ee1b7",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0054"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0055.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0055",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "674b139714e3b34b5c3c5a9e0a5d302014d5e0f71d1a301a98dd70093c224b30",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0055"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0056.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0056",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "4ea242a70881a88d782865d7421870fa2a4e561d1a3afc87a93612443bfd1b33",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0056"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0057.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0057",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "623fbf2738953bf823648d5f32e19ab730339a74c372deb2cd148b22cef865a5",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0057"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0058.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0058",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "822aaf63af97cf5a7a1359d1105323b2031c6df080c01c5c45066ef95ee73a78",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0058"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0059.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0059",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "b1b37fa9bbb76f7a7aff131f8b4015eca43ef11e62e248bd133a888418830942",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0059"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0060.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0060",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "fa46b3b9ae8bd36a88988863f7e198b0791acf60d832fcbf01ae12a4eec980e3",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0060"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0061.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0061",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "4bec3b3741d4385a23162084ddf91815312adab246037ad68fa693747aee0793",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0061"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0062.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0062",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "f88f795d388a8d645b4f89ed890a4e786586349930997846904df30ac33edb04",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0062"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0063.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0063",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "acf4f102d4821c3a9900e813bf8ed7f7bc615938a95544b382cfe48084b1cf8a",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0063"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0064.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0064",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "56c699b73ba062557aa039bdb79fac961c591c102d1aee29b9ea353c89f99fe5",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0064"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0065.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0065",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "1c5ca917a076151551548903152ed0a6235c778e923aa341df1ad886f196a708",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0065"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0066.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0066",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "548ece8d302b6b10a0c1f961633c662995546d085d4833e0dd30b356819634f0",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0066"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0067.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0067",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "1da75a914add2cb605a4f83197886a60eba1b78332f166e829a3aa461f0750ff",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0067"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0068.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0068",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "0d9fa9fe72fd6db82ce2c0afe503bbe4fa6a95319d765d75b7f3de7d09e18208",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0068"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0069.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0069",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "f5fcc406461eea167ee2e7842623ddd0601a4a7dc28d8369b46f2a24c8392e0d",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0069"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0070.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0070",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "2d46121027bf88002a06fc79760e9b11af601a5feb947e5a10ca1cce0e3dff5f",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0070"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0071.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0071",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "ade56fad2705a2473ff78509d252de7778dc83a723ed3094fe50cebf027f7675",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0071"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0072.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0072",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "5220f37b445a2cc572ac135de5ab18ae66820683c730d5e5e5130d59c91690d5",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0072"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0073.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0073",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "2062525fa7b54031a5f49cc33c089472c3eabcc2ceec825361a2a8b20f6ec0fd",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0073"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0074.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0074",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "d1e07fecbed7c515075603abe4534342850872af6e7f01c8a06d4eab9dca1d80",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0074"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0075.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0075",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "c294a6c69f5b20d5dacb237ba766834628a36625bd601048f57ff0ad0ac70dda",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0075"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0076.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0076",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "e8df80e598250e4a03640d30dcad4de8d1a77350f6de8a5daf7571370d32810c",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0076"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0077.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0077",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "03c5b2e0318f1970d49ad95fb62f2248851c049d077f6aafb225a7dfcb8a2380",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0077"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0078.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0078",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "80e653cfcf1e96d610a76ba2986b11735b12613378a3c39d6df3f5370014130a",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0078"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0079.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0079",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "b804fa8d36544d0c79e5cb0f83daf0f1722279bcb7e947b6c073cdc4e126367a",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0079"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0080.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0080",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "58d26d7dd96353439fc89916bffd808716672d35db9421aa52ccb0c7e67080cc",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0080"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0081.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0081",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "3003bd4e6025c53620a52a139f24cd2df9fc2433fc5823cedccdfb8a6a7d933a",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0081"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0082.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0082",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "3e85c9aad8ae27196805ddf44f690aeffb081fa2b64e2f46b60325d14d0ddfd5",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0082"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_transactions\\pair_0083.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_pair_transaction_0083",
+      "node_type": "pair_transaction",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "d690c343093141d2aa367f7d7548591c250af728f123cd52929abeae5424688b",
+      "stage": "P2",
+      "transaction_id": "P2_pair_transaction_0083"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0000.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0000",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0000"
+      ],
+      "sha256": "a3ccd920e4969eee2e16b66bbb44ff3f0d7d2cb68537593e88022ba4283e768b",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0001.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0001",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0001"
+      ],
+      "sha256": "c60439657979d3a68b9e6a94ccdfc87df11893a041a95ab2911c96408f877401",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0002.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0002",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0002"
+      ],
+      "sha256": "5833c94458bd37644963f89498e603a50749a80483151c18d032052861dfe389",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0003.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0003",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0003"
+      ],
+      "sha256": "b25186018e27aa26a6f0bf93ac3bc049c344a57fea7020e22fbf45defeef0f1c",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0004.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0004",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0004"
+      ],
+      "sha256": "ed6f269eaa774400326932695686c665a16e218937c82c2cd0b688c45f368781",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0005.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0005",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0005"
+      ],
+      "sha256": "f47763208f98b1895391835de599046b3e73cb1491e1b610f8b009c67f2e80b6",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0006.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0006",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0006"
+      ],
+      "sha256": "076a098f3f838f67dd328c21d69cd82eab8aacaa532876d1055cc8ff14a48a2f",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0007.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0007",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0007"
+      ],
+      "sha256": "a58462d87cc16bbbd1ef452cafc12c987546c8b17bb95636590a2afed3829dd1",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0008.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0008",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0008"
+      ],
+      "sha256": "c4c6ba64185674e8ca2d659eb54f2171e421dda66e8ad582c6c2253936fd816f",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0009.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0009",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0009"
+      ],
+      "sha256": "ff968425ddc40a2735a1746ebdcec652c52e2b271ff2e23802ef1c2a60fe19bb",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0010.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0010",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0010"
+      ],
+      "sha256": "817abb811e7d8a47c1331784ff88a862c318e13caeb5ee356c7155fc530374b6",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0011.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0011",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0011"
+      ],
+      "sha256": "c6f57540a7088a90939db8132cff89cd8fb9a1a092507470f5e6b1c325cc37e4",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0012.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0012",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0012"
+      ],
+      "sha256": "19d2d2b8bb8ed6b355e3bb28c861b4773bfaa3e95e751815ca0c10eb7fa7354c",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0013.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0013",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0013"
+      ],
+      "sha256": "320060ae20b0dfc65ffe2175ceebc4d81bf9f1f82dd8cece83b97fd12cd0d814",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0014.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0014",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0014"
+      ],
+      "sha256": "7aaead252a7326e1e401af7750925c3a87241824fe52444a24bd4bc7fcfda10d",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0015.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0015",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0015"
+      ],
+      "sha256": "657e1ec346113b2a48398674ec55025457c3ca090630377c8c7fe7e0e79c0e9c",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0016.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0016",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0016"
+      ],
+      "sha256": "7aec6522c80d2ae1bc25f4e1f919cd520ebe8c8d0a8fd1d77658834db8453d59",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0017.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0017",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0017"
+      ],
+      "sha256": "230b7de2c965659c1e583c70e50241fd7f550d726f579243ed37c62545001a61",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0018.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0018",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0018"
+      ],
+      "sha256": "3b990a000307cdec9e349d14eff680d9bba55381e5499a78346f5db868fd618a",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0019.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0019",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0019"
+      ],
+      "sha256": "8f1ba968a4595d4328e77fb6e5f4efd4f88acb8cd90dd8c717879c99f91a09a1",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0020.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0020",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0020"
+      ],
+      "sha256": "95b9c59e07b9815a1c0bc4df6465df8f5f0fb0aaaa35338b547e77707781a550",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0021.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0021",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0021"
+      ],
+      "sha256": "41a8cfe85279c5d990f38bfad4089c19605d33264357de298626f7f075f6703c",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0022.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0022",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0022"
+      ],
+      "sha256": "c24a5828ac802f34dc24c62c3dd4598d026a017dc893ad5bfe299a88f3b98fff",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0023.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0023",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0023"
+      ],
+      "sha256": "c60b657773d1cf9ea6c2e6c69ae510eb9f0db49829a19a09454b1210d0e8c8d7",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0024.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0024",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0024"
+      ],
+      "sha256": "8b00b2eb9036babb3ba3fb597b2cffaca083b88b764fb8a3c77fe0626e85752e",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0025.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0025",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0025"
+      ],
+      "sha256": "b46a881d87e9bacf7c05fe4265c45f0d4ce4e4474b3d487c6433f6ddc32eef6f",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0026.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0026",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0026"
+      ],
+      "sha256": "f3a24230f18b107e951e6f528fd6b2616b8c7cf2f44cc836837b1ea6572bbebd",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0027.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0027",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0027"
+      ],
+      "sha256": "061053d6b7361175343d0a382bff6cf1cad456a3ee9072d13a8c309f680f2ee8",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0028.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0028",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0028"
+      ],
+      "sha256": "81f365187dd4d3603c80b455a2259bee097d73d5296b7c86d81e6a32c8577594",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0029.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0029",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0029"
+      ],
+      "sha256": "c818e9758c5076dabb0f1a648579f4839f4269761a84f77d001de21274772490",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0030.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0030",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0030"
+      ],
+      "sha256": "67ecb15163a6a83baeab7a5a493a3d3fb5896c72263bdf4014a4ed0b7d995416",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0031.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0031",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0031"
+      ],
+      "sha256": "e16e01f3a9e26671b2642cea26c9cf268d5374f3271f4fa3378d92811fe3b416",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0032.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0032",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0032"
+      ],
+      "sha256": "1eefab06c460482b40df15c4d26219ff48c1e50ad4ed767bbaa519c7ca694b37",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0033.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0033",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0033"
+      ],
+      "sha256": "0c6cb825aba5646ee1391af7948ad81aeec8ace73574a994c5f0773af9f6af8b",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0034.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0034",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0034"
+      ],
+      "sha256": "76d2f60ac5b017aea637ec2c3114aea22a321a5a2457132ee8ab5ed484ca3eb2",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0035.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0035",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0035"
+      ],
+      "sha256": "44e51d97df47addae50c51edc2223228430a35aef54268bf00761c78d7998c23",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0036.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0036",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0036"
+      ],
+      "sha256": "fc237eac588545bb62830c0fd7511272b885b6491fdbfeac4f31cf9d80e2152c",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0037.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0037",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0037"
+      ],
+      "sha256": "4b775ce4e586ba756f4769e6dd80b84132632e08f7ad17455b3dcc17d08d0bf5",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0038.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0038",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0038"
+      ],
+      "sha256": "c004cb3d8c8330d3d80a72efc5b7ae05b62ef6117ab224416c1b878bb529005a",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0039.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0039",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0039"
+      ],
+      "sha256": "b154a234cdbd61ad92a13d20c73b038264dcb89bb1b0cee72cd248deb0b8b24b",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0040.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0040",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0040"
+      ],
+      "sha256": "6002f91e5ad35e245e04d6e6b6ffe7c27144f454fa99aa17f55f1f50319d7964",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0041.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0041",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0041"
+      ],
+      "sha256": "f6eaab38476590ecd46aacdf0ca24fb8109246fc0fa800014e3bf2a3175799c7",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0042.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0042",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0042"
+      ],
+      "sha256": "76f64a15f18039e097a4f2aeebf34326dde4bb35507886a11de03104369c1a0e",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0043.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0043",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0043"
+      ],
+      "sha256": "9e3d235e88635d936ee31bcd0ed7955300c78bf9991faaed9e21f3672b93c16d",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0044.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0044",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0044"
+      ],
+      "sha256": "c9e2026a89f8667558d0a2b71bcd41277bd6b5b50387eb65dfe3adb742b92946",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0045.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0045",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0045"
+      ],
+      "sha256": "9fc98ebeab9e6d816e68ce6aa844a03686c5dad7bf59ae6bacf8f5a455d7a3b6",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0046.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0046",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0046"
+      ],
+      "sha256": "f5064e3c8115ce574af56c7ca18b6c1d59895781124e5873fd66341b48e385d3",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0047.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0047",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0047"
+      ],
+      "sha256": "2c8a7fe6aaf50f9671a986cf1612d745976dbd6131dc2e945a521aab9df47ba2",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0048.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0048",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0048"
+      ],
+      "sha256": "bcbbb527bae9ca0a5438792c9be5103f0578041b0f618374f5c0c43187654bd2",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0049.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0049",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0049"
+      ],
+      "sha256": "3c42f68dee6a09d48a1dcbd637c953785c06c5bdf5967b45760ee97621497217",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0050.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0050",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0050"
+      ],
+      "sha256": "6ad07529cdd66a65c23736c2625cc68c7af275b51ea7cc8a989b58f78b5c82e4",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0051.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0051",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0051"
+      ],
+      "sha256": "457c450d648a7c4a5b3f90a49bcc790f5da338e978f69b59d2c28c807751bf0c",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0052.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0052",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0052"
+      ],
+      "sha256": "d1fc00d912820644a2ea353602ae84b2c12118732ccad70d8c52cd8217381ec8",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0053.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0053",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0053"
+      ],
+      "sha256": "b3dd350db68e666b7eec546ef8af753ad4cfffce689b12f1cda78706ffbe0055",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0054.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0054",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0054"
+      ],
+      "sha256": "2f3785b62ebc056b6743806d898211081718fc455346fba922417fdfe7eef57e",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0055.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0055",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0055"
+      ],
+      "sha256": "06934d82ec64db550279152bec8a5f0caa4708aefd54d51026e9a0af669914de",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0056.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0056",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0056"
+      ],
+      "sha256": "e544d23098d976c3007796aea74b873e560e9caeeaeeb34d77b65e62ce523524",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0057.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0057",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0057"
+      ],
+      "sha256": "3192f979118c19f43ac6c0f562f95806b5de191a4cbc15155bca416f312dd0a5",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0058.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0058",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0058"
+      ],
+      "sha256": "e123f20b02ddc82c39dd4922522045e79ed1631d1689a72ddc3ed93150783777",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0059.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0059",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0059"
+      ],
+      "sha256": "02ccfdfcb370d7698afefcf3d65270ea464fa7e2a35889976af789e1e4b9cc5c",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0060.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0060",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0060"
+      ],
+      "sha256": "71ef25a4431c1fad096f22b8443eb1bdf3519b36340985602bb34f84c8451786",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0061.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0061",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0061"
+      ],
+      "sha256": "ad263774ad52874c30a9e9fb0415ba32a8701799a4950eabfbb5fe7e6a1a7c30",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0062.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0062",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0062"
+      ],
+      "sha256": "30bb612289364be9304080e92e57df74465eba6aab722024a52ed4d2c0b39e6c",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0063.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0063",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0063"
+      ],
+      "sha256": "e79e417d07e48248c74b7e02fd5ab7dd2b7e6903c2631506f3fffffeed581fdf",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0064.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0064",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0064"
+      ],
+      "sha256": "9cfb3e8afa85b6dd8bf8405b58e87dc5d6ff07f48e4ef539dc9314f7b19795fa",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0065.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0065",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0065"
+      ],
+      "sha256": "36825df1bd7a03b13a968f176302d33070674dd8d1ec0e09f027a16a1f24bb27",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0066.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0066",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0066"
+      ],
+      "sha256": "1d9525121cb5b6fd2e637bd69b6964304ac915f9629e4bd59c2e0e88e557d50d",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0067.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0067",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0067"
+      ],
+      "sha256": "09ae528ad80dc40ff228dc4da10fe92160b1e9bc95bd3811d7d75368b8d2a78a",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0068.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0068",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0068"
+      ],
+      "sha256": "c77ab47a2a75cfcc9260ad476c2d0bb34a8113f03369455c9d0200f451183b57",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0069.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0069",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0069"
+      ],
+      "sha256": "3ae1d606c8b1a46dec20528a6d28aad54ff45c0e3fc2ebec000c75a777c9a6b9",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0070.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0070",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0070"
+      ],
+      "sha256": "ff531e1ddfd43a35f055da9fe4d3493630d4b3dc32327704cd6615d29d802107",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0071.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0071",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0071"
+      ],
+      "sha256": "0f1e474db2cc461eb70d90ee6e01d6eb224fee8acdb1b0e03b967bd9549c22e7",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0072.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0072",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0072"
+      ],
+      "sha256": "8bde07a815fb14f9a0816dc2b5da290194bb4589fafbce051b2d46eaf9fcde7b",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0073.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0073",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0073"
+      ],
+      "sha256": "01f9ffe88f6ac00e22a4746a427c7e40d567daa2179978d8061542c8618b58a6",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0074.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0074",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0074"
+      ],
+      "sha256": "04645afcba59affa0850c8400e629086853c02600dc4d95140046a25668b52f1",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0075.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0075",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0075"
+      ],
+      "sha256": "4f60fd50ff67cfcfd3eed9f5d6417597900569d5b51e25572dfb5ce03b9a8aef",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0076.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0076",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0076"
+      ],
+      "sha256": "c3dd36a61e359a9d3dec932939f2f212a9b424d822b01ed78d9fafcd433ff290",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0077.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0077",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0077"
+      ],
+      "sha256": "1d623c331d2eee8fef040f3cc62701fa18c22b5df9a83dcb1302cf702a7b23a7",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0078.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0078",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0078"
+      ],
+      "sha256": "40aed495a3595618d056acaf723ede130c12359a8874be9e16b374919ed22a3f",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0079.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0079",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0079"
+      ],
+      "sha256": "d42db0e2b4852eabd4daded5feafb75355de48d2a4c818df14d9b62f1bdd3b0a",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0080.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0080",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0080"
+      ],
+      "sha256": "c72f4e361788dcfb2750c497ece995022ee9f32ecc932b1b36c77b5711cdcee0",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0081.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0081",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0081"
+      ],
+      "sha256": "e51fc10d59400e952a2e1298b905ee8dc9b5292e811d68af2d58ae071eae719d",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0082.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0082",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0082"
+      ],
+      "sha256": "622ac1349108e2e7c51896f3c273545ae9f80bcf6acd560cdafcef79cfa70747",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\fast_direct\\P2\\pair_replay\\pair_0083.npz",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P2_replay_0083",
+      "node_type": "pair_replay",
+      "parent_node_ids": [
+        "P2_pair_transaction_0083"
+      ],
+      "sha256": "ccc210d13fdc139c91732b64cbb1fa5c77a22aefeedf4d297667cbbf237e7ff3",
+      "stage": "P2",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\photometric_solution.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_photometric_solution",
+      "node_type": "solution",
+      "parent_node_ids": [
+        "P2_completion"
+      ],
+      "sha256": "d29e0b865d6a9cf9ead45761c176c1cf6350b84beff8e3a617959d4d6a10173b",
+      "stage": "P3",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0000.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0000",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0000"
+      ],
+      "sha256": "f7d7aab1dea11bb7ff938729ec62173d21a90b35037450cb9cede1a53f091472",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0000"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0001.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0001",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0001"
+      ],
+      "sha256": "83e3d630ca54f25953a9f95f08ddef1b4fbe7c10032f2f851f29a342968f861a",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0001"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0002.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0002",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0002"
+      ],
+      "sha256": "052c804b97c1c9109fa0708e87984dd8b94dada43b8eeaf99116286d31853b67",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0002"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0003.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0003",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0003"
+      ],
+      "sha256": "0ef15c2f060ac21a51e47531ab97ae28b998e638926f37e77b59a9fe9a4bc87c",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0003"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0004.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0004",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0004"
+      ],
+      "sha256": "0db032938f0de5e3f478e2c74f614a43b98474c4ded42eedc8909f20c4d18b28",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0004"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0005.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0005",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0005"
+      ],
+      "sha256": "e707505749f64973a2c1c3a9739b48cabe05aa63f8cc73bd301846b6d7e57169",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0005"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0006.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0006",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0006"
+      ],
+      "sha256": "cedd3bb88f03ab50ca1f5f6eb899228b6f7b061bd8765b9b025296553dd1c762",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0006"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0007.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0007",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0007"
+      ],
+      "sha256": "41d5543fab5745015372377385552b5ae9d7ac955657e0081fcab04244c95c13",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0007"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0008.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0008",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0008"
+      ],
+      "sha256": "5f2e491a27d5bf4c935ddd3d0bc2d8b38b4353316a76e0cb31ec82ecd3765ddc",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0008"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0009.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0009",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0009"
+      ],
+      "sha256": "3f643f547f29767343461f1fa5e437fd3fe12f93eccc136d1df381ddeb00b921",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0009"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0010.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0010",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0010"
+      ],
+      "sha256": "80d818107211868295c87eb09377ac74c005530bd7fb261f196fda0a91ce74e0",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0010"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0011.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0011",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0011"
+      ],
+      "sha256": "d88e0ec47d6d94b4c162733c9023dabedbe788235bcd55376e40b89cc516112a",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0011"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0012.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0012",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0012"
+      ],
+      "sha256": "2f25930e34dfbb69b18f121c75a98b97b5bbc6871f58d3ffbc5a2c5b5bda1d5a",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0012"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0013.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0013",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0013"
+      ],
+      "sha256": "1012b5d8d7e87f95be71a7c51651e39464f51b6ca673a3338e0a7b98d2cdf562",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0013"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0014.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0014",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0014"
+      ],
+      "sha256": "38a59ce22b69e49afc2170a87e1039fef2f8221e35471d907f6b918200ccf880",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0014"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0015.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0015",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0015"
+      ],
+      "sha256": "f9232976663dc67f19755458ace55a06c9f222467c7fbbbe8bcabcca1668cce9",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0015"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0016.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0016",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0016"
+      ],
+      "sha256": "1b5b79256ee32253f40b4fa1878d069dc509daa91517deb7aa9fb8893e5b8bef",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0016"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0017.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0017",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0017"
+      ],
+      "sha256": "442cbd1122a193ca310214864ecf50db4c3f5923339e07afc6d4e365e352ce1c",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0017"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0018.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0018",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0018"
+      ],
+      "sha256": "495057f59cfed27938d5ad731b5e4710802173a9685f2590a18a381dbbd06cd0",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0018"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0019.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0019",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0019"
+      ],
+      "sha256": "b36cb3a2c3d474c4a656ce1ec02f98c8ee82f561b61c144f2bb6bdf3f7ac1b3b",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0019"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0020.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0020",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0020"
+      ],
+      "sha256": "d6da7438a9fec15f3202131f772ee849c38016c7c49040aee69c3ad6601e5dac",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0020"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0021.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0021",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0021"
+      ],
+      "sha256": "7dfa368a135ec13d51384f44acc672f652212cb1480d968e6faa5a8cae1abef9",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0021"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0022.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0022",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0022"
+      ],
+      "sha256": "a9758ee0903d2e105cdc2db92804bb64c11c68ee5d7d82a37423d909b452f76a",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0022"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0023.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0023",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0023"
+      ],
+      "sha256": "976932f3cc763588ec813712b4abbc94c13dcb0a7d82e359822581a43696ef67",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0023"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0024.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0024",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0024"
+      ],
+      "sha256": "49496bb881c7dbe3129d9c657f30b1918876f1e9319085f1e7cdab47500e3118",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0024"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0025.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0025",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0025"
+      ],
+      "sha256": "ce911c21209616c6077cdd66bc7d7faeb847e66305be88d850567683d00257e0",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0025"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0026.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0026",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0026"
+      ],
+      "sha256": "5f84209341e976e713597513ee64e2f96ae2a43771b0ebc68cc042ff803e7548",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0026"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0027.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0027",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0027"
+      ],
+      "sha256": "2bf195a73aa6daf2700b63590dba8ceefe4115f584fb3af7b5a9199b21ccb0b1",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0027"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0028.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0028",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0028"
+      ],
+      "sha256": "c06e0eeb98632f5c503a02474844caa86d70fe24e4d8e79448b6db51303b80b9",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0028"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0029.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0029",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0029"
+      ],
+      "sha256": "f25d005f2aedb8809ac92bec8df738f6a803ef537dc474d0c3085cee538b0a52",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0029"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0030.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0030",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0030"
+      ],
+      "sha256": "43051be52c5eb09cda0406b51ad80f87b92109570521d6000a237cd72c2c6a63",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0030"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0031.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0031",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0031"
+      ],
+      "sha256": "1e20ea49f3769f78518508afa85d577a46dbac81c05c5fad6610375967035e40",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0031"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0032.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0032",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0032"
+      ],
+      "sha256": "48ed94d1c3107d318627c18e94342d178cc66b7d2f2d10a0228543b08a10c225",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0032"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0033.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0033",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0033"
+      ],
+      "sha256": "aa31c2a4a3d6707451923db35083bb14b8797ab6c21dfee0d03a0ae94b60c3fe",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0033"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0034.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0034",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0034"
+      ],
+      "sha256": "97b689dc623c80273d2607492bad372de29a4e664b3afb78954503c5a5de2ca4",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0034"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0035.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0035",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0035"
+      ],
+      "sha256": "de0d4f6a6e887a97ffa43db9df7e93eefd8ac01b57b9a185a5bf27d955beee69",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0035"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0036.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0036",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0036"
+      ],
+      "sha256": "52c09734829a0061da25dcecd01f4caf50374a8a087ccc0cd1f5dc04bc232f3d",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0036"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0037.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0037",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0037"
+      ],
+      "sha256": "8e87a7f7eb7c110f76cbff98b3dcbc396446f4e6641729df1e65eed4ae267dae",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0037"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0038.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0038",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0038"
+      ],
+      "sha256": "5d6700cbec543b4afcb0e7b7090b270a5e4cf5078701964a9acd4e0f6021d13a",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0038"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0039.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0039",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0039"
+      ],
+      "sha256": "d77fd6fea20b9d7c68b715c53e281d9f147dd0db023338598ad1ddff25bb7232",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0039"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0040.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0040",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0040"
+      ],
+      "sha256": "eb4297e4a59fb907a53abfe4322bc55527a2d2f8f64f049aa6bb019c21a5c308",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0040"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0041.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0041",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0041"
+      ],
+      "sha256": "7e9697b4a56fdc23389bd621180f2dd29a4ba911292bfcf65e74a01ab76ee361",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0041"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0042.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0042",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0042"
+      ],
+      "sha256": "c66e8ec5e22c00f59fb77d7cd4b0040b93bf9295b53e38e9febaafa6bf217b70",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0042"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0043.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0043",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0043"
+      ],
+      "sha256": "29508b178764db7b92f540e2f0b1c130a61c42a785035a77f6f66fb69d3a8515",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0043"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0044.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0044",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0044"
+      ],
+      "sha256": "1f19b2ebee01c79347fe6d2be1a967171b96391451c278fc23df5358fe8faa83",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0044"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0045.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0045",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0045"
+      ],
+      "sha256": "9c158c7f0d449414c2b157ddc210b3de33dc1b2aca669c59d9646a29e2f0dc74",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0045"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0046.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0046",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0046"
+      ],
+      "sha256": "b8a1503d46670b7b8b53a0d35ab17be48e7ab08724b8ea8fd4ad9e4b66c49625",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0046"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0047.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0047",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0047"
+      ],
+      "sha256": "780477ee38dbffd950a6163583a81bd11bece82ab34bc72308432c6e3f2e8a02",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0047"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0048.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0048",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0048"
+      ],
+      "sha256": "ddea5a99032dab2188b03fda91c5009dff95e4984a38348b4b50f9331dba3a2b",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0048"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0049.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0049",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0049"
+      ],
+      "sha256": "5e8ab84d004f99bda321fdef147478031b656fac55615490fd056b3cc8e577b7",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0049"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0050.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0050",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0050"
+      ],
+      "sha256": "436b9c8064cc9d896fe48bf192ee2961c9406aabb2e47234bccd9e4e1756355e",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0050"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0051.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0051",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0051"
+      ],
+      "sha256": "87d14fd439e6e52f6d2035e5c3559c8ef2868a5cf243ea27d72b5cc2726d4a08",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0051"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0052.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0052",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0052"
+      ],
+      "sha256": "ac4f12d24222e9d93dd79ff484d42b8395165938e640591e91db97cd97086e95",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0052"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0053.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0053",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0053"
+      ],
+      "sha256": "75ac1b56678b78a2f471812ae7be8f1650981ae9365e1bd95c012290aa29dc4e",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0053"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0054.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0054",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0054"
+      ],
+      "sha256": "de676ff3eccc7ac68a0a88ca0d98053372937bed1bdc649503986eeac5ba0de9",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0054"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0055.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0055",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0055"
+      ],
+      "sha256": "594475796ea02ed511a7de402a44ee487a8b7f6cd22453e3b8cda0b9a7cf9829",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0055"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0056.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0056",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0056"
+      ],
+      "sha256": "5595cae060c4e6c5eab0d73c7955332855f57ad48043967940a53b1cfef5e995",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0056"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0057.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0057",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0057"
+      ],
+      "sha256": "ab0d3efa7f5fab2d58e81931d0e95585f0407bac277a69cfafe8d47cb85268f4",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0057"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0058.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0058",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0058"
+      ],
+      "sha256": "b2f8ed77df95d39d662a9b0b2a9de8fdcbc7878ebcb95b8eba2fdbfdab79e1e5",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0058"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0059.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0059",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0059"
+      ],
+      "sha256": "0413e8590489c42fef27affa9ffe5f8424537b307f6117ae02ddcef778174c22",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0059"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0060.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0060",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0060"
+      ],
+      "sha256": "e4750f154223818394f653eda6283fcfe7e1c83ac6476f4932a97e1ad82cc87b",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0060"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0061.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0061",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0061"
+      ],
+      "sha256": "84f8c6eef5d13cf94826c8e371cd4b4d76a38cb0a5e6c9e565fd8e19631f61c1",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0061"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0062.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0062",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0062"
+      ],
+      "sha256": "87d847ae6bd06eb5c43f4dce42951c61445057cdf8e44084c5f656080c394d3c",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0062"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0063.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0063",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0063"
+      ],
+      "sha256": "4ddadb4f47c6f909f4a296f681a855125ebde5be457eba8ead1292593b47d6fe",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0063"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0064.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0064",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0064"
+      ],
+      "sha256": "251ec934f3c49a9fd78888fa874f71a862d4688ce43dbc579d9f4cb4d713fabc",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0064"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0065.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0065",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0065"
+      ],
+      "sha256": "15d5cd5ebdcfe58a5d7e1bdd006d2f17fee95ab1a9c9e5ceba2a3198aeb472a3",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0065"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0066.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0066",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0066"
+      ],
+      "sha256": "0d93c8aa6957cedba28af24c47f447188eb9bbb38203bffb7cd102b5b82a72ae",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0066"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0067.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0067",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0067"
+      ],
+      "sha256": "643cee58061e43f53621531eca961cf6b1b9e9faf169cd4b59e227a3420f7bee",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0067"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0068.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0068",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0068"
+      ],
+      "sha256": "dc753b5265519fc082a9dc7e8f949c6f689c77cf1ab79b59091055dbad8c2078",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0068"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0069.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0069",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0069"
+      ],
+      "sha256": "417660ed4bf73e02e12be8c660fcd3de56fa52903e0d2f285a49d7f62dc3a71d",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0069"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0070.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0070",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0070"
+      ],
+      "sha256": "05631a4fe485dd8f3b6f63b483d86c238e61d2d34c7a75714b2ca64289606924",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0070"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0071.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0071",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0071"
+      ],
+      "sha256": "e9996506c689715d0ab603bc9de06d8ef7374a49663be7b9503afd2856ab78c8",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0071"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0072.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0072",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0072"
+      ],
+      "sha256": "8b22d673a3c45ac4e9f6064fc4a1b82c2a5cd058a58693d8d3eec7f7031c0011",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0072"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0073.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0073",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0073"
+      ],
+      "sha256": "ea0bf08370f5763d535b4d000184924b5aa751f378cfb9d5e367af94e81d533e",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0073"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0074.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0074",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0074"
+      ],
+      "sha256": "2682b558b39b8ee82cc5435a779115cf6d788726262bd38d1b1bc56b1b68d3f1",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0074"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0075.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0075",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0075"
+      ],
+      "sha256": "a0ed7a2f8caa380805eef56009071f77067c0a86c4ece20988d85adbf077eb8b",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0075"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0076.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0076",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0076"
+      ],
+      "sha256": "28efb56e00ced1e62d79d2c866132090ff9a0ad14e2f6c7ca8f39dcacea894dd",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0076"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0077.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0077",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0077"
+      ],
+      "sha256": "aff4b3aa905c1f3af0fbe6a0a5bedd25bacbd6931ae104673a67635f1bd1e0c5",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0077"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0078.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0078",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0078"
+      ],
+      "sha256": "dff0a065a90f2c6ed114a7489a88b0e08c91080dc0a145e214e5c5ba4aae25bb",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0078"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0079.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0079",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0079"
+      ],
+      "sha256": "5056c28e6dc6bec41de18a319512a4a21ab467bd509491901babf1653625dec6",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0079"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0080.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0080",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0080"
+      ],
+      "sha256": "43d68bd3efefe4cafcb7dfd4281c60b78aef4d7ea6bb660013396a37a3185b6e",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0080"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0081.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0081",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0081"
+      ],
+      "sha256": "288a1d7644710f96d8e8b145e89aa0f6bfade4a4f45ec71e6f80914433ba3617",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0081"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0082.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0082",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0082"
+      ],
+      "sha256": "c799160433c01fe32f920163bad3b78728e0c3bee2119a06120c9dd600a2b345",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0082"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\blend_transactions\\pair_0083.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_blend_transaction_0083",
+      "node_type": "blend_transaction",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P2_pair_transaction_0083"
+      ],
+      "sha256": "045b9153b8a84cb5dd252a7834a670eac8e4e4b96cdcdf9655d6e620bf736bc9",
+      "stage": "P3",
+      "transaction_id": "P3_blend_transaction_0083"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\P3\\P3_completion.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "P3_completion",
+      "node_type": "completion",
+      "parent_node_ids": [
+        "P3_photometric_solution",
+        "P3_blend_transaction_0000",
+        "P3_blend_transaction_0001",
+        "P3_blend_transaction_0002",
+        "P3_blend_transaction_0003",
+        "P3_blend_transaction_0004",
+        "P3_blend_transaction_0005",
+        "P3_blend_transaction_0006",
+        "P3_blend_transaction_0007",
+        "P3_blend_transaction_0008",
+        "P3_blend_transaction_0009",
+        "P3_blend_transaction_0010",
+        "P3_blend_transaction_0011",
+        "P3_blend_transaction_0012",
+        "P3_blend_transaction_0013",
+        "P3_blend_transaction_0014",
+        "P3_blend_transaction_0015",
+        "P3_blend_transaction_0016",
+        "P3_blend_transaction_0017",
+        "P3_blend_transaction_0018",
+        "P3_blend_transaction_0019",
+        "P3_blend_transaction_0020",
+        "P3_blend_transaction_0021",
+        "P3_blend_transaction_0022",
+        "P3_blend_transaction_0023",
+        "P3_blend_transaction_0024",
+        "P3_blend_transaction_0025",
+        "P3_blend_transaction_0026",
+        "P3_blend_transaction_0027",
+        "P3_blend_transaction_0028",
+        "P3_blend_transaction_0029",
+        "P3_blend_transaction_0030",
+        "P3_blend_transaction_0031",
+        "P3_blend_transaction_0032",
+        "P3_blend_transaction_0033",
+        "P3_blend_transaction_0034",
+        "P3_blend_transaction_0035",
+        "P3_blend_transaction_0036",
+        "P3_blend_transaction_0037",
+        "P3_blend_transaction_0038",
+        "P3_blend_transaction_0039",
+        "P3_blend_transaction_0040",
+        "P3_blend_transaction_0041",
+        "P3_blend_transaction_0042",
+        "P3_blend_transaction_0043",
+        "P3_blend_transaction_0044",
+        "P3_blend_transaction_0045",
+        "P3_blend_transaction_0046",
+        "P3_blend_transaction_0047",
+        "P3_blend_transaction_0048",
+        "P3_blend_transaction_0049",
+        "P3_blend_transaction_0050",
+        "P3_blend_transaction_0051",
+        "P3_blend_transaction_0052",
+        "P3_blend_transaction_0053",
+        "P3_blend_transaction_0054",
+        "P3_blend_transaction_0055",
+        "P3_blend_transaction_0056",
+        "P3_blend_transaction_0057",
+        "P3_blend_transaction_0058",
+        "P3_blend_transaction_0059",
+        "P3_blend_transaction_0060",
+        "P3_blend_transaction_0061",
+        "P3_blend_transaction_0062",
+        "P3_blend_transaction_0063",
+        "P3_blend_transaction_0064",
+        "P3_blend_transaction_0065",
+        "P3_blend_transaction_0066",
+        "P3_blend_transaction_0067",
+        "P3_blend_transaction_0068",
+        "P3_blend_transaction_0069",
+        "P3_blend_transaction_0070",
+        "P3_blend_transaction_0071",
+        "P3_blend_transaction_0072",
+        "P3_blend_transaction_0073",
+        "P3_blend_transaction_0074",
+        "P3_blend_transaction_0075",
+        "P3_blend_transaction_0076",
+        "P3_blend_transaction_0077",
+        "P3_blend_transaction_0078",
+        "P3_blend_transaction_0079",
+        "P3_blend_transaction_0080",
+        "P3_blend_transaction_0081",
+        "P3_blend_transaction_0082",
+        "P3_blend_transaction_0083"
+      ],
+      "sha256": "ce14467e95da2950231554412be948f5abc8fe73b53d922184c92c2506086579",
+      "stage": "P3",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\runs_v4\\fast_direct\\formal\\post_quality_final\\post_quality.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "M6_automatic_quality",
+      "node_type": "automatic_quality",
+      "parent_node_ids": [
+        "P3_completion"
+      ],
+      "sha256": "e8f5dd959f0d23f2154f4f500f56eb2391bbd27cd03334f2a47caa4964581742",
+      "stage": "M6",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\blocked_report.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "M6_blocked_report",
+      "node_type": "automatic_blocked",
+      "parent_node_ids": [
+        "M6_automatic_quality"
+      ],
+      "sha256": "c3687a80c1120f0ad64df1153bd1f067e6bfaaf82a1960c1bfdcc5dc070e9e6e",
+      "stage": "M6",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\M6_manual_forward_authorization.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "M6_manual_forward",
+      "node_type": "manual_authorization",
+      "parent_node_ids": [
+        "M6_blocked_report",
+        "P3_completion"
+      ],
+      "sha256": "bc1545bed24eb8b3898bb80365a9c22fa1f092a8ccf7024d4edef543dc47c3e0",
+      "stage": "M6",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\M7_handoff.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "M7_handoff",
+      "node_type": "handoff",
+      "parent_node_ids": [
+        "M6_manual_forward"
+      ],
+      "sha256": "9ffad5ce9f3e87696c4b8da54e6c3486ab4bf3970678c7c972d7b802fbd70fe5",
+      "stage": "M7",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\M7_preflight.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "M7_preflight",
+      "node_type": "preflight",
+      "parent_node_ids": [
+        "M7_handoff"
+      ],
+      "sha256": "6a87063bfa9c1addcf237db69b99e978049db6800129590500ac93f1ed18d573",
+      "stage": "M7",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\evaluation\\M8_manual_forward_P3_20260812_v1\\fast_direct\\m7_component_transactions\\fast_direct-owner-0016.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "M7_component_fast_direct-owner-0016",
+      "node_type": "component_transaction",
+      "parent_node_ids": [
+        "M7_preflight"
+      ],
+      "sha256": "a81d099a8d837e6dd35e54268bde97cda53d5ee7bf921b0d2b228550cb07a9b6",
+      "stage": "M7",
+      "transaction_id": "M7_component_fast_direct-owner-0016"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\evaluation\\M8_manual_forward_P3_20260812_v1\\fast_direct\\m7_component_transactions\\fast_direct-owner-0034.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "M7_component_fast_direct-owner-0034",
+      "node_type": "component_transaction",
+      "parent_node_ids": [
+        "M7_preflight"
+      ],
+      "sha256": "32924cfbc888e36ef5b304a889172dfec7dca8949e7feebce3f5867d2cb1bfb1",
+      "stage": "M7",
+      "transaction_id": "M7_component_fast_direct-owner-0034"
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\M7_validation_summary.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "M7_no_winner",
+      "node_type": "no_winner",
+      "parent_node_ids": [
+        "M7_preflight",
+        "M7_component_fast_direct-owner-0016",
+        "M7_component_fast_direct-owner-0034"
+      ],
+      "sha256": "6c096ca3ea302f89311601404d229780350222728b10770d56fddfe0e7721ccc",
+      "stage": "M7",
+      "transaction_id": null
+    },
+    {
+      "asset": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\M7_known_out_of_scope.json",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "node_id": "M7_known_out_of_scope",
+      "node_type": "known_limitations",
+      "parent_node_ids": [
+        "M7_no_winner"
+      ],
+      "sha256": "ecf5185eab5061b28294bbdb5fcedf5e90e6e087196342c147aa4c7d0c0b9d0e",
+      "stage": "M7",
+      "transaction_id": null
+    }
+  ],
+  "p4_state": "not_run_no_real_winner",
+  "schema": "gemini305-video-s13-transaction-dag/v1"
+}
