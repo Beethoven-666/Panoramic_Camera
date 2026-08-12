@@ -1,0 +1,34 @@
+{
+  "branches": [
+    {
+      "branch": "fast_direct",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "reviewed_stage": "P3",
+      "transaction_dag_sha256": "9e19b0cf5ed5bbf04a47180fe7aca0823a09f25837c327b7db013abae2be3984"
+    },
+    {
+      "branch": "fast_ignore_pose",
+      "generation_id": "20260812T140107-fb6aafb7f542",
+      "reviewed_stage": "P3",
+      "transaction_dag_sha256": "c20c711f8caf657985f8fe9be70c50ddfc7acdcb28d509a924dff71e78367e58"
+    },
+    {
+      "branch": "slow_direct",
+      "generation_id": "20260812T140111-5a520ae4f223",
+      "reviewed_stage": "P3",
+      "transaction_dag_sha256": "c8da2f6924a44de33eba3e2cb29bd86ff7ddd61d455a6133aa3d34493e53cdb6"
+    },
+    {
+      "branch": "slow_ignore_pose",
+      "generation_id": "20260812T140111-6319fb59b194",
+      "reviewed_stage": "P3",
+      "transaction_dag_sha256": "d91e678f18cf0008c46d0b909296b72b66fd928df9046003391621bf4d5d9e99"
+    }
+  ],
+  "current_preview_runtime_authority": false,
+  "evaluation_id": "M8_manual_forward_P3_20260812_v1",
+  "no_new_pixels": true,
+  "production_eligible": false,
+  "schema": "gemini305-video-s13-m8-review-validation-summary/v1",
+  "state": "complete"
+}

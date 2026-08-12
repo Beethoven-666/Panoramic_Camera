@@ -106,10 +106,12 @@ def _load_color(path: Path) -> np.ndarray:
     return image
 
 
-def _replay_pixels(
+def _replay_pixels_full_canvas(
     provenance: Mapping[str, np.ndarray],
     sources_by_frame: Mapping[int, np.ndarray],
     parameters_by_frame: Mapping[int, tuple[np.ndarray, np.ndarray]],
+    *,
+    telemetry: dict[str, int] | None = None,
 ) -> np.ndarray:
     """Independently replay every valid pixel from raw RGB and provenance."""
     valid = np.asarray(provenance["valid"], bool)
@@ -142,6 +144,8 @@ def _replay_pixels(
                 interpolation=cv2.INTER_LINEAR,
                 borderMode=cv2.BORDER_CONSTANT,
             )
+            if telemetry is not None:
+                telemetry["remap_invocation_count"] = telemetry.get("remap_invocation_count", 0) + 1
             linear = sampled[active].astype(np.float64) / 255.0
             corrected = np.rint(np.clip(linear * gain + bias, 0.0, 1.0) * 255.0)
             alpha = weight[active] if prefix else 1.0 - weight[active]
@@ -149,6 +153,82 @@ def _replay_pixels(
 
     sample("", valid)
     sample("secondary_", valid & (weight > 0.0))
+    return np.clip(np.rint(output), 0, 255).astype(np.uint8)
+
+
+def _replay_pixels(
+    provenance: Mapping[str, np.ndarray],
+    sources_by_frame: Mapping[int, np.ndarray],
+    parameters_by_frame: Mapping[int, tuple[np.ndarray, np.ndarray]],
+    *,
+    telemetry: dict[str, int] | None = None,
+) -> np.ndarray:
+    """Replay valid pixels with one decode and one compact remap per source.
+
+    The reference implementation above remaps a full panorama-sized map once
+    for primary and once for secondary contribution.  This exact path merges
+    both coordinate lists for a frame, while retaining the original primary-
+    then-secondary accumulation order.
+    """
+    valid = np.asarray(provenance["valid"], bool)
+    output = np.zeros((*valid.shape, 3), np.float64)
+    weight = np.asarray(provenance["secondary_weight"], np.float64)
+    owner_frame = np.asarray(provenance["owner_frame_id"], np.int32)
+    owner_u = np.asarray(provenance["source_u"], np.float32)
+    owner_v = np.asarray(provenance["source_v"], np.float32)
+    secondary_active = valid & (weight > 0.0)
+    secondary_frame = np.asarray(provenance["secondary_frame_id"], np.int32)
+    secondary_u = np.asarray(provenance["secondary_source_u"], np.float32)
+    secondary_v = np.asarray(provenance["secondary_source_v"], np.float32)
+    frame_ids = set(map(int, np.unique(owner_frame[valid])))
+    if np.any(secondary_active):
+        frame_ids.update(map(int, np.unique(secondary_frame[secondary_active])))
+    available_frames = set(sources_by_frame)
+    secondary_contributions: list[tuple[np.ndarray, np.ndarray]] = []
+    for frame_id in sorted(frame_ids):
+        if frame_id not in available_frames or frame_id not in parameters_by_frame:
+            raise ValueError("provenance references an unbound raw RGB frame")
+        primary = valid & (owner_frame == frame_id)
+        secondary = secondary_active & (secondary_frame == frame_id)
+        primary_count = int(np.count_nonzero(primary))
+        secondary_count = int(np.count_nonzero(secondary))
+        selected_u = np.concatenate((owner_u[primary], secondary_u[secondary]))
+        selected_v = np.concatenate((owner_v[primary], secondary_v[secondary]))
+        image = np.asarray(sources_by_frame[frame_id])
+        if (
+            np.any(selected_u < 0)
+            or np.any(selected_v < 0)
+            or np.any(selected_u > image.shape[1] - 1)
+            or np.any(selected_v > image.shape[0] - 1)
+        ):
+            raise ValueError("provenance UV is outside raw RGB")
+        sample_count = selected_u.size
+        map_width = min(32_766, max(1, int(np.ceil(np.sqrt(sample_count)))))
+        map_height = int(np.ceil(sample_count / map_width))
+        u = np.full(map_height * map_width, -1, np.float32)
+        v = np.full_like(u, -1)
+        u[:sample_count], v[:sample_count] = selected_u, selected_v
+        u, v = u.reshape(map_height, map_width), v.reshape(map_height, map_width)
+        sampled = cv2.remap(
+            image,
+            u,
+            v,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+        ).reshape(-1, 3)[:sample_count]
+        if telemetry is not None:
+            telemetry["remap_invocation_count"] = telemetry.get("remap_invocation_count", 0) + 1
+        gain, bias = parameters_by_frame[frame_id]
+        corrected = np.rint(
+            np.clip(sampled.astype(np.float64) / 255.0 * gain + bias, 0.0, 1.0) * 255.0
+        )
+        output[primary] += corrected[:primary_count] * (1.0 - weight[primary])[:, None]
+        if secondary_count:
+            secondary_contributions.append(
+                (secondary, corrected[primary_count:] * weight[secondary][:, None])
+            )
+    for mask, contribution in secondary_contributions:
+        output[mask] += contribution
     return np.clip(np.rint(output), 0, 255).astype(np.uint8)
 
 

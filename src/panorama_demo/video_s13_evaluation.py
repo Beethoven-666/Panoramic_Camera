@@ -758,6 +758,7 @@ def build_evaluation_lock(
     test_summary: Path,
     *,
     allow_dirty: bool = False,
+    m9_benchmark_completion: Path | None = None,
 ) -> Path:
     snap = code_snapshot(repo)
     if snap["dirty"] and not allow_dirty:
@@ -860,10 +861,27 @@ def build_evaluation_lock(
         "validation_summary": validation_summary,
         "test_summary": test_summary,
     }
+    if m9_benchmark_completion is not None:
+        m9_benchmark_completion = m9_benchmark_completion.resolve()
+        completion = _json(m9_benchmark_completion)
+        if (
+            completion.get("schema")
+            != "gemini305-video-s13-m9-benchmark-completion/v1"
+            or completion.get("exact") is not True
+            or completion.get("diagnostic_only") is not True
+            or completion.get("production_lock_created") is not False
+        ):
+            raise ValueError("M9 exact benchmark completion contract invalid")
+        for name, digest in completion.get("assets_sha256", {}).items():
+            asset = m9_benchmark_completion.parent / str(name)
+            if not asset.is_file() or sha256_file(asset) != digest:
+                raise ValueError("M9 benchmark asset binding invalid")
+        evidence_paths["m9_benchmark_completion"] = m9_benchmark_completion
     lock = {
         "schema": LOCK_SCHEMA,
         "created_at_utc": _utc(),
         "evaluation_id": evaluation_id,
+        "evaluation_phase": "M9_exact" if m9_benchmark_completion else "M8",
         "diagnostic_only": True,
         "production_eligible": False,
         "production_lock_eligible": False,
@@ -957,9 +975,29 @@ def verify_evaluation_lock(path: Path) -> dict[str, Any]:
         "test_summary",
     }
     if set(lock.get("evidence", {})) != required_evidence:
-        raise ValueError("M8 evaluation evidence set incomplete")
+        if not (
+            lock.get("evaluation_phase") == "M9_exact"
+            and set(lock.get("evidence", {}))
+            == required_evidence | {"m9_benchmark_completion"}
+        ):
+            raise ValueError("M8/M9 evaluation evidence set incomplete")
     for binding in lock["evidence"].values():
         _verify_sha_binding(binding, "evaluation evidence")
+    if lock.get("evaluation_phase") == "M9_exact":
+        benchmark = Path(lock["evidence"]["m9_benchmark_completion"]["path"])
+        completion = _json(benchmark)
+        if (
+            completion.get("schema")
+            != "gemini305-video-s13-m9-benchmark-completion/v1"
+            or completion.get("exact") is not True
+            or completion.get("diagnostic_only") is not True
+            or completion.get("production_lock_created") is not False
+        ):
+            raise ValueError("M9 exact benchmark completion changed")
+        for name, digest in completion.get("assets_sha256", {}).items():
+            asset = benchmark.parent / str(name)
+            if not asset.is_file() or sha256_file(asset) != digest:
+                raise ValueError("M9 benchmark asset changed")
     for run in lock["runs"]:
         for key in (
             "current_reviewed",

@@ -1,0 +1,9 @@
+profile,branch,peak_rss_bytes,peak_gpu_memory_bytes,decode_invocations,formal_remaps,audit_remaps
+baseline,fast_direct,185524224,,322,85,161
+baseline,fast_ignore_pose,187707392,,334,85,167
+baseline,slow_direct,169664512,,394,109,197
+baseline,slow_ignore_pose,174895104,,398,110,199
+optimized,fast_direct,264933376,,85,85,85
+optimized,fast_ignore_pose,270925824,,85,85,85
+optimized,slow_direct,258363392,,109,109,109
+optimized,slow_ignore_pose,236388352,,110,110,110

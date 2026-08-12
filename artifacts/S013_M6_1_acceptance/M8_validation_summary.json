@@ -1,0 +1,35 @@
+{
+  "automatic_quality_remains_blocked": true,
+  "evaluation_id": "M8_manual_forward_P3_20260812_v1",
+  "evaluation_lock_sha256": "44dc330b12ce9c0aaa36154d13bfc18db414aa13711beb6de4eed4f40a71cef6",
+  "p4_created": false,
+  "production_lock_written": false,
+  "runs": [
+    {
+      "branch": "fast_direct",
+      "generation_id": "20260812T140107-c4db600bf175",
+      "pointer_sha256": "8c5a5f2a53b0fc33dbd16ce48102a07445987a8c05c0bce4d723e49178acdbec",
+      "stage": "P3"
+    },
+    {
+      "branch": "fast_ignore_pose",
+      "generation_id": "20260812T140107-fb6aafb7f542",
+      "pointer_sha256": "b6f678321a3d8ea98189bb0c49a9a044e5d530e9139fc6f87c6772baa451797b",
+      "stage": "P3"
+    },
+    {
+      "branch": "slow_direct",
+      "generation_id": "20260812T140111-5a520ae4f223",
+      "pointer_sha256": "0ed113b171f5510b38fe9c514799826c7e588798e99bc6d14a60b34661d4c760",
+      "stage": "P3"
+    },
+    {
+      "branch": "slow_ignore_pose",
+      "generation_id": "20260812T140111-6319fb59b194",
+      "pointer_sha256": "d4df435b05f98a4be57163fa4ab34039ba5e50326d24267c6389d6178102c1b3",
+      "stage": "P3"
+    }
+  ],
+  "schema": "gemini305-video-s13-m8-validation-summary/v1",
+  "state": "completed_diagnostic_review_p3"
+}
