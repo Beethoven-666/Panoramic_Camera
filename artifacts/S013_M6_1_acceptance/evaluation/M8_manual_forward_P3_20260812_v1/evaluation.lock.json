@@ -12,7 +12,7 @@
   },
   "code": {
     "branch": "codex/video-realtime-seam-v6",
-    "commit": "c4362d1dfa4ad6ab41521dc3d7a9775eb6b4c449",
+    "commit": "35b9e4145b5c4d0484abdc2b2892110c1bfa5f9d",
     "dirty": false,
     "environment": {
       "opencv_version": "5.0.0",
@@ -33,10 +33,11 @@
     "repository": "D:\\central_strip_Panoramic_Camera",
     "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
-  "created_at_utc": "2026-08-12T15:12:59.416057Z",
+  "created_at_utc": "2026-08-12T15:28:18.037023Z",
   "diagnostic_only": true,
   "dirty_snapshot_explicitly_authorized": false,
   "evaluation_id": "M8_manual_forward_P3_20260812_v1",
+  "evaluation_phase": "M9_exact",
   "evidence": {
     "blocked_report": {
       "path": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\blocked_report.json",
@@ -62,6 +63,10 @@
       "path": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\M7_validation_summary.json",
       "sha256": "6c096ca3ea302f89311601404d229780350222728b10770d56fddfe0e7721ccc"
     },
+    "m9_benchmark_completion": {
+      "path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\S013_M9\\M9_exact_replay_roi_20260812\\benchmark_completion.json",
+      "sha256": "0b2daab8615a6f2066a7b961b513d47e6717fe3b6209d287c3b5fd6735889e9e"
+    },
     "manual_forward_authorization": {
       "path": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\M6_manual_forward_authorization.json",
       "sha256": "bc1545bed24eb8b3898bb80365a9c22fa1f092a8ccf7024d4edef543dc47c3e0"
@@ -83,12 +88,12 @@
       "explicit_review_required": true,
       "new_pixels_generated": false
     },
-    "ended_at_utc": "2026-08-12T15:12:59.434652Z",
+    "ended_at_utc": "2026-08-12T15:28:18.052735Z",
     "environment": "D:\\Panoramic_Camera\\.conda\\python.exe",
     "environment_variables": {
       "G305_CUDA": "off"
     },
-    "started_at_utc": "2026-08-12T15:12:56.863819Z"
+    "started_at_utc": "2026-08-12T15:28:15.449066Z"
   },
   "production_eligible": false,
   "production_lock_eligible": false,
