@@ -855,7 +855,7 @@ model purity while exposing feature loss separately; it does not bypass the
 `minimum_inlier_count=16` and `minimum_inlier_ratio=0.45` keys are retained only
 as fixed compatibility/audit aliases and are not additional reliability gates.
 
-## S1.3 output-first M0–M5 diagnostic candidate
+## S1.3 output-first M0–M6 diagnostic candidate
 
 `S013_output_first_progressive_dense_central_slit_v3` is an isolated,
 development-only route selected through `g305-video-experiment --algorithm
@@ -885,11 +885,17 @@ P95 bound are rejected. A curved DP seam requires an evaluable shifted-straight
 comparator, at least a 2% cost margin, and independent symmetric/long-structure
 evidence at preliminary geometry, final geometry, and the full rendered output;
 otherwise it falls back to shifted-straight or the immutable midpoint.
-P2 is remapped once per real contributor from raw RGB and updates
-`current_preview.json` only after its completion is verified and it is selected
-as better. GraphCut, photometric correction, luminance fields, feather,
-MultiBand, depth, mesh, source rescue, M6+, and production publication remain
-outside this implementation.
+P2 is remapped once per real contributor from raw RGB and sealed with replay
+maps for the selected geometry and seam. M6 verifies and loads that sealed P2;
+it never re-estimates M4/M5, trajectory, geometry, or seam state. It jointly
+solves bounded linear-light Q0–Q3 source photometric candidates, then permits
+only owner-only or a protected, one-to-two-pixel adjacent-source feather in
+safe background. The selected source maps are formally remapped once per real
+contributor to produce P3. An independent P3 hard audit controls sealing and
+`current_latest=P3`; diagnostic visual quality has no pointer authority.
+`current_reviewed` remains explicit and `current_preview` remains deprecated.
+Low-frequency luminance fields, GraphCut, depth, mesh, source rescue, M7+, and
+production publication remain outside this implementation.
 
 An adjacent RGB motion below `0.25 px` contributes zero layout progress
 (`zero_duplicate`) only when supported grid LK and phase correlation agree on

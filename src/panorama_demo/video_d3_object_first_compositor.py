@@ -85,8 +85,10 @@ def compose_d3_object_first_dense_source(
         > np.maximum(tolerance[1:] , tolerance[:-1])
     )
     barriers = np.zeros(shape, dtype=bool)
-    barriers[:, 1:] |= horizontal; barriers[:, :-1] |= horizontal
-    barriers[1:] |= vertical; barriers[:-1] |= vertical
+    barriers[:, 1:] |= horizontal
+    barriers[:, :-1] |= horizontal
+    barriers[1:] |= vertical
+    barriers[:-1] |= vertical
     barriers = cv2.dilate(barriers.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
     foreground = valid_depth & ~barriers
     count, labels, stats, _ = cv2.connectedComponentsWithStats(foreground.astype(np.uint8), connectivity=8)
@@ -101,7 +103,8 @@ def compose_d3_object_first_dense_source(
         mask = labels == label
         pixels = int(mask.sum())
         if pixels < 32:
-            scores.append(float("-inf")); continue
+            scores.append(float("-inf"))
+            continue
         x = float(np.mean(np.nonzero(mask)[1]))
         # Prefer a coherent near surface.  This is entirely automatic: depth,
         # centre and sharpness are all measurements from the real source tile.

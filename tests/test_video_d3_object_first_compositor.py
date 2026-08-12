@@ -34,7 +34,8 @@ def test_d3_copies_a_guarded_object_from_one_real_source_without_blending():
 def test_d3_rejects_when_no_single_real_source_has_98_percent_guard_support():
     shape = (48, 64)
     depth = np.full(shape, 1000, np.float32)
-    other = depth.copy(); other[20:28, 28:36] = 700
+    other = depth.copy()
+    other[20:28, 28:36] = 700
     result = compose_d3_object_first_dense_source(
         panorama_bgr=np.zeros((*shape, 3), np.uint8), owner_frame_id=np.full(shape, 11, np.int64),
         first_bgr=np.zeros((*shape, 3), np.uint8), second_bgr=np.ones((*shape, 3), np.uint8),

@@ -69,7 +69,7 @@ from .local_apap_flow import (
     LocalAPAPFlowInverseWarp,
     fit_local_apap_plus_dense_flow,
 )
-from .render import largest_valid_rectangle
+from .render import CropInfo, largest_valid_rectangle
 from .rgb_residual_alignment import (
     PairResidualEvidence,
     ProtectedComponentFragment,
@@ -10870,7 +10870,7 @@ def _apply_candidate_d2_monotonic_depth_layer_warp(
 
 def _apply_candidate_d3_object_first_dense_source_compositor(
     panorama: np.ndarray, cropped_owner: np.ndarray, *, renderer: CalibratedRGBPushbroomRenderer,
-    frames: Sequence[RGBDFrame], crop: CropBounds, config: Mapping[str, object],
+    frames: Sequence[RGBDFrame], crop: CropInfo, config: Mapping[str, object],
 ) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
     """Apply D3 only from calibrated real source tiles after D2.
 

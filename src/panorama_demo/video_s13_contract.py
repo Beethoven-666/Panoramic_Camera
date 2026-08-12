@@ -108,6 +108,47 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
     output = _mapping(component.get("output"), "output")
     if output.get("write_production_delivery") is not False:
         raise ValueError("S1.3 cannot write production delivery")
+    forward = _mapping(component.get("forward_pipeline"), "forward_pipeline")
+    if list(forward.get("stage_order", ())) != ["P0", "P1", "P2", "P3"]:
+        raise ValueError("S1.3 M6 stage order must stop at P3")
+    if (
+        forward.get("default_stop_after") != "P3"
+        or forward.get("forbid_parent_reselection") is not True
+        or forward.get("current_preview_runtime_authority") is not False
+    ):
+        raise ValueError("S1.3 M6 forward pointer contract is invalid")
+    replay = _mapping(component.get("p2_replay"), "p2_replay")
+    if (
+        replay.get("enabled") is not True
+        or replay.get("completion_schema") != "gemini305-video-s13-p2-completion/v3"
+        or int(replay.get("maximum_secondary_corridor_width_px", -1)) != 8
+        or replay.get("require_transaction_hash_match") is not True
+    ):
+        raise ValueError("S1.3 M6 P2 replay contract is invalid")
+    photometric = _mapping(component.get("photometric"), "photometric")
+    if list(photometric.get("model_candidates", ())) != [
+        "identity", "scalar_luminance_gain", "rgb_diagonal_gain", "bounded_rgb_gain_bias"
+    ]:
+        raise ValueError("S1.3 M6 photometric candidates must preserve Q0-Q3 order")
+    if (
+        photometric.get("color_domain") != "linear_srgb"
+        or photometric.get("safe_background_only") is not True
+        or photometric.get("train_heldout_split") is not True
+        or photometric.get("low_frequency_luminance_field") is not False
+        or photometric.get("failure_policy") != "identity"
+    ):
+        raise ValueError("S1.3 M6 photometric safety contract is invalid")
+    blend = _mapping(component.get("blend"), "blend")
+    if (
+        blend.get("enabled") is not True
+        or blend.get("safe_background_only") is not True
+        or int(blend.get("maximum_total_width_px", -1)) != 8
+        or int(blend.get("maximum_levels", -1)) != 2
+        or int(blend.get("maximum_color_contributors_per_pixel", -1)) != 2
+        or float(blend.get("protected_structure_weight", -1)) != 0.0
+        or blend.get("failure_policy") != "owner_only"
+    ):
+        raise ValueError("S1.3 M6 blend safety contract is invalid")
     return S13Config(path=path, document=document, component=component)
 
 

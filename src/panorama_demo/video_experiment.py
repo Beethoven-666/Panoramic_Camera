@@ -57,6 +57,11 @@ def _parser() -> argparse.ArgumentParser:
         help="S1.3 candidate only: do not read any trajectory and use RGB evidence alone.",
     )
     parser.add_argument(
+        "--resume-generation",
+        type=Path,
+        help="S1.3 M6 only: append P3 to an existing hash-sealed P2 generation.",
+    )
+    parser.add_argument(
         "--simulate-optimizer-all-fail",
         action="store_true",
         help="S1.3 test hook: fail all post-P0 optimizers after the immutable base seal.",
@@ -190,6 +195,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ignore_pose=ignore_pose,
             config_path=getattr(args, "config", None),
             simulate_optimizer_all_fail=simulate_optimizer_all_fail,
+            resume_generation=getattr(args, "resume_generation", None),
         )
         args.output.mkdir(parents=True, exist_ok=True)
         (args.output / "experiment_environment.json").write_text(

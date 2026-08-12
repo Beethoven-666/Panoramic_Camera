@@ -20,7 +20,7 @@ P0_COMPLETION_SCHEMA = "gemini305-video-s13-p0-completion/v1"
 BASE_POINTER_SCHEMA = "gemini305-video-s13-current-base/v1"
 LATEST_POINTER_SCHEMA = "gemini305-video-s13-current-latest/v1"
 REVIEWED_POINTER_SCHEMA = "gemini305-video-s13-current-reviewed/v1"
-_STAGE_ORDER = {"P0": 0, "P1": 1, "P2": 2, "M6": 3}
+_STAGE_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 
 def sha256_file(path: Path) -> str:
@@ -210,7 +210,7 @@ def _verified_pointer_payload(
     if stage == "P1":
         parent_stage = parent_stage or "P0"
         parent_sha = parent_sha or completion.get("p0_parent_sha256")
-    expected_parent = {"P1": "P0", "P2": "P1", "M6": "P2"}.get(stage)
+    expected_parent = {"P1": "P0", "P2": "P1", "P3": "P2"}.get(stage)
     if expected_parent is not None:
         if parent_stage != expected_parent or not isinstance(parent_sha, str):
             raise ValueError("S1.3 stage parent binding is incomplete")

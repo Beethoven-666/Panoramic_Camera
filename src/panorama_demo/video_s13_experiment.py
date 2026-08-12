@@ -8,7 +8,7 @@ import os
 import time
 import uuid
 from collections import Counter
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -36,6 +36,15 @@ from .video_s13_bundle import (
 from .video_s13_contract import S13_ALGORITHM_ID, load_s13_config
 from .video_s13_motion import measure_s13_motion
 from .video_s13_m5 import run_s13_m5
+from .video_s13_m6 import run_s13_m6
+from .video_s13_blend import BLEND_SCHEMA, blend_transaction_document
+from .video_s13_p3_hard_audit import audit_s13_p3_stage, verify_sealed_s13_p3
+from .video_s13_photometric import photometric_solution_document
+from .video_s13_replay import (
+    P2_REPLAY_SCHEMA,
+    load_verified_s13_p2_for_m6,
+    replay_pair_arrays,
+)
 from .video_s13_progress import S13M3Layout, build_s13_m3_layout
 from .video_s13_schedule import S13SchedulePlan, plan_s13_m3_schedule
 from .video_s13_session import S13Session, load_s13_session, read_s13_rgb
@@ -51,7 +60,8 @@ from .video_s13_selection import select_s13_vertical_parent
 REPORT_SCHEMA = "gemini305-video-s13-output-first-report/v1"
 GENERATION_SCHEMA = "gemini305-video-s13-generation/v1"
 P1_COMPLETION_SCHEMA = "gemini305-video-s13-p1-vertical-completion/v2"
-P2_COMPLETION_SCHEMA = "gemini305-video-s13-p2-completion/v2"
+P2_COMPLETION_SCHEMA = "gemini305-video-s13-p2-completion/v3"
+P3_COMPLETION_SCHEMA = "gemini305-video-s13-p3-visual-completion/v1"
 
 
 def _generation_id(session: S13Session, config_sha: str) -> str:
@@ -333,6 +343,45 @@ def _run_m5(
                 pending / "pair_transactions" / f"pair_{int(pair.transaction['transaction_id'].split('-')[-1]):04d}.json",
                 dict(pair.transaction),
             )
+        replay_manifest_rows: list[dict[str, object]] = []
+        replay_pairs = []
+        for replay_pair in m5.replay_pairs:
+            transaction_asset = (
+                pending / "pair_transactions" / f"pair_{replay_pair.pair_index:04d}.json"
+            )
+            transaction_sha = sha256_file(transaction_asset)
+            bound_pair = replace(
+                replay_pair, parent_pair_transaction_sha256=transaction_sha
+            )
+            replay_asset = Path("pair_replay") / f"pair_{bound_pair.pair_index:04d}.npz"
+            write_npz(pending / replay_asset, replay_pair_arrays(bound_pair))
+            replay_manifest_rows.append({
+                "pair_index": bound_pair.pair_index,
+                "asset": replay_asset.as_posix(),
+                "left_source_index": bound_pair.left_source_index,
+                "right_source_index": bound_pair.right_source_index,
+                "left_frame_id": bound_pair.left_frame_id,
+                "right_frame_id": bound_pair.right_frame_id,
+                "parent_pair_transaction": (
+                    f"pair_transactions/pair_{bound_pair.pair_index:04d}.json"
+                ),
+                "parent_pair_transaction_sha256": transaction_sha,
+            })
+            replay_pairs.append(bound_pair)
+        write_npz(pending / "p2_seams.npz", {
+            "seams_x_by_row": np.stack(
+                [pair.seam_x_by_row for pair in replay_pairs]
+            ).astype(np.int32),
+            "base_boundaries_x": np.asarray(schedule.boundaries[1:-1], np.int32),
+        })
+        atomic_write_json(pending / "p2_replay_manifest.json", {
+            "schema": P2_REPLAY_SCHEMA,
+            "pair_count": len(replay_manifest_rows),
+            "source_count": len(schedule.assignments),
+            "maximum_secondary_corridor_width_px": 8,
+            "reestimation_performed": False,
+            "pairs": replay_manifest_rows,
+        })
         ranked = sorted(
             enumerate(m5.pairs),
             key=lambda item: float(item[1].transaction.get("after_metrics", {}).get("score") or -1.0),
@@ -428,6 +477,12 @@ def _run_m5(
                     bool(pair.transaction.get("fallback_used")) for pair in m5.pairs
                 ),
                 "source_count": len(schedule.assignments),
+                "p2_replay_schema": P2_REPLAY_SCHEMA,
+                "p2_replay_pair_count": len(replay_pairs),
+                "p2_replay_manifest_sha256": sha256_file(
+                    pending / "p2_replay_manifest.json"
+                ),
+                "p2_seams_sha256": sha256_file(pending / "p2_seams.npz"),
                 "before_mean_structure_score": m5.before_mean_score,
                 "after_mean_structure_score": m5.after_mean_score,
                 "selection_audit": dict(m5.selection_audit),
@@ -475,6 +530,327 @@ def _run_m5(
     except BaseException:
         discard_staging(pending)
         raise
+
+
+def _run_m6(
+    generation: Path,
+    root: Path,
+    generation_id: str,
+    image_loader: object,
+) -> dict[str, object]:
+    """Append P3 by replaying only sealed P2 state and original RGB."""
+
+    if not callable(image_loader):
+        raise TypeError("S1.3 M6 requires a raw RGB loader")
+    final = generation / "P3"
+    if final.exists():
+        raise FileExistsError(f"S1.3 M6 P3 already exists: {final}")
+    reviewed_before = (
+        sha256_file(root / "current_reviewed.json")
+        if (root / "current_reviewed.json").is_file() else None
+    )
+    preview_before = (
+        sha256_file(root / "current_preview.json")
+        if (root / "current_preview.json").is_file() else None
+    )
+    try:
+        p2 = load_verified_s13_p2_for_m6(
+            generation,
+            p1_completion_schema=P1_COMPLETION_SCHEMA,
+            p2_completion_schema=P2_COMPLETION_SCHEMA,
+        )
+    except Exception as exc:
+        atomic_write_json(generation / "P3_preflight_failure.json", {
+            "schema": "gemini305-video-s13-p3-preflight-failure/v1",
+            "generation_id": generation_id,
+            "parent_stage": "P2",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        })
+        raise
+    for attempt in range(2):
+        pending = generation / f".P3.{uuid.uuid4().hex}.pending"
+        pending.mkdir()
+        force_fallback = attempt == 1
+        try:
+            started = time.perf_counter()
+            p3 = run_s13_m6(
+                p2, image_loader, force_identity_owner_only=force_fallback
+            )
+            atomic_write_json(pending / "p2_parent_reference.json", {
+                "schema": "gemini305-video-s13-p2-parent-reference/v1",
+                "parent_stage": "P2",
+                "completion": "../P2/P2_completion.json",
+                "completion_sha256": p2.completion_sha256,
+                "result_asset": "../P2/geometry_and_seam_panorama_owner_only.png",
+                "result_asset_sha256": p2.completion["result_asset_sha256"],
+                "pixel_provenance_sha256": p2.completion["assets_sha256"][
+                    "p2_pixel_provenance.npz"
+                ],
+            })
+            write_image(pending / "photometric_owner_only.png", p3.photometric_owner_only)
+            write_image(pending / "photometric_owner_only.jpg", p3.photometric_owner_only)
+            write_image(pending / "visual_panorama.png", p3.visual_panorama)
+            write_image(pending / "visual_panorama.jpg", p3.visual_panorama)
+            write_image(pending / "p3_valid_mask.png", p3.valid_mask.astype(np.uint8) * 255)
+            write_image(
+                pending / "photometric_training_mask.png",
+                p3.photometric_training_mask.astype(np.uint8) * 255,
+            )
+            write_image(
+                pending / "photometric_heldout_mask.png",
+                p3.photometric_heldout_mask.astype(np.uint8) * 255,
+            )
+            write_image(
+                pending / "protected_structure_mask.png",
+                p3.protected_structure_mask.astype(np.uint8) * 255,
+            )
+            write_image(
+                pending / "safe_blend_mask.png",
+                p3.safe_blend_mask.astype(np.uint8) * 255,
+            )
+            write_image(
+                pending / "blend_weight_map.png",
+                np.rint(np.clip(p3.blend_weight_map, 0.0, 1.0) * 255.0).astype(np.uint8),
+            )
+            write_npz(pending / "p3_pixel_provenance.npz", p3.pixel_provenance)
+            solution_document = photometric_solution_document(p3.photometric_solution)
+            atomic_write_json(pending / "photometric_solution.json", solution_document)
+            write_npz(pending / "photometric_solution.npz", {
+                "source_index": np.asarray(
+                    [item.source_index for item in p3.photometric_solution.source_parameters], np.int32
+                ),
+                "frame_id": np.asarray(
+                    [item.frame_id for item in p3.photometric_solution.source_parameters], np.int32
+                ),
+                "gain_bgr": np.asarray(
+                    [item.gain_bgr for item in p3.photometric_solution.source_parameters], np.float32
+                ),
+                "bias_bgr": np.asarray(
+                    [item.bias_bgr for item in p3.photometric_solution.source_parameters], np.float32
+                ),
+            })
+            blend_rows = []
+            for plan in p3.blend_plans:
+                document = blend_transaction_document(plan.transaction)
+                name = f"pair_{plan.transaction.pair_index:04d}.json"
+                atomic_write_json(pending / "blend_transactions" / name, document)
+                blend_rows.append({**document, "asset": f"blend_transactions/{name}"})
+            atomic_write_json(pending / "blend_transactions.json", {
+                "schema": BLEND_SCHEMA,
+                "all_pairs_reported": len(blend_rows) == len(p2.replay_pairs),
+                "pairs": blend_rows,
+            })
+            atomic_write_json(pending / "pair_photometric_report.json", {
+                "schema": "gemini305-video-s13-pair-photometric-report/v1",
+                "diagnostic_only": True,
+                "runtime_authority": False,
+                "pairs": [
+                    {
+                        "pair_index": sample.pair_index,
+                        "train_sample_count": len(sample.train_left_rgb_linear),
+                        "heldout_sample_count": len(sample.heldout_left_rgb_linear),
+                        "safe_mask_sha256": sample.safe_mask_sha256,
+                        "protected_mask_sha256": sample.protected_mask_sha256,
+                    }
+                    for sample in p3.photometric_samples
+                ],
+            })
+            atomic_write_json(
+                pending / "diagnostic_quality_report.json", dict(p3.diagnostic_quality)
+            )
+            # Export deterministic full-height risk/seam crops.  These are
+            # evidence only and never participate in candidate selection.
+            pair_quality = list(p3.diagnostic_quality.get("pair_reports", []))
+            ranked_color = sorted(
+                pair_quality,
+                key=lambda row: float(row.get("p3_luminance_jump") or -1.0),
+                reverse=True,
+            )[:10]
+            ranked_blur = sorted(
+                enumerate(p3.blend_plans),
+                key=lambda item: item[1].transaction.blended_pixel_count,
+                reverse=True,
+            )[:10]
+            crop_manifest: list[dict[str, object]] = []
+            for category, ranked in (("color", ranked_color), ("blur_ghost", ranked_blur)):
+                for rank, item in enumerate(ranked):
+                    pair_index = int(item[0] if isinstance(item, tuple) else item["pair_index"])
+                    pair = p2.replay_pairs[pair_index]
+                    x0 = max(0, int(pair.seam_x_by_row.min()) - 48)
+                    x1 = min(p3.visual_panorama.shape[1], int(pair.seam_x_by_row.max()) + 49)
+                    comparison = np.concatenate((
+                        p2.result_image[:, x0:x1],
+                        p3.photometric_owner_only[:, x0:x1],
+                        p3.visual_panorama[:, x0:x1],
+                    ), axis=1)
+                    name = f"{category}_{rank:02d}_pair_{pair_index:04d}.png"
+                    write_image(pending / "worst_visual_crops" / name, comparison)
+                    crop_manifest.append({
+                        "category": category, "rank": rank, "pair_index": pair_index,
+                        "x0": x0, "x1": x1, "asset": name,
+                    })
+            protected_rows = np.count_nonzero(p3.protected_structure_mask, axis=1)
+            for rank, center_y in enumerate(np.argsort(protected_rows)[-3:][::-1]):
+                y0, y1 = max(0, int(center_y) - 48), min(p3.visual_panorama.shape[0], int(center_y) + 49)
+                name = f"high_risk_horizontal_{rank:02d}.png"
+                write_image(
+                    pending / "worst_visual_crops" / name,
+                    np.concatenate((p2.result_image[y0:y1], p3.visual_panorama[y0:y1]), axis=1),
+                )
+                crop_manifest.append({
+                    "category": "high_risk_horizontal", "rank": rank,
+                    "y0": y0, "y1": y1, "asset": name,
+                })
+            atomic_write_json(pending / "worst_visual_crops" / "manifest.json", {
+                "schema": "gemini305-video-s13-p3-worst-visual-crops/v1",
+                "crops": crop_manifest,
+            })
+            performance = dict(p3.performance)
+            performance["artifact_export"] = time.perf_counter() - started - float(
+                performance["total_m6"]
+            )
+            performance["total_m6"] = time.perf_counter() - started
+            atomic_write_json(pending / "performance.json", performance)
+            pending_hashes = {
+                path.relative_to(pending).as_posix(): sha256_file(path)
+                for path in sorted(pending.rglob("*")) if path.is_file()
+            }
+            audit_started = time.perf_counter()
+            audit = audit_s13_p3_stage(
+                p2, p3, pending_asset_sha256=pending_hashes
+            )
+            performance["p3_hard_audit"] = time.perf_counter() - audit_started
+            performance["total_m6"] = time.perf_counter() - started
+            atomic_write_json(pending / "performance.json", performance)
+            atomic_write_json(pending / "hard_audit.json", audit)
+            if audit.get("passed") is not True:
+                if not force_fallback:
+                    atomic_write_json(generation / "P3_first_attempt_failure.json", {
+                        "schema": "gemini305-video-s13-p3-first-attempt-failure/v1",
+                        "generation_id": generation_id,
+                        "fallback": "Q0_identity+B0_owner_only",
+                        "hard_audit": audit,
+                    })
+                    discard_staging(pending)
+                    continue
+                atomic_write_json(generation / "P3_failure_bundle.json", {
+                    "schema": "gemini305-video-s13-p3-failure-bundle/v1",
+                    "generation_id": generation_id,
+                    "parent_stage": "P2",
+                    "parent_completion_sha256": p2.completion_sha256,
+                    "fallback_attempted": "Q0_identity+B0_owner_only",
+                    "hard_audit": audit,
+                })
+                raise ValueError("S1.3 M6 Q0+B0 P3 hard audit failed")
+            result_asset = "visual_panorama.png"
+            seal_stage(
+                pending,
+                completion_name="P3_completion.json",
+                schema=P3_COMPLETION_SCHEMA,
+                metadata={
+                    "generation_id": generation_id,
+                    "stage": "P3",
+                    "hard_audit_passed": True,
+                    "parent_stage": "P2",
+                    "parent_completion_sha256": p2.completion_sha256,
+                    "parent_result_sha256": p2.completion["result_asset_sha256"],
+                    "result_asset": result_asset,
+                    "result_asset_sha256": sha256_file(pending / result_asset),
+                    "pixel_provenance_sha256": sha256_file(
+                        pending / "p3_pixel_provenance.npz"
+                    ),
+                    "hard_audit_sha256": sha256_file(pending / "hard_audit.json"),
+                    "diagnostic_quality_report_sha256": sha256_file(
+                        pending / "diagnostic_quality_report.json"
+                    ),
+                    "photometric_solution_sha256": sha256_file(
+                        pending / "photometric_solution.json"
+                    ),
+                    "blend_transactions_sha256": sha256_file(
+                        pending / "blend_transactions.json"
+                    ),
+                    "diagnostic_quality_passed": bool(
+                        p3.diagnostic_quality.get("quality_pass")
+                    ),
+                    "diagnostic_quality_runtime_authority": False,
+                    "formal_raw_rgb_unique_sources": performance[
+                        "formal_raw_rgb_unique_sources"
+                    ],
+                    "formal_raw_rgb_remap_invocations": performance[
+                        "formal_raw_rgb_remap_invocations"
+                    ],
+                    "maximum_real_contributors_per_pixel": 2 if np.any(
+                        p3.blend_weight_map > 0.0
+                    ) else 1,
+                    "protected_blend_pixel_count": int(np.count_nonzero(
+                        p3.protected_structure_mask & (p3.blend_weight_map > 0.0)
+                    )),
+                    "m4_reestimated_in_m6": 0,
+                    "m5_reestimated_in_m6": 0,
+                    "geometry_reestimated_in_m6": 0,
+                    "seam_reestimated_in_m6": 0,
+                    "trajectory_estimation_invocations": 0,
+                    "open3d_invocations": 0,
+                    "uses_depth": False,
+                    "uses_tsdf": False,
+                    "uses_graphcut": False,
+                    "uses_mesh": False,
+                    "uses_source_rescue": False,
+                    "diagnostic_only": True,
+                    "production_eligible": False,
+                    "production_lock_eligible": False,
+                },
+            )
+            os.replace(pending, final)
+            verify_sealed_s13_p3(final, completion_schema=P3_COMPLETION_SCHEMA)
+            if not all(
+                (generation / name).is_file()
+                and sha256_file(generation / name) == expected
+                for name, expected in p2.immutable_sha256.items()
+            ):
+                raise ValueError("S1.3 M6 immutable P2 ancestry changed after P3 seal")
+            pointer = update_current_latest(
+                root, generation, stage="P3", completion_name="P3_completion.json",
+                completion_schema=P3_COMPLETION_SCHEMA, result_asset=result_asset,
+            )
+            reviewed_after = (
+                sha256_file(root / "current_reviewed.json")
+                if (root / "current_reviewed.json").is_file() else None
+            )
+            preview_after = (
+                sha256_file(root / "current_preview.json")
+                if (root / "current_preview.json").is_file() else None
+            )
+            if reviewed_before != reviewed_after or preview_before != preview_after:
+                raise ValueError("S1.3 M6 modified reviewed/preview pointers")
+            return {
+                "state": "P3_sealed",
+                "panorama": str(final / result_asset),
+                "photometric_owner_only": str(final / "photometric_owner_only.png"),
+                "pixel_provenance": str(final / "p3_pixel_provenance.npz"),
+                "hard_audit": str(final / "hard_audit.json"),
+                "diagnostic_quality": str(final / "diagnostic_quality_report.json"),
+                "performance": str(final / "performance.json"),
+                "completion": str(final / "P3_completion.json"),
+                "current_latest": str(root / "current_latest.json"),
+                "latest_stage": pointer["stage"],
+                "hard_audit_passed": True,
+                "diagnostic_quality_passed": bool(
+                    p3.diagnostic_quality.get("quality_pass")
+                ),
+                "fallback_rebuild_used": force_fallback,
+                "blend_pixel_count": int(np.count_nonzero(p3.blend_weight_map > 0.0)),
+                "protected_blend_pixel_count": 0,
+                "formal_raw_rgb_remap_invocations": performance[
+                    "formal_raw_rgb_remap_invocations"
+                ],
+            }
+        except BaseException:
+            if pending.exists():
+                discard_staging(pending)
+            raise
+    raise AssertionError("S1.3 M6 fallback loop did not terminate")
 
 
 def _write_nonpanorama(
@@ -557,6 +933,8 @@ def run_s13_experiment(
     simulate_optimizer_all_fail: bool = False,
     run_m4: bool = True,
     run_m5: bool = True,
+    run_m6: bool = True,
+    resume_generation: Path | None = None,
 ) -> dict[str, Any]:
     run_started = time.perf_counter()
     config = load_s13_config(candidate_config)
@@ -583,6 +961,40 @@ def run_s13_experiment(
         })
         raise
     stage_seconds["input_and_preflight"] = time.perf_counter() - tick
+    if resume_generation is not None:
+        generation = resume_generation.expanduser().resolve()
+        generations_root = (root / "generations").resolve()
+        try:
+            generation.relative_to(generations_root)
+        except ValueError as exc:
+            raise ValueError("S1.3 resume generation is outside the output root") from exc
+        if generation.parent != generations_root or not generation.is_dir():
+            raise ValueError("S1.3 resume generation must be one direct sealed generation")
+        current = json.loads((root / "current_latest.json").read_text(encoding="utf-8"))
+        if current.get("generation_id") != generation.name or current.get("stage") != "P2":
+            raise ValueError("S1.3 M6 resume requires current_latest=P2 for the generation")
+        if any((generation / name).exists() for name in ("P3", "M6")):
+            raise ValueError("S1.3 M6 resume target already has a P3/M6 stage")
+        by_id = session.frame_by_id
+        m6 = _run_m6(
+            generation, root, generation.name,
+            lambda frame_id: read_s13_rgb(by_id[frame_id]),
+        )
+        report = {
+            "schema": REPORT_SCHEMA,
+            "algorithm_id": S13_ALGORITHM_ID,
+            "generation_id": generation.name,
+            "generation": str(generation),
+            "panorama": m6["panorama"],
+            "resume_parent_stage": "P2",
+            "m6": m6,
+            "optimizer_state": "m6_sealed",
+            "diagnostic_only": True,
+            "production_eligible": False,
+            "production_lock_eligible": False,
+        }
+        atomic_write_json(root / "latest_run.json", report)
+        return report
     tick = time.perf_counter()
     selected_trajectory_sources = sum(
         (trajectory_cache is not None, reuse_online_trajectory, run_offline_orb, ignore_pose)
@@ -637,9 +1049,11 @@ def run_s13_experiment(
             "implemented_milestones": [
                 "M0", "M1", "M2", "M3", *(("M4",) if run_m4 else ()),
                 *(("M5",) if run_m4 and run_m5 else ()),
+                *(("M6",) if run_m4 and run_m5 and run_m6 else ()),
             ],
             "excluded_milestones": (
-                ["M6", "M7", "M8", "M9"] if run_m4 and run_m5
+                ["M7", "M8", "M9"] if run_m4 and run_m5 and run_m6
+                else ["M6", "M7", "M8", "M9"] if run_m4 and run_m5
                 else ["M5", "M6", "M7", "M8", "M9"] if run_m4
                 else ["M4", "M5", "M6", "M7", "M8", "M9"]
             ),
@@ -859,6 +1273,7 @@ def run_s13_experiment(
             "production_lock_eligible": False, "manual_review_required": True,
             "optimizer_state": (
                 "all_failed_after_p0" if simulate_optimizer_all_fail
+                else "m6_pending_after_p0" if run_m4 and run_m5 and run_m6 and not is_panel_set
                 else "m5_pending_after_p0" if run_m4 and run_m5 and not is_panel_set
                 else "m4_pending_after_p0" if run_m4 and not is_panel_set
                 else "m3_complete_m4_not_started"
@@ -946,6 +1361,34 @@ def run_s13_experiment(
                     "p1_candidate_parent_preserved": True,
                     **m5,
                 })
+        m6: dict[str, object] = {
+            "state": "not_run",
+            "reason": "optimizer_all_fail_probe" if simulate_optimizer_all_fail
+            else "spatial_panel_set_requires_independent_panels" if is_panel_set
+            else "m5_failed" if str(m5.get("state", "")).startswith("failed")
+            else "disabled",
+        }
+        if (
+            run_m4 and run_m5 and run_m6 and not simulate_optimizer_all_fail
+            and not is_panel_set and m5.get("state") == "P2_sealed"
+        ):
+            try:
+                m6 = _run_m6(
+                    generation, root, generation_id,
+                    lambda frame_id: read_s13_rgb(by_id[frame_id]),
+                )
+            except Exception as exc:
+                m6 = {
+                    "state": "failed_p2_preserved",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+                atomic_write_json(generation / "M6_failure.json", {
+                    "schema": "gemini305-video-s13-m6-failure/v1",
+                    "generation_id": generation_id,
+                    "p2_parent_preserved": True,
+                    **m6,
+                })
         optimizer["p0_hash_unchanged_after_m5"] = (
             p0_hashes_before == verify_p0_completion(generation / "P0")["assets_sha256"]
         )
@@ -962,7 +1405,9 @@ def run_s13_experiment(
             p0_hashes_before == verify_p0_completion(generation / "P0")["assets_sha256"]
         )
         optimizer_state = (
-            "m5_sealed" if m5.get("state") == "P2_sealed"
+            "m6_sealed" if m6.get("state") == "P3_sealed"
+            else "m6_failed" if str(m6.get("state", "")).startswith("failed")
+            else "m5_sealed" if m5.get("state") == "P2_sealed"
             else "m5_failed" if str(m5.get("state", "")).startswith("failed")
             else "m4_sealed" if m4.get("state") == "P1_sealed"
             else "post_p0_not_run"
@@ -973,6 +1418,7 @@ def run_s13_experiment(
             "optimizer_state": optimizer_state,
             "m4": m4,
             "m5": m5,
+            "m6": m6,
             "optimizer": optimizer,
             "performance": {"stage_seconds": stage_seconds},
         })
@@ -998,6 +1444,7 @@ def run_s13_experiment(
             "optimizer_state": optimizer_state,
             "m4": m4,
             "m5": m5,
+            "m6": m6,
             "motion_graph_connected_telemetry": progress.adjacent_reliable_graph_connected,
             "motion_graph_disconnection_is_fatal": False, "direct_local_delta_is_fatal": False,
             **report_statistics,

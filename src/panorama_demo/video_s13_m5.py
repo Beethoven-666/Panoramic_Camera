@@ -38,6 +38,7 @@ from .video_s13_seam import (
     rank_s13_seam_candidates,
     select_s13_seam,
 )
+from .video_s13_replay import S13P2ReplayPair
 from .video_s13_vertical import S13VerticalSolution
 
 
@@ -61,6 +62,7 @@ class S13P2Result:
 @dataclass(frozen=True)
 class S13M5Result:
     pairs: tuple[S13M5Pair, ...]
+    replay_pairs: tuple[S13P2ReplayPair, ...]
     geometry_result: S13P2Result
     final_result: S13P2Result
     seam_overlay: np.ndarray
@@ -746,6 +748,63 @@ def _seams_array(schedule: S012Schedule, pairs: Sequence[S13M5Pair], *, final: b
     return result
 
 
+def build_s13_p2_replay(
+    schedule: S012Schedule,
+    calibration: CameraIntrinsics,
+    vertical: S13VerticalSolution,
+    pairs: Sequence[S13M5Pair],
+    *,
+    corridor_half_width_px: int = 8,
+) -> tuple[S13P2ReplayPair, ...]:
+    """Serialize selected P2 sampling without re-estimating geometry or seams."""
+
+    if not 4 <= int(corridor_half_width_px) <= 16:
+        raise ValueError("S1.3 P2 replay half-width must be in [4, 16]")
+    seams = _seams_array(schedule, pairs, final=True)
+    replay: list[S13P2ReplayPair] = []
+    for pair_index, pair in enumerate(pairs):
+        seam = seams[pair_index]
+        x0 = max(0, int(seam.min()) - int(corridor_half_width_px))
+        x1 = min(schedule.canvas_width, int(seam.max()) + int(corridor_half_width_px) + 1)
+        left_candidate = (
+            pairs[pair_index - 1].alignment.selected
+            if pair_index > 0 and pairs[pair_index - 1].alignment is not None
+            else None
+        )
+        right_candidate = pair.alignment.selected if pair.alignment is not None else None
+        left_maps = _map_crop(
+            schedule, calibration, pair_index, x0, x1,
+            vertical.global_offsets_px[pair_index], left_candidate,
+        )
+        right_maps = _map_crop(
+            schedule, calibration, pair_index + 1, x0, x1,
+            vertical.global_offsets_px[pair_index + 1], right_candidate,
+        )
+        canvas_x = np.arange(x0, x1, dtype=np.int32)[None, :]
+        owner_right = canvas_x >= seam[:, None]
+        replay.append(S13P2ReplayPair(
+            pair_index=pair_index,
+            left_source_index=pair_index,
+            right_source_index=pair_index + 1,
+            left_frame_id=int(schedule.assignments[pair_index].frame_id),
+            right_frame_id=int(schedule.assignments[pair_index + 1].frame_id),
+            corridor_x0=x0,
+            corridor_x1=x1,
+            seam_x_by_row=seam.copy(),
+            left_source_u=np.asarray(left_maps[0], dtype=np.float32),
+            left_source_v=np.asarray(left_maps[1], dtype=np.float32),
+            left_valid=np.asarray(left_maps[2], dtype=bool),
+            right_source_u=np.asarray(right_maps[0], dtype=np.float32),
+            right_source_v=np.asarray(right_maps[1], dtype=np.float32),
+            right_valid=np.asarray(right_maps[2], dtype=bool),
+            primary_owner_right_mask=owner_right,
+            geometry_transaction_numeric_id=pair_index,
+            seam_transaction_numeric_id=pair_index,
+            parent_pair_transaction_sha256="",
+        ))
+    return tuple(replay)
+
+
 def render_s13_p2_from_raw(
     schedule: S012Schedule,
     calibration: CameraIntrinsics,
@@ -889,6 +948,7 @@ def run_s13_m5(
         schedule, calibration, image_loader, vertical, pairs, final_seams=True,
         selected_hypothesis_ids=selected_hypothesis_ids, placement_methods=placement_methods,
     )
+    replay_pairs = build_s13_p2_replay(schedule, calibration, vertical, pairs)
     seam_seconds = time.perf_counter() - tick
     # Geometry is compared on one owner topology.  Seam ownership is then
     # independently compared against the fixed-boundary render on both the
@@ -1054,6 +1114,7 @@ def run_s13_m5(
     }
     return S13M5Result(
         pairs=pairs,
+        replay_pairs=replay_pairs,
         geometry_result=geometry,
         final_result=final,
         seam_overlay=_overlay_seams(final.image, pairs),
@@ -1073,6 +1134,6 @@ def run_s13_m5(
 
 
 __all__ = [
-    "S13M5Pair", "S13M5Result", "S13P2Result", "estimate_s13_m5_transactions",
-    "render_s13_p2_from_raw", "run_s13_m5",
+    "S13M5Pair", "S13M5Result", "S13P2Result", "build_s13_p2_replay",
+    "estimate_s13_m5_transactions", "render_s13_p2_from_raw", "run_s13_m5",
 ]
