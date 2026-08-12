@@ -29,6 +29,7 @@ def test_b1_pixel_center_golden_is_exactly_two_pixels_at_quarter_weight() -> Non
     assert np.array_equal(np.flatnonzero(weight[0]), np.asarray([3, 4]))
     assert np.array_equal(np.unique(weight[weight > 0]), np.asarray([0.25], np.float32))
     plan = plan_m61_blends((candidate,))[0]
+    assert plan.transaction.schema == "gemini305-video-s13-blend-transaction/v2"
     assert plan.transaction.model == "B1_narrow_feather_2px"
     assert plan.transaction.total_width_px == 2
     assert plan.transaction.ineligible_models == INELIGIBLE_MODELS

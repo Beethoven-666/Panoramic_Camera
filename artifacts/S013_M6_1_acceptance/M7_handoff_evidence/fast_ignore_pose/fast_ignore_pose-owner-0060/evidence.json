@@ -1,0 +1,22 @@
+{
+  "affected_b1_pixel_count": 590,
+  "affected_mask_sha256": "17b4fd3ba87e0684a5e9fe4b96bb551fcb28edf7910cdb8a5c979cb0aa93ab9c",
+  "bbox_xyxy": [
+    1328,
+    0,
+    1343,
+    480
+  ],
+  "branch": "fast_ignore_pose",
+  "classification": "owner",
+  "diagnostic_only": true,
+  "frozen_metric": "m61_gradient_ghost_predicate",
+  "ghost_seed_pixel_count": 2,
+  "handoff_item_id": "fast_ignore_pose-owner-0060",
+  "p2_crop_sha256": "c58c36ea3f595e07b4ad66802a3a616dfa75f51c4193826f6c61b384838b76f6",
+  "p3_crop_sha256": "e9941af617b2f9c22b9bc506f72e3d37fe64f0cdd0665a6b7dc39683a631c382",
+  "pair_index": 60,
+  "risk": "blend_induced_local_ghost",
+  "runtime_authority": false,
+  "schema": "gemini305-video-s13-m7-component-evidence/v1"
+}

@@ -1,0 +1,49 @@
+{
+  "actual_winner_count": 0,
+  "authorization_mode": "completed_manual_forward",
+  "automatic_quality_records_preserved": true,
+  "automatic_visual_status": "blocked",
+  "branches": [
+    {
+      "branch": "fast_direct",
+      "component_count": 2,
+      "p4_created": false,
+      "pointer_stage": "P3",
+      "state": "no_winning_repair"
+    },
+    {
+      "branch": "fast_ignore_pose",
+      "component_count": 1,
+      "p4_created": false,
+      "pointer_stage": "P3",
+      "state": "no_winning_repair"
+    },
+    {
+      "branch": "slow_direct",
+      "component_count": 0,
+      "p4_created": false,
+      "pointer_stage": "P3",
+      "state": "no_winning_repair"
+    },
+    {
+      "branch": "slow_ignore_pose",
+      "component_count": 0,
+      "p4_created": false,
+      "pointer_stage": "P3",
+      "state": "no_winning_repair"
+    }
+  ],
+  "component_count": 3,
+  "continue_to_m8": true,
+  "continue_to_m8_with_stage": "P3",
+  "current_reviewed_written": false,
+  "diagnostic_only": true,
+  "m7_handoff_sha256": "9ffad5ce9f3e87696c4b8da54e6c3486ab4bf3970678c7c972d7b802fbd70fe5",
+  "manual_forward_authorization_sha256": "bc1545bed24eb8b3898bb80365a9c22fa1f092a8ccf7024d4edef543dc47c3e0",
+  "optional_invocations": 0,
+  "p4_created": false,
+  "production_lock_written": false,
+  "runtime_authority": false,
+  "schema": "gemini305-video-s13-m7-validation-summary/v1",
+  "state": "completed_no_winner_keep_p3"
+}

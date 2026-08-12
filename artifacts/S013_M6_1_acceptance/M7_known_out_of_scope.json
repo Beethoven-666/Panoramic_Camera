@@ -1,0 +1,27 @@
+{
+  "diagnostic_only": true,
+  "known_out_of_scope": [
+    {
+      "class": "systemic_photometric",
+      "reason": "wide-safe P95 benefit is below one percent on all four branches",
+      "source": "blocked_report.json"
+    },
+    {
+      "class": "brightness_chroma_white_balance",
+      "reason": "systemic brightness/chroma/white-balance residuals remain M6/M6.x scope",
+      "source": "blocked_report.json"
+    },
+    {
+      "class": "metric_calibration",
+      "reason": "frozen proxy threshold and post-render tail definitions disagree",
+      "source": "blocked_report.json"
+    },
+    {
+      "class": "Q4_low_frequency_field",
+      "reason": "Q4 and nonzero low-frequency fields are disabled and not M7 components",
+      "source": "manual_forward_authorization"
+    }
+  ],
+  "runtime_authority": false,
+  "schema": "gemini305-video-s13-m7-known-out-of-scope/v1"
+}

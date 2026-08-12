@@ -6,11 +6,16 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from panorama_demo.synthetic import generate_sequence
 from panorama_demo.video_algorithm import build_algorithm_spec
-from panorama_demo.video_s13_bundle import sha256_file, verify_p0_completion
+from panorama_demo.video_s13_bundle import sha256_file, verify_p0_completion, verify_stage
 from panorama_demo.video_s13_experiment import run_s13_experiment
+from panorama_demo.video_s13_m61_config import (
+    M61_P2_COMPLETION_SCHEMA,
+    M61_P3_COMPLETION_SCHEMA,
+)
 from panorama_demo.video_s13_motion import S13MotionEdge, S13MotionHypothesis
 from panorama_demo.video_s13_session import load_s13_session
 from panorama_demo.video_s13_trajectory import load_s13_trajectory
@@ -19,6 +24,9 @@ from panorama_demo.video_trajectory_cache import session_input_sha256
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v3.yaml"
+FORMAL_M6_CONFIG = (
+    ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4.yaml"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -50,6 +58,28 @@ def _run(session: Path, output: Path, *, all_fail: bool = False) -> dict:
         ignore_pose=True,
         config_path=None,
         simulate_optimizer_all_fail=all_fail,
+    )
+
+
+def _run_formal_m6(
+    session: Path,
+    output: Path,
+    *,
+    run_m6: bool = True,
+    resume_generation: Path | None = None,
+) -> dict:
+    return run_s13_experiment(
+        input_path=session,
+        output=output,
+        candidate_config=FORMAL_M6_CONFIG,
+        algorithm_spec=build_algorithm_spec(FORMAL_M6_CONFIG, expected_role="candidate"),
+        trajectory_cache=None,
+        reuse_online_trajectory=False,
+        run_offline_orb=False,
+        ignore_pose=True,
+        config_path=None,
+        run_m6=run_m6,
+        resume_generation=resume_generation,
     )
 
 
@@ -372,3 +402,140 @@ def test_m5_never_reestimates_or_reselects_m4(tmp_path: Path, monkeypatch) -> No
     assert performance["gain_enumeration_count_in_m5"] == 0
     assert performance["m4_selection_full_resolution_render_count"] == 0
     assert performance["p2_full_resolution_render_count"] == 2
+
+
+def test_formal_m6_v4_runs_one_sealed_generation_through_shared_p3(
+    tmp_path: Path,
+) -> None:
+    session = _video_session(tmp_path)
+    output = tmp_path / "out"
+
+    assert not (ROOT / "configs/video_algorithms/production.lock.json").exists()
+    report = _run_formal_m6(session, output)
+    generation = Path(report["generation"])
+    p2_root = generation / "P2"
+    p3_root = generation / "P3"
+    p2 = verify_stage(
+        p2_root,
+        completion_name="P2_completion.json",
+        schema=M61_P2_COMPLETION_SCHEMA,
+    )
+    p3 = verify_stage(
+        p3_root,
+        completion_name="P3_completion.json",
+        schema=M61_P3_COMPLETION_SCHEMA,
+    )
+
+    assert p2["generation_id"] == generation.name
+    assert p2["stage"] == "P2"
+    assert p2["native_p2_v4"] is True
+    assert p2["p2_v3_parent"] is None
+    assert p2["sealed"] is True
+    assert p3["generation_id"] == generation.name
+    assert p3["stage"] == "P3"
+    assert p3["parent_stage"] == "P2"
+    assert p3["parent_completion_sha256"] == sha256_file(
+        p2_root / "P2_completion.json"
+    )
+    assert p3["sealed"] is True
+    assert p3["hard_audit_passed"] is True
+
+    pointer = json.loads((output / "current_latest.json").read_text(encoding="utf-8"))
+    assert pointer["generation_id"] == generation.name
+    assert pointer["stage"] == "P3"
+    assert pointer["completion_sha256"] == sha256_file(
+        p3_root / "P3_completion.json"
+    )
+    assert report["final_stage"] == "P3"
+    assert Path(report["panorama"]).resolve() == (p3_root / "visual_panorama.png").resolve()
+    assert Path(report["completion"]).resolve() == (p3_root / "P3_completion.json").resolve()
+    latest_report = json.loads((output / "latest_run.json").read_text(encoding="utf-8"))
+    assert latest_report["final_stage"] == "P3"
+    assert Path(latest_report["panorama"]).resolve() == Path(report["panorama"]).resolve()
+
+    provenance = np.load(p3_root / "p3_pixel_provenance.npz")
+    valid = np.asarray(provenance["valid"], bool)
+    photometric_ids = np.asarray(provenance["photometric_transaction_id"], np.int32)
+    blend_ids = np.asarray(provenance["blend_transaction_id"], np.int32)
+    solution = json.loads((p3_root / "photometric_solution.json").read_text(encoding="utf-8"))
+    traceable_photometric_ids = {
+        int(source["photometric_transaction_id"]) for source in solution["sources"]
+    }
+    assert np.any(valid)
+    assert np.all(photometric_ids[valid] >= 0)
+    assert set(map(int, np.unique(photometric_ids[valid]))).issubset(
+        traceable_photometric_ids
+    )
+
+    pair_masks = np.load(p3_root / "pair_masks.npz")
+    active_b1 = np.asarray(pair_masks["active"], bool)
+    blend_manifest = json.loads(
+        (p3_root / "blend_transactions.json").read_text(encoding="utf-8")
+    )
+    traceable_blend_ids = {
+        int(pair["transaction_id"]) for pair in blend_manifest["pairs"]
+    }
+    assert np.all(blend_ids[active_b1] >= 0)
+    assert set(map(int, np.unique(blend_ids[active_b1]))).issubset(traceable_blend_ids)
+    assert np.all(blend_ids[~active_b1] == -1)
+
+    assert not (ROOT / "configs/video_algorithms/production.lock.json").exists()
+    assert not list(output.rglob("production.lock.json"))
+    assert not list(output.rglob("delivery.json"))
+    assert not list(output.rglob("video_delivery.json"))
+
+
+def test_formal_m6_resume_rejects_unbound_p2_then_advances_the_same_generation(
+    tmp_path: Path,
+) -> None:
+    session = _video_session(tmp_path)
+    output = tmp_path / "out"
+    p2_report = _run_formal_m6(session, output, run_m6=False)
+    generation = Path(p2_report["generation"])
+    p2_completion_path = generation / "P2/P2_completion.json"
+    pointer_path = output / "current_latest.json"
+    sealed_p2_bytes = p2_completion_path.read_bytes()
+    sealed_p2_sha256 = sha256_file(p2_completion_path)
+    valid_pointer_bytes = pointer_path.read_bytes()
+
+    pointer = json.loads(valid_pointer_bytes)
+    assert p2_report["final_stage"] == "P2"
+    assert pointer["stage"] == "P2"
+    assert pointer["generation_id"] == generation.name
+
+    unbound_pointer = {**pointer, "completion_sha256": "0" * 64}
+    pointer_path.write_text(json.dumps(unbound_pointer), encoding="utf-8")
+    unbound_pointer_bytes = pointer_path.read_bytes()
+    with pytest.raises(ValueError, match="pointer is not bound"):
+        _run_formal_m6(session, output, resume_generation=generation)
+    assert pointer_path.read_bytes() == unbound_pointer_bytes
+    assert json.loads(pointer_path.read_text(encoding="utf-8"))["stage"] == "P2"
+    assert sha256_file(p2_completion_path) == sealed_p2_sha256
+    assert not (generation / "P3").exists()
+
+    pointer_path.write_bytes(valid_pointer_bytes)
+    wrong_schema = json.loads(sealed_p2_bytes)
+    wrong_schema["schema"] = "gemini305-video-s13-p2-completion/wrong"
+    p2_completion_path.write_text(json.dumps(wrong_schema), encoding="utf-8")
+    with pytest.raises(ValueError, match="completion is not sealed"):
+        _run_formal_m6(session, output, resume_generation=generation)
+    assert pointer_path.read_bytes() == valid_pointer_bytes
+    assert json.loads(pointer_path.read_text(encoding="utf-8"))["stage"] == "P2"
+    assert not (generation / "P3").exists()
+
+    p2_completion_path.write_bytes(sealed_p2_bytes)
+    resumed = _run_formal_m6(session, output, resume_generation=generation)
+    assert Path(resumed["generation"]).resolve() == generation.resolve()
+    assert resumed["resume_parent_stage"] == "P2"
+    assert resumed["m6"]["state"] == "P3_sealed"
+    assert sha256_file(p2_completion_path) == sealed_p2_sha256
+    verify_stage(
+        generation / "P3",
+        completion_name="P3_completion.json",
+        schema=M61_P3_COMPLETION_SCHEMA,
+    )
+    resumed_pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    assert resumed_pointer["generation_id"] == generation.name
+    assert resumed_pointer["stage"] == "P3"
+    assert not list(output.rglob("delivery.json"))
+    assert not list(output.rglob("video_delivery.json"))

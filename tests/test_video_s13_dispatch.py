@@ -5,10 +5,12 @@ import json
 from pathlib import Path
 
 import panorama_demo.video_experiment as video_experiment
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v3.yaml"
+FORMAL_M6_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4.yaml"
 
 
 def _args(tmp_path: Path, **overrides) -> argparse.Namespace:
@@ -36,7 +38,10 @@ def _args(tmp_path: Path, **overrides) -> argparse.Namespace:
     return argparse.Namespace(**values)
 
 
-def test_s13_dispatch_bypasses_shared_pipeline_and_allows_full_scan(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("candidate_config", (CONFIG, FORMAL_M6_CONFIG))
+def test_s13_dispatch_bypasses_shared_pipeline_and_allows_full_scan(
+    tmp_path: Path, monkeypatch, candidate_config: Path
+) -> None:
     called: dict[str, object] = {}
 
     def fail_shared(*_args, **_kwargs):
@@ -51,7 +56,7 @@ def test_s13_dispatch_bypasses_shared_pipeline_and_allows_full_scan(tmp_path: Pa
     import panorama_demo.video_s13_experiment as s13_experiment
 
     monkeypatch.setattr(s13_experiment, "run_s13_experiment", fake_s13)
-    report = video_experiment.run(_args(tmp_path))
+    report = video_experiment.run(_args(tmp_path, candidate_config=candidate_config))
     assert report["panorama"] == "p0.png"
     assert called["ignore_pose"] is True
     assert called["algorithm_spec"].algorithm_id.startswith("S013_")
@@ -80,10 +85,18 @@ def test_s13_trajectory_source_must_be_explicit_and_unique(tmp_path: Path, monke
             raise AssertionError("invalid S1.3 trajectory selection passed")
 
 
-def test_malformed_s13_claim_fails_closed_instead_of_falling_to_legacy(tmp_path: Path, monkeypatch) -> None:
-    document = CONFIG.read_text(encoding="utf-8").replace(
-        "implementation_id: s013_output_first_progressive_dense_central_slit_preview",
-        "implementation_id: wrong_implementation",
+@pytest.mark.parametrize(
+    ("source", "implementation"),
+    (
+        (CONFIG, "s013_output_first_progressive_dense_central_slit_preview"),
+        (FORMAL_M6_CONFIG, "s013_output_first_progressive_dense_central_slit_m61_v2"),
+    ),
+)
+def test_malformed_s13_claim_fails_closed_instead_of_falling_to_legacy(
+    tmp_path: Path, monkeypatch, source: Path, implementation: str
+) -> None:
+    document = source.read_text(encoding="utf-8").replace(
+        f"implementation_id: {implementation}", "implementation_id: wrong_implementation"
     )
     candidate = tmp_path / "candidate.yaml"
     candidate.write_text(document, encoding="utf-8")

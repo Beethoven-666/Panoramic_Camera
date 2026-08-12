@@ -29,12 +29,16 @@ from .video_s13_m61_blend import (
     plan_m61_blends,
 )
 from .video_s13_m61_config import (
+    M61_BLEND_MANIFEST_SCHEMA,
+    M61_PERFORMANCE_SCHEMA,
+    M61_P2_COMPLETION_SCHEMA,
+    M61_P3_COMPLETION_SCHEMA,
     S13M61EffectiveConfig,
     load_s13_m61_effective_config,
 )
 from .video_s13_m61_hard_audit import (
+    P2_PARENT_REFERENCE_SCHEMA,
     audit_m61_p3_files,
-    promote_verified_pending,
     verify_promoted_m61_p3,
 )
 from .video_s13_m61_photometric import (
@@ -43,6 +47,7 @@ from .video_s13_m61_photometric import (
     solve_and_select_s13_m61_photometric,
 )
 from .video_s13_m61_streaming import M61ROIStreamer
+from .video_s13_bundle import seal_stage, update_current_latest, verify_stage
 
 
 RUN_SCHEMA = "gemini305-video-s13-m61-run/v1"
@@ -71,9 +76,44 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def _load_session_rgb(session: Path) -> tuple[dict[int, Path], dict[int, str]]:
+def _restore_pointer(path: Path, previous: bytes | None) -> None:
+    """Restore the exact pre-run pointer after a failed final publication."""
+    if previous is None:
+        path.unlink(missing_ok=True)
+        return
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:12]}.rollback")
+    try:
+        temporary.write_bytes(previous)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _load_session_rgb(
+    session: Path,
+    raw_rgb_paths: Mapping[int, str | Path] | None = None,
+) -> tuple[dict[int, Path], dict[int, str]]:
     paths: dict[int, Path] = {}
     hashes: dict[int, str] = {}
+    if raw_rgb_paths is not None:
+        if not raw_rgb_paths:
+            raise ValueError("raw RGB path mapping is empty")
+        for raw_frame_id, raw_path in raw_rgb_paths.items():
+            if isinstance(raw_frame_id, bool):
+                raise ValueError("raw RGB frame ID is invalid")
+            frame_id = int(raw_frame_id)
+            if frame_id < 0 or frame_id in paths:
+                raise ValueError("raw RGB frame IDs must be unique and nonnegative")
+            path = Path(raw_path)
+            if not path.is_absolute():
+                if ".." in path.parts:
+                    raise ValueError("unsafe raw RGB path mapping")
+                path = session / path
+            path = path.resolve()
+            if not path.is_file():
+                raise ValueError(f"raw RGB is missing: {path}")
+            paths[frame_id], hashes[frame_id] = path, _sha(path)
+        return paths, hashes
     with (session / "frames.csv").open(newline="", encoding="utf-8") as stream:
         for row in csv.DictReader(stream):
             frame_id = int(row["frame_id"])
@@ -137,6 +177,56 @@ def _apply_active_pixels(
     """Apply only a frozen B1 support; inactive pixels remain canonical owner."""
     mask = np.asarray(active, bool)
     visual[np.asarray(canvas_y)[mask], np.asarray(canvas_x)[mask]] = composed[mask]
+
+
+def _write_p3_transaction_provenance(
+    provenance: dict[str, np.ndarray],
+    pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, np.ndarray]]],
+    finalized: Sequence[Any],
+) -> None:
+    """Bind every P3 photometric/blend pixel to one immutable transaction."""
+    valid = np.asarray(provenance["valid"], bool)
+    owner_source = np.asarray(provenance["owner_source_index"], np.int32)
+    secondary = {
+        "blend_transaction_id": np.full(valid.shape, -1, np.int32),
+        "secondary_frame_id": np.full(valid.shape, -1, np.int32),
+        "secondary_source_index": np.full(valid.shape, -1, np.int32),
+        "secondary_source_u": np.full(valid.shape, np.nan, np.float32),
+        "secondary_source_v": np.full(valid.shape, np.nan, np.float32),
+        "secondary_weight": np.zeros(valid.shape, np.float32),
+    }
+    for (metadata, arrays), plan in zip(pairs, finalized, strict=True):
+        active = np.asarray(plan.active, bool)
+        yy = np.asarray(arrays["canvas_y"])[active]
+        xx = np.asarray(arrays["canvas_x"])[active]
+        transaction_id = int(plan.transaction.pair_index)
+        if transaction_id < 0:
+            raise ValueError("M6.1 blend transaction ID must be nonnegative")
+        if np.any(secondary["blend_transaction_id"][yy, xx] != -1):
+            raise ValueError("M6.1 active pixels belong to more than one blend transaction")
+        secondary["blend_transaction_id"][yy, xx] = transaction_id
+        owner_right = np.asarray(arrays["primary_owner_right"], bool)[active]
+        side = np.where(owner_right, "left", "right")
+        for label in ("left", "right"):
+            select = side == label
+            secondary["secondary_frame_id"][yy[select], xx[select]] = int(
+                metadata[f"{label}_frame_id"]
+            )
+            secondary["secondary_source_index"][yy[select], xx[select]] = int(
+                metadata[f"{label}_source_index"]
+            )
+            secondary["secondary_source_u"][yy[select], xx[select]] = np.asarray(
+                arrays[f"{label}_source_u"]
+            )[active][select]
+            secondary["secondary_source_v"][yy[select], xx[select]] = np.asarray(
+                arrays[f"{label}_source_v"]
+            )[active][select]
+        secondary["secondary_weight"][yy, xx] = np.asarray(plan.secondary_weight)[active]
+    provenance.update(secondary)
+    if "photometric_transaction_id" in provenance:
+        provenance["photometric_transaction_id"] = np.where(
+            valid, owner_source, -1,
+        ).astype(np.int32)
 
 
 def _pair_files(p2_root: Path) -> list[tuple[dict[str, Any], dict[str, np.ndarray]]]:
@@ -319,26 +409,7 @@ def _formal_render(
         _apply_active_pixels(visual, yy, xx, composed, active)
         finalized.append(final_plan)
         transactions[int(metadata["pair_index"])] = tx_arrays
-    secondary = {
-        "secondary_frame_id": np.full(valid.shape, -1, np.int32),
-        "secondary_source_index": np.full(valid.shape, -1, np.int32),
-        "secondary_source_u": np.full(valid.shape, np.nan, np.float32),
-        "secondary_source_v": np.full(valid.shape, np.nan, np.float32),
-        "secondary_weight": np.zeros(valid.shape, np.float32),
-    }
-    for (metadata, arrays), plan in zip(pairs, finalized, strict=True):
-        active = np.asarray(plan.active, bool)
-        yy, xx = np.asarray(arrays["canvas_y"])[active], np.asarray(arrays["canvas_x"])[active]
-        owner_right = np.asarray(arrays["primary_owner_right"], bool)[active]
-        side = np.where(owner_right, "left", "right")
-        for label in ("left", "right"):
-            select = side == label
-            secondary["secondary_frame_id"][yy[select], xx[select]] = int(metadata[f"{label}_frame_id"])
-            secondary["secondary_source_index"][yy[select], xx[select]] = int(metadata[f"{label}_source_index"])
-            secondary["secondary_source_u"][yy[select], xx[select]] = np.asarray(arrays[f"{label}_source_u"])[active][select]
-            secondary["secondary_source_v"][yy[select], xx[select]] = np.asarray(arrays[f"{label}_source_v"])[active][select]
-        secondary["secondary_weight"][yy, xx] = np.asarray(plan.secondary_weight)[active]
-    provenance.update(secondary)
+    _write_p3_transaction_provenance(provenance, pairs, finalized)
     return visual, owner_only, provenance, finalized, streaming
 
 
@@ -352,10 +423,21 @@ def _solution_document(plan: Any, topology: Any, source_frames: Mapping[int, int
     model_by_source = {source: model for component, model in zip(topology.components, plan.selected_model_by_component, strict=True)
                        for source in component.source_indices}
     for source in range(plan.source_count):
-        sources.append({"source_index": source, "frame_id": source_frames[source],
-                        "model": model_by_source[source],
-                        "gain_bgr": plan.gains_rgb[source].tolist(),
-                        "bias_bgr_linear": plan.biases_rgb[source].tolist()})
+        parameter = {
+            "source_index": source,
+            "frame_id": source_frames[source],
+            "model": model_by_source[source],
+            "gain_bgr": plan.gains_rgb[source].tolist(),
+            "bias_bgr_linear": plan.biases_rgb[source].tolist(),
+        }
+        parameter_sha256 = hashlib.sha256(json.dumps(
+            parameter, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode("utf-8")).hexdigest()
+        sources.append({
+            **parameter,
+            "photometric_transaction_id": source,
+            "parameter_sha256": parameter_sha256,
+        })
     return {"schema": plan.schema, "graph_topology_sha256": plan.topology_sha256,
             "selected_model": "Q0_identity" if all_q0 else "component_selected",
             "components": components, "sources": sources,
@@ -415,10 +497,46 @@ def _diagnostics(
 def run_s13_m61_acceptance(
     *, p2_root: str | Path, session: str | Path, output: str | Path,
     candidate_config: str | Path, old_m6_p3: str | Path | None = None,
+    pointer_root: str | Path | None = None,
+    raw_rgb_paths: Mapping[int, str | Path] | None = None,
 ) -> dict[str, Any]:
-    """Run one branch.  This function never replaces an existing P3."""
+    """Run one branch and append P3 without replacing an existing stage.
+
+    ``output`` is the S013 generation root.  ``pointer_root`` is the shared
+    output root containing that generation; standalone acceptance runs retain
+    their historical layout by defaulting it to ``output``.
+    """
     p2_root, session, output = Path(p2_root).resolve(), Path(session).resolve(), Path(output).resolve()
+    shared_pointer = pointer_root is not None
+    pointer_root = output if pointer_root is None else Path(pointer_root).resolve()
+    if shared_pointer:
+        if p2_root != output / "P2":
+            raise ValueError("M6.1 shared P3 requires p2_root to be output/P2")
+        try:
+            output.relative_to(pointer_root)
+        except ValueError as exc:
+            raise ValueError("M6.1 output generation must be inside pointer_root") from exc
     candidate_path = Path(candidate_config).resolve()
+    p2_completion = verify_stage(
+        p2_root, completion_name="P2_completion.json", schema=M61_P2_COMPLETION_SCHEMA,
+    )
+    if p2_completion.get("stage") != "P2" or p2_completion.get("hard_audit_passed") is not True:
+        raise ValueError("M6.1 parent P2 is not a hard-audited shared stage")
+    parent_sha = _sha(p2_root / "P2_completion.json")
+    p2_result_asset = Path(str(p2_completion.get("result_asset", "")))
+    if (p2_result_asset.is_absolute() or ".." in p2_result_asset.parts
+            or p2_result_asset == Path(".")):
+        raise ValueError("M6.1 P2 result asset path is unsafe")
+    p2_result_path = p2_root / p2_result_asset
+    p2_result_sha = _sha(p2_result_path)
+    p2_assets = p2_completion.get("assets_sha256")
+    if (not isinstance(p2_assets, Mapping)
+            or p2_completion.get("result_asset_sha256") != p2_result_sha
+            or p2_assets.get(p2_result_asset.as_posix()) != p2_result_sha):
+        raise ValueError("M6.1 P2 result asset binding is invalid")
+    p2_provenance_sha = _sha(p2_root / "p2_pixel_provenance.npz")
+    if p2_assets.get("p2_pixel_provenance.npz") != p2_provenance_sha:
+        raise ValueError("M6.1 P2 provenance binding is invalid")
     replay_manifest = _json(p2_root / "photometric_replay/manifest.json")
     effective = load_s13_m61_effective_config(
         candidate_path, photometric_evidence_config=replay_manifest["photometric_evidence_config"],
@@ -430,7 +548,7 @@ def run_s13_m61_acceptance(
     )
     invocation_rss = _rss()
     pairs = _pair_files(p2_root)
-    raw_paths, raw_hashes = _load_session_rgb(session)
+    raw_paths, raw_hashes = _load_session_rgb(session, raw_rgb_paths)
     _verify_raw_bindings(pairs, raw_hashes)
     accepted = {edge.pair_index for edge in topology.edges if edge.accepted}
     evidence = _solver_evidence(pairs, accepted,
@@ -473,13 +591,19 @@ def run_s13_m61_acceptance(
         raise FileExistsError("P3 already exists; formal rerender is forbidden")
     pending = output / f".P3.{uuid.uuid4().hex[:12]}.pending"
     pending.mkdir(parents=True, exist_ok=False)
+    pointer_path = pointer_root / "current_latest.json"
+    pointer_before = pointer_path.read_bytes() if pointer_path.is_file() else None
+    published_final = False
+    pointer_update_attempted = False
     try:
         source_frames = _source_frames(p2_root)
         visual, owner_only, provenance, finalized, streaming = _formal_render(
             p2_root, pairs, raw_paths, source_frames, photometric_plan.gains_rgb,
             photometric_plan.biases_rgb, blend_plans, effective,
         )
-        p2_image = cv2.imread(str(p2_root / "geometry_and_seam_panorama_owner_only.png"), cv2.IMREAD_COLOR)
+        p2_image = cv2.imread(str(p2_result_path), cv2.IMREAD_COLOR)
+        if p2_image is None or p2_image.shape != visual.shape:
+            raise ValueError("M6.1 sealed P2 result image is unreadable or has changed shape")
         cv2.imwrite(str(pending / "visual_panorama.png"), visual)
         cv2.imwrite(str(pending / "photometric_owner_only.png"), owner_only)
         cv2.imwrite(str(pending / "p3_valid_mask.png"), np.asarray(provenance["valid"], np.uint8) * 255)
@@ -503,33 +627,68 @@ def run_s13_m61_acceptance(
                                 ("expected_valid", arrays["expected_valid"])):
                 full_masks[name][yy, xx] |= np.asarray(local, bool)
         np.savez_compressed(pending / "pair_masks.npz", **full_masks)
-        parent_sha = _sha(p2_root / "P2_completion.json")
-        _write_json(pending / "p2_parent_reference.json", {"p2_completion_sha256": parent_sha,
-                    "p2_root": str(p2_root), "raw_rgb_provenance_replay": True})
+        shared_parent_layout = p2_root == output / "P2"
+        parent_completion_reference = (
+            "../P2/P2_completion.json" if shared_parent_layout
+            else str((p2_root / "P2_completion.json").resolve())
+        )
+        parent_result_reference = (
+            f"../P2/{p2_result_asset.as_posix()}" if shared_parent_layout
+            else str(p2_result_path.resolve())
+        )
+        parent_provenance_reference = (
+            "../P2/p2_pixel_provenance.npz" if shared_parent_layout
+            else str((p2_root / "p2_pixel_provenance.npz").resolve())
+        )
+        _write_json(pending / "p2_parent_reference.json", {
+            "schema": P2_PARENT_REFERENCE_SCHEMA,
+            "parent_stage": "P2",
+            "completion": parent_completion_reference,
+            "completion_sha256": parent_sha,
+            "p2_completion_sha256": parent_sha,
+            "result_asset": parent_result_reference,
+            "result_asset_sha256": p2_result_sha,
+            "pixel_provenance": parent_provenance_reference,
+            "pixel_provenance_sha256": p2_provenance_sha,
+            "raw_rgb_provenance_replay": True,
+        })
         tx_root = pending / "blend_transactions"
         tx_root.mkdir()
         tx_entries, reasons = [], []
         mask_sha = _sha(pending / "pair_masks.npz")
-        for plan in finalized:
+        for (metadata, _arrays), plan in zip(pairs, finalized, strict=True):
             tx = asdict(plan.transaction)
-            tx.update({"parent_completion_sha256": parent_sha, "pair_masks_sha256": mask_sha,
-                       "selection_completed_before_formal_render": True})
+            tx.update({
+                "transaction_id": int(plan.transaction.pair_index),
+                "parent_completion_sha256": parent_sha,
+                "parent_narrow_replay_sha256": metadata["parent_narrow_replay_sha256"],
+                "parent_pair_transaction_sha256": metadata["parent_pair_transaction_sha256"],
+                "pair_masks_sha256": mask_sha,
+                "selection_completed_before_formal_render": True,
+            })
             asset = f"blend_transactions/pair_{plan.transaction.pair_index:04d}.json"
             _write_json(pending / asset, tx)
-            tx_entries.append({"pair_index": plan.transaction.pair_index, "asset": asset,
-                               "asset_sha256": _sha(pending / asset)})
+            tx_entries.append({
+                "transaction_id": int(plan.transaction.pair_index),
+                "pair_index": plan.transaction.pair_index,
+                "model": plan.transaction.model,
+                "active_pixel_count": int(plan.transaction.active_pixel_count),
+                "asset": asset,
+                "asset_sha256": _sha(pending / asset),
+            })
             if plan.transaction.fallback_reason:
                 reasons.append("blend_benefit_not_detectable" if
                                plan.transaction.fallback_reason in {"immediate_benefit_below_mde", "no_safe_two_pixel_support"}
                                else "blend_ineligible")
         _write_json(pending / "blend_transactions.json", {
-            "schema": "gemini305-video-s13-m61-blend-transactions/v1",
+            "schema": M61_BLEND_MANIFEST_SCHEMA,
             "parent_completion_sha256": parent_sha, "pair_masks_sha256": mask_sha,
             "pairs": tx_entries, "fallback_reasons": sorted(set(reasons)),
+            "all_pairs_reported": len(tx_entries) == len(pairs),
             "candidate_selection_completed_before_formal_render": True,
             "post_render_parameter_changes": 0,
         })
-        performance = {**streaming, "formal_render_attempt_count": 1,
+        performance = {"schema": M61_PERFORMANCE_SCHEMA, **streaming, "formal_render_attempt_count": 1,
                        "formal_remap_count_by_source": [1] * topology.source_count,
                        "hard_audit_render_invocations": 0, "fallback_identity_rebuild_count": 0,
                        "forbidden_invocations": {"q4_nonzero_solver": 0, "b2_b3_b4": 0,
@@ -553,8 +712,48 @@ def run_s13_m61_acceptance(
         )
         if not audit["passed"]:
             raise ValueError(f"M6.1 hard audit failed: {audit['failures']}")
-        pointer = promote_verified_pending(pending, final, output / "current_latest.json", audit,
-                                           generation_id=str(_json(p2_root / "P2_completion.json")["generation_id"]))
+        _write_json(pending / "hard_audit.json", audit)
+        result_asset = "visual_panorama.png"
+        result_sha = _sha(pending / result_asset)
+        provenance_sha = _sha(pending / "p3_pixel_provenance.npz")
+        completion = seal_stage(
+            pending,
+            completion_name="P3_completion.json",
+            schema=M61_P3_COMPLETION_SCHEMA,
+            metadata={
+                "generation_id": str(p2_completion["generation_id"]),
+                "stage": "P3",
+                "hard_audit_passed": True,
+                "parent_stage": "P2",
+                "parent_completion_sha256": parent_sha,
+                "parent_result_sha256": p2_result_sha,
+                "parent_pixel_provenance_sha256": p2_provenance_sha,
+                "result_asset": result_asset,
+                "result_asset_sha256": result_sha,
+                "pixel_provenance_sha256": provenance_sha,
+                "hard_audit_sha256": _sha(pending / "hard_audit.json"),
+                "effective_config_sha256": effective.effective_config_sha256,
+                "graph_topology_sha256": topology.topology_sha256,
+                "photometric_solution_sha256": _sha(pending / "photometric_solution.json"),
+                "blend_transactions_sha256": _sha(pending / "blend_transactions.json"),
+                "formal_raw_rgb_unique_sources": topology.source_count,
+                "formal_raw_rgb_remap_invocations": sum(
+                    int(value) for value in performance["formal_remap_count_by_source"]
+                ),
+                "maximum_real_contributors_per_pixel": (
+                    2 if np.any(np.asarray(provenance["secondary_weight"]) > 0.0) else 1
+                ),
+                "diagnostic_only": True,
+                "production": False,
+                "production_eligible": False,
+                "production_lock_eligible": False,
+            },
+        )
+        verify_stage(
+            pending, completion_name="P3_completion.json", schema=M61_P3_COMPLETION_SCHEMA,
+        )
+        os.replace(pending, final)
+        published_final = True
         verify_promoted_m61_p3(
             p2_root, final, expected_parent_sha256=parent_sha,
             expected_effective_config_sha256=effective.effective_config_sha256,
@@ -575,8 +774,36 @@ def run_s13_m61_acceptance(
                  "formal_render_attempt_count": 1, "post_render_parameter_changes": 0,
                  "quality_report_sha256": _sha(diagnostics / "quality_report.json")}
         _write_json(diagnostics / "reproducibility.json", repro)
+        # Pointer publication is deliberately the final fallible output action.
+        # Diagnostic quality has no authority over this hard-audited stage.
+        pointer_update_attempted = True
+        if shared_pointer:
+            pointer = update_current_latest(
+                pointer_root, output, stage="P3", completion_name="P3_completion.json",
+                completion_schema=M61_P3_COMPLETION_SCHEMA, result_asset=result_asset,
+            )
+        else:
+            pointer = {
+                "schema": "gemini305-video-s13-current-stage/v2",
+                "stage": "P3",
+                "generation_id": str(p2_completion["generation_id"]),
+                "completion_sha256": _sha(final / "P3_completion.json"),
+            }
+            _write_json(pointer_path, pointer)
         return {"schema": RUN_SCHEMA, "p3": str(final), "pointer": pointer,
-                "hard_audit_passed": True, "quality": quality, "reproducibility": repro}
+                "completion": completion, "hard_audit_passed": True,
+                "quality": quality, "reproducibility": repro}
+    except Exception:
+        if pointer_update_attempted:
+            try:
+                current = _json(pointer_path)
+            except (OSError, ValueError):
+                current = {}
+            if published_final and current.get("completion_sha256") == _sha(final / "P3_completion.json"):
+                _restore_pointer(pointer_path, pointer_before)
+        if published_final and final.exists():
+            shutil.rmtree(final)
+        raise
     finally:
         if pending.exists():
             shutil.rmtree(pending)
@@ -589,6 +816,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--candidate-config", required=True, type=Path)
     parser.add_argument("--old-m6-p3", type=Path)
+    parser.add_argument("--pointer-root", type=Path)
     args = parser.parse_args(argv)
     result = run_s13_m61_acceptance(**vars(args))
     print(json.dumps(result, sort_keys=True, allow_nan=False))

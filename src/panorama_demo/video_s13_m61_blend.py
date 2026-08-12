@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 
-BLEND_SCHEMA = "gemini305-video-s13-blend-transactions/v2"
+BLEND_SCHEMA = "gemini305-video-s13-blend-transaction/v2"
 BLEND_MASK_SCHEMA = "gemini305-video-s13-blend-pair-masks/v1"
 ELIGIBLE_MODELS = ("B0_owner_only", "B1_narrow_feather_2px")
 INELIGIBLE_MODELS = ("B2_safe_masked_multiband", "B3", "B4")

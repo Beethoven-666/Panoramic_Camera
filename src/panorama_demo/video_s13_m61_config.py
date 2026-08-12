@@ -21,6 +21,8 @@ import yaml
 
 M61_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_m61_v2"
 M61_IMPLEMENTATION_ID = "s013_output_first_progressive_dense_central_slit_m61_v2_preview"
+FORMAL_M6_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v4"
+FORMAL_M6_IMPLEMENTATION_ID = "s013_output_first_progressive_dense_central_slit_m61_v2"
 M61_CONTRACT_SCHEMA = "gemini305-video-s13-output-first/v4"
 M61_P2_COMPLETION_SCHEMA = "gemini305-video-s13-p2-completion/v4"
 M61_P2_PHOTOMETRIC_REPLAY_SCHEMA = "gemini305-video-s13-p2-photometric-replay/v1"
@@ -708,10 +710,14 @@ def load_s13_m61_effective_config(
 
     candidate_file = Path(candidate_path).expanduser().resolve()
     candidate = _load_mapping(candidate_file, "candidate config")
+    algorithm_id = candidate.get("algorithm_id")
+    implementation_id = candidate.get("implementation_id")
     if (
-        candidate.get("candidate_id") != M61_ALGORITHM_ID
-        or candidate.get("algorithm_id") != M61_ALGORITHM_ID
-        or candidate.get("implementation_id") != M61_IMPLEMENTATION_ID
+        candidate.get("candidate_id") != algorithm_id
+        or (algorithm_id, implementation_id) not in {
+            (M61_ALGORITHM_ID, M61_IMPLEMENTATION_ID),
+            (FORMAL_M6_ALGORITHM_ID, FORMAL_M6_IMPLEMENTATION_ID),
+        }
     ):
         raise ValueError("S013 M6.1 candidate identity is not exact")
     declared_config_sha = _sha(candidate.get("config_sha256"), "candidate config SHA")
@@ -761,8 +767,8 @@ def load_s13_m61_effective_config(
     visual_quality = S13VisualQualityConfig.from_mapping(bootstrap.get("visual_quality", {}))
     document = {
         "schema": M61_EFFECTIVE_CONFIG_SCHEMA,
-        "algorithm_id": M61_ALGORITHM_ID,
-        "implementation_id": M61_IMPLEMENTATION_ID,
+        "algorithm_id": algorithm_id,
+        "implementation_id": implementation_id,
         "candidate_config_sha256": declared_config_sha,
         "photometric_evidence_config": asdict(evidence),
         "photometric_evidence_config_sha256": evidence_sha,
@@ -778,8 +784,8 @@ def load_s13_m61_effective_config(
     }
     return S13M61EffectiveConfig(
         schema=M61_EFFECTIVE_CONFIG_SCHEMA,
-        algorithm_id=M61_ALGORITHM_ID,
-        implementation_id=M61_IMPLEMENTATION_ID,
+        algorithm_id=str(algorithm_id),
+        implementation_id=str(implementation_id),
         candidate_config_sha256=declared_config_sha,
         photometric_evidence_config=evidence,
         photometric_evidence_config_sha256=evidence_sha,
@@ -800,6 +806,7 @@ __all__ = [
     name for name in globals()
     if name.startswith("M61_")
 ] + [
+    "FORMAL_M6_ALGORITHM_ID", "FORMAL_M6_IMPLEMENTATION_ID",
     "S13LuminanceFieldDisabledConfig", "S13M61EffectiveConfig",
     "S13BlendConfig", "S13PhotometricEvidenceConfig",
     "S13PhotometricSelectionConfig", "S13PhotometricSolverConfig",

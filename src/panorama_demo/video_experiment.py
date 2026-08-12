@@ -137,14 +137,31 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     simulate_optimizer_all_fail = bool(getattr(args, "simulate_optimizer_all_fail", False))
     s13_spec = None
     if args.algorithm == "candidate" and args.candidate_config is not None:
-        from .video_s13_contract import S13_ALGORITHM_ID, S13_IMPLEMENTATION_ID, is_s13_identity, load_s13_config
+        from .video_s13_contract import (
+            S13_ALGORITHM_ID,
+            S13_FORMAL_M6_ALGORITHM_ID,
+            claims_s13_document,
+            is_s13_identity,
+            load_s13_config,
+        )
 
         candidate_path = Path(args.candidate_config).expanduser().resolve()
         try:
             candidate_text = candidate_path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             candidate_text = ""
-        claims_s13 = S13_ALGORITHM_ID in candidate_text or S13_IMPLEMENTATION_ID in candidate_text
+        try:
+            candidate_document = load_algorithm_config(candidate_path)
+        except (OSError, UnicodeError, ValueError):
+            candidate_document = {}
+        claims_s13 = claims_s13_document(candidate_document) or any(
+            marker in candidate_text
+            for marker in (
+                S13_ALGORITHM_ID,
+                S13_FORMAL_M6_ALGORITHM_ID,
+                "s013_output_first_progressive_dense_central_slit:",
+            )
+        )
         if claims_s13:
             # The sibling manifest, self hashes, and exact identity are all
             # verified before any shared lock, facade, renderer, or publisher.

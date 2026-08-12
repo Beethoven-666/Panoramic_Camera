@@ -494,6 +494,11 @@ def build_s13_m61_evidence(
         "photometric_evidence_config_sha256": config.canonical_sha256, "sources": owner_entries,
     })
     owner_manifest_sha = sha256_file(owner_root / "manifest.json")
+    legacy_completion_sha = (
+        p2.completion_sha256
+        if isinstance(p2.completion_sha256, str) and len(p2.completion_sha256) == 64
+        else None
+    )
     manifest = {
         "schema": PHOTOMETRIC_REPLAY_SCHEMA, "branch": branch, "run_id": run_id,
         "generation_id": generation_id, "pair_count": len(pair_entries),
@@ -501,7 +506,16 @@ def build_s13_m61_evidence(
         "photometric_evidence_config": asdict(config),
         "photometric_evidence_config_sha256": config.canonical_sha256,
         "p1_parent_completion_sha256": p2.completion["parent_completion_sha256"],
-        "p2_v3_completion_sha256": p2.completion_sha256,
+        # A migrated historical generation has a sealed v3 parent.  The
+        # formal forward path instead builds this sidecar while the native
+        # P2/v4 tree is still pending, so there is intentionally no earlier
+        # P2 completion to cite.  The final v4 completion binds this manifest
+        # and every sidecar asset in one direction after this function returns.
+        "p2_lineage": (
+            "migrated_sealed_v3" if legacy_completion_sha is not None
+            else "native_pending_v4"
+        ),
+        "p2_v3_completion_sha256": legacy_completion_sha,
         "p2_canonical_image_sha256": p2.completion["result_asset_sha256"],
         "p2_canonical_provenance_sha256": p2.completion["assets_sha256"]["p2_pixel_provenance.npz"],
         "p2_pair_transactions_sha256": p2.completion["assets_sha256"]["pair_transactions.json"],
@@ -515,6 +529,84 @@ def build_s13_m61_evidence(
     }
     atomic_write_json(replay_root / "manifest.json", manifest)
     return manifest
+
+
+def build_native_s13_m61_evidence(
+    p2_root: Path,
+    *,
+    result_image: np.ndarray,
+    valid_mask: np.ndarray,
+    provenance: Mapping[str, np.ndarray],
+    transactions: Sequence[Mapping[str, object]],
+    replay_pairs: Sequence[S13P2ReplayPair],
+    source_count: int,
+    generation_id: str,
+    p1_parent_completion_sha256: str,
+    branch: str,
+    run_id: str,
+    frame_image_loader: Callable[[int], np.ndarray],
+    raw_rgb_sha256: Mapping[int, str],
+    config: S13PhotometricEvidenceConfig,
+) -> dict[str, object]:
+    """Add M6 evidence to a pending native P2/v4 before its only seal.
+
+    This is deliberately separate from :func:`prepare_s13_m61_p2`, which is
+    retained for historical v3 acceptance migrations.  The caller must have
+    already written the canonical P2 assets and narrow replay files.  Their
+    real hashes seed the evidence lineage; the eventual P2/v4 completion then
+    seals both those assets and everything produced here atomically.
+    """
+
+    p2_root = p2_root.resolve()
+    required = (
+        "geometry_and_seam_panorama_owner_only.png",
+        "p2_pixel_provenance.npz",
+        "pair_transactions.json",
+        "p2_replay_manifest.json",
+    )
+    if any(not (p2_root / name).is_file() for name in required):
+        raise ValueError("native P2/v4 evidence requires all canonical P2 assets")
+    pair_assets = {
+        f"pair_replay/pair_{pair.pair_index:04d}.npz": sha256_file(
+            p2_root / f"pair_replay/pair_{pair.pair_index:04d}.npz"
+        )
+        for pair in replay_pairs
+    }
+    assets = {
+        **pair_assets,
+        "p2_pixel_provenance.npz": sha256_file(p2_root / "p2_pixel_provenance.npz"),
+        "pair_transactions.json": sha256_file(p2_root / "pair_transactions.json"),
+        "p2_replay_manifest.json": sha256_file(p2_root / "p2_replay_manifest.json"),
+    }
+    pending_view = S13VerifiedP2(
+        root=p2_root,
+        completion={
+            "source_count": int(source_count),
+            "generation_id": generation_id,
+            "assets_sha256": assets,
+            "parent_completion_sha256": p1_parent_completion_sha256,
+            "result_asset_sha256": sha256_file(
+                p2_root / "geometry_and_seam_panorama_owner_only.png"
+            ),
+        },
+        completion_sha256="",
+        result_image=np.asarray(result_image),
+        valid_mask=np.asarray(valid_mask, bool),
+        provenance={name: np.asarray(value) for name, value in provenance.items()},
+        transactions=tuple(transactions),
+        replay_pairs=tuple(replay_pairs),
+        immutable_sha256={},
+    )
+    return build_s13_m61_evidence(
+        pending_view,
+        p2_root,
+        branch=branch,
+        run_id=run_id,
+        generation_id=generation_id,
+        frame_image_loader=frame_image_loader,
+        raw_rgb_sha256=raw_rgb_sha256,
+        config=config,
+    )
 
 
 def _frame_inputs(session: Path) -> tuple[dict[int, Path], dict[int, str]]:
@@ -637,5 +729,6 @@ def prepare_s13_m61_p2(
 __all__ = [
     "CALIBRATION_INPUT_SCHEMA", "GRAPH_TOPOLOGY_SCHEMA", "OWNER_DOMAIN_SCHEMA",
     "P2_V4_COMPLETION_SCHEMA", "PHOTOMETRIC_REPLAY_SCHEMA",
-    "S13PhotometricEvidenceConfig", "build_s13_m61_evidence", "prepare_s13_m61_p2",
+    "S13PhotometricEvidenceConfig", "build_native_s13_m61_evidence",
+    "build_s13_m61_evidence", "prepare_s13_m61_p2",
 ]

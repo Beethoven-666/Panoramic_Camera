@@ -33,9 +33,18 @@ from .video_s13_bundle import (
     write_image,
     write_npz,
 )
-from .video_s13_contract import S13_ALGORITHM_ID, load_s13_config
+from .video_s13_contract import (
+    S13_FORMAL_M6_ALGORITHM_ID,
+    load_s13_config,
+)
 from .video_s13_motion import measure_s13_motion
 from .video_s13_m5 import run_s13_m5
+from .video_s13_m61_evidence import (
+    P2_V4_COMPLETION_SCHEMA,
+    S13PhotometricEvidenceConfig,
+    build_native_s13_m61_evidence,
+)
+from .video_s13_m61_config import load_s13_m61_effective_config
 from .video_s13_m6 import run_s13_m6
 from .video_s13_blend import BLEND_SCHEMA, blend_transaction_document
 from .video_s13_p3_hard_audit import audit_s13_p3_stage, verify_sealed_s13_p3
@@ -264,6 +273,11 @@ def _run_m5(
     *,
     selected_hypothesis_ids: tuple[int, ...],
     placement_methods: tuple[str, ...],
+    p2_completion_schema: str = P2_COMPLETION_SCHEMA,
+    m61_evidence_config: S13PhotometricEvidenceConfig | None = None,
+    m61_evidence_branch: str = "formal",
+    m61_evidence_run_id: str = "",
+    raw_rgb_sha256_by_frame: Mapping[int, str] | None = None,
 ) -> dict[str, object]:
     from .session import CameraIntrinsics
     from .video_s12_schedule import S012Schedule
@@ -382,6 +396,33 @@ def _run_m5(
             "reestimation_performed": False,
             "pairs": replay_manifest_rows,
         })
+        photometric_replay: Mapping[str, object] | None = None
+        if p2_completion_schema == P2_V4_COMPLETION_SCHEMA:
+            if m61_evidence_config is None or raw_rgb_sha256_by_frame is None:
+                raise ValueError("S1.3 native P2/v4 requires frozen M6 photometric evidence inputs")
+            if m61_evidence_config.canonical_sha256 != S13PhotometricEvidenceConfig().canonical_sha256:
+                # The current formal identity freezes the evidence definition
+                # used by the approved M6 thresholds.  A changed definition is
+                # a successor candidate, not an implicit runtime override.
+                raise ValueError("S1.3 native P2/v4 evidence config is not the approved formal contract")
+            photometric_replay = build_native_s13_m61_evidence(
+                pending,
+                result_image=m5.final_result.image,
+                valid_mask=m5.final_result.valid_mask,
+                provenance=m5.final_result.pixel_provenance,
+                transactions=transaction_rows,
+                replay_pairs=replay_pairs,
+                source_count=len(schedule.assignments),
+                generation_id=generation_id,
+                p1_parent_completion_sha256=p1_completion_sha,
+                branch=m61_evidence_branch,
+                run_id=m61_evidence_run_id,
+                frame_image_loader=image_loader,  # type: ignore[arg-type]
+                raw_rgb_sha256=raw_rgb_sha256_by_frame,
+                config=m61_evidence_config,
+            )
+        elif p2_completion_schema != P2_COMPLETION_SCHEMA:
+            raise ValueError("S1.3 P2 completion schema is unsupported")
         ranked = sorted(
             enumerate(m5.pairs),
             key=lambda item: float(item[1].transaction.get("after_metrics", {}).get("score") or -1.0),
@@ -440,11 +481,7 @@ def _run_m5(
         selected_counts = Counter(
             str(pair.transaction.get("seam_model")) for pair in m5.pairs
         )
-        completion = seal_stage(
-            pending,
-            completion_name="P2_completion.json",
-            schema=P2_COMPLETION_SCHEMA,
-            metadata={
+        completion_metadata: dict[str, object] = {
                 "generation_id": generation_id,
                 "stage": "P2",
                 "hard_audit_passed": True,
@@ -494,17 +531,42 @@ def _run_m5(
                     "graphcut", "photometric_gain_bias", "luminance_field", "feather", "multiband",
                     "depth", "mesh", "source_rescue", "production_renderer",
                 ],
-            },
+            }
+        if photometric_replay is not None:
+            completion_metadata.update({
+                "native_p2_v4": True,
+                "p2_v3_parent": None,
+                "photometric_replay_manifest_sha256": sha256_file(
+                    pending / "photometric_replay/manifest.json"
+                ),
+                "owner_domain_manifest_sha256": photometric_replay[
+                    "owner_domain_manifest_sha256"
+                ],
+                "graph_topology_manifest_sha256": photometric_replay[
+                    "graph_topology_manifest_sha256"
+                ],
+                "graph_topology_sha256": photometric_replay["graph_topology_sha256"],
+                "photometric_evidence_config_sha256": photometric_replay[
+                    "photometric_evidence_config_sha256"
+                ],
+                "q_solver_invocations": 0,
+                "q0_b0_only": True,
+            })
+        completion = seal_stage(
+            pending,
+            completion_name="P2_completion.json",
+            schema=p2_completion_schema,
+            metadata=completion_metadata,
         )
         os.replace(pending, final)
-        verify_stage(final, completion_name="P2_completion.json", schema=P2_COMPLETION_SCHEMA)
+        verify_stage(final, completion_name="P2_completion.json", schema=p2_completion_schema)
         if sha256_file(p0_completion_path) != p0_completion_sha:
             raise ValueError("S1.3 M5 immutable P0 completion changed")
         if sha256_file(p1_completion_path) != p1_completion_sha:
             raise ValueError("S1.3 M5 immutable original P1 completion changed")
         pointer = update_current_latest(
             root, generation, stage="P2", completion_name="P2_completion.json",
-            completion_schema=P2_COMPLETION_SCHEMA, result_asset=result_asset,
+            completion_schema=p2_completion_schema, result_asset=result_asset,
         )
         return {
             "state": "P2_sealed",
@@ -853,6 +915,49 @@ def _run_m6(
     raise AssertionError("S1.3 M6 fallback loop did not terminate")
 
 
+def _run_formal_m6(
+    generation: Path,
+    root: Path,
+    session: S13Session,
+    candidate_config: Path,
+) -> dict[str, object]:
+    """Append the M6.1 implementation as the canonical S013 P3/v2 stage."""
+
+    from .video_s13_m61_runner import run_s13_m61_acceptance
+
+    result = run_s13_m61_acceptance(
+        p2_root=generation / "P2",
+        session=session.root,
+        output=generation,
+        candidate_config=candidate_config,
+        pointer_root=root,
+        raw_rgb_paths={frame.frame_id: frame.color_path for frame in session.frames},
+    )
+    final = Path(str(result["p3"])).resolve()
+    completion = final / "P3_completion.json"
+    return {
+        "state": "P3_sealed",
+        "implementation": "M6.1_formal_M6",
+        "stage_acceptance": "hard_audit_sealed",
+        "visual_acceptance_state": "not_granted",
+        "m7_handoff_eligible": False,
+        "panorama": str(final / "visual_panorama.png"),
+        "photometric_owner_only": str(final / "photometric_owner_only.png"),
+        "pixel_provenance": str(final / "p3_pixel_provenance.npz"),
+        "hard_audit": str(final / "hard_audit.json"),
+        "effective_config": str(final / "effective_config.json"),
+        "blend_transactions": str(final / "blend_transactions.json"),
+        "performance": str(final / "performance.json"),
+        "completion": str(completion),
+        "current_latest": str(root / "current_latest.json"),
+        "latest_stage": result["pointer"]["stage"],
+        "hard_audit_passed": True,
+        "diagnostic_quality": str(generation / "validation_m61" / "quality_report.json"),
+        "diagnostic_quality_runtime_authority": False,
+        "reproducibility": dict(result["reproducibility"]),
+    }
+
+
 def _write_nonpanorama(
     staging: Path,
     session: S13Session,
@@ -938,8 +1043,25 @@ def run_s13_experiment(
 ) -> dict[str, Any]:
     run_started = time.perf_counter()
     config = load_s13_config(candidate_config)
-    if algorithm_spec.algorithm_id != S13_ALGORITHM_ID or algorithm_spec.config_sha256 != candidate_config_sha(config.document):
+    configured_algorithm_id = str(config.document["algorithm_id"])
+    configured_implementation_id = str(config.document["implementation_id"])
+    if (
+        algorithm_spec.algorithm_id != configured_algorithm_id
+        or algorithm_spec.implementation_id != configured_implementation_id
+        or algorithm_spec.config_sha256 != candidate_config_sha(config.document)
+    ):
         raise ValueError("S1.3 dispatch identity/config binding changed after validation")
+    formal_m6 = configured_algorithm_id == S13_FORMAL_M6_ALGORITHM_ID
+    m61_evidence_config = S13PhotometricEvidenceConfig() if formal_m6 else None
+    if m61_evidence_config is not None:
+        # Validate every immutable M6 threshold/approval binding before the
+        # generation can publish even P0.  Runtime evidence is generated later
+        # from this exact frozen definition inside the native P2/v4 stage.
+        load_s13_m61_effective_config(
+            config.path,
+            photometric_evidence_config=asdict(m61_evidence_config),
+            config_root=config.path.parents[3],
+        )
     root = output.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     stage_seconds: dict[str, float] = {}
@@ -949,7 +1071,7 @@ def run_s13_experiment(
     except Exception as exc:
         atomic_write_json(root / "S013_failure.json", {
             "schema": "gemini305-video-s13-failure/v1",
-            "algorithm_id": S13_ALGORITHM_ID,
+            "algorithm_id": configured_algorithm_id,
             "render_state": "input_fatal",
             "panorama_claim": "none",
             "trust_state": "invalid_input",
@@ -970,28 +1092,65 @@ def run_s13_experiment(
             raise ValueError("S1.3 resume generation is outside the output root") from exc
         if generation.parent != generations_root or not generation.is_dir():
             raise ValueError("S1.3 resume generation must be one direct sealed generation")
+        generation_manifest = json.loads(
+            (generation / "generation_manifest.json").read_text(encoding="utf-8")
+        )
+        generation_algorithm = generation_manifest.get("algorithm")
+        if not isinstance(generation_algorithm, Mapping) or any(
+            generation_algorithm.get(key) != expected
+            for key, expected in {
+                "algorithm_id": configured_algorithm_id,
+                "implementation_id": configured_implementation_id,
+                "config_sha256": algorithm_spec.config_sha256,
+            }.items()
+        ):
+            raise ValueError("S1.3 resume generation algorithm/config binding changed")
         current = json.loads((root / "current_latest.json").read_text(encoding="utf-8"))
         if current.get("generation_id") != generation.name or current.get("stage") != "P2":
             raise ValueError("S1.3 M6 resume requires current_latest=P2 for the generation")
         if any((generation / name).exists() for name in ("P3", "M6")):
             raise ValueError("S1.3 M6 resume target already has a P3/M6 stage")
-        by_id = session.frame_by_id
-        m6 = _run_m6(
-            generation, root, generation.name,
-            lambda frame_id: read_s13_rgb(by_id[frame_id]),
+        p2_schema = P2_V4_COMPLETION_SCHEMA if formal_m6 else P2_COMPLETION_SCHEMA
+        p2_completion_path = generation / "P2" / "P2_completion.json"
+        p2_completion = verify_stage(
+            generation / "P2", completion_name="P2_completion.json", schema=p2_schema,
         )
+        if (
+            p2_completion.get("generation_id") != generation.name
+            or current.get("completion_sha256") != sha256_file(p2_completion_path)
+            or current.get("completion")
+            != p2_completion_path.relative_to(root).as_posix()
+        ):
+            raise ValueError("S1.3 M6 resume pointer is not bound to the sealed P2 parent")
+        by_id = session.frame_by_id
+        if formal_m6:
+            m6 = _run_formal_m6(generation, root, session, config.path)
+        else:
+            m6 = _run_m6(
+                generation, root, generation.name,
+                lambda frame_id: read_s13_rgb(by_id[frame_id]),
+            )
         report = {
             "schema": REPORT_SCHEMA,
-            "algorithm_id": S13_ALGORITHM_ID,
+            "algorithm_id": configured_algorithm_id,
+            "implementation_id": configured_implementation_id,
             "generation_id": generation.name,
             "generation": str(generation),
             "panorama": m6["panorama"],
+            "pixel_provenance": m6["pixel_provenance"],
+            "completion": m6["completion"],
+            "current_latest": m6["current_latest"],
+            "final_stage": "P3",
             "resume_parent_stage": "P2",
             "m6": m6,
             "optimizer_state": "m6_sealed",
+            "stage_acceptance": m6.get("stage_acceptance", "hard_audit_sealed"),
+            "visual_acceptance_state": m6.get("visual_acceptance_state", "legacy_not_evaluated"),
+            "m7_handoff_eligible": bool(m6.get("m7_handoff_eligible", False)),
             "diagnostic_only": True,
             "production_eligible": False,
             "production_lock_eligible": False,
+            "manual_review_required": True,
         }
         atomic_write_json(root / "latest_run.json", report)
         return report
@@ -1290,7 +1449,9 @@ def run_s13_experiment(
             **report_statistics,
         })
         publish_generation(staging, generation)
-        pointer = update_current_base(root, generation)
+        pointer = update_current_base(
+            root, generation, algorithm_id=configured_algorithm_id,
+        )
         if not is_panel_set:
             update_current_latest(
                 root, generation, stage="P0", completion_name="P0_completion.json",
@@ -1347,6 +1508,19 @@ def run_s13_experiment(
                         hypothesis_by_frame.get(frame_id, -1) for frame_id in selection.frame_ids
                     ),
                     placement_methods=selection.placement_methods,
+                    p2_completion_schema=(
+                        P2_V4_COMPLETION_SCHEMA if formal_m6 else P2_COMPLETION_SCHEMA
+                    ),
+                    m61_evidence_config=m61_evidence_config,
+                    m61_evidence_branch="formal",
+                    m61_evidence_run_id=generation_id,
+                    raw_rgb_sha256_by_frame=(
+                        {
+                            frame.frame_id: sha256_file(frame.color_path)
+                            for frame in session.frames
+                        }
+                        if formal_m6 else None
+                    ),
                 )
             except Exception as exc:
                 m5 = {
@@ -1373,10 +1547,15 @@ def run_s13_experiment(
             and not is_panel_set and m5.get("state") == "P2_sealed"
         ):
             try:
-                m6 = _run_m6(
-                    generation, root, generation_id,
-                    lambda frame_id: read_s13_rgb(by_id[frame_id]),
-                )
+                if formal_m6:
+                    m6 = _run_formal_m6(
+                        generation, root, session, config.path,
+                    )
+                else:
+                    m6 = _run_m6(
+                        generation, root, generation_id,
+                        lambda frame_id: read_s13_rgb(by_id[frame_id]),
+                    )
             except Exception as exc:
                 m6 = {
                     "state": "failed_p2_preserved",
@@ -1423,19 +1602,43 @@ def run_s13_experiment(
             "performance": {"stage_seconds": stage_seconds},
         })
         atomic_write_json(generation_report_path, generation_report)
+        final_stage = (
+            m6 if m6.get("state") == "P3_sealed"
+            else m5 if m5.get("state") == "P2_sealed"
+            else m4 if m4.get("state") == "P1_sealed"
+            else {}
+        )
+        # The historical v3 report keeps its P0 compatibility fields.  The
+        # new v4 identity is the first contract whose primary result is the
+        # latest sealed forward stage.
+        primary_stage = final_stage if formal_m6 else {}
         report = {
-            "schema": REPORT_SCHEMA, "algorithm_id": S13_ALGORITHM_ID, "generation_id": generation_id,
+            "schema": REPORT_SCHEMA, "algorithm_id": configured_algorithm_id,
+            "implementation_id": configured_implementation_id,
+            "generation_id": generation_id,
             "generation": str(generation),
-            "panorama": None if is_panel_set else str(generation / "P0" / "base_panorama_owner_only.png"),
+            "panorama": (
+                None if is_panel_set
+                else str(primary_stage.get("panorama", generation / "P0" / "base_panorama_owner_only.png"))
+            ),
             "spatial_panel_set": str(generation / "P0" / "panels") if is_panel_set else None,
             "panel_navigation_overview": (
                 str(generation / "P0" / "panel_navigation_overview_explicit_gaps.png") if is_panel_set else None
             ),
             "layout": str(generation / "P0" / "base_layout.json"),
             "owner_overlay": None if is_panel_set else str(generation / "P0" / "owner_boundary_overlay.png"),
-            "pixel_provenance": None if is_panel_set else str(generation / "P0" / "base_pixel_provenance.npz"),
+            "pixel_provenance": (
+                None if is_panel_set
+                else str(primary_stage.get("pixel_provenance", generation / "P0" / "base_pixel_provenance.npz"))
+            ),
             "column_provenance": None if is_panel_set else str(generation / "P0" / "base_column_provenance.npz"),
-            "completion": str(generation / "P0" / "P0_completion.json"),
+            "completion": str(primary_stage.get("completion", generation / "P0" / "P0_completion.json")),
+            "final_stage": (
+                "P3" if m6.get("state") == "P3_sealed"
+                else "P2" if m5.get("state") == "P2_sealed"
+                else "P1" if m4.get("state") == "P1_sealed"
+                else "P0"
+            ),
             "current_base": str(root / "current_base.json"), "time_to_P0_seconds": time_to_p0,
             "total_wall_seconds": time.perf_counter() - run_started, "stage_seconds": stage_seconds,
             "render_state": render_state, "panorama_claim": layout["panorama_claim"],
@@ -1445,6 +1648,15 @@ def run_s13_experiment(
             "m4": m4,
             "m5": m5,
             "m6": m6,
+            "stage_acceptance": (
+                m6.get("stage_acceptance") if formal_m6 else None
+            ),
+            "visual_acceptance_state": (
+                m6.get("visual_acceptance_state") if formal_m6 else None
+            ),
+            "m7_handoff_eligible": (
+                bool(m6.get("m7_handoff_eligible", False)) if formal_m6 else None
+            ),
             "motion_graph_connected_telemetry": progress.adjacent_reliable_graph_connected,
             "motion_graph_disconnection_is_fatal": False, "direct_local_delta_is_fatal": False,
             **report_statistics,

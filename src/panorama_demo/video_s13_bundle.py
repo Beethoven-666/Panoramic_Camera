@@ -20,7 +20,7 @@ P0_COMPLETION_SCHEMA = "gemini305-video-s13-p0-completion/v1"
 BASE_POINTER_SCHEMA = "gemini305-video-s13-current-base/v1"
 LATEST_POINTER_SCHEMA = "gemini305-video-s13-current-latest/v1"
 REVIEWED_POINTER_SCHEMA = "gemini305-video-s13-current-reviewed/v1"
-_STAGE_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+_STAGE_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4}
 
 
 def sha256_file(path: Path) -> str:
@@ -210,12 +210,13 @@ def _verified_pointer_payload(
     if stage == "P1":
         parent_stage = parent_stage or "P0"
         parent_sha = parent_sha or completion.get("p0_parent_sha256")
-    expected_parent = {"P1": "P0", "P2": "P1", "P3": "P2"}.get(stage)
+    expected_parent = {"P1": "P0", "P2": "P1", "P3": "P2", "P4": "P3"}.get(stage)
     if expected_parent is not None:
         if parent_stage != expected_parent or not isinstance(parent_sha, str):
             raise ValueError("S1.3 stage parent binding is incomplete")
         parent_completion_name = {
-            "P0": "P0_completion.json", "P1": "P1_completion.json", "P2": "P2_completion.json",
+            "P0": "P0_completion.json", "P1": "P1_completion.json",
+            "P2": "P2_completion.json", "P3": "P3_completion.json",
         }[expected_parent]
         parent_completion_path = generation / expected_parent / parent_completion_name
         if not parent_completion_path.is_file() or sha256_file(parent_completion_path) != parent_sha:
@@ -348,12 +349,17 @@ def publish_generation(staging: Path, generation: Path) -> None:
     os.replace(staging, generation)
 
 
-def update_current_base(root: Path, generation: Path) -> dict[str, Any]:
+def update_current_base(
+    root: Path,
+    generation: Path,
+    *,
+    algorithm_id: str = "S013_output_first_progressive_dense_central_slit_v3",
+) -> dict[str, Any]:
     completion_path = generation / "P0" / "P0_completion.json"
     completion = verify_p0_completion(completion_path.parent)
     pointer = {
         "schema": BASE_POINTER_SCHEMA,
-        "algorithm_id": "S013_output_first_progressive_dense_central_slit_v3",
+        "algorithm_id": algorithm_id,
         "generation_id": completion["generation_id"],
         "generation": str(generation.relative_to(root)).replace("\\", "/"),
         "completion": str(completion_path.relative_to(root)).replace("\\", "/"),

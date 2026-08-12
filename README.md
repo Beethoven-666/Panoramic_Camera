@@ -857,11 +857,17 @@ as fixed compatibility/audit aliases and are not additional reliability gates.
 
 ## S1.3 output-first M0–M6 diagnostic candidate
 
-`S013_output_first_progressive_dense_central_slit_v3` is an isolated,
-development-only route selected through `g305-video-experiment --algorithm
-candidate`. Its config and hash-bound sibling manifest live under
-`configs/video_candidates/s013/`. The route dispatches before the shared video
-pipeline and never reads S1/S1.1/S1.2 bundles or a production lock.
+`S013_output_first_progressive_dense_central_slit_v4` is the canonical S013
+M0–M6 route selected through `g305-video-experiment --algorithm candidate`; its
+implementation identity is `s013_output_first_progressive_dense_central_slit_m61_v2`.
+Here, canonical/formal means the single supported S013 diagnostic chain with
+hash-bound parent, seal, provenance, and pointer contracts. It remains
+`diagnostic_only=true`, `production_eligible=false`, and
+`production_lock_eligible=false`: it neither modifies the public video renderer
+nor reads or writes a production lock or delivery. Its config and hash-bound
+sibling manifest live under `configs/video_candidates/s013/`. The v3 route is
+retained only for compatibility and historical regression evidence and cannot
+authorize a new M7 run.
 
 Exactly one trajectory policy must be explicit: `--trajectory-cache`,
 `--reuse-online-trajectory`, `--run-offline-orb`, or `--ignore-pose`. Missing
@@ -886,16 +892,38 @@ comparator, at least a 2% cost margin, and independent symmetric/long-structure
 evidence at preliminary geometry, final geometry, and the full rendered output;
 otherwise it falls back to shifted-straight or the immutable midpoint.
 P2 is remapped once per real contributor from raw RGB and sealed with replay
-maps for the selected geometry and seam. M6 verifies and loads that sealed P2;
-it never re-estimates M4/M5, trajectory, geometry, or seam state. It jointly
-solves bounded linear-light Q0–Q3 source photometric candidates, then permits
-only owner-only or a protected, one-to-two-pixel adjacent-source feather in
-safe background. The selected source maps are formally remapped once per real
-contributor to produce P3. An independent P3 hard audit controls sealing and
-`current_latest=P3`; diagnostic visual quality has no pointer authority.
-`current_reviewed` remains explicit and `current_preview` remains deprecated.
-Low-frequency luminance fields, GraphCut, depth, mesh, source rescue, M7+, and
-production publication remain outside this implementation.
+maps for the selected geometry and seam. The canonical chain creates native
+`gemini305-video-s13-p2-completion/v4`, including the frozen M6 evidence and
+threshold lineage, then runs the former M6.1 implementation as M6 to produce
+`gemini305-video-s13-p3-visual-completion/v2`. M6 never re-estimates M4/M5,
+trajectory, geometry, or seam state. It jointly solves bounded linear-light
+Q0–Q3 source photometric candidates; Q4/low-frequency-field solving is disabled.
+Only B0 owner-only or protected B1 adjacent-source feather with a total width of
+2 px is legal; B2–B4, 1 px feather, and MultiBand are forbidden in this path.
+An independent P3 hard audit controls sealing and `current_latest=P3`;
+diagnostic visual quality has no pointer authority. `current_reviewed` remains
+explicit and `current_preview` remains deprecated.
+
+The existing four-branch M6.1 evidence is structurally hard-audit clean but
+visually blocked: the original `blocked_report.json` remains unchanged with
+`stage_exit=blocked`, `m7_handoff_eligible=false`, fast ghost regressions, slow
+unresolved results, and the frozen proxy/full-tail calibration mismatch. The
+user has separately accepted the sealed P3 parents for a restricted manual
+forward. That decision is recorded as a SHA-bound
+`completed_manual_forward` authorization; it does not relabel the automatic
+result as `completed_target`.
+
+M7 consumes only the v2 handoff bound to that authorization and to every P2/P3
+completion, result, provenance, hard-audit, quality, Q, threshold, and source-set
+hash. Components may be only isolated, non-adjacent geometry/seam/owner/protected
+residuals. Systemic photometric, brightness/chroma/white-balance, adjacent
+multi-seam, Q4/low-frequency-field, threshold/metric-calibration, source-set,
+and frame-insertion requests remain out of scope. Core evaluation is fixed to
+R0 keep-P3, R1 B1-2px-to-B0, R2 seam downgrade with P0 geometry re-estimation,
+and R3 geometry downgrade with seam re-evaluation. GraphCut, depth-risk, mesh,
+1 px or expanded feather, MultiBand, cross-pair repair, and every Optional are
+disabled. Only a strict pixel-changing winner may seal P4 and advance
+`current_latest`; all-R0/no-winner runs retain P3 and proceed to M8.
 
 An adjacent RGB motion below `0.25 px` contributes zero layout progress
 (`zero_duplicate`) only when supported grid LK and phase correlation agree on

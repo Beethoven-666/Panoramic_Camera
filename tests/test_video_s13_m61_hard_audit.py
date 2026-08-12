@@ -45,40 +45,107 @@ def _fixture(root: Path) -> tuple[Path, Path, dict[str, object]]:
         "train_only": True,
         "components": [{"component_index": 0, "source_indices": [0]}],
     })
+    replay_root = p2 / "photometric_replay"
+    pair_metadata = replay_root / "pairs/pair_0000.json"
+    pair_asset = replay_root / "pairs/pair_0000.npz"
+    pair_metadata.parent.mkdir(parents=True)
+    np.savez(pair_asset, evidence=np.ones((1,), np.uint8))
+    _write_json(pair_metadata, {
+        "pair_index": 0,
+        "parent_narrow_replay_sha256": "c" * 64,
+        "parent_pair_transaction_sha256": "d" * 64,
+    })
+    _write_json(replay_root / "manifest.json", {
+        "schema": "gemini305-video-s13-p2-photometric-replay/v1",
+        "pairs": [{
+            "pair_index": 0,
+            "metadata": "pairs/pair_0000.json",
+            "metadata_sha256": _sha(pair_metadata),
+            "asset": "pairs/pair_0000.npz",
+            "asset_sha256": _sha(pair_asset),
+        }],
+    })
+    p2_assets = {
+        "geometry_and_seam_panorama_owner_only.png": _sha(
+            p2 / "geometry_and_seam_panorama_owner_only.png"
+        ),
+        "p2_pixel_provenance.npz": _sha(p2 / "p2_pixel_provenance.npz"),
+        "photometric_replay/graph_topology/topology.json": _sha(topology_path),
+        "photometric_replay/manifest.json": _sha(replay_root / "manifest.json"),
+        "photometric_replay/pairs/pair_0000.json": _sha(pair_metadata),
+        "photometric_replay/pairs/pair_0000.npz": _sha(pair_asset),
+    }
+    _write_json(p2 / "P2_completion.json", {
+        "schema": "gemini305-video-s13-p2-completion/v4",
+        "sealed": True,
+        "generation_id": "g",
+        "stage": "P2",
+        "hard_audit_passed": True,
+        "result_asset": "geometry_and_seam_panorama_owner_only.png",
+        "result_asset_sha256": p2_assets["geometry_and_seam_panorama_owner_only.png"],
+        "assets_sha256": p2_assets,
+    })
     p3_provenance = {**primary, "secondary_frame_id": np.full(shape, -1, np.int32),
                      "secondary_source_index": np.full(shape, -1, np.int32),
                      "secondary_source_u": np.full(shape, np.nan, np.float32),
                      "secondary_source_v": np.full(shape, np.nan, np.float32),
-                     "secondary_weight": np.zeros(shape, np.float32)}
+                     "secondary_weight": np.zeros(shape, np.float32),
+                     "photometric_transaction_id": owner_source.copy(),
+                     "blend_transaction_id": np.full(shape, -1, np.int32)}
     np.savez(p3 / "p3_pixel_provenance.npz", **p3_provenance)
     cv2.imwrite(str(p3 / "visual_panorama.png"), image)
     cv2.imwrite(str(p3 / "photometric_owner_only.png"), image)
     cv2.imwrite(str(p3 / "p3_valid_mask.png"), np.full(shape, 255, np.uint8))
     np.savez(p3 / "pair_masks.npz", active=np.zeros(shape, bool), safe=np.ones(shape, bool),
              protected=np.zeros(shape, bool), common_valid=np.ones(shape, bool), expected_valid=np.ones(shape, bool))
-    expected = {"parent": "a" * 64, "config": "b" * 64, "topology": _sha(topology_path)}
-    _write_json(p3 / "p2_parent_reference.json", {"p2_completion_sha256": expected["parent"]})
+    expected = {"parent": _sha(p2 / "P2_completion.json"), "config": "b" * 64, "topology": _sha(topology_path)}
+    _write_json(p3 / "p2_parent_reference.json", {
+        "schema": "gemini305-video-s13-p2-parent-reference/v1",
+        "parent_stage": "P2",
+        "completion": "../P2/P2_completion.json",
+        "completion_sha256": expected["parent"],
+        "p2_completion_sha256": expected["parent"],
+        "result_asset": "../P2/geometry_and_seam_panorama_owner_only.png",
+        "result_asset_sha256": p2_assets["geometry_and_seam_panorama_owner_only.png"],
+        "pixel_provenance": "../P2/p2_pixel_provenance.npz",
+        "pixel_provenance_sha256": p2_assets["p2_pixel_provenance.npz"],
+    })
     _write_json(p3 / "effective_config.json", {"effective_config_sha256": expected["config"], "graph_topology_sha256": expected["topology"]})
     _write_json(p3 / "performance.json", {
+        "schema": "gemini305-video-s13-p3-performance/v2",
         "formal_render_attempt_count": 1, "formal_remap_count_by_source": [1],
         "hard_audit_render_invocations": 0, "fallback_identity_rebuild_count": 0,
         "forbidden_invocations": {"m4": 0, "m5": 0, "depth": 0, "open3d": 0, "tsdf": 0},
     })
+    parameter = {"source_index": 0, "frame_id": 10, "model": "Q0_identity",
+                 "gain_bgr": [1, 1, 1], "bias_bgr_linear": [0, 0, 0]}
+    parameter_sha = hashlib.sha256(json.dumps(
+        parameter, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
     _write_json(p3 / "photometric_solution.json", {
         "selected_model": "Q0_identity", "graph_topology_sha256": expected["topology"],
         "components": [{"component_id": 0, "source_indices": [0], "selected_model": "Q0_identity"}],
-        "sources": [{"source_index": 0, "frame_id": 10, "model": "Q0_identity", "gain_bgr": [1, 1, 1], "bias_bgr_linear": [0, 0, 0]}],
+        "sources": [{**parameter, "photometric_transaction_id": 0,
+                     "parameter_sha256": parameter_sha}],
     })
     pair_asset = "blend_transactions/pair_0000.json"
     (p3 / "blend_transactions").mkdir()
     _write_json(p3 / pair_asset, {
-        "pair_index": 0, "parent_completion_sha256": expected["parent"],
+        "schema": "gemini305-video-s13-blend-transaction/v2",
+        "transaction_id": 0, "pair_index": 0, "model": "B0_owner_only",
+        "active_pixel_count": 0, "parent_completion_sha256": expected["parent"],
+        "parent_narrow_replay_sha256": "c" * 64,
+        "parent_pair_transaction_sha256": "d" * 64,
         "pair_masks_sha256": _sha(p3 / "pair_masks.npz"),
     })
     _write_json(p3 / "blend_transactions.json", {
+        "schema": "gemini305-video-s13-blend-transactions/v2",
         "parent_completion_sha256": expected["parent"],
         "pair_masks_sha256": _sha(p3 / "pair_masks.npz"), "fallback_reasons": [],
-        "pairs": [{"pair_index": 0, "asset": pair_asset, "asset_sha256": _sha(p3 / pair_asset)}],
+        "all_pairs_reported": True,
+        "pairs": [{"transaction_id": 0, "pair_index": 0, "model": "B0_owner_only",
+                   "active_pixel_count": 0, "asset": pair_asset,
+                   "asset_sha256": _sha(p3 / pair_asset)}],
     })
     assets = {name: _sha(p3 / name) for name in (
         "visual_panorama.png", "photometric_owner_only.png", "p3_valid_mask.png",
@@ -102,7 +169,10 @@ def test_independent_audit_accepts_q0_b0_and_raw_replay(tmp_path: Path) -> None:
     assert _audit(p2, p3, expected)["passed"] is True
 
 
-@pytest.mark.parametrize("mutation", ["primary", "weight", "uv", "parent", "config", "mask", "solution", "pixel"])
+@pytest.mark.parametrize("mutation", [
+    "primary", "weight", "uv", "parent", "config", "mask", "valid_mask",
+    "solution", "pixel",
+])
 def test_mutations_fail_closed_without_identity_rebuild(tmp_path: Path, mutation: str) -> None:
     p2, p3, expected = _fixture(tmp_path)
     if mutation in {"primary", "weight", "uv"}:
@@ -125,6 +195,10 @@ def test_mutations_fail_closed_without_identity_rebuild(tmp_path: Path, mutation
         masks = dict(np.load(p3 / "pair_masks.npz", allow_pickle=False))
         masks["active"][0, 0] = True
         np.savez(p3 / "pair_masks.npz", **masks)
+    elif mutation == "valid_mask":
+        image = cv2.imread(str(p3 / "p3_valid_mask.png"), cv2.IMREAD_UNCHANGED)
+        image[0, 0] = 0
+        cv2.imwrite(str(p3 / "p3_valid_mask.png"), image)
     elif mutation == "solution":
         value = json.loads((p3 / "photometric_solution.json").read_text())
         value["graph_topology_sha256"] = "f" * 64
@@ -171,6 +245,34 @@ def test_pointer_changes_only_after_passing_audit(tmp_path: Path) -> None:
         expected_topology_sha256=expected["topology"], raw_rgb_by_frame=expected["raw"],
     )
     assert completion["stage"] == "P3"
+    assert completion["sealed"] is True
+    assert completion["hard_audit_passed"] is True
+    assert completion["parent_stage"] == "P2"
+    assert completion["result_asset"] == "visual_panorama.png"
+    assert completion["result_asset_sha256"] == _sha(tmp_path / "P3/visual_panorama.png")
+    assert completion["pixel_provenance_sha256"] == _sha(
+        tmp_path / "P3/p3_pixel_provenance.npz"
+    )
+    assert completion["diagnostic_only"] is True
+    assert completion["production_eligible"] is False
+    assert completion["effective_config_sha256"] == expected["config"]
+    assert completion["graph_topology_sha256"] == expected["topology"]
+    assert "hard_audit.json" in completion["assets_sha256"]
+
+
+def test_failed_final_verifier_preserves_p2_pointer_and_removes_p3(tmp_path: Path) -> None:
+    p2, pending, expected = _fixture(tmp_path)
+    pointer = tmp_path / "current_latest.json"
+    before = {"stage": "P2", "sentinel": True}
+    _write_json(pointer, before)
+    audit = _audit(p2, pending, expected)
+    mask = cv2.imread(str(pending / "p3_valid_mask.png"), cv2.IMREAD_UNCHANGED)
+    mask[0, 0] = 0
+    cv2.imwrite(str(pending / "p3_valid_mask.png"), mask)
+    with pytest.raises(ValueError, match="independent replay"):
+        promote_verified_pending(pending, tmp_path / "P3", pointer, audit, generation_id="g")
+    assert json.loads(pointer.read_text()) == before
+    assert not (tmp_path / "P3").exists()
 
 
 def test_pair_transaction_parent_mutation_fails(tmp_path: Path) -> None:

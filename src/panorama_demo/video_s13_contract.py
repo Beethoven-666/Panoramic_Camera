@@ -8,15 +8,34 @@ from typing import Any, Mapping
 
 from .video_algorithm import load_algorithm_config
 from .video_s13_m61_config import (
+    FORMAL_M6_ALGORITHM_ID,
+    FORMAL_M6_IMPLEMENTATION_ID,
     M61_ALGORITHM_ID,
     M61_CONTRACT_SCHEMA,
     M61_IMPLEMENTATION_ID,
+    M61_P2_COMPLETION_SCHEMA,
 )
 
 
 S13_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v3"
 S13_IMPLEMENTATION_ID = "s013_output_first_progressive_dense_central_slit_preview"
 S13_CONTRACT_SCHEMA = "gemini305-video-s13-output-first/v3"
+S13_FORMAL_M6_ALGORITHM_ID = FORMAL_M6_ALGORITHM_ID
+S13_FORMAL_M6_IMPLEMENTATION_ID = FORMAL_M6_IMPLEMENTATION_ID
+
+_S13_COMPONENT_NAME = "s013_output_first_progressive_dense_central_slit"
+_S13_IDENTITY_CONTRACTS = {
+    (S13_ALGORITHM_ID, S13_IMPLEMENTATION_ID): (
+        S13_CONTRACT_SCHEMA,
+        "gemini305-video-s13-p2-completion/v3",
+        False,
+    ),
+    (S13_FORMAL_M6_ALGORITHM_ID, S13_FORMAL_M6_IMPLEMENTATION_ID): (
+        M61_CONTRACT_SCHEMA,
+        M61_P2_COMPLETION_SCHEMA,
+        True,
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -62,19 +81,26 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
         raise ValueError("S1.3 requires gemini305-video-candidate/v1")
     if document.get("role") != "candidate":
         raise ValueError("S1.3 is candidate-only")
-    if document.get("candidate_id") != S13_ALGORITHM_ID or document.get("algorithm_id") != S13_ALGORITHM_ID:
+    algorithm_id = document.get("algorithm_id")
+    if document.get("candidate_id") != algorithm_id:
         raise ValueError("S1.3 candidate identity is not exact")
-    if document.get("implementation_id") != S13_IMPLEMENTATION_ID:
+    identity_contract = _S13_IDENTITY_CONTRACTS.get(
+        (algorithm_id, document.get("implementation_id"))
+    )
+    if identity_contract is None:
         raise ValueError("S1.3 implementation identity is not exact")
+    contract_schema, p2_completion_schema, requires_m61_bootstrap = identity_contract
     if document.get("allow_baseline_fallback") is not False:
         raise ValueError("S1.3 forbids baseline fallback")
     components = _mapping(document.get("components"), "components")
     component = _mapping(
-        components.get("s013_output_first_progressive_dense_central_slit"),
+        components.get(_S13_COMPONENT_NAME),
         "component",
     )
-    if component.get("contract_schema") != S13_CONTRACT_SCHEMA:
+    if component.get("contract_schema") != contract_schema:
         raise ValueError("S1.3 contract schema is invalid")
+    if requires_m61_bootstrap:
+        _mapping(document.get("m61_bootstrap"), "M6.1 bootstrap")
     if (
         component.get("diagnostic_only") is not True
         or component.get("production_eligible") is not False
@@ -114,18 +140,26 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
     if output.get("write_production_delivery") is not False:
         raise ValueError("S1.3 cannot write production delivery")
     forward = _mapping(component.get("forward_pipeline"), "forward_pipeline")
-    if list(forward.get("stage_order", ())) != ["P0", "P1", "P2", "P3"]:
-        raise ValueError("S1.3 M6 stage order must stop at P3")
+    expected_stage_order = ["P0", "P1", "P2", "P3", "P4"] if requires_m61_bootstrap else [
+        "P0", "P1", "P2", "P3",
+    ]
+    if list(forward.get("stage_order", ())) != expected_stage_order:
+        raise ValueError("S1.3 forward stage order is invalid")
     if (
         forward.get("default_stop_after") != "P3"
         or forward.get("forbid_parent_reselection") is not True
         or forward.get("current_preview_runtime_authority") is not False
     ):
         raise ValueError("S1.3 M6 forward pointer contract is invalid")
+    if requires_m61_bootstrap and (
+        forward.get("allow_resume_from_sealed_stage") is not True
+        or forward.get("p4_requires_certified_handoff_and_actual_winner") is not True
+    ):
+        raise ValueError("S1.3 M7 must require a sealed handoff and an actual winner")
     replay = _mapping(component.get("p2_replay"), "p2_replay")
     if (
         replay.get("enabled") is not True
-        or replay.get("completion_schema") != "gemini305-video-s13-p2-completion/v3"
+        or replay.get("completion_schema") != p2_completion_schema
         or int(replay.get("maximum_secondary_corridor_width_px", -1)) != 8
         or replay.get("require_transaction_hash_match") is not True
     ):
@@ -144,16 +178,63 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
     ):
         raise ValueError("S1.3 M6 photometric safety contract is invalid")
     blend = _mapping(component.get("blend"), "blend")
+    expected_blend_width = 2 if requires_m61_bootstrap else 8
+    expected_blend_levels = 1 if requires_m61_bootstrap else 2
     if (
         blend.get("enabled") is not True
         or blend.get("safe_background_only") is not True
-        or int(blend.get("maximum_total_width_px", -1)) != 8
-        or int(blend.get("maximum_levels", -1)) != 2
+        or int(blend.get("maximum_total_width_px", -1)) != expected_blend_width
+        or int(blend.get("maximum_levels", -1)) != expected_blend_levels
         or int(blend.get("maximum_color_contributors_per_pixel", -1)) != 2
         or float(blend.get("protected_structure_weight", -1)) != 0.0
         or blend.get("failure_policy") != "owner_only"
     ):
         raise ValueError("S1.3 M6 blend safety contract is invalid")
+    if requires_m61_bootstrap:
+        if (
+            list(blend.get("model_candidates", ()))
+            != ["B0_owner_only", "B1_narrow_feather_2px"]
+            or list(blend.get("ineligible_models", ()))
+            != ["B2_safe_masked_multiband", "B3", "B4"]
+            or blend.get("adaptive_levels") is not False
+        ):
+            raise ValueError("S1.3 formal M6 permits only B0 or total-width-2 B1")
+        repair = _mapping(component.get("repair"), "repair")
+        if (
+            repair.get("enabled") is not True
+            or repair.get("authorization_schema") != "gemini305-video-s13-m7-handoff/v2"
+            or list(repair.get("allowed_stage_exits", ()))
+            != ["completed_target", "completed_manual_forward"]
+            or repair.get("manual_forward_authorization_schema")
+            != "gemini305-video-s13-m7-manual-forward-authorization/v1"
+            or repair.get("manual_forward_requires_explicit_user_authorization") is not True
+            or repair.get("manual_forward_preserve_automatic_quality_records") is not True
+            or repair.get("manual_forward_core_only") is not True
+            or list(repair.get("allowed_component_classes", ()))
+            != ["protected", "geometry", "seam", "owner"]
+            or list(repair.get("core_candidates", ())) != [
+                "R0_keep_p3", "R1_b1_2px_to_b0_owner_only",
+                "R2_downgrade_seam_reestimate_geometry",
+                "R3_downgrade_geometry_reselect_seam",
+            ]
+            or repair.get("no_handoff_or_no_winner_policy") != "no_p4_keep_p3"
+        ):
+            raise ValueError("S1.3 M7 authorization/Core contract is invalid")
+        required_true = (
+            "completed_target_requires_m7_handoff_eligible",
+            "systemic_photometric_component_forbidden",
+            "adjacent_or_merged_seam_component_forbidden",
+            "q_parameters_frozen", "thresholds_frozen", "source_set_frozen",
+        )
+        required_false = (
+            "q4_enabled", "low_frequency_field_enabled", "expanded_feather_enabled",
+            "multiband_enabled", "cross_pair_joint_repair_enabled", "frame_insertion_enabled",
+            "graphcut_enabled", "depth_risk_enabled", "bounded_mesh_enabled",
+        )
+        if any(repair.get(key) is not True for key in required_true) or any(
+            repair.get(key) is not False for key in required_false
+        ):
+            raise ValueError("S1.3 M7 frozen/disabled safety contract is invalid")
     return S13Config(path=path, document=document, component=component)
 
 
@@ -163,7 +244,33 @@ def load_s13_config(path: str | Path) -> S13Config:
 
 
 def is_s13_identity(*, algorithm_id: str, implementation_id: str, role: str) -> bool:
-    return role == "candidate" and algorithm_id == S13_ALGORITHM_ID and implementation_id == S13_IMPLEMENTATION_ID
+    return role == "candidate" and (algorithm_id, implementation_id) in _S13_IDENTITY_CONTRACTS
+
+
+def claims_s13_document(document: Mapping[str, Any]) -> bool:
+    """Recognize exact or malformed full-chain S1.3 claims before dispatch.
+
+    A config which names either supported identity half, schema, or component
+    must pass the strict S1.3 validator; it may not fall through to a legacy
+    candidate renderer after mutating the other half of its identity.
+    """
+
+    algorithms = {identity[0] for identity in _S13_IDENTITY_CONTRACTS}
+    implementations = {identity[1] for identity in _S13_IDENTITY_CONTRACTS}
+    values = {
+        document.get("candidate_id"),
+        document.get("algorithm_id"),
+        document.get("implementation_id"),
+    }
+    if values & (algorithms | implementations):
+        return True
+    components = document.get("components")
+    if isinstance(components, Mapping) and _S13_COMPONENT_NAME in components:
+        return True
+    component = components.get(_S13_COMPONENT_NAME) if isinstance(components, Mapping) else None
+    return isinstance(component, Mapping) and component.get("contract_schema") in {
+        contract[0] for contract in _S13_IDENTITY_CONTRACTS.values()
+    }
 
 
 def is_s13_m61_identity(*, algorithm_id: str, implementation_id: str, role: str) -> bool:
@@ -180,10 +287,13 @@ __all__ = [
     "S13_ALGORITHM_ID",
     "S13_CONTRACT_SCHEMA",
     "S13_IMPLEMENTATION_ID",
+    "S13_FORMAL_M6_ALGORITHM_ID",
+    "S13_FORMAL_M6_IMPLEMENTATION_ID",
     "M61_ALGORITHM_ID",
     "M61_CONTRACT_SCHEMA",
     "M61_IMPLEMENTATION_ID",
     "S13Config",
+    "claims_s13_document",
     "is_s13_identity",
     "is_s13_m61_identity",
     "load_s13_config",
