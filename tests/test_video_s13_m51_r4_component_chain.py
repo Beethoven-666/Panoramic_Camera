@@ -1476,8 +1476,17 @@ def test_runtime_forward_cache_carries_unsigned_and_signed_orientation_separatel
     assert rows
     assert all("orientation_agreement" in row for row in rows)
     assert all("signed_gradient_agreement" in row for row in rows)
+    assert all("exact_score" in row for row in rows)
     assert all(0.0 <= float(row["orientation_agreement"]) <= 1.0 for row in rows)
     assert all(-1.0 <= float(row["signed_gradient_agreement"]) <= 1.0 for row in rows)
+    for row in rows:
+        assert float(row["score"]) == pytest.approx(
+            float(row["correlation"]) * float(row["orientation_agreement"])
+        )
+        assert float(row["exact_score"]) == pytest.approx(
+            float(row["score"])
+            * max(0.0, float(row["signed_gradient_agreement"]))
+        )
 
 
 def _runtime_trace(

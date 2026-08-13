@@ -349,7 +349,9 @@ def append_s13_exact_component_evidence_from_forward_context(
                 signed_gradient_agreement = float(row.get(
                     "signed_gradient_agreement", orientation_agreement
                 ))
-                score_sum[index] += count * float(row["score"])
+                score_sum[index] += count * float(
+                    row.get("exact_score", row["score"])
+                )
                 correlation_sum[index] += count * correlation
                 agreement_sum[index] += count * orientation_agreement
                 signed_agreement_sum[index] += count * signed_gradient_agreement
@@ -610,16 +612,17 @@ def pair_edge_registration_metrics(
                 ))
                 if np.any(orientation_usable) else 0.0
             )
-            score = (
-                correlation
-                * max(0.0, orientation_agreement)
-                * max(0.0, signed_gradient_agreement)
-            )
+            # Preserve the frozen v6-r1 pair/seam selection score exactly.
+            # Signed-gradient agreement is an R4 physical-component gate and
+            # must not perturb the pre-C2E baseline candidate ranking.
+            score = correlation * max(0.0, orientation_agreement)
+            exact_score = score * max(0.0, signed_gradient_agreement)
             lag_rows.append({"lag": float(lag), "correlation": correlation,
                              "orientation_difference": orientation_difference,
                              "orientation_agreement": orientation_agreement,
                              "signed_gradient_agreement": signed_gradient_agreement,
-                             "score": score, "support": int(keep.sum()),
+                             "score": score, "exact_score": exact_score,
+                             "support": int(keep.sum()),
                              "normal_x": float(nx), "normal_y": float(ny)})
         if not lag_rows:
             if exact_evidence_sink is not None or forward_evidence_sink is not None:
