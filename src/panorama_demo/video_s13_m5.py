@@ -52,6 +52,7 @@ from .video_s13_m51_r4_component_chain import (
     build_s13_source_component_correction,
     evaluate_s13_component_candidate_quality,
     freeze_s13_baseline_c2e_obligations,
+    make_s13_edge_component_observation,
     S13ComponentSegmentCandidate,
     S13ComponentPatchSet,
     select_s13_component_patch_set,
@@ -65,6 +66,47 @@ from .video_s13_m51_r4_component_chain import (
 S13SourceMapProvider = Callable[
     [int, int, int], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
 ]
+
+
+def _component_trace_metrics(
+    observations: Sequence[object], *, config: S13M51R4Config
+) -> dict[str, float | bool]:
+    lags = np.asarray([
+        0.5 * (
+            float(row.forward_best_lag_px) - float(row.reverse_best_lag_px)
+        )
+        for row in observations
+    ], dtype=np.float64)
+    if lags.size == 0 or not np.isfinite(lags).all():
+        raise ValueError("component ROI has no finite edge trace")
+    break_length = 0.0
+    double_edge_length = 0.0
+    guard_steps = []
+    for row, lag in zip(observations, lags, strict=True):
+        x0, y0, x1, y1 = row.global_bbox_xyxy
+        trace_length = float(max(x1 - x0, y1 - y0))
+        if (
+            int(row.forward_valid_samples) < 2
+            or int(row.reverse_valid_samples) < 2
+            or float(row.correlation) < config.minimum_c2e_correlation
+        ):
+            break_length += trace_length
+        if float(row.uniqueness_fraction) < config.minimum_c2e_uniqueness_fraction:
+            double_edge_length += trace_length
+        if abs(float(lag)) <= config.maximum_post_edge_p95_px:
+            guard_steps.append(abs(float(lag)))
+    absolute = np.abs(lags)
+    return {
+        "edge_p50_px": float(np.percentile(absolute, 50.0)),
+        "edge_p95_px": float(np.percentile(absolute, 95.0)),
+        "maximum_step_px": float(np.max(absolute)),
+        "break_length_px": break_length,
+        "double_edge_length_px": double_edge_length,
+        "non_target_p95_px": (
+            float(np.percentile(guard_steps, 95.0)) if guard_steps else 0.0
+        ),
+        "search_boundary_hit": any(row.search_boundary_hit for row in observations),
+    }
 
 
 @dataclass(frozen=True)
@@ -1582,8 +1624,15 @@ def run_s13_m5(
 ) -> S13M5Result:
     started = time.perf_counter()
     tick = time.perf_counter()
+    raw_cache: dict[int, np.ndarray] = {}
+
+    def cached_image_loader(frame_id: int) -> np.ndarray:
+        if frame_id not in raw_cache:
+            raw_cache[frame_id] = np.asarray(image_loader(frame_id))
+        return raw_cache[frame_id]
+
     pairs = estimate_s13_m5_transactions(
-        schedule, calibration, image_loader, vertical,
+        schedule, calibration, cached_image_loader, vertical,
         parent_stage_sha256=parent_stage_sha256,
         parent_result_sha256=parent_result_sha256,
         p0_ancestor_completion_sha256=p0_ancestor_completion_sha256,
@@ -1594,6 +1643,8 @@ def run_s13_m5(
     component_patch_set: S13ComponentPatchSet | None = None
     component_field_ids: dict[str, int] = {}
     geometry_seconds = 0.0
+    roi_candidate_pixels = 0
+    roi_preview_count = 0
     if isinstance(m51_r2_config, S13M51R4Config):
         component_started = time.perf_counter()
         geometry_seconds = component_started - tick
@@ -1622,6 +1673,91 @@ def run_s13_m5(
             (observation.pair_index, observation.component_id): evidence
             for pair in pairs for observation, evidence in pair.component_evidence
         }
+        def measure_candidate_roi(
+            segment_observations: Sequence[object],
+            corrections: Sequence[object],
+        ) -> dict[str, float | bool]:
+            nonlocal roi_candidate_pixels, roi_preview_count
+            measured = []
+            field_ids = {
+                row.segment_id: index
+                for index, row in enumerate(sorted(
+                    corrections, key=lambda item: (item.segment_id, item.source_index)
+                ))
+            }
+            halo = int(math.ceil(
+                m51_r2_config.normal_search_maximum_px
+                + m51_r2_config.normal_taper_radius_px
+            ))
+            for observation in segment_observations:
+                evidence = evidence_by_component.get(
+                    (observation.pair_index, observation.component_id)
+                )
+                if evidence is None:
+                    raise ValueError("segment ROI evidence is missing")
+                bx0, by0, bx1, by1 = observation.global_bbox_xyxy
+                x0 = max(0, bx0 - halo)
+                x1 = min(schedule.canvas_width, bx1 + halo)
+                y0 = max(0, by0 - halo)
+                y1 = min(schedule.canvas_height, by1 + halo)
+                if x1 <= x0 or y1 <= y0:
+                    raise ValueError("segment ROI domain is empty")
+                source_features = []
+                for source_index in observation.source_indices:
+                    alignment = None
+                    if source_index > 0 and pairs[source_index - 1].alignment is not None:
+                        alignment = pairs[source_index - 1].alignment.selected
+                    source_corrections = tuple(
+                        row for row in corrections if row.source_index == source_index
+                    )
+                    maps = _map_crop(
+                        schedule, calibration, source_index, x0, x1,
+                        vertical.global_offsets_px[source_index], alignment,
+                        source_corrections, field_ids,
+                    )
+                    sliced_maps = tuple(row[y0:y1] for row in maps)
+                    sampled, _valid = _sample_crop(
+                        cached_image_loader(
+                            int(schedule.assignments[source_index].frame_id)
+                        ),
+                        sliced_maps,
+                    )
+                    features = prepare_seam_structure(sampled)
+                    if features is None:
+                        raise ValueError("segment ROI feature construction failed")
+                    source_features.append(features)
+                    roi_candidate_pixels += int((x1 - x0) * (y1 - y0))
+                if roi_candidate_pixels > m51_r2_config.maximum_total_roi_candidate_pixels:
+                    raise ValueError("component ROI candidate pixel budget exceeded")
+                support = np.asarray(evidence.support_xy, dtype=np.int32).copy()
+                support[:, 0] -= x0
+                support[:, 1] -= y0
+                left_features, right_features = source_features
+                measured_observation, _measured_evidence = (
+                    make_s13_edge_component_observation(
+                        pair_index=observation.pair_index,
+                        component_id=observation.component_id,
+                        source_indices=observation.source_indices,
+                        support_xy=support,
+                        left_magnitude=left_features.gradient,
+                        right_magnitude=right_features.gradient,
+                        left_gradient_x=left_features.gradient_x,
+                        left_gradient_y=left_features.gradient_y,
+                        right_gradient_x=right_features.gradient_x,
+                        right_gradient_y=right_features.gradient_y,
+                        minimum_correlation=m51_r2_config.minimum_c2e_correlation,
+                        minimum_uniqueness_fraction=(
+                            m51_r2_config.minimum_c2e_uniqueness_fraction
+                        ),
+                        maximum_forward_reverse_discrepancy_px=(
+                            m51_r2_config.maximum_forward_reverse_discrepancy_px
+                        ),
+                    )
+                )
+                measured.append(measured_observation)
+            roi_preview_count += 1
+            return _component_trace_metrics(measured, config=m51_r2_config)
+
         chain_by_id = {chain.chain_id: chain for chain in chains}
         final_seams_for_gauge = _seams_array(schedule, pairs, final=True)
         gauge_owner = np.zeros(
@@ -1648,13 +1784,9 @@ def run_s13_m5(
                     0.5 * (row.forward_best_lag_px - row.reverse_best_lag_px)
                     for row in segment.observations
                 ], dtype=np.float64)
-                baseline_metrics = {
-                    "edge_p95_px": float(np.percentile(np.abs(lags), 95.0)),
-                    "maximum_step_px": float(np.max(np.abs(lags))),
-                    "break_length_px": 0.0,
-                    "double_edge_length_px": 0.0,
-                    "non_target_p95_px": 0.0,
-                }
+                baseline_metrics = _component_trace_metrics(
+                    segment.observations, config=m51_r2_config
+                )
                 for gain in m51_r2_config.correction_gain_candidates:
                     corrections = []
                     for source in segment.source_indices:
@@ -1680,24 +1812,9 @@ def run_s13_m5(
                             normal_xy=chain.canonical_normal_xy,
                             config=m51_r2_config,
                         ))
-                    residuals = np.asarray([
-                        0.5 * (row.forward_best_lag_px - row.reverse_best_lag_px)
-                        + float(gain) * (
-                            float(offsets[row.source_indices[1]])
-                            - float(offsets[row.source_indices[0]])
-                        )
-                        for row in segment.observations
-                    ], dtype=np.float64)
-                    candidate_metrics = {
-                        "edge_p95_px": float(np.percentile(np.abs(residuals), 95.0)),
-                        "maximum_step_px": float(np.max(np.abs(residuals))),
-                        "break_length_px": 0.0,
-                        "double_edge_length_px": 0.0,
-                        "non_target_p95_px": 0.0,
-                        "search_boundary_hit": any(
-                            row.search_boundary_hit for row in segment.observations
-                        ),
-                    }
+                    candidate_metrics = measure_candidate_roi(
+                        segment.observations, corrections
+                    )
                     quality = evaluate_s13_component_candidate_quality(
                         baseline=baseline_metrics,
                         candidate=candidate_metrics,
@@ -1720,7 +1837,8 @@ def run_s13_m5(
                         **dict(quality.audit),
                         "rescued_severe_seam_count": sum(abs(value) > 1.0 for value in lags),
                         "worst_seam_absolute_improvement": float(
-                            np.max(np.abs(lags)) - np.max(np.abs(residuals))
+                            np.max(np.abs(lags))
+                            - float(candidate_metrics["maximum_step_px"])
                         ),
                         "supported_unique_edge_columns": int(
                             sum(row.reference_support_samples for row in segment.observations)
@@ -1834,6 +1952,8 @@ def run_s13_m5(
             "forward_reverse_hypotheses": hypothesis_rows,
             "fatal_failures": [],
             "passed": True,
+            "roi_candidate_pixels": roi_candidate_pixels,
+            "roi_preview_count": roi_preview_count,
         }
         component_chain_seconds = time.perf_counter() - component_started
     else:
@@ -1871,12 +1991,12 @@ def run_s13_m5(
         frozen_map_provider if isinstance(m51_r2_config, S13M51R4Config) else None
     )
     geometry = render_s13_p2_from_raw(
-        schedule, calibration, image_loader, vertical, pairs, final_seams=False,
+        schedule, calibration, cached_image_loader, vertical, pairs, final_seams=False,
         selected_hypothesis_ids=selected_hypothesis_ids, placement_methods=placement_methods,
         map_provider=formal_provider,
     )
     final = render_s13_p2_from_raw(
-        schedule, calibration, image_loader, vertical, pairs, final_seams=True,
+        schedule, calibration, cached_image_loader, vertical, pairs, final_seams=True,
         selected_hypothesis_ids=selected_hypothesis_ids, placement_methods=placement_methods,
         map_provider=formal_provider,
     )
@@ -2290,7 +2410,7 @@ def run_s13_m5(
             "chain_linear_solve_count": int(
                 0 if component_chain_audit is None else component_chain_audit["segment_count"]
             ),
-            "chain_roi_preview_count": 0,
+            "chain_roi_preview_count": roi_preview_count,
             "component_correction_pixel_count": int(
                 0 if component_patch_set is None else sum(
                     np.count_nonzero(correction.weight > 0.0)

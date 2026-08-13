@@ -64,7 +64,7 @@ function Invoke-TimedCandidate {
     )
     $savedPythonPath = $env:PYTHONPATH
     $env:PYTHONPATH = (Join-Path $SourceRoot 'src')
-    & $Python -m panorama_demo.video_experiment `
+    & $Python -c 'from panorama_demo.video_experiment import main; main()' `
         $FastInput `
         --output $RunRoot `
         --algorithm candidate `
