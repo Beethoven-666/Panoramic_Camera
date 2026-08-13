@@ -22,6 +22,8 @@ from typing import Callable, Literal, Mapping
 import cv2
 import numpy as np
 
+from .video_s13_m51_r2 import S13M51R2Config
+
 
 AlignmentSide = Literal["left", "right"]
 QualityEvaluator = Callable[[str, np.ndarray, np.ndarray, np.ndarray], Mapping[str, object]]
@@ -139,6 +141,7 @@ class S13PairAlignment:
     selected_candidate_index: int
     fallback_order: tuple[str, ...]
     reestimated_for_final_seam: bool
+    seam_local_evidence: Mapping[str, object] | None = None
 
     @property
     def selected(self) -> S13AlignmentCandidate:
@@ -381,6 +384,7 @@ def estimate_s13_pair_alignment(
     quality_evaluator: QualityEvaluator | None = None,
     config: S13AlignmentConfig | None = None,
     reestimated_for_final_seam: bool = False,
+    seam_local_evidence: Mapping[str, object] | None = None,
 ) -> S13PairAlignment:
     """Estimate and audit C0--C4 from one immutable P0 non-reference grid.
 
@@ -547,6 +551,9 @@ def estimate_s13_pair_alignment(
         application_band=application_band, candidates=tuple(candidates),
         selected_model=selected_model, selected_candidate_index=by_model[selected_model],
         fallback_order=fallback_order, reestimated_for_final_seam=bool(reestimated_for_final_seam),
+        seam_local_evidence=(
+            None if seam_local_evidence is None else dict(seam_local_evidence)
+        ),
     )
 
 
@@ -580,12 +587,88 @@ def final_corridor_application_band(
     return S13ApplicationBand(left.astype(np.int32), right.astype(np.int32))
 
 
+def filter_s13_correspondences_for_final_seam(
+    reference_points_xy: np.ndarray,
+    non_reference_points_xy: np.ndarray,
+    final_seam_x_by_row: np.ndarray,
+    *,
+    evidence_half_widths_px: tuple[int, ...] = (16, 24),
+    moving_margin_px: int = 8,
+    minimum_required_points: int = 36,
+) -> tuple[np.ndarray, np.ndarray, Mapping[str, object]]:
+    """Select deterministic, seam-local evidence without a shoulder fallback."""
+
+    reference = np.asarray(reference_points_xy, dtype=np.float64)
+    moving = np.asarray(non_reference_points_xy, dtype=np.float64)
+    seam = np.asarray(final_seam_x_by_row)
+    widths = tuple(int(value) for value in evidence_half_widths_px)
+    if (
+        reference.ndim != 2
+        or reference.shape[1:] != (2,)
+        or moving.shape != reference.shape
+    ):
+        raise ValueError("S1.3 M5 seam-local correspondences must be paired Nx2 arrays")
+    if seam.ndim != 1 or not np.issubdtype(seam.dtype, np.integer) or seam.size == 0:
+        raise ValueError("S1.3 M5 final seam must be a non-empty integer row vector")
+    if (
+        not widths
+        or any(value <= 0 for value in widths)
+        or tuple(sorted(set(widths))) != widths
+        or moving_margin_px < 0
+        or minimum_required_points < 1
+    ):
+        raise ValueError("S1.3 M5 seam-local evidence limits are invalid")
+
+    finite = np.isfinite(reference).all(axis=1) & np.isfinite(moving).all(axis=1)
+    ref_y_ok = finite & (reference[:, 1] >= 0.0) & (reference[:, 1] <= seam.size - 1.0)
+    mov_y_ok = finite & (moving[:, 1] >= 0.0) & (moving[:, 1] <= seam.size - 1.0)
+    rows_ok = ref_y_ok & mov_y_ok
+    valid_indices = np.flatnonzero(rows_ok)
+    ref_rows = np.rint(reference[valid_indices, 1]).astype(np.int32)
+    mov_rows = np.rint(moving[valid_indices, 1]).astype(np.int32)
+    ref_distance = np.abs(reference[valid_indices, 0] - seam[ref_rows])
+    mov_distance = np.abs(moving[valid_indices, 0] - seam[mov_rows])
+
+    selected_indices: np.ndarray | None = None
+    selected_width: int | None = None
+    counts_by_width: dict[str, int] = {}
+    for width in widths:
+        local = (ref_distance <= width) & (
+            mov_distance <= width + int(moving_margin_px)
+        )
+        indices = valid_indices[local]
+        counts_by_width[str(width)] = int(indices.size)
+        if indices.size >= minimum_required_points:
+            selected_indices = indices
+            selected_width = width
+            break
+
+    sufficient = selected_indices is not None
+    if selected_indices is None:
+        selected_indices = np.empty(0, dtype=np.int64)
+    audit: dict[str, object] = {
+        "requested_half_widths_px": list(widths),
+        "selected_half_width_px": selected_width,
+        "raw_count": int(len(reference)),
+        "finite_in_bounds_row_count": int(valid_indices.size),
+        "selected_count": int(selected_indices.size),
+        "minimum_required_count": int(minimum_required_points),
+        "sufficient_for_train_held_out": sufficient,
+        "wide_evidence": bool(selected_width is not None and selected_width != widths[0]),
+        "full_shoulder_fallback_used": False,
+        "mode": "seam_local" if sufficient else "seam_local_insufficient",
+        "counts_by_half_width_px": counts_by_width,
+    }
+    return reference[selected_indices], moving[selected_indices], audit
+
+
 def reestimate_s13_final_corridor_alignment(
     *,
     final_seam_x_by_row: np.ndarray,
     application_half_width_px: int,
     allowed_left_x_by_row: np.ndarray | None = None,
     allowed_right_x_by_row: np.ndarray | None = None,
+    m51_r2_config: S13M51R2Config | None = None,
     **estimator_arguments: object,
 ) -> S13PairAlignment:
     """Re-estimate geometry around a moved seam from the immutable P0 grids.
@@ -605,6 +688,19 @@ def reestimate_s13_final_corridor_alignment(
         allowed_right_x_by_row=allowed_right_x_by_row,
     )
     arguments = dict(estimator_arguments)
+    successor = m51_r2_config or S13M51R2Config()
+    if successor.enabled:
+        reference, moving, evidence_audit = filter_s13_correspondences_for_final_seam(
+            np.asarray(arguments.get("reference_points_xy"), dtype=np.float64),
+            np.asarray(arguments.get("non_reference_points_xy"), dtype=np.float64),
+            np.asarray(final_seam_x_by_row),
+            evidence_half_widths_px=successor.evidence_half_widths_px,
+            moving_margin_px=successor.moving_evidence_margin_px,
+            minimum_required_points=36,
+        )
+        arguments["reference_points_xy"] = reference
+        arguments["non_reference_points_xy"] = moving
+        arguments["seam_local_evidence"] = evidence_audit
     arguments["application_band"] = band
     arguments["reestimated_for_final_seam"] = True
     return estimate_s13_pair_alignment(**arguments)  # type: ignore[arg-type]
@@ -613,5 +709,6 @@ def reestimate_s13_final_corridor_alignment(
 __all__ = [
     "AlignmentSide", "QualityEvaluator", "S13AlignmentCandidate", "S13AlignmentConfig",
     "S13ApplicationBand", "S13PairAlignment", "estimate_s13_pair_alignment",
-    "final_corridor_application_band", "reestimate_s13_final_corridor_alignment",
+    "filter_s13_correspondences_for_final_seam", "final_corridor_application_band",
+    "reestimate_s13_final_corridor_alignment",
 ]

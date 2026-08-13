@@ -35,6 +35,7 @@ from .video_s13_bundle import (
 )
 from .video_s13_contract import (
     S13_FORMAL_M6_ALGORITHM_ID,
+    S13_M51_R2_P2_COMPLETION_SCHEMA,
     load_s13_config,
 )
 from .video_s13_motion import measure_s13_motion
@@ -274,10 +275,13 @@ def _run_m5(
     selected_hypothesis_ids: tuple[int, ...],
     placement_methods: tuple[str, ...],
     p2_completion_schema: str = P2_COMPLETION_SCHEMA,
+    m6_eligible: bool = True,
+    m6_blocked_reason: str | None = None,
     m61_evidence_config: S13PhotometricEvidenceConfig | None = None,
     m61_evidence_branch: str = "formal",
     m61_evidence_run_id: str = "",
     raw_rgb_sha256_by_frame: Mapping[int, str] | None = None,
+    m51_r2_config: object | None = None,
 ) -> dict[str, object]:
     from .session import CameraIntrinsics
     from .video_s12_schedule import S012Schedule
@@ -334,6 +338,7 @@ def _run_m5(
             p0_ancestor_completion_sha256=p0_completion_sha,
             selected_hypothesis_ids=selected_hypothesis_ids,
             placement_methods=placement_methods,
+            m51_r2_config=m51_r2_config,
         )
         write_image(pending / "geometry_panorama_owner_only.png", m5.geometry_result.image)
         write_image(pending / "geometry_and_seam_panorama_owner_only.png", m5.final_result.image)
@@ -343,7 +348,11 @@ def _run_m5(
         write_npz(pending / "p2_pixel_provenance.npz", m5.final_result.pixel_provenance)
         transaction_rows = [dict(pair.transaction) for pair in m5.pairs]
         atomic_write_json(pending / "pair_transactions.json", {
-            "schema": "gemini305-video-s13-m5-pair-transactions/v1",
+            "schema": (
+                "gemini305-video-s13-m5-pair-transactions/v2"
+                if p2_completion_schema == S13_M51_R2_P2_COMPLETION_SCHEMA
+                else "gemini305-video-s13-m5-pair-transactions/v1"
+            ),
             "all_pairs_reported": len(transaction_rows) == len(schedule.assignments) - 1,
             "pairs": transaction_rows,
         })
@@ -421,7 +430,10 @@ def _run_m5(
                 raw_rgb_sha256=raw_rgb_sha256_by_frame,
                 config=m61_evidence_config,
             )
-        elif p2_completion_schema != P2_COMPLETION_SCHEMA:
+        elif p2_completion_schema not in (
+            P2_COMPLETION_SCHEMA,
+            S13_M51_R2_P2_COMPLETION_SCHEMA,
+        ):
             raise ValueError("S1.3 P2 completion schema is unsupported")
         ranked = sorted(
             enumerate(m5.pairs),
@@ -444,6 +456,7 @@ def _run_m5(
             "schema": "gemini305-video-s13-m5-worst-seam-crops/v1", "crops": crop_rows,
         })
         performance = {
+            **dict(m5.performance),
             "input_and_preflight": 0.0,
             "trajectory": 0.0,
             "motion_measurement": 0.0,
@@ -461,9 +474,9 @@ def _run_m5(
             "total_wall_time": time.perf_counter() - started,
             "total_m5": time.perf_counter() - started,
             "m4_reestimated_in_m5": False,
-            "gain_enumeration_count_in_m5": 0,
+            "gain_enumeration_count_in_m5": int(m5.performance.get("gain_enumeration_count", 0)),
             "m4_selection_full_resolution_render_count": 0,
-            "p2_full_resolution_render_count": 2,
+            "p2_full_resolution_render_count": int(m5.performance.get("p2_full_resolution_render_count", 2)),
             "peak_memory": None,
             "excluded_after_m5": ["photometric", "luminance_field", "feather", "multiband", "depth", "mesh", "source_rescue"],
         }
@@ -531,7 +544,12 @@ def _run_m5(
                     "graphcut", "photometric_gain_bias", "luminance_field", "feather", "multiband",
                     "depth", "mesh", "source_rescue", "production_renderer",
                 ],
+                "m6_eligible": bool(m6_eligible),
             }
+        if not m6_eligible:
+            if not isinstance(m6_blocked_reason, str) or not m6_blocked_reason:
+                raise ValueError("S1.3 P2-only completion requires an M6 blocked reason")
+            completion_metadata["m6_blocked_reason"] = m6_blocked_reason
         if photometric_replay is not None:
             completion_metadata.update({
                 "native_p2_v4": True,
@@ -1038,7 +1056,7 @@ def run_s13_experiment(
     simulate_optimizer_all_fail: bool = False,
     run_m4: bool = True,
     run_m5: bool = True,
-    run_m6: bool = True,
+    run_m6: bool | None = None,
     resume_generation: Path | None = None,
 ) -> dict[str, Any]:
     run_started = time.perf_counter()
@@ -1051,7 +1069,29 @@ def run_s13_experiment(
         or algorithm_spec.config_sha256 != candidate_config_sha(config.document)
     ):
         raise ValueError("S1.3 dispatch identity/config binding changed after validation")
+    if config.p2_only and run_m6 is True:
+        raise ValueError("S1.3 v5 is P2-only and cannot run M6/P3")
+    if config.p2_only and resume_generation is not None:
+        raise ValueError("S1.3 v5 is P2-only and cannot resume into M6/P3")
+    if run_m6 is None:
+        run_m6 = config.identity.default_stop_after != "P2"
+    if run_m6 and not config.m6_eligible:
+        raise ValueError("S1.3 identity is not M6 eligible")
     formal_m6 = configured_algorithm_id == S13_FORMAL_M6_ALGORITHM_ID
+    from .video_s13_m51_r2 import S13M51R2Config
+
+    m51_r2_document = config.component.get("m51_r2")
+    if config.m51_r2_enabled:
+        if not isinstance(m51_r2_document, Mapping):
+            raise ValueError("S1.3 v5 M5.1-r2 configuration is missing")
+        m51_r2_config = S13M51R2Config(**dict(m51_r2_document))
+    elif os.environ.get("G305_S13_M51_T0_STATS_ONLY", "0") == "1":
+        # Development-only instrumentation for the frozen legacy path.  It
+        # records PyrLK error distributions in a new generation but preserves
+        # the historical correspondence set and every pixel decision.
+        m51_r2_config = S13M51R2Config(enabled=False)
+    else:
+        m51_r2_config = None
     m61_evidence_config = S13PhotometricEvidenceConfig() if formal_m6 else None
     if m61_evidence_config is not None:
         # Validate every immutable M6 threshold/approval binding before the
@@ -1110,7 +1150,7 @@ def run_s13_experiment(
             raise ValueError("S1.3 M6 resume requires current_latest=P2 for the generation")
         if any((generation / name).exists() for name in ("P3", "M6")):
             raise ValueError("S1.3 M6 resume target already has a P3/M6 stage")
-        p2_schema = P2_V4_COMPLETION_SCHEMA if formal_m6 else P2_COMPLETION_SCHEMA
+        p2_schema = config.p2_completion_schema
         p2_completion_path = generation / "P2" / "P2_completion.json"
         p2_completion = verify_stage(
             generation / "P2", completion_name="P2_completion.json", schema=p2_schema,
@@ -1509,7 +1549,12 @@ def run_s13_experiment(
                     ),
                     placement_methods=selection.placement_methods,
                     p2_completion_schema=(
-                        P2_V4_COMPLETION_SCHEMA if formal_m6 else P2_COMPLETION_SCHEMA
+                        config.p2_completion_schema
+                    ),
+                    m6_eligible=config.m6_eligible,
+                    m6_blocked_reason=(
+                        "successor_p2_requires_fresh_four_branch_threshold_lineage"
+                        if config.p2_only else None
                     ),
                     m61_evidence_config=m61_evidence_config,
                     m61_evidence_branch="formal",
@@ -1521,6 +1566,7 @@ def run_s13_experiment(
                         }
                         if formal_m6 else None
                     ),
+                    m51_r2_config=m51_r2_config,
                 )
             except Exception as exc:
                 m5 = {
@@ -1611,7 +1657,7 @@ def run_s13_experiment(
         # The historical v3 report keeps its P0 compatibility fields.  The
         # new v4 identity is the first contract whose primary result is the
         # latest sealed forward stage.
-        primary_stage = final_stage if formal_m6 else {}
+        primary_stage = final_stage if (formal_m6 or config.p2_only) else {}
         report = {
             "schema": REPORT_SCHEMA, "algorithm_id": configured_algorithm_id,
             "implementation_id": configured_implementation_id,

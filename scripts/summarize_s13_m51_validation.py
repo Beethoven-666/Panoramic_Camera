@@ -64,9 +64,31 @@ def _run_summary(root: Path, name: str) -> dict[str, Any]:
     evaluation_status = Counter()
     hard_rejections = Counter()
     fallback_reasons = Counter()
+    evidence_widths = Counter()
+    lk_detected = lk_final = risk_pairs = unresolved_pairs = 0
+    edge_rows: list[dict[str, object]] = []
     for row in transactions:
         if row.get("fallback_used"):
             fallback_reasons[str(row.get("fallback_reason") or "unspecified")] += 1
+        correspondence = row.get("correspondence_filter", {})
+        if isinstance(correspondence, dict):
+            lk_detected += int(correspondence.get("detected_count", 0))
+            lk_final += int(correspondence.get("final_count", 0))
+        evidence = row.get("seam_local_evidence", {})
+        if isinstance(evidence, dict):
+            evidence_widths[str(evidence.get("selected_half_width_px"))] += 1
+        risk_pairs += int(bool(row.get("selection_continued_for_structure")))
+        unresolved_pairs += int(bool(row.get("unresolved_oblique_structure")))
+        edge = row.get("edge_registration", {})
+        if isinstance(edge, dict) and isinstance(edge.get("p95_supported_abs_lag_px"), (int, float)):
+            edge_rows.append({
+                "pair_index": int(str(row["transaction_id"]).split("-")[-1]),
+                "p95_supported_abs_lag_px": float(edge["p95_supported_abs_lag_px"]),
+                "median_supported_abs_lag_px": edge.get("median_supported_abs_lag_px"),
+                "evaluable": edge.get("evaluable"),
+                "ambiguous": edge.get("multiple_layer_or_ambiguous", edge.get("ambiguous")),
+                "unresolved": row.get("unresolved_oblique_structure"),
+            })
         for status in row.get("candidate_generation", []):
             if status.get("model_name") == "monotone_dp" and status.get("generation_status") == "generated":
                 dp_generated += 1
@@ -94,6 +116,18 @@ def _run_summary(root: Path, name: str) -> dict[str, Any]:
     })
     _write(validation / "hard_rejection_histogram.json", dict(hard_rejections))
     _write(validation / "fallback_histogram.json", dict(fallback_reasons))
+    _write(validation / "lk_and_seam_local_summary.json", {
+        "detected_count": lk_detected,
+        "final_count": lk_final,
+        "filtered_count": lk_detected - lk_final,
+        "evidence_width_counts": dict(evidence_widths),
+        "risk_pair_count": risk_pairs,
+        "unresolved_pair_count": unresolved_pairs,
+    })
+    _write(
+        validation / "worst_oblique_edge_pairs.json",
+        {"pairs": sorted(edge_rows, key=lambda row: float(row["p95_supported_abs_lag_px"]), reverse=True)[:10]},
+    )
 
     p0_time = float(latest_run["time_to_P0_seconds"])
     p1_time = max(0.0, (p1 / "P1_completion.json").stat().st_mtime - (p0 / "P0_completion.json").stat().st_mtime)
@@ -131,6 +165,11 @@ def _run_summary(root: Path, name: str) -> dict[str, Any]:
         "hard_rejection_histogram": dict(hard_rejections),
         "pair_fallback_count": sum(fallback_reasons.values()),
         "fallback_histogram": dict(fallback_reasons),
+        "risk_pair_count": risk_pairs,
+        "unresolved_pair_count": unresolved_pairs,
+        "lk_detected_count": lk_detected,
+        "lk_final_count": lk_final,
+        "evidence_width_counts": dict(evidence_widths),
         "time_to_p0": p0_time,
         "time_p1": p1_time,
         "time_m5": p2_time,
@@ -172,6 +211,56 @@ def _comparison(root: Path, old_p2: Path, fast_generation: Path) -> None:
         cv2.imwrite(str(crops / f"horizontal_band_{index:02d}_old_vs_new.png"), crop)
     for name in ("seam_model_counts.json",):
         shutil.copy2(root / "fast_direct" / "validation" / name, validation / name)
+
+    target = validation / "fast_direct_target_roi"
+    target.mkdir(parents=True, exist_ok=True)
+    x0, x1 = 1436, min(1648, old.shape[1], new.shape[1])
+    if x1 > x0:
+        cv2.imwrite(str(target / "old_x1436_1648.png"), old[:, x0:x1])
+        cv2.imwrite(str(target / "new_x1436_1648.png"), new[:, x0:x1])
+        gap_roi = np.zeros((height, 8, 3), np.uint8)
+        gap_roi[:, :, 2] = 255
+        cv2.imwrite(
+            str(target / "old_vs_new_x1436_1648.png"),
+            np.concatenate((old[:height, x0:x1], gap_roi, new[:height, x0:x1]), axis=1),
+        )
+
+    transaction_root = fast_generation / "P2" / "pair_transactions"
+    seam_overlay = cv2.imread(str(fast_generation / "P2" / "seam_overlay.png"), cv2.IMREAD_COLOR)
+    with np.load(fast_generation / "P2" / "p2_seams.npz", allow_pickle=False) as seam_archive:
+        seams = np.asarray(seam_archive["seams_x_by_row"], dtype=np.int32)
+    target_rows: list[dict[str, object]] = []
+    for pair_index in (65, 66, 71, 78):
+        transaction = _read(transaction_root / f"pair_{pair_index:04d}.json")
+        seam = None
+        for evaluation in transaction.get("candidate_evaluations", []):
+            if evaluation.get("candidate_id") == transaction.get("selected_candidate_id"):
+                seam = evaluation.get("corridor_bounds")
+                break
+        target_rows.append({
+            "pair_index": pair_index,
+            "selected_seam_model": transaction.get("selected_seam_model"),
+            "selected_geometry_model": transaction.get("selected_geometry_model"),
+            "correspondence_filter": transaction.get("correspondence_filter"),
+            "seam_local_evidence": transaction.get("seam_local_evidence"),
+            "edge_registration": transaction.get("edge_registration"),
+            "selection_continued_for_structure": transaction.get("selection_continued_for_structure"),
+            "unresolved_oblique_structure": transaction.get("unresolved_oblique_structure"),
+            "corridor_bounds": seam,
+        })
+        crop_x0 = max(0, int(seams[pair_index].min()) - 48)
+        crop_x1 = min(old.shape[1], new.shape[1], int(seams[pair_index].max()) + 49)
+        if crop_x1 > crop_x0:
+            pieces = [old[:, crop_x0:crop_x1], new[:, crop_x0:crop_x1]]
+            if seam_overlay is not None:
+                pieces.append(seam_overlay[:, crop_x0:crop_x1])
+            local_gap = np.zeros((height, 6, 3), np.uint8)
+            local_gap[:, :, 2] = 255
+            contact = pieces[0]
+            for piece in pieces[1:]:
+                contact = np.concatenate((contact, local_gap, piece), axis=1)
+            cv2.imwrite(str(target / f"pair_{pair_index:04d}_old_new_seam.png"), contact)
+    _write(target / "pair_0065_0066_0071_0078.json", {"pairs": target_rows})
 
 
 def main() -> int:

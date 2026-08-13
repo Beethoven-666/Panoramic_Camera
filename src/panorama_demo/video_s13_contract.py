@@ -22,18 +22,38 @@ S13_IMPLEMENTATION_ID = "s013_output_first_progressive_dense_central_slit_previe
 S13_CONTRACT_SCHEMA = "gemini305-video-s13-output-first/v3"
 S13_FORMAL_M6_ALGORITHM_ID = FORMAL_M6_ALGORITHM_ID
 S13_FORMAL_M6_IMPLEMENTATION_ID = FORMAL_M6_IMPLEMENTATION_ID
+S13_M51_R2_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v5"
+S13_M51_R2_IMPLEMENTATION_ID = "s013_output_first_progressive_dense_central_slit_m51_r2"
+S13_M51_R2_CONTRACT_SCHEMA = "gemini305-video-s13-output-first/v5"
+S13_M51_R2_P2_COMPLETION_SCHEMA = "gemini305-video-s13-p2-completion/v5"
 
 _S13_COMPONENT_NAME = "s013_output_first_progressive_dense_central_slit"
+
+
+@dataclass(frozen=True)
+class S13IdentityDescriptor:
+    contract_schema: str
+    p2_completion_schema: str
+    p2_only: bool
+    requires_m61_bootstrap: bool
+    m51_r2_enabled: bool
+    m6_eligible: bool
+    default_stop_after: str
+    stage_order: tuple[str, ...]
+
+
 _S13_IDENTITY_CONTRACTS = {
-    (S13_ALGORITHM_ID, S13_IMPLEMENTATION_ID): (
-        S13_CONTRACT_SCHEMA,
-        "gemini305-video-s13-p2-completion/v3",
-        False,
+    (S13_ALGORITHM_ID, S13_IMPLEMENTATION_ID): S13IdentityDescriptor(
+        S13_CONTRACT_SCHEMA, "gemini305-video-s13-p2-completion/v3", False,
+        False, False, True, "P3", ("P0", "P1", "P2", "P3"),
     ),
-    (S13_FORMAL_M6_ALGORITHM_ID, S13_FORMAL_M6_IMPLEMENTATION_ID): (
-        M61_CONTRACT_SCHEMA,
-        M61_P2_COMPLETION_SCHEMA,
-        True,
+    (S13_FORMAL_M6_ALGORITHM_ID, S13_FORMAL_M6_IMPLEMENTATION_ID): S13IdentityDescriptor(
+        M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
+        True, False, True, "P3", ("P0", "P1", "P2", "P3", "P4"),
+    ),
+    (S13_M51_R2_ALGORITHM_ID, S13_M51_R2_IMPLEMENTATION_ID): S13IdentityDescriptor(
+        S13_M51_R2_CONTRACT_SCHEMA, S13_M51_R2_P2_COMPLETION_SCHEMA, True,
+        False, True, False, "P2", ("P0", "P1", "P2"),
     ),
 }
 
@@ -43,6 +63,27 @@ class S13Config:
     path: Path
     document: Mapping[str, Any]
     component: Mapping[str, Any]
+    identity: S13IdentityDescriptor
+
+    @property
+    def p2_completion_schema(self) -> str:
+        return self.identity.p2_completion_schema
+
+    @property
+    def p2_only(self) -> bool:
+        return self.identity.p2_only
+
+    @property
+    def requires_m61_bootstrap(self) -> bool:
+        return self.identity.requires_m61_bootstrap
+
+    @property
+    def m51_r2_enabled(self) -> bool:
+        return self.identity.m51_r2_enabled
+
+    @property
+    def m6_eligible(self) -> bool:
+        return self.identity.m6_eligible
 
     @property
     def analysis_width_px(self) -> int:
@@ -89,7 +130,9 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
     )
     if identity_contract is None:
         raise ValueError("S1.3 implementation identity is not exact")
-    contract_schema, p2_completion_schema, requires_m61_bootstrap = identity_contract
+    contract_schema = identity_contract.contract_schema
+    p2_completion_schema = identity_contract.p2_completion_schema
+    requires_m61_bootstrap = identity_contract.requires_m61_bootstrap
     if document.get("allow_baseline_fallback") is not False:
         raise ValueError("S1.3 forbids baseline fallback")
     components = _mapping(document.get("components"), "components")
@@ -140,17 +183,15 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
     if output.get("write_production_delivery") is not False:
         raise ValueError("S1.3 cannot write production delivery")
     forward = _mapping(component.get("forward_pipeline"), "forward_pipeline")
-    expected_stage_order = ["P0", "P1", "P2", "P3", "P4"] if requires_m61_bootstrap else [
-        "P0", "P1", "P2", "P3",
-    ]
+    expected_stage_order = list(identity_contract.stage_order)
     if list(forward.get("stage_order", ())) != expected_stage_order:
         raise ValueError("S1.3 forward stage order is invalid")
     if (
-        forward.get("default_stop_after") != "P3"
+        forward.get("default_stop_after") != identity_contract.default_stop_after
         or forward.get("forbid_parent_reselection") is not True
         or forward.get("current_preview_runtime_authority") is not False
     ):
-        raise ValueError("S1.3 M6 forward pointer contract is invalid")
+        raise ValueError("S1.3 forward pointer contract is invalid")
     if requires_m61_bootstrap and (
         forward.get("allow_resume_from_sealed_stage") is not True
         or forward.get("p4_requires_certified_handoff_and_actual_winner") is not True
@@ -164,32 +205,44 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
         or replay.get("require_transaction_hash_match") is not True
     ):
         raise ValueError("S1.3 M6 P2 replay contract is invalid")
-    photometric = _mapping(component.get("photometric"), "photometric")
-    if list(photometric.get("model_candidates", ())) != [
-        "identity", "scalar_luminance_gain", "rgb_diagonal_gain", "bounded_rgb_gain_bias"
-    ]:
-        raise ValueError("S1.3 M6 photometric candidates must preserve Q0-Q3 order")
-    if (
-        photometric.get("color_domain") != "linear_srgb"
-        or photometric.get("safe_background_only") is not True
-        or photometric.get("train_heldout_split") is not True
-        or photometric.get("low_frequency_luminance_field") is not False
-        or photometric.get("failure_policy") != "identity"
-    ):
-        raise ValueError("S1.3 M6 photometric safety contract is invalid")
-    blend = _mapping(component.get("blend"), "blend")
-    expected_blend_width = 2 if requires_m61_bootstrap else 8
-    expected_blend_levels = 1 if requires_m61_bootstrap else 2
-    if (
-        blend.get("enabled") is not True
-        or blend.get("safe_background_only") is not True
-        or int(blend.get("maximum_total_width_px", -1)) != expected_blend_width
-        or int(blend.get("maximum_levels", -1)) != expected_blend_levels
-        or int(blend.get("maximum_color_contributors_per_pixel", -1)) != 2
-        or float(blend.get("protected_structure_weight", -1)) != 0.0
-        or blend.get("failure_policy") != "owner_only"
-    ):
-        raise ValueError("S1.3 M6 blend safety contract is invalid")
+    if identity_contract.p2_only:
+        if "m61_bootstrap" in document:
+            raise ValueError("S1.3 P2-only identity forbids an M6.1 bootstrap")
+        if document.get("required_output_components") != ["s013_p2_v5"]:
+            raise ValueError("S1.3 P2-only identity requires only s013_p2_v5")
+        m51_r2 = _mapping(component.get("m51_r2"), "M5.1-r2 config")
+        if m51_r2.get("enabled") is not True:
+            raise ValueError("S1.3 v5 requires M5.1-r2 to be explicitly enabled")
+        serialized = repr(document).lower()
+        if "quality_thresholds_m61" in serialized or "threshold_approval" in serialized:
+            raise ValueError("S1.3 P2-only identity forbids old M6 threshold/approval bindings")
+    else:
+        photometric = _mapping(component.get("photometric"), "photometric")
+        if list(photometric.get("model_candidates", ())) != [
+            "identity", "scalar_luminance_gain", "rgb_diagonal_gain", "bounded_rgb_gain_bias"
+        ]:
+            raise ValueError("S1.3 M6 photometric candidates must preserve Q0-Q3 order")
+        if (
+            photometric.get("color_domain") != "linear_srgb"
+            or photometric.get("safe_background_only") is not True
+            or photometric.get("train_heldout_split") is not True
+            or photometric.get("low_frequency_luminance_field") is not False
+            or photometric.get("failure_policy") != "identity"
+        ):
+            raise ValueError("S1.3 M6 photometric safety contract is invalid")
+        blend = _mapping(component.get("blend"), "blend")
+        expected_blend_width = 2 if requires_m61_bootstrap else 8
+        expected_blend_levels = 1 if requires_m61_bootstrap else 2
+        if (
+            blend.get("enabled") is not True
+            or blend.get("safe_background_only") is not True
+            or int(blend.get("maximum_total_width_px", -1)) != expected_blend_width
+            or int(blend.get("maximum_levels", -1)) != expected_blend_levels
+            or int(blend.get("maximum_color_contributors_per_pixel", -1)) != 2
+            or float(blend.get("protected_structure_weight", -1)) != 0.0
+            or blend.get("failure_policy") != "owner_only"
+        ):
+            raise ValueError("S1.3 M6 blend safety contract is invalid")
     if requires_m61_bootstrap:
         if (
             list(blend.get("model_candidates", ()))
@@ -235,7 +288,9 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
             repair.get(key) is not False for key in required_false
         ):
             raise ValueError("S1.3 M7 frozen/disabled safety contract is invalid")
-    return S13Config(path=path, document=document, component=component)
+    return S13Config(
+        path=path, document=document, component=component, identity=identity_contract
+    )
 
 
 def load_s13_config(path: str | Path) -> S13Config:
@@ -269,7 +324,7 @@ def claims_s13_document(document: Mapping[str, Any]) -> bool:
         return True
     component = components.get(_S13_COMPONENT_NAME) if isinstance(components, Mapping) else None
     return isinstance(component, Mapping) and component.get("contract_schema") in {
-        contract[0] for contract in _S13_IDENTITY_CONTRACTS.values()
+        contract.contract_schema for contract in _S13_IDENTITY_CONTRACTS.values()
     }
 
 
@@ -289,10 +344,15 @@ __all__ = [
     "S13_IMPLEMENTATION_ID",
     "S13_FORMAL_M6_ALGORITHM_ID",
     "S13_FORMAL_M6_IMPLEMENTATION_ID",
+    "S13_M51_R2_ALGORITHM_ID",
+    "S13_M51_R2_IMPLEMENTATION_ID",
+    "S13_M51_R2_CONTRACT_SCHEMA",
+    "S13_M51_R2_P2_COMPLETION_SCHEMA",
     "M61_ALGORITHM_ID",
     "M61_CONTRACT_SCHEMA",
     "M61_IMPLEMENTATION_ID",
     "S13Config",
+    "S13IdentityDescriptor",
     "claims_s13_document",
     "is_s13_identity",
     "is_s13_m61_identity",

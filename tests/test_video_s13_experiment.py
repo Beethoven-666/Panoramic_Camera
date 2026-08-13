@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 from pathlib import Path
+import subprocess
+import sys
+from functools import wraps
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -27,6 +32,55 @@ CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_den
 FORMAL_M6_CONFIG = (
     ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4.yaml"
 )
+
+
+def _isolated_rss_process(test: Callable[..., None]) -> Callable[..., None]:
+    """Run an RSS-capped integration test in a fresh pytest process.
+
+    The production cap is an absolute process-RSS envelope.  A long-lived
+    pytest process retains unrelated OpenCV/CUDA allocator pages from earlier
+    tests, so RSS-capped integration tests need a process boundary to measure
+    only their own test process.  The child executes the original body; the
+    parent only relays its result.
+    """
+
+    isolated_key = f"{Path(__file__).name}::{test.__name__}"
+
+    @wraps(test)
+    def wrapper(*args: object, **kwargs: object) -> None:
+        if os.environ.get("G305_PYTEST_RSS_ISOLATED_TEST") == isolated_key:
+            test(*args, **kwargs)
+            return
+        environment = os.environ.copy()
+        environment["G305_PYTEST_RSS_ISOLATED_TEST"] = isolated_key
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                f"{Path(__file__).as_posix()}::{test.__name__}",
+            ],
+            cwd=ROOT,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+            check=False,
+        )
+        if result.returncode != 0:
+            pytest.fail(
+                "isolated RSS pytest process failed:\n" + result.stdout,
+                pytrace=False,
+            )
+
+    wrapper.rss_process_isolated = True  # type: ignore[attr-defined]
+    return wrapper
 
 
 def _sha256(path: Path) -> str:
@@ -404,6 +458,7 @@ def test_m5_never_reestimates_or_reselects_m4(tmp_path: Path, monkeypatch) -> No
     assert performance["p2_full_resolution_render_count"] == 2
 
 
+@_isolated_rss_process
 def test_formal_m6_v4_runs_one_sealed_generation_through_shared_p3(
     tmp_path: Path,
 ) -> None:
@@ -485,6 +540,20 @@ def test_formal_m6_v4_runs_one_sealed_generation_through_shared_p3(
     assert not list(output.rglob("video_delivery.json"))
 
 
+def test_formal_m6_rss_cap_tests_are_process_isolated() -> None:
+    assert getattr(
+        test_formal_m6_v4_runs_one_sealed_generation_through_shared_p3,
+        "rss_process_isolated",
+        False,
+    )
+    assert getattr(
+        test_formal_m6_resume_rejects_unbound_p2_then_advances_the_same_generation,
+        "rss_process_isolated",
+        False,
+    )
+
+
+@_isolated_rss_process
 def test_formal_m6_resume_rejects_unbound_p2_then_advances_the_same_generation(
     tmp_path: Path,
 ) -> None:

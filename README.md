@@ -857,7 +857,7 @@ as fixed compatibility/audit aliases and are not additional reliability gates.
 
 ## S1.3 output-first M0–M6 diagnostic candidate
 
-`S013_output_first_progressive_dense_central_slit_v4` is the canonical S013
+`S013_output_first_progressive_dense_central_slit_v4` remains the canonical S013
 M0–M6 route selected through `g305-video-experiment --algorithm candidate`; its
 implementation identity is `s013_output_first_progressive_dense_central_slit_m61_v2`.
 Here, canonical/formal means the single supported S013 diagnostic chain with
@@ -891,6 +891,19 @@ P95 bound are rejected. A curved DP seam requires an evaluable shifted-straight
 comparator, at least a 2% cost margin, and independent symmetric/long-structure
 evidence at preliminary geometry, final geometry, and the full rendered output;
 otherwise it falls back to shifted-straight or the immutable midpoint.
+
+The isolated successor
+`S013_output_first_progressive_dense_central_slit_v5` stops at sealed P2. It
+filters the existing single forward PyrLK pass using target validity and a
+four-branch-calibrated robust error tail, fits each candidate from its own
+16/24 px seam-local evidence, and adds a pair-local edge-normal continuity
+audit. Seam candidates remain peers: the first hard-safe, visually clean
+candidate still stops the search, while a supported local structure suspect
+causes evaluation of already-built C0–C4 compact maps and then the next ranked
+seam. Unevaluable structure is neutral, the long-horizontal catastrophic gate
+remains intact, and unresolved visual evidence is recorded without becoming a
+general P2 hard failure. This successor has no M6 threshold or approval binding,
+cannot resume into v4 M6, and does not create P3 or delivery artifacts.
 P2 is remapped once per real contributor from raw RGB and sealed with replay
 maps for the selected geometry and seam. The canonical chain creates native
 `gemini305-video-s13-p2-completion/v4`, including the frozen M6 evidence and

@@ -7,7 +7,7 @@ import json
 import math
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Mapping, Sequence
 
 import cv2
@@ -24,8 +24,12 @@ from .video_s13_alignment import (
     reestimate_s13_final_corridor_alignment,
 )
 from .video_s13_quality import (
+    SeamStructureFeatures,
+    prepare_seam_structure,
     long_horizontal_structure_metrics,
     long_horizontal_structure_nondegrading,
+    edge_registration_visual_suspect,
+    pair_edge_registration_metrics,
     seam_structure_metrics,
     sequence_structure_decision,
     structurally_non_degrading,
@@ -39,6 +43,7 @@ from .video_s13_seam import (
     select_s13_seam,
 )
 from .video_s13_replay import S13P2ReplayPair
+from .video_s13_m51_r2 import S13M51R2Config
 from .video_s13_vertical import S13VerticalSolution
 
 
@@ -76,6 +81,19 @@ class S13M5Result:
     performance: Mapping[str, float]
 
 
+@dataclass(frozen=True)
+class S13PairCorrespondences:
+    reference_xy: np.ndarray
+    moving_xy: np.ndarray
+    audit: Mapping[str, object]
+
+    def __iter__(self):
+        """Keep legacy internal two-value unpacking while exposing the audit."""
+
+        yield self.reference_xy
+        yield self.moving_xy
+
+
 def _sha_array(*arrays: np.ndarray) -> str:
     digest = hashlib.sha256()
     for array in arrays:
@@ -87,7 +105,58 @@ def _sha_array(*arrays: np.ndarray) -> str:
 
 
 def _sha_json(value: Mapping[str, object]) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+_V5_TRANSACTION_FLOAT_DECIMAL_PLACES = 6
+
+
+def _canonicalize_v5_transaction_value(value: object) -> object:
+    """Return the frozen JSON value representation used by M5.1-r2/v5.
+
+    Candidate selection consumes the full-precision in-memory metrics before
+    this function is called.  Quantization therefore affects only the sealed
+    audit representation and its digest, not pixels, thresholds, or ranking.
+    """
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonicalize_v5_transaction_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonicalize_v5_transaction_value(item) for item in value]
+    if isinstance(value, (np.bool_, bool)):
+        return bool(value)
+    if isinstance(value, (np.integer, int)):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("S1.3 v5 transaction floats must be finite")
+        rounded = round(number, _V5_TRANSACTION_FLOAT_DECIMAL_PLACES)
+        return 0.0 if rounded == 0.0 else rounded
+    return value
+
+
+def _finalize_v5_transaction(value: Mapping[str, object]) -> dict[str, object]:
+    """Canonicalize a v5 transaction and bind its normalized content hash."""
+
+    without_digest = dict(value)
+    without_digest.pop("result_stage_sha256", None)
+    normalized = _canonicalize_v5_transaction_value(without_digest)
+    if not isinstance(normalized, dict):  # pragma: no cover - Mapping guarantees this
+        raise TypeError("S1.3 v5 transaction must be a mapping")
+    normalized["result_stage_sha256"] = _sha_json(normalized)
+    return normalized
 
 
 def _base_calibrated_map(
@@ -173,26 +242,150 @@ def _pair_correspondences(
     right_valid: np.ndarray,
     *,
     x_offset: int,
-) -> tuple[np.ndarray, np.ndarray]:
+    config: S13M51R2Config | None = None,
+) -> S13PairCorrespondences:
+    settings = config or S13M51R2Config()
     left_gray = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
     right_gray = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
     mask = (left_valid & right_valid).astype(np.uint8) * 255
     points = cv2.goodFeaturesToTrack(left_gray, 400, 0.01, 4.0, mask=mask, blockSize=5)
+    empty = np.empty((0, 2), np.float64)
+    empty_audit: dict[str, object] = {
+        "detected_count": 0,
+        "status_count": 0,
+        "finite_count": 0,
+        "target_in_bounds_count": 0,
+        "target_valid_count": 0,
+        "error_filtered_count": 0,
+        "final_count": 0,
+        "error_median": None,
+        "error_mad": None,
+        "error_limit": None,
+        "raw_error_count": 0,
+        "raw_error_median": None,
+        "raw_error_mad": None,
+        "raw_error_p50": None,
+        "raw_error_p90": None,
+        "raw_error_p95": None,
+        "raw_error_p99": None,
+        "raw_error_maximum": None,
+        "filter_enabled": bool(settings.enabled),
+        "legacy_decision_preserved": not settings.enabled,
+        "gftt_call_count": 1,
+        "forward_pyr_lk_call_count": 0,
+        "backward_pyr_lk_call_count": 0,
+    }
     if points is None:
-        return np.empty((0, 2), np.float64), np.empty((0, 2), np.float64)
-    moved, status, _error = cv2.calcOpticalFlowPyrLK(
+        return S13PairCorrespondences(empty.copy(), empty.copy(), empty_audit)
+    moved, status, error = cv2.calcOpticalFlowPyrLK(
         left_gray, right_gray, points, None, winSize=(21, 21), maxLevel=3,
         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
     )
+    empty_audit["detected_count"] = int(np.asarray(points).reshape(-1, 2).shape[0])
+    empty_audit["forward_pyr_lk_call_count"] = 1
     if moved is None or status is None:
-        return np.empty((0, 2), np.float64), np.empty((0, 2), np.float64)
-    source = points.reshape(-1, 2)
-    target = moved.reshape(-1, 2)
-    finite = (status.reshape(-1) > 0) & np.isfinite(source).all(axis=1) & np.isfinite(target).all(axis=1)
-    source, target = source[finite].astype(np.float64), target[finite].astype(np.float64)
-    source[:, 0] += x_offset
-    target[:, 0] += x_offset
-    return source, target
+        return S13PairCorrespondences(empty.copy(), empty.copy(), empty_audit)
+    source = np.asarray(points).reshape(-1, 2).astype(np.float64)
+    target = np.asarray(moved).reshape(-1, 2).astype(np.float64)
+    status_values = np.asarray(status).reshape(-1) > 0
+    if len(source) != len(target) or len(source) != len(status_values):
+        raise ValueError("S1.3 M5 PyrLK result count disagrees with detected points")
+    finite_values = np.isfinite(source).all(axis=1) & np.isfinite(target).all(axis=1)
+    legacy_keep = status_values & finite_values
+
+    target_in_bounds = np.zeros(len(source), dtype=bool)
+    target_in_bounds[legacy_keep] = (
+        (target[legacy_keep, 0] >= 0.0)
+        & (target[legacy_keep, 0] <= right_valid.shape[1] - 1.0)
+        & (target[legacy_keep, 1] >= 0.0)
+        & (target[legacy_keep, 1] <= right_valid.shape[0] - 1.0)
+    )
+    target_valid = np.zeros(len(source), dtype=bool)
+    indexable = legacy_keep & target_in_bounds
+    if np.any(indexable):
+        # Finite/in-bounds is deliberately established before round/cast/index.
+        tx = np.rint(target[indexable, 0]).astype(np.int32)
+        ty = np.rint(target[indexable, 1]).astype(np.int32)
+        target_valid[indexable] = np.asarray(right_valid, dtype=bool)[ty, tx]
+    hard_keep = legacy_keep & target_in_bounds & target_valid
+
+    error_values = None if error is None else np.asarray(error).reshape(-1).astype(np.float64)
+    if error_values is not None and len(error_values) != len(source):
+        raise ValueError("S1.3 M5 PyrLK error count disagrees with detected points")
+    raw_error = (
+        np.empty(0, dtype=np.float64)
+        if error_values is None
+        else error_values[legacy_keep & np.isfinite(error_values)]
+    )
+    distribution: dict[str, object] = {
+        "raw_error_count": int(raw_error.size),
+        "raw_error_median": None,
+        "raw_error_mad": None,
+        "raw_error_p50": None,
+        "raw_error_p90": None,
+        "raw_error_p95": None,
+        "raw_error_p99": None,
+        "raw_error_maximum": None,
+    }
+    if raw_error.size and settings.collect_lk_error_statistics:
+        raw_median = float(np.median(raw_error))
+        distribution.update({
+            "raw_error_median": raw_median,
+            "raw_error_mad": float(np.median(np.abs(raw_error - raw_median))),
+            "raw_error_p50": float(np.percentile(raw_error, 50.0)),
+            "raw_error_p90": float(np.percentile(raw_error, 90.0)),
+            "raw_error_p95": float(np.percentile(raw_error, 95.0)),
+            "raw_error_p99": float(np.percentile(raw_error, 99.0)),
+            "raw_error_maximum": float(np.max(raw_error)),
+        })
+
+    final_keep = legacy_keep.copy()
+    error_median = error_mad = error_limit = None
+    error_filtered_count = int(hard_keep.sum())
+    if settings.enabled:
+        final_keep = hard_keep.copy()
+        valid_error = (
+            np.empty(0, dtype=np.float64)
+            if error_values is None
+            else error_values[hard_keep & np.isfinite(error_values)]
+        )
+        if valid_error.size >= settings.minimum_correspondence_count_for_error_filter:
+            error_median = float(np.median(valid_error))
+            error_mad = float(np.median(np.abs(valid_error - error_median)))
+            sigma = 1.4826 * error_mad
+            assert settings.lk_error_mad_floor is not None
+            assert settings.lk_error_absolute_maximum is not None
+            robust_limit = error_median + settings.lk_error_sigma_multiplier * max(
+                sigma, settings.lk_error_mad_floor
+            )
+            error_limit = float(min(settings.lk_error_absolute_maximum, robust_limit))
+            error_keep = np.isfinite(error_values) & (error_values <= error_limit)  # type: ignore[operator]
+            final_keep &= error_keep
+            error_filtered_count = int(final_keep.sum())
+
+    selected_source = source[final_keep].copy()
+    selected_target = target[final_keep].copy()
+    selected_source[:, 0] += int(x_offset)
+    selected_target[:, 0] += int(x_offset)
+    audit: dict[str, object] = {
+        "detected_count": int(len(source)),
+        "status_count": int(status_values.sum()),
+        "finite_count": int(legacy_keep.sum()),
+        "target_in_bounds_count": int(indexable.sum()),
+        "target_valid_count": int(hard_keep.sum()),
+        "error_filtered_count": error_filtered_count,
+        "final_count": int(final_keep.sum()),
+        "error_median": error_median,
+        "error_mad": error_mad,
+        "error_limit": error_limit,
+        **distribution,
+        "filter_enabled": bool(settings.enabled),
+        "legacy_decision_preserved": not settings.enabled,
+        "gftt_call_count": 1,
+        "forward_pyr_lk_call_count": 1,
+        "backward_pyr_lk_call_count": 0,
+    }
+    return S13PairCorrespondences(selected_source, selected_target, audit)
 
 
 def _pair_domain(schedule: S012Schedule, pair_index: int, half_width: int = 48) -> tuple[int, int]:
@@ -223,10 +416,17 @@ def _fallback_pair(
     p0_ancestor_completion_sha256: str | None = None,
     before: Mapping[str, object] | None = None,
     after: Mapping[str, object] | None = None,
+    correspondence_filter: Mapping[str, object] | None = None,
+    m51_r2_config: S13M51R2Config | None = None,
+    topology_repair_used: bool = False,
 ) -> S13M5Pair:
     seam = np.full(schedule.canvas_height, schedule.boundaries[pair_index + 1], dtype=np.int32)
     core: dict[str, object] = {
-        "schema": "gemini305-video-s13-m5-pair-transaction/v2",
+        "schema": (
+            "gemini305-video-s13-m5-pair-transaction/v3"
+            if m51_r2_config is not None and m51_r2_config.enabled
+            else "gemini305-video-s13-m5-pair-transaction/v2"
+        ),
         "transaction_id": f"m5-pair-{pair_index:04d}",
         "parent_stage": "P1",
         "parent_stage_sha256": parent_sha,
@@ -262,7 +462,37 @@ def _fallback_pair(
             "same_owner_geometry_plus_symmetric_base_candidate_seam"
         ),
     }
-    core["result_stage_sha256"] = _sha_json(core)
+    if correspondence_filter is not None:
+        core["correspondence_filter"] = dict(correspondence_filter)
+    if m51_r2_config is not None and m51_r2_config.enabled:
+        core.update({
+            "correspondence_filter": dict(correspondence_filter or {}),
+            "seam_local_evidence": {
+                "requested_half_widths_px": list(m51_r2_config.evidence_half_widths_px),
+                "selected_half_width_px": None, "raw_count": 0,
+                "selected_count": 0, "minimum_required_count": 36,
+                "sufficient_for_train_held_out": False,
+                "full_shoulder_fallback_used": False,
+                "mode": "seam_local_insufficient",
+            },
+            "edge_registration": {
+                "evaluable": False, "visual_suspect": False,
+                "supported_block_count": 0, "supported_component_count": 0,
+                "median_supported_abs_lag_px": None,
+                "p95_supported_abs_lag_px": None, "ambiguous": False,
+            },
+            "selection_continued_for_structure": False,
+            "selected_seam_rank": 0, "selected_geometry_rank": 0,
+            "seam_fallback_used": True, "geometry_fallback_used": True,
+            "topology_repair_used": bool(topology_repair_used),
+            "unresolved_oblique_structure": False,
+            "unexpected_exception_fallback": False,
+            "micro_rescue": {"enabled": False, "attempted": False, "accepted": False},
+        })
+    if m51_r2_config is not None and m51_r2_config.enabled:
+        core = _finalize_v5_transaction(core)
+    else:
+        core["result_stage_sha256"] = _sha_json(core)
     return S13M5Pair(core, seam, None)
 
 
@@ -278,14 +508,21 @@ def _audit_rendered_seam_change(
     after_image: np.ndarray,
     before_seam_x_by_row: np.ndarray,
     after_seam_x_by_row: np.ndarray,
+    *,
+    before_features: SeamStructureFeatures | None = None,
+    after_features: SeamStructureFeatures | None = None,
 ) -> dict[str, object]:
     """Audit two rendered owner topologies on both paths and held-out shoulders."""
 
     before_seam = np.asarray(before_seam_x_by_row, dtype=np.int32)
     after_seam = np.asarray(after_seam_x_by_row, dtype=np.int32)
+    cached_before = before_features or prepare_seam_structure(before_image)
+    cached_after = after_features or prepare_seam_structure(after_image)
+    if cached_before is None or cached_after is None:
+        raise ValueError("S1.3 seam audit images cannot build structure features")
     symmetric_before, symmetric_after = symmetric_seam_structure_metrics(
-        before_image,
-        after_image,
+        cached_before,
+        cached_after,
         before_seam,
         after_seam,
     )
@@ -296,13 +533,13 @@ def _audit_rendered_seam_change(
     paths_ok = True
     first_reason: str | None = None
     for name, path in (("before_owner", before_seam), ("after_owner", after_seam)):
-        before_metrics = seam_structure_metrics(before_image, path)
-        after_metrics = seam_structure_metrics(after_image, path)
+        before_metrics = seam_structure_metrics(cached_before, path)
+        after_metrics = seam_structure_metrics(cached_after, path)
         structure_ok, structure_reason = structurally_non_degrading(
             before_metrics, after_metrics
         )
-        before_horizontal = long_horizontal_structure_metrics(before_image, path)
-        after_horizontal = long_horizontal_structure_metrics(after_image, path)
+        before_horizontal = long_horizontal_structure_metrics(cached_before, path)
+        after_horizontal = long_horizontal_structure_metrics(cached_after, path)
         horizontal_ok, horizontal_reason = long_horizontal_structure_nondegrading(
             before_horizontal, after_horizontal
         )
@@ -438,12 +675,15 @@ def estimate_s13_m5_transactions(
     parent_result_sha256: str | None = None,
     p0_ancestor_completion_sha256: str | None = None,
     maximum_seam_shift_px: int = 8,
+    m51_r2_config: S13M51R2Config | None = None,
 ) -> tuple[S13M5Pair, ...]:
     """Evaluate peer seam candidates independently from immutable P1/P0 grids."""
 
     validate_s012_schedule(schedule)
     pairs: list[S13M5Pair] = []
     raw_cache: dict[int, np.ndarray] = {}
+    successor = m51_r2_config or S13M51R2Config()
+    instrumentation_requested = m51_r2_config is not None
     audit_all = os.environ.get("G305_S13_M5_AUDIT_ALL_CANDIDATES", "0") == "1"
 
     def raw(frame_id: int) -> np.ndarray:
@@ -455,6 +695,7 @@ def estimate_s13_m5_transactions(
         zip(schedule.assignments[:-1], schedule.assignments[1:])
     ):
         frame_ids = (left_assignment.frame_id, right_assignment.frame_id)
+        correspondence_audit: Mapping[str, object] | None = None
         try:
             x0, x1 = _pair_domain(schedule, pair_index)
             if x1 - x0 < 12:
@@ -465,9 +706,12 @@ def estimate_s13_m5_transactions(
                                    vertical.global_offsets_px[pair_index + 1], None)
             left_image, left_valid = _sample_crop(raw(frame_ids[0]), left_maps)
             right_image, right_valid = _sample_crop(raw(frame_ids[1]), right_maps)
-            reference, moving = _pair_correspondences(
-                left_image, right_image, left_valid, right_valid, x_offset=x0
+            correspondence_result = _pair_correspondences(
+                left_image, right_image, left_valid, right_valid, x_offset=x0,
+                config=successor,
             )
+            reference, moving = correspondence_result
+            correspondence_audit = correspondence_result.audit
             p0_u, p0_v, p0_valid = _base_calibrated_map(
                 schedule, calibration, pair_index + 1
             )
@@ -514,7 +758,18 @@ def estimate_s13_m5_transactions(
             selected_after: Mapping[str, object] | None = None
             selected_before_horizontal: Mapping[str, object] | None = None
             selected_after_horizontal: Mapping[str, object] | None = None
-            for candidate in ordered:
+            selected_edge_registration: Mapping[str, object] = {
+                "evaluable": False, "visual_suspect": False,
+                "supported_block_count": 0, "supported_component_count": 0,
+                "median_supported_abs_lag_px": None,
+                "p95_supported_abs_lag_px": None, "ambiguous": False,
+            }
+            selected_seam_rank = 0
+            selected_geometry_rank = 0
+            selection_continued_for_structure = False
+            unresolved_oblique_structure = False
+            hard_safe_baseline: tuple[object, ...] | None = None
+            for seam_rank, candidate in enumerate(ordered):
                 if selected_candidate is not None and not audit_all:
                     evaluations.append({
                         "candidate_id": candidate.candidate_id,
@@ -549,6 +804,14 @@ def estimate_s13_m5_transactions(
                 geometry_candidates: list[dict[str, object]] = []
                 map_delta_sha: str | None = None
                 corridor_bounds: list[int] | None = None
+                edge_registration: Mapping[str, object] = {
+                    "evaluable": False, "visual_suspect": False,
+                    "supported_block_count": 0, "supported_component_count": 0,
+                    "median_supported_abs_lag_px": None,
+                    "p95_supported_abs_lag_px": None, "ambiguous": False,
+                }
+                visual_suspect = False
+                geometry_rank = 0
                 if not failures:
                     alignment = reestimate_s13_final_corridor_alignment(
                         final_seam_x_by_row=seam_global,
@@ -561,6 +824,7 @@ def estimate_s13_m5_transactions(
                         reference_points_xy=reference, non_reference_points_xy=moving,
                         accepted_vertical_dy_by_row=local_vertical, alignment_shoulder=(x0, x1),
                         vertical_accepted=bool(np.any(local_vertical != 0.0)),
+                        m51_r2_config=successor,
                     )
                     selected_map = alignment.selected
                     geometry_candidates = [
@@ -586,10 +850,14 @@ def estimate_s13_m5_transactions(
                     final_right, final_valid = _sample_crop(raw(frame_ids[1]), final_maps)
                     before_preview = _compose_pair_preview(left_image, right_image, seam_local)
                     after_preview = _compose_pair_preview(left_image, final_right, seam_local)
-                    before_metrics = seam_structure_metrics(before_preview, seam_local)
-                    after_metrics = seam_structure_metrics(after_preview, seam_local)
-                    before_horizontal = long_horizontal_structure_metrics(before_preview, seam_local)
-                    after_horizontal = long_horizontal_structure_metrics(after_preview, seam_local)
+                    before_features = prepare_seam_structure(before_preview)
+                    after_features = prepare_seam_structure(after_preview)
+                    if before_features is None or after_features is None:
+                        raise ValueError("pair preview feature construction failed")
+                    before_metrics = seam_structure_metrics(before_features, seam_local)
+                    after_metrics = seam_structure_metrics(after_features, seam_local)
+                    before_horizontal = long_horizontal_structure_metrics(before_features, seam_local)
+                    after_horizontal = long_horizontal_structure_metrics(after_features, seam_local)
                     # Only catastrophic horizontal damage is a runtime gate.
                     from .video_s13_hard_audit import long_horizontal_structure_catastrophe_guard
 
@@ -598,6 +866,127 @@ def estimate_s13_m5_transactions(
                     )
                     if not horizontal_safe:
                         failures.append(str(horizontal_reason or "horizontal_structure_catastrophe"))
+                    if successor.enabled and not failures:
+                        left_edge_features = prepare_seam_structure(left_image)
+                        final_edge_features = prepare_seam_structure(final_right)
+                        if left_edge_features is None or final_edge_features is None:
+                            raise ValueError("pair edge feature construction failed")
+                        edge_registration = pair_edge_registration_metrics(
+                            left_edge_features, final_edge_features, left_valid, final_valid, seam_local,
+                            config=successor,
+                        )
+                        lk_p95_value = selected_map.metrics.get("residual_p95_px")
+                        lk_p95 = (
+                            float(lk_p95_value)
+                            if isinstance(lk_p95_value, (int, float)) else None
+                        )
+                        visual_suspect = edge_registration_visual_suspect(
+                            edge_registration, seam_local_lk_p95_px=lk_p95,
+                            config=successor,
+                        )
+                        edge_registration = {
+                            **dict(edge_registration), "visual_suspect": visual_suspect,
+                        }
+
+                        if visual_suspect:
+                            selection_continued_for_structure = True
+                            if hard_safe_baseline is None:
+                                hard_safe_baseline = (
+                                    candidate, alignment, before_metrics, after_metrics,
+                                    before_horizontal, after_horizontal, edge_registration,
+                                    seam_rank, 0,
+                                )
+                            clean_alternatives: list[tuple[float, int, int, object, object]] = []
+                            simplicity = {
+                                "C0_identity": 0, "C1_accepted_vertical": 1,
+                                "C2_subpixel_translation": 2,
+                                "C3_translation_tiny_rotation": 3,
+                                "C4_bounded_light_affine": 4,
+                            }
+                            for alternate_index, alternate in enumerate(alignment.candidates):
+                                if not alternate.accepted or alternate_index == alignment.selected_candidate_index:
+                                    continue
+                                if (
+                                    alternate.audit.get("map_finite") is not True
+                                    or alternate.audit.get("map_in_source_bounds") is not True
+                                    or alternate.audit.get("positive_jacobian") is not True
+                                    or float(alternate.audit.get("support_retention", 0.0)) < 0.95
+                                    or float(alternate.audit.get("maximum_map_displacement_px", math.inf)) > 8.0
+                                ):
+                                    continue
+                                alternate_maps = _map_crop(
+                                    schedule, calibration, pair_index + 1, x0, x1,
+                                    vertical.global_offsets_px[pair_index + 1], alternate,
+                                )
+                                alternate_right, alternate_valid = _sample_crop(
+                                    raw(frame_ids[1]), alternate_maps
+                                )
+                                alternate_preview = _compose_pair_preview(
+                                    left_image, alternate_right, seam_local
+                                )
+                                alternate_preview_features = prepare_seam_structure(alternate_preview)
+                                alternate_edge_features = prepare_seam_structure(alternate_right)
+                                if alternate_preview_features is None or alternate_edge_features is None:
+                                    raise ValueError("alternate pair feature construction failed")
+                                alternate_after = seam_structure_metrics(
+                                    alternate_preview_features, seam_local
+                                )
+                                alternate_horizontal = long_horizontal_structure_metrics(
+                                    alternate_preview_features, seam_local
+                                )
+                                alternate_safe, _alternate_reason, _alternate_audit = (
+                                    long_horizontal_structure_catastrophe_guard(
+                                        before_horizontal, alternate_horizontal
+                                    )
+                                )
+                                if not alternate_safe:
+                                    continue
+                                alternate_edge = pair_edge_registration_metrics(
+                                    left_edge_features, alternate_edge_features, left_valid,
+                                    alternate_valid, seam_local, config=successor,
+                                )
+                                alt_lk_value = alternate.metrics.get("residual_p95_px")
+                                alt_lk = (
+                                    float(alt_lk_value)
+                                    if isinstance(alt_lk_value, (int, float)) else None
+                                )
+                                if edge_registration_visual_suspect(
+                                    alternate_edge, seam_local_lk_p95_px=alt_lk,
+                                    config=successor,
+                                ):
+                                    continue
+                                edge_p95_value = alternate_edge.get("p95_supported_abs_lag_px")
+                                edge_p95 = (
+                                    float(edge_p95_value)
+                                    if isinstance(edge_p95_value, (int, float)) else math.inf
+                                )
+                                clean_alternatives.append((
+                                    edge_p95, simplicity.get(alternate.model, 99),
+                                    alternate_index, alternate_after,
+                                    (alternate_horizontal, alternate_edge),
+                                ))
+                            if clean_alternatives:
+                                minimum_edge = min(item[0] for item in clean_alternatives)
+                                equivalent = [
+                                    item for item in clean_alternatives
+                                    if item[0] <= minimum_edge + successor.equivalent_edge_p95_tolerance_px
+                                ]
+                                chosen = min(equivalent, key=lambda item: item[1])
+                                geometry_rank = int(chosen[2])
+                                alignment = replace(
+                                    alignment,
+                                    selected_model=alignment.candidates[geometry_rank].model,
+                                    selected_candidate_index=geometry_rank,
+                                )
+                                selected_map = alignment.selected
+                                after_metrics = chosen[3]  # type: ignore[assignment]
+                                alternate_details = chosen[4]
+                                after_horizontal = alternate_details[0]  # type: ignore[index,assignment]
+                                edge_registration = {
+                                    **dict(alternate_details[1]),  # type: ignore[arg-type,index]
+                                    "visual_suspect": False,
+                                }
+                                visual_suspect = False
                     map_delta_sha = _sha_array(selected_map.target_delta_u, selected_map.target_delta_v)
                     corridor_bounds = [
                         int(alignment.application_band.left_x_by_row.min()),
@@ -605,14 +994,20 @@ def estimate_s13_m5_transactions(
                     ]
                 else:
                     horizontal_audit = {"passed": False, "not_evaluated": True}
-                passed = not failures
+                hard_safe = not failures
+                passed = hard_safe
+                if successor.enabled and hard_safe and visual_suspect:
+                    passed = False
                 evaluation = {
                     "candidate_id": candidate.candidate_id,
                     "model_code": candidate.model_code,
                     "model_name": candidate.model_name,
                     "generation_status": "generated",
-                    "evaluation_status": "selected" if passed and selected_candidate is None else (
-                        "hard_safe_not_selected" if passed else "rejected_hard_gate"
+                    "evaluation_status": (
+                        "selected" if passed and selected_candidate is None
+                        else "hard_safe_not_selected" if passed
+                        else "visual_suspect_continued" if hard_safe and visual_suspect
+                        else "rejected_hard_gate"
                     ),
                     "local_objective": candidate.local_objective,
                     "seam_sha256": _sha_array(seam_global),
@@ -622,7 +1017,9 @@ def estimate_s13_m5_transactions(
                     "geometry_candidates": geometry_candidates,
                     "map_delta_sha256": map_delta_sha,
                     "horizontal_hard_audit": horizontal_audit,
-                    "hard_gate_passed": passed,
+                    "edge_registration": dict(edge_registration),
+                    "visual_suspect": bool(visual_suspect),
+                    "hard_gate_passed": hard_safe,
                     "hard_gate_failures": failures,
                     "diagnostic_metrics": {"before": before_metrics, "after": after_metrics},
                     "generation_audit": dict(candidate.generation_audit),
@@ -633,12 +1030,45 @@ def estimate_s13_m5_transactions(
                     selected_alignment = alignment
                     selected_before, selected_after = before_metrics, after_metrics
                     selected_before_horizontal, selected_after_horizontal = before_horizontal, after_horizontal
+                    selected_edge_registration = edge_registration
+                    selected_seam_rank = seam_rank
+                    selected_geometry_rank = geometry_rank
+            if selected_candidate is None and hard_safe_baseline is not None:
+                (
+                    selected_candidate, selected_alignment, selected_before, selected_after,
+                    selected_before_horizontal, selected_after_horizontal,
+                    selected_edge_registration, selected_seam_rank, selected_geometry_rank,
+                ) = hard_safe_baseline
+                unresolved_oblique_structure = True
+                for row in evaluations:
+                    if row.get("candidate_id") == selected_candidate.candidate_id:
+                        row["evaluation_status"] = (
+                            "selected_unresolved_hard_safe_baseline"
+                        )
+                        break
             if selected_candidate is None or selected_alignment is None:
-                raise RuntimeError("midpoint_identity_hard_gate_failed")
+                fallback = _fallback_pair(
+                    schedule, pair_index, parent_stage_sha256, frame_ids,
+                    "all_generated_candidates_failed_declared_hard_gates",
+                    parent_result_sha256, p0_ancestor_completion_sha256,
+                    correspondence_filter=correspondence_audit,
+                    m51_r2_config=successor,
+                )
+                transaction = {
+                    **dict(fallback.transaction),
+                    "candidate_generation": [dict(item) for item in generation_statuses],
+                    "candidate_evaluations": evaluations,
+                }
+                transaction = _finalize_v5_transaction(transaction)
+                pairs.append(S13M5Pair(transaction, fallback.seam_x_by_row, None))
+                continue
             selected_seam = np.asarray(selected_candidate.seam_x_by_row, dtype=np.int32) + x0
             selected_map = selected_alignment.selected
             core: dict[str, object] = {
-                "schema": "gemini305-video-s13-m5-pair-transaction/v2",
+                "schema": (
+                    "gemini305-video-s13-m5-pair-transaction/v3"
+                    if successor.enabled else "gemini305-video-s13-m5-pair-transaction/v2"
+                ),
                 "transaction_id": f"m5-pair-{pair_index:04d}",
                 "parent_stage": "P1",
                 "parent_stage_sha256": parent_stage_sha256,
@@ -648,7 +1078,11 @@ def estimate_s13_m5_transactions(
                 "pair_frame_ids": list(frame_ids),
                 "candidate_generation": [dict(item) for item in generation_statuses],
                 "candidate_evaluations": evaluations,
-                "selection_policy": "minimum_local_objective_among_hard_safe_candidates",
+                "selection_policy": (
+                    "minimum_local_objective_with_supported_edge_residual_veto"
+                    if successor.enabled
+                    else "minimum_local_objective_among_hard_safe_candidates"
+                ),
                 "selected_candidate_id": selected_candidate.candidate_id,
                 "selected_seam_model": selected_candidate.model_name,
                 "selected_geometry_model": selected_map.model,
@@ -693,14 +1127,52 @@ def estimate_s13_m5_transactions(
                 ),
                 "seam_fallback_chain": list(seam_result.fallback_chain),
             }
-            core["result_stage_sha256"] = _sha_json(core)
+            if instrumentation_requested:
+                core["correspondence_filter"] = dict(correspondence_result.audit)
+            if successor.enabled:
+                transaction_edge = dict(selected_edge_registration)
+                transaction_edge.setdefault(
+                    "ambiguous",
+                    bool(transaction_edge.get("multiple_layer_or_ambiguous", False)),
+                )
+                core.update({
+                    "seam_local_evidence": dict(
+                        selected_alignment.seam_local_evidence or {}
+                    ),
+                    "edge_registration": transaction_edge,
+                    "selection_continued_for_structure": bool(
+                        selection_continued_for_structure
+                    ),
+                    "selected_seam_rank": int(selected_seam_rank),
+                    "selected_geometry_rank": int(selected_geometry_rank),
+                    "seam_fallback_used": bool(selected_seam_rank > 0),
+                    "geometry_fallback_used": bool(
+                        selected_map.model in {"C0_identity", "C1_accepted_vertical"}
+                    ),
+                    "topology_repair_used": False,
+                    "unresolved_oblique_structure": bool(unresolved_oblique_structure),
+                    "unexpected_exception_fallback": False,
+                    "micro_rescue": {
+                        "enabled": False, "attempted": False, "accepted": False,
+                    },
+                })
+            if successor.enabled:
+                core = _finalize_v5_transaction(core)
+            else:
+                core["result_stage_sha256"] = _sha_json(core)
             pairs.append(S13M5Pair(core, selected_seam, selected_alignment))
         except Exception as exc:
+            if successor.enabled:
+                raise
             fallback = _fallback_pair(
                 schedule, pair_index, parent_stage_sha256, frame_ids,
                 f"{type(exc).__name__}:{exc}",
                 parent_result_sha256,
                 p0_ancestor_completion_sha256,
+                correspondence_filter=(
+                    correspondence_audit if instrumentation_requested else None
+                ),
+                m51_r2_config=m51_r2_config,
             )
             pairs.append(fallback)
     # One deterministic topology repair pass.  A local candidate may stay in
@@ -720,13 +1192,26 @@ def estimate_s13_m5_transactions(
                 "seam_family_crossing_deterministic_midpoint_identity_repair",
                 parent_result_sha256,
                 p0_ancestor_completion_sha256,
+                correspondence_filter=(
+                    original.transaction.get("correspondence_filter")
+                    if instrumentation_requested else None
+                ),
+                m51_r2_config=m51_r2_config,
+                topology_repair_used=True,
             )
             transaction = {
                 **dict(fallback.transaction),
                 "candidate_generation": original.transaction.get("candidate_generation", []),
                 "candidate_evaluations": original.transaction.get("candidate_evaluations", []),
             }
-            transaction["result_stage_sha256"] = _sha_json(transaction)
+            if instrumentation_requested and "correspondence_filter" in original.transaction:
+                transaction["correspondence_filter"] = original.transaction[
+                    "correspondence_filter"
+                ]
+            if successor.enabled:
+                transaction = _finalize_v5_transaction(transaction)
+            else:
+                transaction["result_stage_sha256"] = _sha_json(transaction)
             pairs[pair_index] = S13M5Pair(transaction, fallback.seam_x_by_row, None)
     return tuple(pairs)
 
@@ -929,6 +1414,7 @@ def run_s13_m5(
     p0_ancestor_completion_sha256: str | None = None,
     selected_hypothesis_ids: tuple[int, ...] | None = None,
     placement_methods: tuple[str, ...] | None = None,
+    m51_r2_config: S13M51R2Config | None = None,
 ) -> S13M5Result:
     started = time.perf_counter()
     tick = time.perf_counter()
@@ -937,6 +1423,7 @@ def run_s13_m5(
         parent_stage_sha256=parent_stage_sha256,
         parent_result_sha256=parent_result_sha256,
         p0_ancestor_completion_sha256=p0_ancestor_completion_sha256,
+        m51_r2_config=m51_r2_config,
     )
     geometry_seconds = time.perf_counter() - tick
     tick = time.perf_counter()
@@ -950,6 +1437,10 @@ def run_s13_m5(
     )
     replay_pairs = build_s13_p2_replay(schedule, calibration, vertical, pairs)
     seam_seconds = time.perf_counter() - tick
+    geometry_features = prepare_seam_structure(geometry.image)
+    final_features = prepare_seam_structure(final.image)
+    if geometry_features is None or final_features is None:
+        raise ValueError("S1.3 P2 full-canvas feature construction failed")
     # Geometry is compared on one owner topology.  Seam ownership is then
     # independently compared against the fixed-boundary render on both the
     # base and candidate paths, so neither half can authorize the other.
@@ -1004,6 +1495,8 @@ def run_s13_m5(
             final.image,
             base_seam,
             np.asarray(pair.seam_x_by_row, dtype=np.int32),
+            before_features=geometry_features,
+            after_features=final_features,
         )
         seam_output_pair_audits.append({"pair_index": pair_index, **audit})
         symmetric_before = audit["symmetric_before_metrics"]
@@ -1112,6 +1605,16 @@ def run_s13_m5(
         ),
         "legacy_selection_audit": selection_audit,
     }
+    correspondence_rows = [
+        pair.transaction.get("correspondence_filter", {}) for pair in pairs
+    ]
+    evaluated_rows = [
+        evaluation
+        for pair in pairs
+        for evaluation in pair.transaction.get("candidate_evaluations", [])
+        if isinstance(evaluation, Mapping)
+        and evaluation.get("evaluation_status") != "skipped_after_higher_rank_safe_candidate"
+    ]
     return S13M5Result(
         pairs=pairs,
         replay_pairs=replay_pairs,
@@ -1129,11 +1632,30 @@ def run_s13_m5(
             "geometry": geometry_seconds,
             "seam_and_p2_render": seam_seconds,
             "total_m5": time.perf_counter() - started,
+            "gftt_call_count": sum(int(row.get("gftt_call_count", 0)) for row in correspondence_rows if isinstance(row, Mapping)),
+            "forward_pyr_lk_call_count": sum(int(row.get("forward_pyr_lk_call_count", 0)) for row in correspondence_rows if isinstance(row, Mapping)),
+            "backward_pyr_lk_call_count": 0,
+            "full_canvas_feature_build_count": 2,
+            "pair_feature_build_count": sum(2 for _row in evaluated_rows),
+            "risk_pair_count": sum(bool(pair.transaction.get("selection_continued_for_structure")) for pair in pairs),
+            "extra_seam_candidate_evaluation_count": sum(max(0, sum(1 for row in pair.transaction.get("candidate_evaluations", []) if isinstance(row, Mapping) and row.get("evaluation_status") != "skipped_after_higher_rank_safe_candidate") - 1) for pair in pairs),
+            "extra_geometry_roi_sample_count": sum(max(0, int(pair.transaction.get("selected_geometry_rank", 0))) for pair in pairs),
+            "micro_rescue_attempt_count": 0,
+            "p2_full_resolution_render_count": 2,
+            "extra_full_resolution_render_count": 0,
+            "formal_raw_rgb_remap_invocations": geometry.remap_invocations + final.remap_invocations,
+            "depth_call_count": 0,
+            "dis_call_count": 0,
+            "open3d_call_count": 0,
+            "orbslam3_call_count_in_m5": 0,
+            "m4_geometry_reestimation_count": 0,
+            "gain_enumeration_count": 0,
         },
     )
 
 
 __all__ = [
-    "S13M5Pair", "S13M5Result", "S13P2Result", "build_s13_p2_replay",
+    "S13M5Pair", "S13M5Result", "S13P2Result", "S13PairCorrespondences",
+    "build_s13_p2_replay",
     "estimate_s13_m5_transactions", "render_s13_p2_from_raw", "run_s13_m5",
 ]

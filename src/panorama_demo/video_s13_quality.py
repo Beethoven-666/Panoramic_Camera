@@ -5,10 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from collections.abc import Sequence
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 import cv2
 import numpy as np
+
+if TYPE_CHECKING:
+    from .video_s13_m51_r2 import S13M51R2Config
 
 
 METRIC_NAMES = (
@@ -60,6 +63,323 @@ def prepare_seam_structure(image: np.ndarray) -> SeamStructureFeatures | None:
         gradient_x=gx,
         gradient_y=gy,
     )
+
+
+def _edge_registration_empty(*, reason: str) -> dict[str, object]:
+    return {
+        "schema": "gemini305-video-s13-oblique-structure-audit/v1",
+        "evaluable": False,
+        "reason": reason,
+        "supported_block_count": 0,
+        "supported_component_count": 0,
+        "block_best_lag_px": [],
+        "median_supported_abs_lag_px": None,
+        "p95_supported_abs_lag_px": None,
+        "maximum_supported_abs_lag_px": None,
+        "minimum_correlation": None,
+        "minimum_uniqueness_margin": None,
+        "maximum_orientation_difference_degrees": None,
+        "multiple_layer_or_ambiguous": False,
+        "block_audits": [],
+    }
+
+
+def _edge_features(
+    value: np.ndarray | SeamStructureFeatures,
+    *,
+    name: str,
+) -> SeamStructureFeatures:
+    if isinstance(value, SeamStructureFeatures):
+        return value
+    features = prepare_seam_structure(np.asarray(value))
+    if features is None:
+        raise ValueError(f"{name} must be a uint8 BGR image or SeamStructureFeatures")
+    return features
+
+
+def edge_registration_visual_suspect(
+    edge_registration: Mapping[str, object],
+    seam_local_lk_p95_px: float | None,
+    *,
+    config: "S13M51R2Config",
+) -> bool:
+    """Return whether sufficient, unambiguous pair-local evidence is risky."""
+
+    if (
+        edge_registration.get("evaluable") is not True
+        or edge_registration.get("multiple_layer_or_ambiguous") is True
+    ):
+        return False
+
+    def exceeds(value: object, threshold: float) -> bool:
+        return (
+            isinstance(value, (int, float))
+            and math.isfinite(float(value))
+            and float(value) > float(threshold)
+        )
+
+    return bool(
+        exceeds(seam_local_lk_p95_px, config.suspect_lk_p95_px)
+        or exceeds(
+            edge_registration.get("median_supported_abs_lag_px"),
+            config.suspect_edge_median_px,
+        )
+        or exceeds(
+            edge_registration.get("p95_supported_abs_lag_px"),
+            config.suspect_edge_p95_px,
+        )
+    )
+
+
+def _modulo_pi_orientation_difference(
+    left_angle: np.ndarray,
+    right_angle: np.ndarray,
+) -> np.ndarray:
+    difference = np.abs(left_angle - right_angle)
+    return np.minimum(difference, np.pi - difference)
+
+
+def _bilinear_feature_samples(
+    feature: SeamStructureFeatures,
+    valid: np.ndarray,
+    x: np.ndarray,
+    y: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Sample cached right features only where every bilinear neighbour is valid."""
+
+    height, width = feature.shape
+    x0 = np.floor(x).astype(np.int32)
+    y0 = np.floor(y).astype(np.int32)
+    x1, y1 = x0 + 1, y0 + 1
+    inside = (x0 >= 0) & (y0 >= 0) & (x1 < width) & (y1 < height)
+    safe_x0 = np.clip(x0, 0, width - 1)
+    safe_x1 = np.clip(x1, 0, width - 1)
+    safe_y0 = np.clip(y0, 0, height - 1)
+    safe_y1 = np.clip(y1, 0, height - 1)
+    sample_valid = inside.copy()
+    sample_valid &= valid[safe_y0, safe_x0]
+    sample_valid &= valid[safe_y0, safe_x1]
+    sample_valid &= valid[safe_y1, safe_x0]
+    sample_valid &= valid[safe_y1, safe_x1]
+    wx = (x - x0).astype(np.float32)
+    wy = (y - y0).astype(np.float32)
+
+    def sample(array: np.ndarray) -> np.ndarray:
+        top = array[safe_y0, safe_x0] * (1.0 - wx) + array[safe_y0, safe_x1] * wx
+        bottom = array[safe_y1, safe_x0] * (1.0 - wx) + array[safe_y1, safe_x1] * wx
+        return (top * (1.0 - wy) + bottom * wy).astype(np.float64)
+
+    return sample(feature.gradient), sample(feature.gradient_x), sample(feature.gradient_y), sample_valid
+
+
+def pair_edge_registration_metrics(
+    left: np.ndarray | SeamStructureFeatures,
+    right: np.ndarray | SeamStructureFeatures,
+    left_valid: np.ndarray,
+    right_valid: np.ndarray,
+    seam_x_by_row: np.ndarray,
+    *,
+    config: "S13M51R2Config",
+) -> dict[str, object]:
+    """Measure pair-local strong-edge registration along each edge's normal.
+
+    This compares the two real pair sources in their shared canvas/crop domain.
+    It deliberately does not inspect an owner-composed preview, infer validity
+    from RGB values, or create a warp.
+    """
+
+    left_features = _edge_features(left, name="left")
+    right_features = _edge_features(right, name="right")
+    if left_features.shape != right_features.shape:
+        raise ValueError("pair edge feature shapes differ")
+    height, width = left_features.shape
+    left_mask = np.asarray(left_valid)
+    right_mask = np.asarray(right_valid)
+    if left_mask.shape != (height, width) or right_mask.shape != (height, width):
+        raise ValueError("pair edge valid mask shape differs from the features")
+    if left_mask.dtype != np.bool_ or right_mask.dtype != np.bool_:
+        raise ValueError("pair edge valid masks must be boolean")
+    seam_value = np.asarray(seam_x_by_row)
+    if seam_value.shape != (height,) or not np.isfinite(seam_value).all():
+        raise ValueError("pair edge seam must contain one finite value per row")
+    seam = np.rint(seam_value).astype(np.int32)
+    if not np.allclose(seam_value, seam, atol=0.0):
+        raise ValueError("pair edge seam coordinates must be integral")
+
+    block_height = int(config.block_height_px)
+    block_stride = int(config.block_stride_px)
+    seam_radius = int(config.seam_support_radius_px)
+    halo_radius = int(config.feature_halo_radius_px)
+    minimum_length = int(config.minimum_edge_component_length_px)
+    minimum_count = int(config.minimum_edge_support_count)
+    maximum_lag = float(config.normal_search_maximum_px)
+    lag_step = float(config.normal_search_step_px)
+    if height < minimum_length or width < 3:
+        return _edge_registration_empty(reason="image_too_small")
+
+    starts = list(range(0, max(height - block_height + 1, 1), block_stride))
+    final_start = max(0, height - block_height)
+    if not starts or starts[-1] != final_start:
+        starts.append(final_start)
+    lags = np.arange(-maximum_lag, maximum_lag + 0.25 * lag_step, lag_step)
+    accepted: list[dict[str, object]] = []
+    block_audits: list[dict[str, object]] = []
+    ambiguous = False
+    nonunique_search_observed = False
+
+    for block_index, y0 in enumerate(starts):
+        y1 = min(height, y0 + block_height)
+        columns = np.arange(width, dtype=np.int32)[None, :]
+        distance = np.abs(columns - seam[y0:y1, None])
+        common = left_mask[y0:y1] & right_mask[y0:y1]
+        local_values = left_features.gradient[y0:y1][common & (distance <= halo_radius)]
+        finite_positive = local_values[np.isfinite(local_values)]
+        if finite_positive.size < minimum_count:
+            block_audits.append({"block_index": block_index, "y0": y0, "y1": y1,
+                                 "supported": False, "reason": "insufficient_local_gradient"})
+            continue
+        threshold = max(8.0, float(np.percentile(finite_positive, 75.0)))
+        strong = (
+            common
+            & (distance <= halo_radius)
+            & np.isfinite(left_features.gradient[y0:y1])
+            & (left_features.gradient[y0:y1] >= threshold)
+        )
+        label_count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+            strong.astype(np.uint8), connectivity=8
+        )
+        candidates: list[tuple[float, int, np.ndarray, np.ndarray]] = []
+        for label in range(1, label_count):
+            component = labels == label
+            component_rows, component_columns = np.nonzero(component)
+            count = int(len(component_rows))
+            if count < minimum_count:
+                continue
+            length = float(max(stats[label, cv2.CC_STAT_WIDTH], stats[label, cv2.CC_STAT_HEIGHT]))
+            if length < minimum_length:
+                continue
+            if not np.any(component & (distance <= seam_radius)):
+                continue
+            strength = float(np.sum(left_features.gradient[y0:y1][component]))
+            candidates.append((strength, label, component_rows, component_columns))
+        if not candidates:
+            block_audits.append({"block_index": block_index, "y0": y0, "y1": y1,
+                                 "supported": False, "reason": "no_cross_seam_component",
+                                 "strong_gradient_threshold": threshold})
+            continue
+        candidates.sort(reverse=True, key=lambda item: item[0])
+        if len(candidates) > 1 and candidates[1][0] >= 0.80 * candidates[0][0]:
+            first_center = np.asarray(
+                (np.mean(candidates[0][3]), np.mean(candidates[0][2])), dtype=np.float64
+            )
+            second_center = np.asarray(
+                (np.mean(candidates[1][3]), np.mean(candidates[1][2])), dtype=np.float64
+            )
+            # The two Sobel flanks of one thick antialiased edge are one
+            # physical layer.  Only spatially separate comparable components
+            # constitute competing layers.
+            if float(np.linalg.norm(first_center - second_center)) > 6.0:
+                ambiguous = True
+        _strength, _label, component_rows, component_columns = candidates[0]
+        ys = (component_rows + y0).astype(np.float64)
+        xs = component_columns.astype(np.float64)
+        gx = left_features.gradient_x[ys.astype(np.int32), xs.astype(np.int32)].astype(np.float64)
+        gy = left_features.gradient_y[ys.astype(np.int32), xs.astype(np.int32)].astype(np.float64)
+        magnitude = np.hypot(gx, gy)
+        angles = np.mod(np.arctan2(gy, gx), np.pi)
+        doubled = np.sum(magnitude * np.exp(2j * angles))
+        if abs(doubled) <= 1e-9:
+            ambiguous = True
+            block_audits.append({"block_index": block_index, "y0": y0, "y1": y1,
+                                 "supported": False, "reason": "ambiguous_normal"})
+            continue
+        normal_angle = float(np.mod(0.5 * np.angle(doubled), np.pi))
+        nx, ny = math.cos(normal_angle), math.sin(normal_angle)
+        lag_rows: list[dict[str, float | int]] = []
+        for lag in lags:
+            sampled_magnitude, sampled_gx, sampled_gy, sample_valid = _bilinear_feature_samples(
+                right_features, right_mask, xs + float(lag) * nx, ys + float(lag) * ny
+            )
+            keep = sample_valid & np.isfinite(sampled_magnitude)
+            if int(keep.sum()) < minimum_count:
+                continue
+            left_magnitude = magnitude[keep]
+            right_magnitude = sampled_magnitude[keep]
+            denominator = float(np.linalg.norm(left_magnitude) * np.linalg.norm(right_magnitude))
+            if denominator <= 1e-9:
+                continue
+            correlation = float(np.clip(np.dot(left_magnitude, right_magnitude) / denominator, 0.0, 1.0))
+            right_angle = np.mod(np.arctan2(sampled_gy[keep], sampled_gx[keep]), np.pi)
+            differences = _modulo_pi_orientation_difference(angles[keep], right_angle)
+            orientation_difference = float(np.degrees(np.average(differences, weights=left_magnitude)))
+            score = correlation * max(0.0, math.cos(math.radians(orientation_difference)))
+            lag_rows.append({"lag": float(lag), "correlation": correlation,
+                             "orientation_difference": orientation_difference,
+                             "score": score, "support": int(keep.sum())})
+        if not lag_rows:
+            block_audits.append({"block_index": block_index, "y0": y0, "y1": y1,
+                                 "supported": False, "reason": "no_valid_normal_samples"})
+            continue
+        best = max(lag_rows, key=lambda row: (float(row["score"]), -abs(float(row["lag"]))))
+        # Adjacent half-pixel hypotheses sample the same Sobel response and
+        # are not independent alternatives.  Compare against a hypothesis at
+        # least 1.5 px away (three configured samples) for uniqueness.
+        independent_lag_distance = max(1.5, 3.0 * lag_step)
+        separated = [
+            row for row in lag_rows
+            if abs(float(row["lag"]) - float(best["lag"])) >= independent_lag_distance
+        ]
+        second_score = max((float(row["score"]) for row in separated), default=0.0)
+        uniqueness = (float(best["score"]) - second_score) / max(abs(float(best["score"])), 1e-9)
+        failure = None
+        if float(best["correlation"]) < float(config.minimum_edge_correlation):
+            failure = "correlation_below_minimum"
+        elif float(best["orientation_difference"]) > float(config.maximum_orientation_difference_degrees):
+            failure = "orientation_difference_exceeded"
+        elif uniqueness < float(config.minimum_uniqueness_fraction):
+            failure = "normal_search_not_unique"
+            nonunique_search_observed = True
+        audit = {
+            "block_index": block_index, "y0": y0, "y1": y1,
+            "supported": failure is None, "reason": failure,
+            "best_lag_px": float(best["lag"]),
+            "correlation": float(best["correlation"]),
+            "uniqueness_margin": float(uniqueness),
+            "orientation_difference_degrees": float(best["orientation_difference"]),
+            "support_count": int(best["support"]),
+            "strong_gradient_threshold": threshold,
+            "normal_angle_degrees_modulo_180": float(math.degrees(normal_angle)),
+        }
+        block_audits.append(audit)
+        if failure is None:
+            accepted.append(audit)
+
+    if not accepted:
+        result = _edge_registration_empty(reason="insufficient_unique_strong_edge_support")
+        result["multiple_layer_or_ambiguous"] = bool(
+            ambiguous or nonunique_search_observed
+        )
+        result["block_audits"] = block_audits
+        return result
+    absolute_lags = np.abs(np.asarray([row["best_lag_px"] for row in accepted], dtype=np.float64))
+    return {
+        "schema": "gemini305-video-s13-oblique-structure-audit/v1",
+        "evaluable": True,
+        "reason": None,
+        "supported_block_count": len({int(row["block_index"]) for row in accepted}),
+        "supported_component_count": len(accepted),
+        "block_best_lag_px": [float(row["best_lag_px"]) for row in accepted],
+        "median_supported_abs_lag_px": float(np.median(absolute_lags)),
+        "p95_supported_abs_lag_px": float(np.percentile(absolute_lags, 95.0)),
+        "maximum_supported_abs_lag_px": float(np.max(absolute_lags)),
+        "minimum_correlation": float(min(float(row["correlation"]) for row in accepted)),
+        "minimum_uniqueness_margin": float(min(float(row["uniqueness_margin"]) for row in accepted)),
+        "maximum_orientation_difference_degrees": float(max(
+            float(row["orientation_difference_degrees"]) for row in accepted
+        )),
+        "multiple_layer_or_ambiguous": ambiguous,
+        "block_audits": block_audits,
+    }
 
 
 def _horizontal_edge_mismatch(left: np.ndarray, right: np.ndarray) -> float:
@@ -483,9 +803,11 @@ def sequence_structure_decision(
 __all__ = [
     "METRIC_NAMES",
     "SeamStructureFeatures",
+    "edge_registration_visual_suspect",
     "mean_seam_structure_metrics",
     "long_horizontal_structure_metrics",
     "long_horizontal_structure_nondegrading",
+    "pair_edge_registration_metrics",
     "prepare_seam_structure",
     "seam_structure_metrics",
     "sequence_structure_decision",
