@@ -319,11 +319,19 @@ def _manifest_asset_rows(
         raise ValueError(f"accepted correction authority rows are invalid: {directory}")
     result: list[Mapping[str, object]] = []
     for row in rows:
-        relative = Path(str(row.get("asset", "")))
-        if relative.is_absolute() or not relative.parts or relative.name != str(relative):
+        asset_value = row.get("asset", row.get("correction_asset"))
+        hash_value = row.get("asset_sha256", row.get("correction_asset_sha256"))
+        if asset_value is None and directory == "source_corrections":
+            continue
+        relative = Path(str(asset_value or ""))
+        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
             raise ValueError(f"accepted correction authority asset is unsafe: {relative}")
-        path = p2 / directory / relative
-        expected = row.get("asset_sha256")
+        path = (
+            p2 / relative
+            if relative.parts[0] == directory
+            else p2 / directory / relative
+        )
+        expected = hash_value
         if not isinstance(expected, str) or _sha_file(path) != expected:
             raise ValueError(f"accepted correction authority asset hash mismatch: {path}")
         result.append(row)
