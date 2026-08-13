@@ -117,6 +117,26 @@ def _verify_p3_seal(p3: Path) -> dict[str, str]:
     return {str(name): str(digest) for name, digest in assets.items()}
 
 
+def _resolve_p2_parent(p3: Path, parent_reference: Mapping[str, Any]) -> Path:
+    """Resolve both standalone-M6 and canonical forward-chain P2 references."""
+    explicit_root = parent_reference.get("p2_root")
+    if isinstance(explicit_root, str) and explicit_root.strip():
+        return Path(explicit_root).resolve()
+    completion = parent_reference.get("completion")
+    if not isinstance(completion, str) or not completion.strip():
+        raise ValueError("S013 M7 P3 parent reference lacks P2 location")
+    relative = Path(completion)
+    if relative.is_absolute() or relative.name != "P2_completion.json":
+        raise ValueError("S013 M7 P3 parent completion reference is unsafe")
+    resolved_p3 = p3.resolve()
+    completion_path = (resolved_p3 / relative).resolve()
+    try:
+        completion_path.relative_to(resolved_p3.parent)
+    except ValueError as exc:
+        raise ValueError("S013 M7 P3 parent completion escapes its generation") from exc
+    return completion_path.parent
+
+
 def _verify_branch(acceptance_root: Path, branch: str) -> dict[str, Any]:
     formal = acceptance_root / "runs_v4" / branch / "formal"
     p3 = formal / "P3"
@@ -144,7 +164,7 @@ def _verify_branch(acceptance_root: Path, branch: str) -> dict[str, Any]:
     ):
         raise ValueError(f"S013 M7 {branch} P3 hard audit binding is invalid")
     parent_reference = _json(p3 / "p2_parent_reference.json")
-    p2 = Path(str(parent_reference.get("p2_root", ""))).resolve()
+    p2 = _resolve_p2_parent(p3, parent_reference)
     if not p2.is_dir():
         raise ValueError(f"S013 M7 {branch} P2 parent is missing")
     p2_completion_path = p2 / "P2_completion.json"
@@ -668,7 +688,7 @@ def _selection_for_component(
     formal = Path(str(component["run_root"]))
     p3 = formal / "P3"
     p2_ref = _json(p3 / "p2_parent_reference.json")
-    p2 = Path(str(p2_ref["p2_root"]))
+    p2 = _resolve_p2_parent(p3, p2_ref)
     p2_completion = _json(p2 / "P2_completion.json")
     p2_image = _load_color(p2 / str(p2_completion.get("result_asset", "geometry_and_seam_panorama_owner_only.png")))
     p3_image = _load_color(p3 / "visual_panorama.png")

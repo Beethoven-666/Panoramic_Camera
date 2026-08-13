@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import panorama_demo.video_s13_evaluation as evaluation
 from panorama_demo.video_s13_evaluation import (
     BRANCHES,
     BUNDLE_SCHEMA,
@@ -39,6 +40,30 @@ def _write(path: Path, value: object) -> Path:
 
 def _binding(path: Path) -> dict[str, str]:
     return {"path": str(path.resolve()), "sha256": _sha(path)}
+
+
+def test_branch_stage_roots_prefers_current_forward_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generation = tmp_path / "forward" / "generation"
+    for stage in ("P0", "P1", "P2"):
+        (generation / stage).mkdir(parents=True)
+    formal = tmp_path / "acceptance" / "runs_v4" / "fast_direct" / "formal"
+    monkeypatch.setattr(
+        evaluation,
+        "_verify_branch",
+        lambda _acceptance, _branch: {
+            "generation_id": "new-generation",
+            "p2_root": str(generation / "P2"),
+            "run_root": str(formal),
+        },
+    )
+
+    roots = evaluation.branch_stage_roots(tmp_path, tmp_path / "acceptance", "fast_direct")
+
+    assert roots["P0"] == generation / "P0"
+    assert roots["P1"] == generation / "P1"
+    assert roots["P2"] == (generation / "P2").resolve()
 
 
 def _dag(tmp_path: Path) -> tuple[Path, dict[str, object]]:

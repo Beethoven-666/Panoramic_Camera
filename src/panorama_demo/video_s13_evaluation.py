@@ -70,13 +70,20 @@ def _node(
 def branch_stage_roots(repo: Path, acceptance: Path, branch: str) -> dict[str, Path]:
     binding = _verify_branch(acceptance, branch)
     generation_id = binding["generation_id"]
-    original = (
+    legacy_original = (
         repo / "artifacts/S013_M6_acceptance" / branch / "generations" / generation_id
+    )
+    p2 = Path(binding["p2_root"]).resolve()
+    forward_generation = p2.parent
+    original = (
+        forward_generation
+        if (forward_generation / "P0").is_dir() and (forward_generation / "P1").is_dir()
+        else legacy_original
     )
     return {
         "P0": original / "P0",
         "P1": original / "P1",
-        "P2": Path(binding["p2_root"]),
+        "P2": p2,
         "P3": Path(binding["run_root"]) / "P3",
         "P4": Path(binding["run_root"]) / "P4",
     }

@@ -8,6 +8,7 @@ import pytest
 
 from panorama_demo.video_algorithm import load_algorithm_config
 from panorama_demo.video_s13_contract import validate_s13_document
+from panorama_demo.video_s13_m7 import _resolve_p2_parent
 from panorama_demo.video_s13_p4_hard_audit import audit_s13_p4_arrays
 from panorama_demo.video_s13_repair import (
     CORE_CANDIDATES,
@@ -51,6 +52,22 @@ def _provenance() -> dict[str, np.ndarray]:
         "secondary_weight": weight,
     }
     return values
+
+
+def test_m7_resolves_standalone_and_forward_chain_p2_parents(tmp_path: Path) -> None:
+    generation = tmp_path / "generation"
+    p2 = generation / "P2"
+    p3 = generation / "P3"
+    p2.mkdir(parents=True)
+    p3.mkdir()
+    (p2 / "P2_completion.json").write_text("{}", encoding="utf-8")
+
+    assert _resolve_p2_parent(p3, {"completion": "../P2/P2_completion.json"}) == p2.resolve()
+    assert _resolve_p2_parent(p3, {"p2_root": str(p2)}) == p2.resolve()
+    with pytest.raises(ValueError, match="unsafe"):
+        _resolve_p2_parent(p3, {"completion": str(p2 / "P2_completion.json")})
+    with pytest.raises(ValueError, match="escapes"):
+        _resolve_p2_parent(p3, {"completion": "../../P2/P2_completion.json"})
 
 
 def test_r1_only_turns_exact_frozen_b1_pair_into_b0() -> None:
