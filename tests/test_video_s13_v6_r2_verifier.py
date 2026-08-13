@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-
+import cv2
 import numpy as np
 import pytest
 
@@ -11,9 +11,11 @@ from panorama_demo.video_s13_m51_r4_component_chain import (
     source_map_oracle_from_arrays,
 )
 from panorama_demo.video_s13_v6_r2_verifier import (
+    component_decision_stable_sha256,
     canonical_pair_transaction_sha256,
     canonical_source_map_slice_sha256,
     verify_s13_v6_r2_p2,
+    verify_s13_v6_r1_noop_exact_comparison,
 )
 
 
@@ -121,6 +123,9 @@ def _build_fixture(tmp_path: Path) -> Path:
         "rejected_segment_ids": [],
         "deferred_segment_ids": [],
     }
+    component["decision_payload_stable_sha256"] = (
+        component_decision_stable_sha256(component)
+    )
     _json(p2 / "component_chain_transactions/manifest.json", component)
     component_sha = _sha(p2 / "component_chain_transactions/manifest.json")
     corrections = {
@@ -248,7 +253,33 @@ def _build_fixture(tmp_path: Path) -> Path:
         "component_correction_field_id": labels,
     }
     _npz(p2 / "p2_pixel_provenance.npz", **provenance)
-    _json(p2 / "hard_audit.json", {"passed": True})
+    _json(p2 / "hard_audit.json", {
+        "passed": True,
+        "component_chain_c2e": {
+            "passed": True,
+            "correction_arrays_finite": True,
+            "correction_domain_valid": True,
+            "resolved_field_overlap_pixel_count": 0,
+            "p2_full_resolution_render_count": 2,
+            "extra_full_resolution_render_count": 0,
+            "formal_raw_rgb_remap_invocations": 4,
+            "owner_valid_topology_unchanged": True,
+            "base_geometry_provenance_valid": True,
+            "secondary_provenance_unchanged": True,
+            "seam_topology_valid": True,
+            "repair_complete": False,
+            "obligation_coverage": {
+                "passed": True,
+                "obligation_count": 0,
+                "covered_obligation_count": 0,
+                "uncovered_obligation_count": 0,
+                "severe_evaluable_obligation_count": 0,
+                "resolved_severe_obligation_count": 0,
+                "repair_complete": False,
+            },
+            "maximum_component_offset_px": 0.0,
+        },
+    })
 
     completion = {
         "schema": "gemini305-video-s13-p2-completion/v6-r2",
@@ -437,3 +468,91 @@ def test_v6_r2_verifier_rejects_replay_slice_sha_tamper(tmp_path: Path) -> None:
     _refresh_completion_assets(p2)
     with pytest.raises(ValueError, match="slice SHA"):
         verify_s13_v6_r2_p2(p2)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("p2_full_resolution_render_count", 3), ("extra_full_resolution_render_count", 1)),
+)
+def test_v6_r2_verifier_rejects_hard_render_authority_tamper(
+    tmp_path: Path, field: str, value: int
+) -> None:
+    p2 = _build_fixture(tmp_path)
+    path = p2 / "hard_audit.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["component_chain_c2e"][field] = value
+    _json(path, document)
+    _refresh_completion_assets(p2)
+    with pytest.raises(ValueError, match="hard audit semantic authority"):
+        verify_s13_v6_r2_p2(p2)
+
+
+def test_v6_r2_verifier_rejects_obligation_coverage_tamper(tmp_path: Path) -> None:
+    p2 = _build_fixture(tmp_path)
+    path = p2 / "hard_audit.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["component_chain_c2e"]["obligation_coverage"][
+        "uncovered_obligation_count"
+    ] = 1
+    _json(path, document)
+    _refresh_completion_assets(p2)
+    with pytest.raises(ValueError, match="coverage disagrees"):
+        verify_s13_v6_r2_p2(p2)
+
+
+@pytest.mark.parametrize("field", ("component_match_matrices", "exact_evidence_propagation"))
+def test_component_stable_sha_binds_match_and_propagation_authority(
+    tmp_path: Path, field: str,
+) -> None:
+    p2 = _build_fixture(tmp_path)
+    path = p2 / "component_chain_transactions/manifest.json"
+    component = json.loads(path.read_text(encoding="utf-8"))
+    component[field] = [{"tampered": True}] if field.endswith("matrices") else {
+        "tampered": True
+    }
+    _json(path, component)
+    with pytest.raises(ValueError, match="stable decision authority"):
+        verify_s13_v6_r2_p2(p2)
+
+
+def test_v6_r1_noop_exact_comparison_covers_png_maps_provenance_and_replay(
+    tmp_path: Path,
+) -> None:
+    baseline, candidate = tmp_path / "baseline", tmp_path / "candidate"
+    for root in (baseline, candidate):
+        (root / "component_chain_transactions").mkdir(parents=True)
+        (root / "pair_replay").mkdir(parents=True)
+        image = np.arange(60, dtype=np.uint8).reshape(4, 5, 3)
+        assert cv2.imwrite(
+            str(root / "geometry_and_seam_panorama_owner_only.png"), image
+        )
+        _npz(root / "p2_seams.npz", seams_x_by_row=np.arange(8).reshape(2, 4))
+        _npz(
+            root / "p2_pixel_provenance.npz",
+            owner_source_index=np.zeros((4, 5), np.int32),
+            source_u=np.arange(20, dtype=np.float32).reshape(4, 5),
+            valid=np.ones((4, 5), bool),
+        )
+        _npz(root / "pair_replay/pair_0000.npz", source_u=np.arange(5))
+        _json(root / "p2_replay_manifest.json", {
+            "pairs": [{"pair_index": 0, "asset": "pair_replay/pair_0000.npz"}]
+        })
+    _json(candidate / "component_chain_transactions/manifest.json", {
+        "application_state": "none", "accepted_segment_ids": []
+    })
+
+    report_path = tmp_path / "noop_exact_comparison.json"
+    result = verify_s13_v6_r1_noop_exact_comparison(
+        baseline, candidate, output_path=report_path
+    )
+    assert result["passed"] is True
+    assert result["comparison_count"] == 4
+    assert json.loads(report_path.read_text(encoding="utf-8")) == result
+
+    with np.load(candidate / "pair_replay/pair_0000.npz") as archive:
+        changed = np.asarray(archive["source_u"]).copy()
+    changed[0] += 1
+    _npz(candidate / "pair_replay/pair_0000.npz", source_u=changed)
+    assert verify_s13_v6_r1_noop_exact_comparison(
+        baseline, candidate
+    )["passed"] is False

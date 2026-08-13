@@ -9,9 +9,9 @@ import os
 import time
 import uuid
 from collections import Counter
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import cv2
 import numpy as np
@@ -47,6 +47,7 @@ from .video_s13_m5 import (
     render_s13_component_roi_from_raw,
     run_s13_m5,
 )
+from .video_s13_m51_r4_component_chain import canonical_s13_support_sha256
 from .video_s13_m61_evidence import (
     P2_V4_COMPLETION_SCHEMA,
     S13PhotometricEvidenceConfig,
@@ -75,6 +76,8 @@ from .video_s13_vertical import (
 from .video_s13_selection import select_s13_vertical_parent
 from .video_s13_v6_r2_verifier import (
     canonical_source_map_slice_sha256,
+    component_decision_stable_payload,
+    component_decision_stable_sha256,
     verify_s13_v6_r2_p2,
 )
 
@@ -154,6 +157,536 @@ def _strong_edge_trace_metrics(
         "threshold": threshold if math.isfinite(threshold) else None,
     }
     return metrics, overlay
+
+
+@dataclass(frozen=True)
+class _ExternalBoxObservationSeed:
+    """Exact observation support used only by the external box acceptance audit."""
+
+    pair_index: int
+    component_id: int
+    support_sha256: str
+    support_xy: np.ndarray
+    obligation_id: str
+    severe: bool
+    evaluable: bool
+
+
+def _support_line(support_xy: np.ndarray) -> tuple[float, float]:
+    support = np.asarray(support_xy, dtype=np.float64)
+    if support.ndim != 2 or support.shape[1] != 2 or support.shape[0] < 2:
+        raise ValueError("S1.3 external edge support must contain at least two xy points")
+    design = np.column_stack((support[:, 0], np.ones(support.shape[0])))
+    slope, intercept = np.linalg.lstsq(design, support[:, 1], rcond=None)[0]
+    return float(slope), float(intercept)
+
+
+def _external_box_physical_tracks(
+    observations: Sequence[_ExternalBoxObservationSeed],
+    *,
+    minimum_y_overlap_fraction: float,
+    maximum_predicted_y_difference_px: float,
+    maximum_normal_difference_degrees: float,
+) -> tuple[dict[str, object], ...]:
+    """Deterministically join adjacent-pair seeds without merging same-pair edges."""
+
+    rows = tuple(sorted(
+        observations,
+        key=lambda row: (row.pair_index, row.component_id, row.support_sha256),
+    ))
+    parent = list(range(len(rows)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def join(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    by_pair: dict[int, list[int]] = {}
+    line_by_index: dict[int, tuple[float, float]] = {}
+    bbox_by_index: dict[int, tuple[float, float, float, float]] = {}
+    for index, row in enumerate(rows):
+        by_pair.setdefault(row.pair_index, []).append(index)
+        line_by_index[index] = _support_line(row.support_xy)
+        support = np.asarray(row.support_xy)
+        bbox_by_index[index] = (
+            float(np.min(support[:, 0])), float(np.min(support[:, 1])),
+            float(np.max(support[:, 0]) + 1), float(np.max(support[:, 1]) + 1),
+        )
+    for pair_index in sorted(by_pair):
+        left_indices = by_pair[pair_index]
+        right_indices = by_pair.get(pair_index + 1, [])
+        candidates: list[tuple[float, float, int, int]] = []
+        for left_index in left_indices:
+            lx0, ly0, lx1, ly1 = bbox_by_index[left_index]
+            left_slope, left_intercept = line_by_index[left_index]
+            for right_index in right_indices:
+                rx0, ry0, rx1, ry1 = bbox_by_index[right_index]
+                overlap = max(0.0, min(ly1, ry1) - max(ly0, ry0)) / max(
+                    1.0, min(ly1 - ly0, ry1 - ry0)
+                )
+                if overlap < minimum_y_overlap_fraction:
+                    continue
+                right_slope, right_intercept = line_by_index[right_index]
+                angle = abs(math.degrees(math.atan(left_slope) - math.atan(right_slope)))
+                if angle > maximum_normal_difference_degrees:
+                    continue
+                common_x = 0.25 * (lx0 + lx1 + rx0 + rx1)
+                predicted_difference = abs(
+                    left_slope * common_x + left_intercept
+                    - right_slope * common_x - right_intercept
+                )
+                if predicted_difference > maximum_predicted_y_difference_px:
+                    continue
+                candidates.append((predicted_difference, angle, left_index, right_index))
+        # One-to-one greedy matching is deterministic.  Geometrically ambiguous
+        # ties remain separate tracks rather than risking a physical-edge merge.
+        used_left: set[int] = set()
+        used_right: set[int] = set()
+        for predicted_difference, angle, left_index, right_index in sorted(candidates):
+            if left_index in used_left or right_index in used_right:
+                continue
+            left_alternatives = sorted(
+                row for row in candidates if row[2] == left_index
+            )
+            right_alternatives = sorted(
+                row for row in candidates if row[3] == right_index
+            )
+            best_cost = predicted_difference + angle
+            ambiguous_left = len(left_alternatives) > 1 and (
+                left_alternatives[1][0] + left_alternatives[1][1]
+                <= best_cost + max(0.5, 0.10 * best_cost)
+            )
+            ambiguous_right = len(right_alternatives) > 1 and (
+                right_alternatives[1][0] + right_alternatives[1][1]
+                <= best_cost + max(0.5, 0.10 * best_cost)
+            )
+            if ambiguous_left or ambiguous_right:
+                continue
+            join(left_index, right_index)
+            used_left.add(left_index)
+            used_right.add(right_index)
+
+    groups: dict[int, list[_ExternalBoxObservationSeed]] = {}
+    for index, row in enumerate(rows):
+        groups.setdefault(find(index), []).append(row)
+    tracks: list[dict[str, object]] = []
+    for members in groups.values():
+        authority = sorted(
+            (row.pair_index, row.component_id, row.support_sha256) for row in members
+        )
+        digest = hashlib.sha256(json.dumps(authority, separators=(",", ":")).encode()).hexdigest()
+        support = np.unique(np.concatenate(
+            [np.asarray(row.support_xy, dtype=np.int32) for row in members], axis=0
+        ), axis=0)
+        tracks.append({
+            "track_id": f"box-edge-{digest[:20]}",
+            "support_xy": support,
+            "observation_authority": [
+                {
+                    "pair_index": pair_index,
+                    "component_id": component_id,
+                    "support_sha256": support_sha256,
+                }
+                for pair_index, component_id, support_sha256 in authority
+            ],
+            "obligation_ids": sorted(row.obligation_id for row in members),
+        })
+    return tuple(sorted(tracks, key=lambda row: str(row["track_id"])))
+
+
+def _seeded_edge_trace_metrics(
+    image: np.ndarray,
+    valid: np.ndarray,
+    tracks: Sequence[Mapping[str, object]],
+    *,
+    roi_origin_xy: tuple[int, int] = (0, 0),
+    search_radius_px: int = 6,
+) -> tuple[dict[str, object], np.ndarray]:
+    """Trace each frozen physical edge in its own narrow, deterministic band."""
+
+    if image.ndim != 3 or image.shape[:2] != valid.shape:
+        raise ValueError("S1.3 box ROI image/valid shapes disagree")
+    if search_radius_px < 1:
+        raise ValueError("S1.3 external edge search radius must be positive")
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    magnitude = np.hypot(gx, gy)
+    height, width = valid.shape
+    origin_x, origin_y = roi_origin_xy
+    overlay = image.copy()
+    palette = ((0, 0, 255), (0, 255, 255), (255, 0, 255), (255, 255, 0))
+    all_steps: list[np.ndarray] = []
+    all_second: list[np.ndarray] = []
+    track_metrics: list[dict[str, object]] = []
+    total_evaluable = 0
+    total_double = 0
+    total_union = 0
+    total_backtracks = 0
+    longest_break_overall = 0
+    for track_index, track in enumerate(sorted(tracks, key=lambda row: str(row["track_id"]))):
+        support = np.asarray(track["support_xy"], dtype=np.float64).copy()
+        support[:, 0] -= origin_x
+        support[:, 1] -= origin_y
+        slope, intercept = _support_line(support)
+        normal = np.asarray((-slope, 1.0), dtype=np.float64)
+        normal /= max(float(np.linalg.norm(normal)), 1e-12)
+        directional = np.abs(gx * normal[0] + gy * normal[1])
+        expected = slope * np.arange(width, dtype=np.float64) + intercept
+        band_mask = np.zeros(valid.shape, dtype=bool)
+        row_candidates: list[np.ndarray] = []
+        for column, expected_row in enumerate(expected):
+            lower = max(1, int(math.floor(expected_row)) - search_radius_px)
+            upper = min(height - 1, int(math.ceil(expected_row)) + search_radius_px + 1)
+            rows_for_column = np.arange(lower, upper, dtype=np.int32)
+            row_candidates.append(rows_for_column)
+            band_mask[rows_for_column, column] = True
+        finite_values = directional[band_mask & valid]
+        threshold = (
+            max(20.0, float(np.percentile(finite_values, 75.0)))
+            if finite_values.size else math.inf
+        )
+        scale = max(threshold, 1.0)
+        costs: list[np.ndarray] = []
+        predecessors: list[np.ndarray] = []
+        for column, rows_for_column in enumerate(row_candidates):
+            if not rows_for_column.size:
+                costs.append(np.empty(0, dtype=np.float64))
+                predecessors.append(np.empty(0, dtype=np.int32))
+                continue
+            emission = (
+                -directional[rows_for_column, column] / scale
+                + 0.05 * np.abs(rows_for_column.astype(np.float64) - expected[column])
+            )
+            emission[~valid[rows_for_column, column]] += 1_000_000.0
+            if column == 0 or not costs[column - 1].size:
+                costs.append(emission)
+                predecessors.append(np.full(rows_for_column.size, -1, dtype=np.int32))
+                continue
+            previous_rows = row_candidates[column - 1]
+            expected_step = expected[column] - expected[column - 1]
+            transition = 0.30 * np.abs(
+                rows_for_column[:, None].astype(np.float64)
+                - previous_rows[None, :].astype(np.float64) - expected_step
+            )
+            combined = transition + costs[column - 1][None, :]
+            previous = np.argmin(combined, axis=1).astype(np.int32)
+            costs.append(emission + combined[np.arange(rows_for_column.size), previous])
+            predecessors.append(previous)
+        trace = np.full(width, -1, dtype=np.int32)
+        segment_ends = [
+            column for column in range(width)
+            if row_candidates[column].size
+            and (column + 1 == width or not row_candidates[column + 1].size)
+        ]
+        for segment_end in segment_ends:
+            state = int(np.argmin(costs[segment_end]))
+            column = segment_end
+            while column >= 0 and row_candidates[column].size:
+                trace[column] = int(row_candidates[column][state])
+                if column == 0 or not row_candidates[column - 1].size:
+                    break
+                state = int(predecessors[column][state])
+                column -= 1
+        selected_columns = np.flatnonzero(trace >= 0)
+        if selected_columns.size:
+            selected_rows = trace[selected_columns]
+            orientation_ratio = directional[selected_rows, selected_columns] / np.maximum(
+                magnitude[selected_rows, selected_columns], 1e-6
+            )
+            supported = (
+                valid[selected_rows, selected_columns]
+                & (directional[selected_rows, selected_columns] >= threshold)
+                & (orientation_ratio >= math.cos(math.radians(35.0)))
+            )
+            trace[selected_columns[~supported]] = -1
+        double_edge = np.zeros(width, dtype=bool)
+        for column in np.flatnonzero(trace >= 0):
+            rows_for_column = row_candidates[column]
+            values = directional[rows_for_column, column]
+            local = np.flatnonzero(
+                (values >= np.roll(values, 1)) & (values >= np.roll(values, -1))
+                & (values >= threshold)
+            )
+            local = local[(local > 0) & (local + 1 < values.size)]
+            primary_row = int(trace[column])
+            primary_strength = float(directional[primary_row, column])
+            double_edge[column] = any(
+                abs(int(rows_for_column[index]) - primary_row) >= 3
+                and float(values[index]) >= 0.65 * primary_strength
+                and float(directional[int(rows_for_column[index]), column])
+                / max(float(magnitude[int(rows_for_column[index]), column]), 1e-6)
+                >= math.cos(math.radians(35.0))
+                for index in local
+            )
+        adjacent = (trace[:-1] >= 0) & (trace[1:] >= 0)
+        steps = np.abs(np.diff(trace.astype(np.float64))[adjacent])
+        second_evaluable = (trace[:-2] >= 0) & (trace[1:-1] >= 0) & (trace[2:] >= 0)
+        second = np.abs(np.diff(trace.astype(np.float64), n=2)[second_evaluable])
+        missing = trace < 0
+        longest_break = 0
+        current_break = 0
+        for value in missing:
+            current_break = current_break + 1 if value else 0
+            longest_break = max(longest_break, current_break)
+        signed_steps = np.diff(trace.astype(np.float64))[adjacent]
+        nonzero_signs = np.sign(signed_steps[np.abs(signed_steps) >= 0.5])
+        backtracks = int(np.count_nonzero(np.diff(nonzero_signs) != 0))
+        columns = np.flatnonzero(trace >= 0)
+        color = palette[track_index % len(palette)]
+        overlay[trace[columns], columns] = color
+        union = int(np.count_nonzero(missing | double_edge))
+        track_metrics.append({
+            "track_id": str(track["track_id"]),
+            "observation_authority": list(track.get("observation_authority", [])),
+            "obligation_ids": list(track.get("obligation_ids", [])),
+            "evaluable_column_count": int(columns.size),
+            "coverage_fraction": float(columns.size / max(width, 1)),
+            "edge_step_p95_px": float(np.percentile(steps, 95.0)) if steps.size else None,
+            "maximum_local_step_px": float(np.max(steps)) if steps.size else None,
+            "break_length_px": int(longest_break),
+            "double_edge_length_px": int(np.count_nonzero(double_edge)),
+            "break_double_edge_union_length_px": union,
+            "backtrack_count": backtracks,
+            "threshold": threshold if math.isfinite(threshold) else None,
+        })
+        if steps.size:
+            all_steps.append(steps)
+        if second.size:
+            all_second.append(second)
+        total_evaluable += int(columns.size)
+        total_double += int(np.count_nonzero(double_edge))
+        total_union += union
+        total_backtracks += backtracks
+        longest_break_overall = max(longest_break_overall, longest_break)
+    steps = np.concatenate(all_steps) if all_steps else np.empty(0, dtype=np.float64)
+    second = np.concatenate(all_second) if all_second else np.empty(0, dtype=np.float64)
+    denominator = max(width * len(tracks), 1)
+    return {
+        "trace_mode": "exact_support_seeded_physical_tracks/v1",
+        "track_count": len(tracks),
+        "tracks": track_metrics,
+        "evaluable_column_count": total_evaluable,
+        "coverage_fraction": float(total_evaluable / denominator),
+        "edge_step_p50_px": float(np.percentile(steps, 50.0)) if steps.size else None,
+        "edge_step_p95_px": float(np.percentile(steps, 95.0)) if steps.size else None,
+        "maximum_local_step_px": float(np.max(steps)) if steps.size else None,
+        "second_difference_p95_px": (
+            float(np.percentile(second, 95.0)) if second.size else None
+        ),
+        "break_length_px": int(longest_break_overall),
+        "double_edge_length_px": total_double,
+        "break_double_edge_union_length_px": total_union,
+        "backtrack_count": total_backtracks,
+        "threshold": None,
+    }, overlay
+
+
+def _box_target_coverage_summary(
+    component_doc: Mapping[str, object],
+    relevant_obligations: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Separate target identity, repair denominator, and non-severe anchors."""
+
+    accepted_ids = {str(value) for value in component_doc.get("accepted_segment_ids", [])}
+    resolved_authority = {
+        (int(row["pair_index"]), int(row["component_id"]), str(row["support_sha256"]))
+        for segment in component_doc.get("segments", [])
+        if str(segment.get("segment_id")) in accepted_ids
+        and segment.get("state") == "resolved"
+        for row in segment.get("observation_authority", [])
+    }
+    repair_rows = [
+        row for row in relevant_obligations
+        if row.get("severe") is True and row.get("evaluable") is True
+    ]
+    anchor_rows = [
+        row for row in relevant_obligations
+        if row.get("severe") is not True and row.get("evaluable") is True
+    ]
+    unresolved = [
+        row for row in repair_rows
+        if (int(row["pair_index"]), int(row["component_id"]), str(row["support_sha256"]))
+        not in resolved_authority
+    ]
+    return {
+        "box_target_obligation_ids": [str(row["obligation_id"]) for row in relevant_obligations],
+        "box_target_repair_obligation_ids": [str(row["obligation_id"]) for row in repair_rows],
+        "box_target_anchor_obligation_ids": [str(row["obligation_id"]) for row in anchor_rows],
+        "box_target_unresolved_repair_obligation_ids": [
+            str(row["obligation_id"]) for row in unresolved
+        ],
+        "repair_obligations_covered": bool(repair_rows) and not unresolved,
+    }
+
+
+def _segment_authority_key(row: Mapping[str, object]) -> tuple[int, int, str]:
+    return (
+        int(row["pair_index"]), int(row["component_id"]),
+        str(row["support_sha256"]),
+    )
+
+
+def _segment_authority_support(
+    pairs: Sequence[object],
+    observation_authority: Sequence[Mapping[str, object]],
+) -> tuple[np.ndarray, tuple[dict[str, object], ...]]:
+    """Collect only exact `(pair, component, support SHA)` segment evidence."""
+
+    authority = tuple(sorted(_segment_authority_key(row) for row in observation_authority))
+    if len(set(authority)) != len(authority):
+        raise RuntimeError("S1.3 segment observation authority contains duplicates")
+    available: dict[tuple[int, int, str], np.ndarray] = {}
+    for pair in pairs:
+        for observation, evidence in pair.component_evidence:
+            key = (
+                int(observation.pair_index), int(observation.component_id),
+                str(observation.mask_sha256),
+            )
+            if key in available:
+                raise RuntimeError("S1.3 exact observation authority is not unique")
+            available[key] = np.asarray(evidence.support_xy, dtype=np.int32)
+    missing = [key for key in authority if key not in available]
+    if missing:
+        raise RuntimeError(f"S1.3 segment exact observation authority is missing: {missing}")
+    supports = [available[key] for key in authority]
+    support = (
+        np.unique(np.concatenate(supports, axis=0), axis=0)
+        if supports else np.empty((0, 2), dtype=np.int32)
+    )
+    rows = tuple({
+        "pair_index": key[0], "component_id": key[1],
+        "support_sha256": key[2], "support_sample_count": int(available[key].shape[0]),
+    } for key in authority)
+    return support, rows
+
+
+def _verify_segment_support_asset(
+    transaction_root: Path,
+    segment_document: Mapping[str, object],
+    evidence_assets: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Independently reconstruct one segment union from sealed observation assets."""
+
+    authority = tuple(
+        sorted(_segment_authority_key(row)
+               for row in segment_document.get("observation_authority", []))
+    )
+    evidence_by_key = {
+        (
+            int(row["pair_index"]), int(row["component_id"]),
+            str(row["support_sha256"]),
+        ): row
+        for row in evidence_assets
+    }
+    if len(evidence_by_key) != len(evidence_assets):
+        raise RuntimeError("S1.3 sealed observation evidence authority is not unique")
+    supports: list[np.ndarray] = []
+    for key in authority:
+        row = evidence_by_key.get(key)
+        if row is None:
+            raise RuntimeError(f"S1.3 segment evidence asset is missing: {key}")
+        asset = transaction_root / str(row["asset"])
+        if sha256_file(asset) != str(row["asset_sha256"]):
+            raise RuntimeError("S1.3 observation evidence asset SHA mismatch")
+        with np.load(asset, allow_pickle=False) as payload:
+            support = np.asarray(payload["support_xy"], dtype=np.int32)
+        if canonical_s13_support_sha256(support) != key[2]:
+            raise RuntimeError("S1.3 observation exact support SHA mismatch")
+        supports.append(support)
+    expected = (
+        np.unique(np.concatenate(supports, axis=0), axis=0)
+        if supports else np.empty((0, 2), dtype=np.int32)
+    )
+    segment_asset = transaction_root / str(segment_document["asset"])
+    if sha256_file(segment_asset) != str(segment_document["asset_sha256"]):
+        raise RuntimeError("S1.3 segment support asset SHA mismatch")
+    with np.load(segment_asset, allow_pickle=False) as payload:
+        actual = np.asarray(payload["support_xy"], dtype=np.int32)
+        asset_pairs = np.asarray(payload["authority_pair_indices"], dtype=np.int32)
+        asset_components = np.asarray(
+            payload["authority_component_ids"], dtype=np.int32
+        )
+        asset_support_shas = tuple(str(value) for value in payload["authority_support_sha256"])
+    expected_pairs = np.asarray([key[0] for key in authority], dtype=np.int32)
+    expected_components = np.asarray([key[1] for key in authority], dtype=np.int32)
+    expected_shas = tuple(key[2] for key in authority)
+    passed = bool(
+        np.array_equal(actual, expected)
+        and np.array_equal(asset_pairs, expected_pairs)
+        and np.array_equal(asset_components, expected_components)
+        and asset_support_shas == expected_shas
+    )
+    if not passed:
+        raise RuntimeError("S1.3 segment support asset does not match exact authority")
+    return {
+        "passed": True,
+        "authority_count": len(authority),
+        "support_sample_count": int(actual.shape[0]),
+    }
+
+
+def _component_obligation_outcomes(
+    component_audit: Mapping[str, object],
+) -> tuple[dict[str, object], ...]:
+    """Explain every frozen obligation outcome without changing its denominator."""
+
+    accepted = {str(value) for value in component_audit.get("accepted_segment_ids", [])}
+    deferred = {str(value) for value in component_audit.get("deferred_segment_ids", [])}
+    by_authority: dict[tuple[int, int, str], list[tuple[str, str]]] = {}
+    for segment in component_audit.get("segments", []):
+        segment_id = str(segment["segment_id"])
+        state = str(segment.get("state", "unknown"))
+        for row in segment.get("observation_authority", []):
+            by_authority.setdefault(_segment_authority_key(row), []).append(
+                (segment_id, state)
+            )
+    outcomes: list[dict[str, object]] = []
+    for obligation in component_audit.get("baseline_c2e_obligations", []):
+        key = _segment_authority_key(obligation)
+        candidates = sorted(by_authority.get(key, []))
+        resolved = [
+            segment_id for segment_id, state in candidates
+            if segment_id in accepted and state == "resolved"
+        ]
+        improved = [
+            segment_id for segment_id, state in candidates
+            if segment_id in accepted and state == "improved_unresolved"
+        ]
+        deferred_segments = [
+            segment_id for segment_id, _state in candidates if segment_id in deferred
+        ]
+        if resolved:
+            outcome, reason = "resolved", None
+        elif improved:
+            outcome, reason = "improved_unresolved", "accepted_segment_not_resolved"
+        elif deferred_segments:
+            outcome, reason = "deferred", "segment_budget_deferred"
+        elif obligation.get("evaluable") is not True:
+            outcome, reason = "unevaluable", "baseline_obligation_unevaluable"
+        elif obligation.get("severe") is not True:
+            outcome, reason = "safe_anchor", "nonsevere_obligation_requires_no_correction"
+        elif candidates:
+            outcome, reason = "unresolved", "candidate_segment_not_applied_resolved"
+        else:
+            outcome, reason = "uncovered", "no_segment_contains_exact_authority"
+        outcomes.append({
+            "obligation_id": str(obligation["obligation_id"]),
+            "pair_index": key[0], "component_id": key[1],
+            "support_sha256": key[2],
+            "severe": obligation.get("severe") is True,
+            "evaluable": obligation.get("evaluable") is True,
+            "outcome": outcome, "reason": reason,
+            "candidate_segment_ids": [row[0] for row in candidates],
+            "resolved_by_segment_ids": resolved,
+        })
+    return tuple(outcomes)
 
 
 REPORT_SCHEMA = "gemini305-video-s13-output-first-report/v1"
@@ -457,6 +990,53 @@ def _run_m5(
                 str(key): int(value)
                 for key, value in dict(component_doc.get("field_id_table", {})).items()
             }
+            obligation_by_authority = {
+                (
+                    int(row["pair_index"]), int(row["component_id"]),
+                    str(row["support_sha256"]),
+                ): row
+                for row in component_doc.get("baseline_c2e_obligations", [])
+            }
+            box_observation_seeds: list[_ExternalBoxObservationSeed] = []
+            for pair in m5.pairs:
+                for observation, evidence in pair.component_evidence:
+                    support = np.asarray(evidence.support_xy, dtype=np.int32)
+                    support_in_roi = (
+                        (support[:, 0] >= x0) & (support[:, 0] < x1)
+                        & (support[:, 1] >= y0) & (support[:, 1] < y1)
+                    )
+                    if not np.any(support_in_roi):
+                        continue
+                    authority = (
+                        int(observation.pair_index), int(observation.component_id),
+                        str(observation.mask_sha256),
+                    )
+                    obligation = obligation_by_authority.get(authority)
+                    if obligation is None:
+                        raise RuntimeError(
+                            "S1.3 box exact support has no frozen obligation authority"
+                        )
+                    box_observation_seeds.append(_ExternalBoxObservationSeed(
+                        pair_index=authority[0],
+                        component_id=authority[1],
+                        support_sha256=authority[2],
+                        support_xy=support,
+                        obligation_id=str(obligation["obligation_id"]),
+                        severe=obligation.get("severe") is True,
+                        evaluable=obligation.get("evaluable") is True,
+                    ))
+            box_tracks = _external_box_physical_tracks(
+                box_observation_seeds,
+                minimum_y_overlap_fraction=float(
+                    getattr(m51_r2_config, "minimum_component_y_overlap_fraction", 0.5)
+                ),
+                maximum_predicted_y_difference_px=float(
+                    getattr(m51_r2_config, "maximum_predicted_y_disagreement_px", 6.0)
+                ),
+                maximum_normal_difference_degrees=float(
+                    getattr(m51_r2_config, "maximum_component_normal_difference_degrees", 10.0)
+                ),
+            )
             current_roi, current_valid = render_s13_component_roi_from_raw(
                 schedule, calibration, validation_image_loader, vertical, m5.pairs,
                 (x0, y0, x1, y1), registry=None,
@@ -466,11 +1046,11 @@ def _run_m5(
                 (x0, y0, x1, y1), registry=m5.source_correction_registry,
                 field_ids=field_ids,
             )
-            current_metrics, current_overlay = _strong_edge_trace_metrics(
-                current_roi, current_valid
+            current_metrics, current_overlay = _seeded_edge_trace_metrics(
+                current_roi, current_valid, box_tracks, roi_origin_xy=(x0, y0)
             )
-            candidate_metrics, candidate_overlay = _strong_edge_trace_metrics(
-                candidate_roi, candidate_valid
+            candidate_metrics, candidate_overlay = _seeded_edge_trace_metrics(
+                candidate_roi, candidate_valid, box_tracks, roi_origin_xy=(x0, y0)
             )
             write_image(validation_root / "current_roi.png", current_roi)
             write_image(validation_root / "candidate_roi.png", candidate_roi)
@@ -498,25 +1078,18 @@ def _run_m5(
             ]
             relevant_obligations = [
                 row for row in component_doc.get("baseline_c2e_obligations", [])
-                if int(row["bbox_xyxy"][0]) < x1
-                and int(row["bbox_xyxy"][2]) > x0
-                and int(row["bbox_xyxy"][1]) < y1
-                and int(row["bbox_xyxy"][3]) > y0
+                if str(row["obligation_id"]) in {
+                    seed.obligation_id for seed in box_observation_seeds
+                }
             ]
-            accepted_authority = {
-                (
-                    int(row["pair_index"]), int(row["component_id"]),
-                    str(row["support_sha256"]),
-                )
-                for segment in component_doc.get("segments", [])
-                if segment.get("state") in {"resolved", "improved_unresolved"}
-                for row in segment.get("observation_authority", [])
-            }
-            obligations_covered = bool(relevant_obligations) and all(
-                (int(row["pair_index"]), int(row["component_id"]), str(row["support_sha256"]))
-                in accepted_authority
-                for row in relevant_obligations
+            relevant_obligations.sort(key=lambda row: (
+                int(row["pair_index"]), int(row["component_id"]),
+                str(row["support_sha256"]),
+            ))
+            coverage_summary = _box_target_coverage_summary(
+                component_doc, relevant_obligations
             )
+            obligations_covered = bool(coverage_summary["repair_obligations_covered"])
             baseline_union = int(current_metrics["break_double_edge_union_length_px"])
             candidate_union = int(candidate_metrics["break_double_edge_union_length_px"])
             break_gate = (
@@ -556,9 +1129,18 @@ def _run_m5(
                 "pairs": pair_rows,
                 "baseline_edge_trace": current_metrics,
                 "candidate_edge_trace": candidate_metrics,
-                "box_target_obligation_ids": [
-                    row["obligation_id"] for row in relevant_obligations
+                "physical_edge_tracks": [
+                    {
+                        "track_id": row["track_id"],
+                        "observation_authority": row["observation_authority"],
+                        "obligation_ids": row["obligation_ids"],
+                        "support_sample_count": int(
+                            np.asarray(row["support_xy"]).shape[0]
+                        ),
+                    }
+                    for row in box_tracks
                 ],
+                **coverage_summary,
                 "box_target_repair_complete": box_target_repair_complete,
                 "failed_gates": failed_box_gates,
                 "reason": None if box_target_repair_complete
@@ -609,29 +1191,151 @@ def _run_m5(
                         "support_sha256": observation.mask_sha256,
                     })
             segment_assets: list[dict[str, object]] = []
+            hypothesis_by_authority = {
+                (
+                    int(row["pair_index"]), int(row["component_id"]),
+                    str(row["support_sha256"]),
+                ): row
+                for row in component_audit.get("forward_reverse_hypotheses", [])
+            }
+            chain_by_id = {
+                str(row["chain_id"]): row for row in component_audit.get("chains", [])
+            }
+            accepted_segment_ids = {
+                str(value) for value in component_audit.get("accepted_segment_ids", [])
+            }
+            rejected_segment_ids = {
+                str(value) for value in component_audit.get("rejected_segment_ids", [])
+            }
+            deferred_segment_ids = {
+                str(value) for value in component_audit.get("deferred_segment_ids", [])
+            }
             for segment in component_audit.get("segments", []):
                 segment_id = str(segment["segment_id"])
                 short_id = segment_id.rsplit("-", 1)[-1]
                 json_name = f"s_{short_id}.json"
                 npz_name = f"s_{short_id}.npz"
-                supports = [
-                    np.asarray(evidence.support_xy, dtype=np.int32)
-                    for pair in m5.pairs
-                    for observation, evidence in pair.component_evidence
-                    if observation.pair_index in segment.get("pair_indices", [])
-                ]
-                support = (
-                    np.unique(np.concatenate(supports), axis=0)
-                    if supports else np.empty((0, 2), dtype=np.int32)
+                observation_authority = list(segment.get("observation_authority", []))
+                parent_chain_id = str(segment.get("parent_chain_id", ""))
+                if not observation_authority and parent_chain_id in chain_by_id:
+                    chain = chain_by_id[parent_chain_id]
+                    component_by_pair = dict(zip(
+                        chain.get("pair_indices", []), chain.get("component_ids", []),
+                        strict=True,
+                    ))
+                    for pair_index in segment.get("pair_indices", []):
+                        component_id = component_by_pair.get(pair_index)
+                        matches = [
+                            row for key, row in hypothesis_by_authority.items()
+                            if key[:2] == (int(pair_index), int(component_id))
+                        ]
+                        if len(matches) != 1:
+                            raise RuntimeError(
+                                "S1.3 segment chain cannot resolve exact observation authority"
+                            )
+                        observation_authority.append({
+                            "pair_index": int(pair_index),
+                            "component_id": int(component_id),
+                            "support_sha256": str(matches[0]["support_sha256"]),
+                        })
+                support, sealed_authority = _segment_authority_support(
+                    m5.pairs, observation_authority
                 )
                 write_npz(pending / "component_chain_transactions" / npz_name, {
                     "support_xy": support,
                     "pair_indices": np.asarray(segment.get("pair_indices", []), np.int32),
                     "source_indices": np.asarray(segment.get("source_indices", []), np.int32),
+                    "authority_pair_indices": np.asarray(
+                        [row["pair_index"] for row in sealed_authority], np.int32
+                    ),
+                    "authority_component_ids": np.asarray(
+                        [row["component_id"] for row in sealed_authority], np.int32
+                    ),
+                    "authority_support_sha256": np.asarray(
+                        [row["support_sha256"] for row in sealed_authority]
+                    ),
                 })
+                hypothesis_summary = []
+                for row in sealed_authority:
+                    hypothesis = hypothesis_by_authority.get(_segment_authority_key(row))
+                    if hypothesis is None:
+                        raise RuntimeError("S1.3 segment authority has no 13-hypothesis audit")
+                    hypothesis_summary.append({
+                        "pair_index": row["pair_index"],
+                        "component_id": row["component_id"],
+                        "support_sha256": row["support_sha256"],
+                        "evidence_state": hypothesis.get("evidence_state"),
+                        "forward_best_lag_px": hypothesis.get("forward_best_lag_px"),
+                        "reverse_best_lag_px": hypothesis.get("reverse_best_lag_px"),
+                        "forward_scores": hypothesis.get("forward_scores", []),
+                        "reverse_scores": hypothesis.get("reverse_scores", []),
+                        "forward_support_counts": hypothesis.get(
+                            "forward_support_counts", []
+                        ),
+                        "reverse_support_counts": hypothesis.get(
+                            "reverse_support_counts", []
+                        ),
+                    })
+                dependency_rows = [
+                    row for row in component_audit.get("dependency_groups", [])
+                    if segment_id in row.get("segment_ids", [])
+                ]
+                affected_pair_indices = sorted({
+                    int(pair_index)
+                    for source_index in segment.get("source_indices", [])
+                    for pair_index in (int(source_index) - 1, int(source_index))
+                    if 0 <= pair_index < len(m5.pairs)
+                } | {
+                    int(pair_index) for row in dependency_rows
+                    for pair_index in row.get("affected_pair_indices", [])
+                })
+                if segment_id in accepted_segment_ids:
+                    selection_outcome = "conflict_winner_applied"
+                elif segment_id in rejected_segment_ids:
+                    selection_outcome = "conflict_or_quality_loser_rejected"
+                elif segment_id in deferred_segment_ids:
+                    selection_outcome = "budget_deferred"
+                else:
+                    selection_outcome = str(segment.get("state", "not_selected"))
+                competing_winners = sorted(
+                    accepted_segment_ids & {
+                        str(value) for row in dependency_rows
+                        for value in row.get("segment_ids", [])
+                    } - {segment_id}
+                )
+                audit = dict(segment.get("audit", {}))
                 segment_document = {
                     "schema": "gemini305-video-s13-component-segment-transaction/v1",
                     **dict(segment),
+                    "parent_segment_id": segment.get("parent_segment_id"),
+                    "root_segment_id": segment.get("root_segment_id", segment_id),
+                    "parent_chain_id": segment.get("parent_chain_id"),
+                    "component_ids": [
+                        int(row["component_id"]) for row in sealed_authority
+                    ],
+                    "observation_authority": list(sealed_authority),
+                    "cut_reasons": {
+                        "left": segment.get("left_cut_reason"),
+                        "right": segment.get("right_cut_reason"),
+                        "terminal": segment.get("reason"),
+                    },
+                    "hypothesis_13_summary": hypothesis_summary,
+                    "affected_pair_closure": affected_pair_indices,
+                    "hard_gates": {
+                        "failures": list(audit.get("hard_gate_failures", [])),
+                        "candidate_map_safety": audit.get("candidate_map_safety"),
+                        "dependency_groups": dependency_rows,
+                    },
+                    "conflict_resolution": {
+                        "outcome": selection_outcome,
+                        "winner_segment_ids": (
+                            [segment_id] if segment_id in accepted_segment_ids
+                            else competing_winners
+                        ),
+                        "loser_segment_ids": (
+                            [segment_id] if segment_id in rejected_segment_ids else []
+                        ),
+                    },
                     "asset": npz_name,
                     "asset_sha256": sha256_file(
                         pending / "component_chain_transactions" / npz_name
@@ -641,6 +1345,11 @@ def _run_m5(
                     pending / "component_chain_transactions" / json_name,
                     segment_document,
                 )
+                support_verification = _verify_segment_support_asset(
+                    pending / "component_chain_transactions",
+                    segment_document,
+                    evidence_assets,
+                )
                 segment_assets.append({
                     "segment_id": segment_id,
                     "json": json_name,
@@ -649,7 +1358,15 @@ def _run_m5(
                     ),
                     "npz": npz_name,
                     "npz_sha256": segment_document["asset_sha256"],
+                    "support_verification": support_verification,
+                    "support_authority_sha256": hashlib.sha256(
+                        json.dumps(
+                            [row["support_sha256"] for row in sealed_authority],
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest(),
                 })
+            obligation_outcomes = _component_obligation_outcomes(component_audit)
             stable_payload = {
                 "application_state": component_audit.get("application_state", "none"),
                 "baseline_c2e_obligations": component_audit.get(
@@ -658,10 +1375,18 @@ def _run_m5(
                 "chains": component_audit.get("chains", []),
                 "segments": component_audit.get("segments", []),
                 "dependency_groups": component_audit.get("dependency_groups", []),
+                "component_match_matrices": component_audit.get(
+                    "component_match_matrices", []
+                ),
+                "exact_evidence_propagation": component_audit.get(
+                    "exact_evidence_propagation", {}
+                ),
                 "roi_candidate_pixels": component_audit.get("roi_candidate_pixels", 0),
                 "roi_preview_count": component_audit.get("roi_preview_count", 0),
                 "evidence_assets": evidence_assets,
                 "segment_assets": segment_assets,
+                "obligation_outcomes": obligation_outcomes,
+                "split_lineage": component_audit.get("split_lineage", []),
             }
             component_manifest = {
                 "schema": "gemini305-video-s13-component-chain-transactions/v1",
@@ -673,6 +1398,12 @@ def _run_m5(
                 "chains": component_audit.get("chains", []),
                 "segments": component_audit.get("segments", []),
                 "dependency_groups": component_audit.get("dependency_groups", []),
+                "component_match_matrices": component_audit.get(
+                    "component_match_matrices", []
+                ),
+                "exact_evidence_propagation": component_audit.get(
+                    "exact_evidence_propagation", {}
+                ),
                 "observation_count": component_audit.get("observation_count", 0),
                 "chain_count": component_audit.get("chain_count", 0),
                 "raw_partition_chain_count": component_audit.get(
@@ -686,6 +1417,8 @@ def _run_m5(
                 ),
                 "evidence_assets": evidence_assets,
                 "segment_assets": segment_assets,
+                "obligation_outcomes": obligation_outcomes,
+                "split_lineage": component_audit.get("split_lineage", []),
                 "segment_transaction_assets": [
                     {
                         "segment_id": row["segment_id"],
@@ -700,13 +1433,13 @@ def _run_m5(
                 "rejected_segment_ids": component_audit.get("rejected_segment_ids", []),
                 "deferred_segment_ids": component_audit.get("deferred_segment_ids", []),
                 "unresolved_regions": component_audit.get("segments", []),
-                "decision_payload_stable_sha256": hashlib.sha256(
-                    json.dumps(
-                        stable_payload, sort_keys=True, separators=(",", ":"),
-                        allow_nan=False,
-                    ).encode("utf-8")
-                ).hexdigest(),
+                "decision_payload_stable_sha256": "",
             }
+            if stable_payload != component_decision_stable_payload(component_manifest):
+                raise RuntimeError("component stable authority field selection disagrees")
+            component_manifest["decision_payload_stable_sha256"] = (
+                component_decision_stable_sha256(component_manifest)
+            )
             atomic_write_json(
                 pending / "component_chain_transactions/manifest.json",
                 component_manifest,
@@ -770,17 +1503,8 @@ def _run_m5(
                 for segment_id in source.get("contributors", [])
             }
             support_sha_by_segment = {
-                str(segment.get("segment_id")): hashlib.sha256(
-                    json.dumps(
-                        sorted(
-                            str(row.get("support_sha256"))
-                            for row in component_audit.get("baseline_c2e_obligations", [])
-                            if row.get("pair_index") in segment.get("pair_indices", [])
-                        ),
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                ).hexdigest()
-                for segment in component_audit.get("segments", [])
+                str(row["segment_id"]): str(row["support_authority_sha256"])
+                for row in segment_assets
             }
             field_table = [
                 {

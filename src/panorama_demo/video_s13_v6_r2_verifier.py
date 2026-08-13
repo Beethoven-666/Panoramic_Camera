@@ -19,6 +19,7 @@ from .video_s13_contract import (
 )
 from .video_s13_m51_r4_component_chain import (
     SourceMapOracle,
+    audit_s13_obligation_coverage,
     source_map_oracle_from_arrays,
 )
 
@@ -30,6 +31,146 @@ _CORRECTION_SCHEMA = "gemini305-video-s13-source-corrections/v1"
 _ORACLE_MANIFEST_SCHEMA = "gemini305-video-s13-source-map-oracles/v1"
 _REPLAY_SCHEMA = "gemini305-video-s13-p2-replay/v2"
 _PROVENANCE_SCHEMA = "gemini305-video-s13-p2-provenance/v6-r2"
+
+_COMPONENT_STABLE_FIELDS = (
+    "application_state", "baseline_c2e_obligations", "chains", "segments",
+    "dependency_groups", "component_match_matrices",
+    "exact_evidence_propagation", "roi_candidate_pixels", "roi_preview_count",
+    "evidence_assets", "segment_assets", "obligation_outcomes", "split_lineage",
+)
+
+
+def component_decision_stable_payload(
+    component_manifest: Mapping[str, object],
+) -> dict[str, object]:
+    """Select all decision-authority fields covered by the stable digest."""
+
+    return {field: component_manifest.get(field, [] if field not in {
+        "application_state", "roi_candidate_pixels", "roi_preview_count"
+    } else ("none" if field == "application_state" else 0))
+            for field in _COMPONENT_STABLE_FIELDS}
+
+
+def component_decision_stable_sha256(
+    component_manifest: Mapping[str, object],
+) -> str:
+    return hashlib.sha256(json.dumps(
+        component_decision_stable_payload(component_manifest),
+        sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+
+
+def verify_s13_v6_r1_noop_exact_comparison(
+    baseline_p2: str | Path,
+    candidate_p2: str | Path,
+    *,
+    output_path: str | Path | None = None,
+) -> dict[str, object]:
+    """Prove a v6-r2 no-op retained every v6-r1 pixel/map authority array."""
+
+    baseline = Path(baseline_p2).resolve()
+    candidate = Path(candidate_p2).resolve()
+    component = _json(
+        candidate / "component_chain_transactions/manifest.json",
+        "component transaction manifest",
+    )
+    if component.get("application_state") != "none" or component.get(
+        "accepted_segment_ids"
+    ) not in ([], ()):
+        raise ValueError("S1.3 v6-r2 no-op exact comparison requires no applied segment")
+
+    comparisons: list[dict[str, object]] = []
+
+    def compare_array_file(
+        relative: str,
+        fields: Sequence[str] | None = None,
+        *,
+        candidate_relative: str | None = None,
+    ) -> None:
+        left_path = baseline / relative
+        right_path = candidate / (candidate_relative or relative)
+        if not left_path.is_file() or not right_path.is_file():
+            raise ValueError(f"S1.3 no-op exact comparison asset is missing: {relative}")
+        if left_path.suffix.lower() == ".png":
+            import cv2
+
+            left = cv2.imread(str(left_path), cv2.IMREAD_UNCHANGED)
+            right = cv2.imread(str(right_path), cv2.IMREAD_UNCHANGED)
+            exact = left is not None and right is not None and np.array_equal(left, right)
+            names: list[str] = []
+        else:
+            with np.load(left_path, allow_pickle=False) as left_archive, np.load(
+                right_path, allow_pickle=False
+            ) as right_archive:
+                names = list(fields) if fields is not None else list(left_archive.files)
+                if fields is None and left_archive.files != right_archive.files:
+                    exact = False
+                else:
+                    exact = all(
+                        name in left_archive.files
+                        and name in right_archive.files
+                        and left_archive[name].dtype == right_archive[name].dtype
+                        and left_archive[name].shape == right_archive[name].shape
+                        and np.array_equal(left_archive[name], right_archive[name])
+                        for name in names
+                    )
+        comparisons.append({
+            "asset": relative,
+            "fields": names,
+            "exact": bool(exact),
+        })
+
+    compare_array_file("geometry_and_seam_panorama_owner_only.png")
+    compare_array_file("p2_seams.npz")
+    # correction_field_id is new v6-r2 authority. Every pre-existing v6-r1
+    # provenance field must remain exactly equal in a no-op run.
+    baseline_provenance = baseline / "p2_pixel_provenance.npz"
+    with np.load(baseline_provenance, allow_pickle=False) as archive:
+        provenance_fields = tuple(archive.files)
+    compare_array_file("p2_pixel_provenance.npz", provenance_fields)
+
+    baseline_replay = _json(
+        baseline / "p2_replay_manifest.json", "baseline replay manifest"
+    )
+    candidate_replay = _json(
+        candidate / "p2_replay_manifest.json", "candidate replay manifest"
+    )
+    baseline_assets = {
+        int(row["pair_index"]): str(row["asset"])
+        for row in baseline_replay.get("pairs", ())
+        if isinstance(row, Mapping)
+    }
+    candidate_assets = {
+        int(row["pair_index"]): str(row["asset"])
+        for row in candidate_replay.get("pairs", ())
+        if isinstance(row, Mapping)
+    }
+    if set(baseline_assets) != set(candidate_assets):
+        raise ValueError("S1.3 no-op replay pair universe differs from v6-r1")
+    for pair_index in sorted(baseline_assets):
+        left_relative = baseline_assets[pair_index]
+        right_relative = candidate_assets[pair_index]
+        if left_relative != right_relative:
+            raise ValueError("S1.3 no-op replay asset identity differs from v6-r1")
+        compare_array_file(left_relative, candidate_relative=right_relative)
+    passed = bool(comparisons) and all(row["exact"] is True for row in comparisons)
+    report = {
+        "schema": "gemini305-video-s13-v6-r1-noop-exact-comparison/v1",
+        "passed": passed,
+        "application_state": "none",
+        "comparison_count": len(comparisons),
+        "comparisons": comparisons,
+    }
+    if output_path is not None:
+        target = Path(output_path).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.tmp")
+        temporary.write_text(
+            json.dumps(report, sort_keys=True, indent=2, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(target)
+    return report
 
 
 def _json(path: Path, label: str) -> dict[str, object]:
@@ -308,6 +449,65 @@ def _correction_asset_authorities(
     return result
 
 
+def _verify_correction_asset_semantics(
+    p2: Path, corrections: Mapping[str, object]
+) -> dict[str, object]:
+    rows = corrections.get("sources", [])
+    maximum_offset = 0.0
+    overlap_pixels = 0
+    asset_count = 0
+    for row in rows:
+        if not isinstance(row, Mapping) or "correction_asset" not in row:
+            continue
+        path = _safe_asset(p2, row["correction_asset"], "source correction asset")
+        with np.load(path, allow_pickle=False) as stored:
+            domains = np.asarray(stored["domains_xyxy"], dtype=np.int32)
+            fields = np.asarray(stored["field_id"], dtype=np.int32)
+            segment_ids = np.asarray(stored["segment_ids"])
+            if domains.shape != (len(fields), 4) or len(segment_ids) != len(fields):
+                raise ValueError("S1.3 v6-r2 correction asset authority shapes disagree")
+            occupied: set[tuple[int, int]] = set()
+            for index, domain in enumerate(domains):
+                names = (
+                    f"delta_u_{index:04d}", f"delta_v_{index:04d}",
+                    f"weight_{index:04d}",
+                )
+                if any(name not in stored.files for name in names):
+                    raise ValueError("S1.3 v6-r2 correction asset arrays are incomplete")
+                du = np.asarray(stored[names[0]], dtype=np.float64)
+                dv = np.asarray(stored[names[1]], dtype=np.float64)
+                weight = np.asarray(stored[names[2]], dtype=np.float64)
+                x0, y0, x1, y1 = (int(value) for value in domain)
+                if (
+                    du.shape != dv.shape or du.shape != weight.shape
+                    or du.shape != (y1 - y0, x1 - x0)
+                    or not np.isfinite(du).all() or not np.isfinite(dv).all()
+                    or not np.isfinite(weight).all() or np.any(weight < 0.0)
+                ):
+                    raise ValueError("S1.3 v6-r2 correction asset numeric domain is invalid")
+                active = weight > 0.0
+                if np.any(du[~active] != 0.0) or np.any(dv[~active] != 0.0):
+                    raise ValueError("S1.3 v6-r2 correction is nonzero outside omega-map")
+                if np.any(active):
+                    maximum_offset = max(
+                        maximum_offset, float(np.max(np.hypot(du[active], dv[active])))
+                    )
+                active_y, active_x = np.nonzero(active)
+                coordinates = {(y0 + int(y), x0 + int(x)) for y, x in zip(active_y, active_x, strict=True)}
+                overlap_pixels += len(occupied & coordinates)
+                occupied.update(coordinates)
+            asset_count += 1
+    if maximum_offset > 3.0 + 1e-6:
+        raise ValueError("S1.3 v6-r2 maximum component offset is exceeded")
+    if overlap_pixels:
+        raise ValueError("S1.3 v6-r2 resolved correction fields overlap")
+    return {
+        "asset_count": asset_count,
+        "maximum_component_offset_px": maximum_offset,
+        "resolved_field_overlap_pixel_count": overlap_pixels,
+    }
+
+
 def _verify_pair_transactions(
     p2: Path,
     aggregate: Mapping[str, object],
@@ -507,19 +707,25 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
     """Verify the complete semantic and hash DAG of one sealed v6-r2 P2."""
 
     root = Path(p2).resolve()
-    completion, _generation = _verify_completion(root)
     component_path = root / "component_chain_transactions/manifest.json"
+    component = _json(component_path, "component transaction manifest")
+    if component.get("schema") != _COMPONENT_SCHEMA:
+        raise ValueError("S1.3 v6-r2 component transaction schema is invalid")
+    stable_sha = component.get("decision_payload_stable_sha256")
+    if (
+        not isinstance(stable_sha, str)
+        or stable_sha != component_decision_stable_sha256(component)
+    ):
+        raise ValueError("S1.3 v6-r2 component stable decision authority disagrees")
+    completion, _generation = _verify_completion(root)
     corrections_path = root / "source_corrections/manifest.json"
     oracle_manifest_path = root / "source_maps/manifest.json"
     aggregate_path = root / "pair_transactions.json"
     replay_path = root / "p2_replay_manifest.json"
-    component = _json(component_path, "component transaction manifest")
     corrections = _json(corrections_path, "source correction manifest")
     oracle_manifest = _json(oracle_manifest_path, "source-map oracle manifest")
     aggregate = _json(aggregate_path, "aggregate pair transaction manifest")
     replay = _json(replay_path, "replay-v2 manifest")
-    if component.get("schema") != _COMPONENT_SCHEMA:
-        raise ValueError("S1.3 v6-r2 component transaction schema is invalid")
     component_sha = sha256_file(component_path)
     corrections_sha = sha256_file(corrections_path)
     oracle_manifest_sha = sha256_file(oracle_manifest_path)
@@ -552,6 +758,13 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
         "repair_complete"
     ) != component.get("repair_complete"):
         raise ValueError("S1.3 v6-r2 repair-complete lineage disagrees")
+    obligation_coverage = audit_s13_obligation_coverage(
+        component.get("baseline_c2e_obligations", []),
+        component.get("segments", []),
+        component.get("accepted_segment_ids", []),
+    )
+    if obligation_coverage["repair_complete"] is not component.get("repair_complete"):
+        raise ValueError("S1.3 v6-r2 repair-complete obligation authority disagrees")
     accepted = component.get("accepted_segment_ids")
     if (
         not isinstance(accepted, Sequence)
@@ -591,6 +804,7 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
         raise ValueError("S1.3 v6-r2 applied state has no correction fields")
     segment_authorities = _segment_authorities(root, component)
     correction_asset_authorities = _correction_asset_authorities(root, corrections)
+    correction_semantics = _verify_correction_asset_semantics(root, corrections)
     for row in field_table.values():
         if row["segment_transaction_sha256"] not in segment_authorities:
             raise ValueError("S1.3 v6-r2 field table references an unknown segment transaction")
@@ -628,12 +842,43 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
         segment_authorities,
     )
     _verify_provenance(root, oracles, field_table)
+    hard_audit = _json(root / "hard_audit.json", "hard audit")
+    component_hard = hard_audit.get("component_chain_c2e")
+    if not isinstance(component_hard, Mapping):
+        raise ValueError("S1.3 v6-r2 component hard audit authority is missing")
+    required_hard_values = {
+        "passed": True,
+        "correction_arrays_finite": True,
+        "correction_domain_valid": True,
+        "resolved_field_overlap_pixel_count": 0,
+        "p2_full_resolution_render_count": 2,
+        "extra_full_resolution_render_count": 0,
+        "formal_raw_rgb_remap_invocations": 2 * len(oracles),
+        "owner_valid_topology_unchanged": True,
+        "base_geometry_provenance_valid": True,
+        "secondary_provenance_unchanged": True,
+        "seam_topology_valid": True,
+    }
+    if any(component_hard.get(key) != value for key, value in required_hard_values.items()):
+        raise ValueError("S1.3 v6-r2 component hard audit semantic authority disagrees")
+    if component_hard.get("repair_complete") is not obligation_coverage["repair_complete"]:
+        raise ValueError("S1.3 v6-r2 component hard audit repair authority disagrees")
+    hard_coverage = component_hard.get("obligation_coverage")
+    if not isinstance(hard_coverage, Mapping) or any(
+        hard_coverage.get(key) != value for key, value in obligation_coverage.items()
+    ):
+        raise ValueError("S1.3 v6-r2 component hard audit coverage disagrees")
+    if abs(float(component_hard.get("maximum_component_offset_px", math.inf)) - float(
+        correction_semantics["maximum_component_offset_px"]
+    )) > 1e-6:
+        raise ValueError("S1.3 v6-r2 component hard audit offset disagrees")
     return {
         "schema": "gemini305-video-s13-v6-r2-semantic-verification/v1",
         "passed": True,
         "pair_count": len(pairs),
         "source_count": len(oracles),
         "field_count": len(field_table),
+        "obligation_coverage": dict(obligation_coverage),
         "manifest_sha256": explicit,
     }
 
@@ -641,5 +886,8 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
 __all__ = [
     "canonical_pair_transaction_sha256",
     "canonical_source_map_slice_sha256",
+    "component_decision_stable_payload",
+    "component_decision_stable_sha256",
+    "verify_s13_v6_r1_noop_exact_comparison",
     "verify_s13_v6_r2_p2",
 ]

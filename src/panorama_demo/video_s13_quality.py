@@ -318,6 +318,7 @@ def append_s13_exact_component_evidence_from_forward_context(
         score_sum = np.zeros(lags.shape, np.float64)
         correlation_sum = np.zeros(lags.shape, np.float64)
         agreement_sum = np.zeros(lags.shape, np.float64)
+        signed_agreement_sum = np.zeros(lags.shape, np.float64)
         counts = np.zeros(lags.shape, np.int32)
         for block in blocks:
             block_rows = rows_value.get(block, ())
@@ -342,17 +343,26 @@ def append_s13_exact_component_evidence_from_forward_context(
                     continue
                 correlation = float(row["correlation"])
                 orientation = float(row["orientation_difference"])
+                orientation_agreement = float(row.get(
+                    "orientation_agreement", math.cos(math.radians(orientation))
+                ))
+                signed_gradient_agreement = float(row.get(
+                    "signed_gradient_agreement", orientation_agreement
+                ))
                 score_sum[index] += count * float(row["score"])
                 correlation_sum[index] += count * correlation
-                agreement_sum[index] += count * math.cos(math.radians(orientation))
+                agreement_sum[index] += count * orientation_agreement
+                signed_agreement_sum[index] += count * signed_gradient_agreement
                 counts[index] += count
         finite = counts > 0
         forward_scores = np.full(lags.shape, -math.inf, np.float64)
         forward_correlations = np.zeros(lags.shape, np.float64)
         forward_agreements = np.zeros(lags.shape, np.float64)
+        forward_signed_agreements = np.zeros(lags.shape, np.float64)
         forward_scores[finite] = score_sum[finite] / counts[finite]
         forward_correlations[finite] = correlation_sum[finite] / counts[finite]
         forward_agreements[finite] = agreement_sum[finite] / counts[finite]
+        forward_signed_agreements[finite] = signed_agreement_sum[finite] / counts[finite]
         try:
             observation, evidence = make_s13_edge_component_observation(
                 pair_index=int(pair_index),
@@ -381,6 +391,7 @@ def append_s13_exact_component_evidence_from_forward_context(
                 precomputed_forward_scores=forward_scores,
                 precomputed_forward_correlations=forward_correlations,
                 precomputed_forward_agreements=forward_agreements,
+                precomputed_forward_signed_agreements=forward_signed_agreements,
                 precomputed_forward_support_counts=counts,
             )
         except ValueError as exc:
@@ -584,9 +595,30 @@ def pair_edge_registration_metrics(
             right_angle = np.mod(np.arctan2(sampled_gy[keep], sampled_gx[keep]), np.pi)
             differences = _modulo_pi_orientation_difference(angles[keep], right_angle)
             orientation_difference = float(np.degrees(np.average(differences, weights=left_magnitude)))
-            score = correlation * max(0.0, math.cos(math.radians(orientation_difference)))
+            orientation_agreement = math.cos(math.radians(orientation_difference))
+            orientation_denominator = magnitude[keep] * np.hypot(
+                sampled_gx[keep], sampled_gy[keep]
+            )
+            orientation_usable = orientation_denominator > 1e-12
+            signed_gradient_agreement = (
+                float(np.average(
+                    (
+                        gx[keep][orientation_usable] * sampled_gx[keep][orientation_usable]
+                        + gy[keep][orientation_usable] * sampled_gy[keep][orientation_usable]
+                    ) / orientation_denominator[orientation_usable],
+                    weights=left_magnitude[orientation_usable],
+                ))
+                if np.any(orientation_usable) else 0.0
+            )
+            score = (
+                correlation
+                * max(0.0, orientation_agreement)
+                * max(0.0, signed_gradient_agreement)
+            )
             lag_rows.append({"lag": float(lag), "correlation": correlation,
                              "orientation_difference": orientation_difference,
+                             "orientation_agreement": orientation_agreement,
+                             "signed_gradient_agreement": signed_gradient_agreement,
                              "score": score, "support": int(keep.sum()),
                              "normal_x": float(nx), "normal_y": float(ny)})
         if not lag_rows:

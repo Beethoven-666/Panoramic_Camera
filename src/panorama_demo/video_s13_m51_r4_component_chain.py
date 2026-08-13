@@ -14,7 +14,7 @@ import hashlib
 import json
 import math
 from types import MappingProxyType
-from typing import Literal, Mapping, Sequence
+from typing import Callable, Literal, Mapping, Sequence
 
 import cv2
 import numpy as np
@@ -24,6 +24,161 @@ EvidenceState = Literal["actionable", "safe_anchor", "ambiguous", "unevaluable"]
 CandidateDecision = Literal[
     "resolved", "improved_unresolved", "rejected", "budget_deferred"
 ]
+
+
+class S13ComponentSolverError(ValueError):
+    """A localizable deterministic solver failure with frozen per-pair audits."""
+
+    def __init__(
+        self, message: str, *, pair_audits: Sequence[Mapping[str, object]] = ()
+    ) -> None:
+        super().__init__(message)
+        self.pair_audits = tuple(MappingProxyType(dict(row)) for row in pair_audits)
+
+
+def audit_s13_component_candidate_map_safety(
+    *,
+    base_u: np.ndarray,
+    base_v: np.ndarray,
+    base_valid: np.ndarray,
+    candidate_u: np.ndarray,
+    candidate_v: np.ndarray,
+    candidate_valid: np.ndarray,
+    owner_mask: np.ndarray,
+    evidence_mask: np.ndarray,
+    influence_mask: np.ndarray,
+    source_size: tuple[int, int],
+    minimum_owner_retention: float,
+    minimum_evidence_retention: float,
+    minimum_jacobian: float,
+    maximum_displacement_px: float,
+    maximum_halo_regression_px: float,
+) -> Mapping[str, object]:
+    """Audit one candidate source map before it can enter the frozen registry."""
+
+    arrays = tuple(np.asarray(value) for value in (
+        base_u, base_v, base_valid, candidate_u, candidate_v, candidate_valid,
+        owner_mask, evidence_mask, influence_mask,
+    ))
+    shape = arrays[0].shape
+    if len(shape) != 2 or any(value.shape != shape for value in arrays):
+        raise ValueError("C2E candidate map safety array shapes disagree")
+    width, height = (int(value) for value in source_size)
+    thresholds = (
+        minimum_owner_retention, minimum_evidence_retention, minimum_jacobian,
+        maximum_displacement_px, maximum_halo_regression_px,
+    )
+    if width < 1 or height < 1 or not all(math.isfinite(float(value)) for value in thresholds):
+        raise ValueError("C2E candidate map safety inputs are invalid")
+    base_u64 = np.asarray(base_u, np.float64)
+    base_v64 = np.asarray(base_v, np.float64)
+    candidate_u64 = np.asarray(candidate_u, np.float64)
+    candidate_v64 = np.asarray(candidate_v, np.float64)
+    base_valid_bool = np.asarray(base_valid, bool)
+    candidate_valid_bool = np.asarray(candidate_valid, bool)
+    owner = np.asarray(owner_mask, bool)
+    evidence = np.asarray(evidence_mask, bool)
+    influence = np.asarray(influence_mask, bool)
+
+    formal_domain = owner & base_valid_bool
+    formal_count = int(np.count_nonzero(formal_domain))
+    retained_formal = int(np.count_nonzero(formal_domain & candidate_valid_bool))
+    owner_retention = retained_formal / max(formal_count, 1)
+    owner_valid_exact = bool(np.array_equal(
+        base_valid_bool & owner, candidate_valid_bool & owner
+    ))
+    evidence_domain = evidence & owner & base_valid_bool
+    evidence_count = int(np.count_nonzero(evidence_domain))
+    retained_evidence = int(np.count_nonzero(evidence_domain & candidate_valid_bool))
+    evidence_retention = retained_evidence / max(evidence_count, 1)
+
+    affected = influence & base_valid_bool
+    finite = bool(
+        np.isfinite(candidate_u64[affected]).all()
+        and np.isfinite(candidate_v64[affected]).all()
+    )
+    in_bounds = bool(
+        finite
+        and np.all((candidate_u64[affected] >= 0.0) & (candidate_u64[affected] <= width - 1))
+        and np.all((candidate_v64[affected] >= 0.0) & (candidate_v64[affected] <= height - 1))
+        and np.all(candidate_valid_bool[affected])
+    )
+    displacement = np.hypot(candidate_u64 - base_u64, candidate_v64 - base_v64)
+    maximum_displacement = float(np.max(displacement[influence])) if np.any(influence) else 0.0
+
+    def minimum_map_jacobian(u: np.ndarray, v: np.ndarray) -> float:
+        if min(u.shape) < 2 or not np.any(influence):
+            return math.inf
+        du_dy, du_dx = np.gradient(u)
+        dv_dy, dv_dx = np.gradient(v)
+        determinant = du_dx * dv_dy - du_dy * dv_dx
+        evaluable = influence & np.isfinite(determinant)
+        return float(np.min(determinant[evaluable])) if np.any(evaluable) else -math.inf
+
+    base_minimum_jacobian = minimum_map_jacobian(base_u64, base_v64)
+    candidate_minimum_jacobian = minimum_map_jacobian(candidate_u64, candidate_v64)
+    jacobian_ratio = (
+        candidate_minimum_jacobian / base_minimum_jacobian
+        if math.isfinite(base_minimum_jacobian) and abs(base_minimum_jacobian) > 1e-12
+        else None
+    )
+
+    kernel = np.ones((3, 3), np.uint8)
+    # A validation ROI may clip through the middle of a larger correction
+    # field.  Only an observed transition to exterior pixels is a true segment
+    # boundary; the artificial ROI border is not.
+    interior_boundary = influence & cv2.dilate(
+        (~influence).astype(np.uint8), kernel, iterations=1
+    ).astype(bool)
+    halo_regression = (
+        float(np.max(displacement[interior_boundary]))
+        if np.any(interior_boundary) else 0.0
+    )
+    displacement_curvature = cv2.Laplacian(displacement, cv2.CV_64F)
+    boundary_curvature = (
+        float(np.max(np.abs(displacement_curvature[interior_boundary])))
+        if np.any(interior_boundary) else 0.0
+    )
+    exterior = ~influence
+    exterior_exact = bool(
+        np.array_equal(np.asarray(base_u)[exterior], np.asarray(candidate_u)[exterior])
+        and np.array_equal(np.asarray(base_v)[exterior], np.asarray(candidate_v)[exterior])
+        and np.array_equal(base_valid_bool[exterior], candidate_valid_bool[exterior])
+    )
+    passed = bool(
+        formal_count > 0
+        and owner_valid_exact
+        and owner_retention >= float(minimum_owner_retention)
+        and evidence_count > 0
+        and evidence_retention >= float(minimum_evidence_retention)
+        and finite
+        and in_bounds
+        and maximum_displacement <= float(maximum_displacement_px) + 1e-9
+        and candidate_minimum_jacobian >= float(minimum_jacobian) - 1e-9
+        and halo_regression <= float(maximum_halo_regression_px) + 1e-9
+        and boundary_curvature <= float(maximum_halo_regression_px) + 1e-9
+        and exterior_exact
+    )
+    return MappingProxyType({
+        "passed": passed,
+        "formal_owner_pixel_count": formal_count,
+        "formal_owner_retained_pixel_count": retained_formal,
+        "formal_owner_support_retention": owner_retention,
+        "formal_owner_valid_exact": owner_valid_exact,
+        "evidence_sample_count": evidence_count,
+        "evidence_retained_sample_count": retained_evidence,
+        "evidence_sample_retention": evidence_retention,
+        "affected_maps_finite": finite,
+        "affected_maps_in_bounds": in_bounds,
+        "maximum_combined_map_displacement_px": maximum_displacement,
+        "base_minimum_inverse_map_jacobian": base_minimum_jacobian,
+        "candidate_minimum_inverse_map_jacobian": candidate_minimum_jacobian,
+        "minimum_inverse_map_jacobian_ratio": jacobian_ratio,
+        "halo_regression_px": halo_regression,
+        "segment_boundary_step_px": halo_regression,
+        "segment_boundary_curvature_spike_px": boundary_curvature,
+        "exterior_map_exact": exterior_exact,
+    })
 
 
 def _readonly(array: np.ndarray, dtype: np.dtype | str | None = None) -> np.ndarray:
@@ -117,6 +272,7 @@ class S13EdgeComponentObservation:
     evidence_state: EvidenceState
     exclusion_reasons: tuple[str, ...]
     signed_gradient_polarity: float = 1.0
+    signed_gradient_agreement: float = 1.0
     forward_valid_samples: int = 0
     reverse_valid_samples: int = 0
     reference_support_samples: int = 0
@@ -136,6 +292,7 @@ class S13EdgeComponentObservation:
             self.forward_best_lag_px, self.reverse_best_lag_px, self.correlation,
             self.uniqueness_fraction, self.orientation_difference_degrees,
             self.signed_gradient_polarity,
+            self.signed_gradient_agreement,
         )
         if not all(math.isfinite(float(value)) for value in finite):
             raise ValueError("C2E observation contains nonfinite metrics")
@@ -256,7 +413,7 @@ def _hypothesis_scores(
     anchor_xy: np.ndarray,
     normal_xy: tuple[float, float],
     lags: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     anchors = np.asarray(anchor_xy, dtype=np.float64)
     rx, rvalid = _bilinear(reference_magnitude, anchors[:, 0], anchors[:, 1])
     rgx, rgxvalid = _bilinear(reference_gx, anchors[:, 0], anchors[:, 1])
@@ -264,7 +421,8 @@ def _hypothesis_scores(
     base_valid = rvalid & rgxvalid & rgyvalid & (rx > 0.0)
     scores = np.full(lags.shape, -math.inf, dtype=np.float64)
     correlations = np.zeros(lags.shape, dtype=np.float64)
-    agreements = np.zeros(lags.shape, dtype=np.float64)
+    orientation_agreements = np.zeros(lags.shape, dtype=np.float64)
+    signed_agreements = np.zeros(lags.shape, dtype=np.float64)
     counts = np.zeros(lags.shape, dtype=np.int32)
     nx, ny = normal_xy
     for index, lag in enumerate(lags):
@@ -287,11 +445,22 @@ def _hypothesis_scores(
         )
         usable = orientation_denominator > 1e-12
         if not np.any(usable):
-            agreement = 0.0
+            orientation_agreement = 0.0
+            signed_agreement = 0.0
         else:
             dot = rgx[keep][usable] * mgx[keep][usable] + rgy[keep][usable] * mgy[keep][usable]
-            agreement = float(np.average(dot / orientation_denominator[usable], weights=left[usable]))
-        correlations[index], agreements[index] = correlation, agreement
+            signed_cosine = dot / orientation_denominator[usable]
+            # Physical edge orientation is modulo pi: contrast reversal must
+            # not masquerade as a 180-degree geometric disagreement.  Preserve
+            # the signed cosine separately for the contrast-consistency gate.
+            modulo_pi_difference = np.arccos(np.clip(np.abs(signed_cosine), 0.0, 1.0))
+            orientation_agreement = math.cos(float(np.average(
+                modulo_pi_difference, weights=left[usable]
+            )))
+            signed_agreement = float(np.average(signed_cosine, weights=left[usable]))
+        correlations[index] = correlation
+        orientation_agreements[index] = orientation_agreement
+        signed_agreements[index] = signed_agreement
         # Cosine correlation alone cannot distinguish an exact response from a
         # uniformly attenuated half-pixel interpolation.  Keep correlation as
         # its own reported gate, and include a bounded magnitude-consistency
@@ -300,8 +469,13 @@ def _hypothesis_scores(
         magnitude_consistency = float(np.clip(
             1.0 - np.mean(np.abs(left - right)) / magnitude_scale, 0.0, 1.0
         ))
-        scores[index] = correlation * max(0.0, agreement) * magnitude_consistency
-    return scores, correlations, agreements, counts
+        scores[index] = (
+            correlation
+            * max(0.0, orientation_agreement)
+            * max(0.0, signed_agreement)
+            * magnitude_consistency
+        )
+    return scores, correlations, orientation_agreements, signed_agreements, counts
 
 
 def _best_hypothesis(scores: np.ndarray, lags: np.ndarray) -> tuple[int, float]:
@@ -343,6 +517,7 @@ def make_s13_edge_component_observation(
     precomputed_forward_scores: np.ndarray | None = None,
     precomputed_forward_correlations: np.ndarray | None = None,
     precomputed_forward_agreements: np.ndarray | None = None,
+    precomputed_forward_signed_agreements: np.ndarray | None = None,
     precomputed_forward_support_counts: np.ndarray | None = None,
 ) -> tuple[S13EdgeComponentObservation, S13ExactEdgeComponentEvidence]:
     """Fit one exact component and evaluate symmetric normal-lag hypotheses."""
@@ -385,6 +560,12 @@ def make_s13_edge_component_observation(
             np.asarray(precomputed_forward_scores, dtype=np.float64),
             np.asarray(precomputed_forward_correlations, dtype=np.float64),
             np.asarray(precomputed_forward_agreements, dtype=np.float64),
+            np.asarray(
+                precomputed_forward_signed_agreements
+                if precomputed_forward_signed_agreements is not None
+                else precomputed_forward_agreements,
+                dtype=np.float64,
+            ),
             np.asarray(precomputed_forward_support_counts, dtype=np.int32),
         )
         if any(value.shape != lag_values.shape for value in forward):
@@ -413,8 +594,15 @@ def make_s13_edge_component_observation(
     reverse_index, reverse_uniqueness = _best_hypothesis(reverse[0], lag_values)
     reverse_lag = -float(lag_values[reverse_index])
     correlation = min(float(forward[1][forward_index]), float(reverse[1][reverse_index]))
-    signed_agreement = min(float(forward[2][forward_index]), float(reverse[2][reverse_index]))
-    orientation_difference = math.degrees(math.acos(float(np.clip(signed_agreement, -1.0, 1.0))))
+    orientation_agreement = min(
+        float(forward[2][forward_index]), float(reverse[2][reverse_index])
+    )
+    signed_agreement = min(
+        float(forward[3][forward_index]), float(reverse[3][reverse_index])
+    )
+    orientation_difference = math.degrees(math.acos(float(np.clip(
+        orientation_agreement, -1.0, 1.0
+    ))))
     uniqueness = min(forward_uniqueness, reverse_uniqueness)
     reasons: list[str] = []
     if correlation < minimum_correlation:
@@ -427,7 +615,7 @@ def make_s13_edge_component_observation(
         reasons.append("signed_gradient_disagrees")
     if abs(forward_lag + reverse_lag) > maximum_forward_reverse_discrepancy_px:
         reasons.append("forward_reverse_discrepancy_exceeded")
-    if min(int(forward[3][forward_index]), int(reverse[3][reverse_index])) < 2:
+    if min(int(forward[4][forward_index]), int(reverse[4][reverse_index])) < 2:
         reasons.append("insufficient_finite_support")
     state: EvidenceState
     if reasons:
@@ -457,8 +645,9 @@ def make_s13_edge_component_observation(
         evidence_state=state,
         exclusion_reasons=tuple(reasons),
         signed_gradient_polarity=polarity,
-        forward_valid_samples=int(forward[3][forward_index]),
-        reverse_valid_samples=int(reverse[3][reverse_index]),
+        signed_gradient_agreement=signed_agreement,
+        forward_valid_samples=int(forward[4][forward_index]),
+        reverse_valid_samples=int(reverse[4][reverse_index]),
         reference_support_samples=int(support.shape[0]),
         search_boundary_hit=bool(
             forward_index in {0, len(lag_values) - 1} or reverse_index in {0, len(lag_values) - 1}
@@ -470,8 +659,8 @@ def make_s13_edge_component_observation(
         reverse_scores=reverse[0],
         forward_correlations=forward[1],
         reverse_correlations=reverse[1],
-        forward_support_counts=forward[3],
-        reverse_support_counts=reverse[3],
+        forward_support_counts=forward[4],
+        reverse_support_counts=reverse[4],
     )
     return observation, evidence
 
@@ -566,15 +755,81 @@ class S13BaselineC2EObligation:
 
 def freeze_s13_baseline_c2e_obligations(
     observations: Sequence[S13EdgeComponentObservation],
+    *,
+    support_by_authority: Mapping[tuple[int, int, str], np.ndarray] | None = None,
+    severe_threshold_px: float = 1.0,
+    minimum_evaluable_columns: int = 1,
 ) -> tuple[S13BaselineC2EObligation, ...]:
+    if not math.isfinite(severe_threshold_px) or severe_threshold_px < 0.0:
+        raise ValueError("C2E obligation severe threshold is invalid")
+    if minimum_evaluable_columns < 1:
+        raise ValueError("C2E obligation minimum evaluable columns is invalid")
     obligations: list[S13BaselineC2EObligation] = []
     for observation in sorted(observations, key=lambda row: (row.pair_index, row.component_id)):
+        authority = (
+            observation.pair_index, observation.component_id, observation.mask_sha256
+        )
+        support = None if support_by_authority is None else support_by_authority.get(authority)
+        trace_columns = 0
+        trace_missing_columns = 0
+        trace_double_edge_columns = 0
+        trace_slope_jump_p95 = 0.0
+        trace_curvature_p95 = 0.0
+        if support is not None:
+            xy = np.asarray(support, dtype=np.int32)
+            if xy.ndim != 2 or xy.shape[1] != 2:
+                raise ValueError("C2E obligation support authority is invalid")
+            if canonical_s13_support_sha256(xy) != observation.mask_sha256:
+                raise ValueError("C2E obligation support authority SHA disagrees")
+            columns = np.unique(xy[:, 0])
+            trace_columns = int(columns.size)
+            trace_missing_columns = int(
+                max(0, int(columns[-1] - columns[0] + 1) - columns.size)
+            ) if columns.size else 0
+            y_trace = np.asarray([
+                np.median(xy[xy[:, 0] == column, 1]) for column in columns
+            ], dtype=np.float64)
+            trace_double_edge_columns = int(sum(
+                np.ptp(xy[xy[:, 0] == column, 1]) > 2.0 for column in columns
+            ))
+            if y_trace.size >= 3:
+                slope_jump = np.abs(np.diff(y_trace, n=2))
+                trace_slope_jump_p95 = float(np.percentile(slope_jump, 95.0))
+                trace_curvature_p95 = trace_slope_jump_p95
+        symmetric_lag = 0.5 * (
+            observation.forward_best_lag_px - observation.reverse_best_lag_px
+        )
+        discrepancy = abs(
+            observation.forward_best_lag_px + observation.reverse_best_lag_px
+        )
+        evaluable = bool(
+            observation.evidence_state != "unevaluable"
+            and observation.forward_valid_samples > 0
+            and observation.reverse_valid_samples > 0
+            and (support is None or trace_columns >= minimum_evaluable_columns)
+        )
         metrics = {
             "forward_best_lag_px": observation.forward_best_lag_px,
             "reverse_best_lag_px": observation.reverse_best_lag_px,
+            "symmetric_normal_lag_px": symmetric_lag,
+            "absolute_symmetric_normal_lag_px": abs(symmetric_lag),
+            "forward_reverse_discrepancy_px": discrepancy,
             "correlation": observation.correlation,
             "uniqueness_fraction": observation.uniqueness_fraction,
             "evidence_state": observation.evidence_state,
+            "trace_unique_column_count": trace_columns,
+            "trace_missing_column_count": trace_missing_columns,
+            "trace_double_edge_column_count": trace_double_edge_columns,
+            "trace_slope_jump_p95_px": trace_slope_jump_p95,
+            "trace_second_difference_p95_px": trace_curvature_p95,
+            "severe_threshold_px": float(severe_threshold_px),
+            "severe_reason": (
+                "absolute_symmetric_normal_lag_exceeded"
+                if evaluable and abs(symmetric_lag) > severe_threshold_px else None
+            ),
+            "evaluable_reason": (
+                None if evaluable else "insufficient_actionable_symmetric_trace"
+            ),
         }
         payload = {
             "pair_index": observation.pair_index,
@@ -589,10 +844,94 @@ def freeze_s13_baseline_c2e_obligations(
             global_bbox_xyxy=observation.global_bbox_xyxy,
             support_sha256=observation.mask_sha256,
             baseline_metrics=metrics,
-            severe=abs(observation.forward_best_lag_px) > 1.0,
-            evaluable=observation.evidence_state != "unevaluable",
+            severe=evaluable and abs(symmetric_lag) > severe_threshold_px,
+            evaluable=evaluable,
         ))
     return tuple(obligations)
+
+
+def audit_s13_obligation_coverage(
+    obligations: Sequence[Mapping[str, object]],
+    segments: Sequence[Mapping[str, object]],
+    accepted_segment_ids: Sequence[str],
+) -> Mapping[str, object]:
+    """Independently recompute frozen obligation and split/application coverage."""
+
+    accepted = {str(value) for value in accepted_segment_ids}
+    obligation_keys: dict[tuple[int, int, str], Mapping[str, object]] = {}
+    for row in obligations:
+        key = (
+            int(row.get("pair_index", -1)),
+            int(row.get("component_id", -1)),
+            str(row.get("support_sha256", "")),
+        )
+        if key[0] < 0 or key[1] < 0 or len(key[2]) != 64 or key in obligation_keys:
+            raise ValueError("C2E frozen obligation authority is invalid or duplicated")
+        if row.get("scope") != "runtime_detected" or not isinstance(
+            row.get("baseline_metrics"), Mapping
+        ):
+            raise ValueError("C2E frozen obligation metrics/scope authority is missing")
+        obligation_keys[key] = row
+
+    segment_ids: set[str] = set()
+    resolved_keys: set[tuple[int, int, str]] = set()
+    covered_keys: set[tuple[int, int, str]] = set()
+    child_parent: dict[str, str] = {}
+    for segment in segments:
+        segment_id = str(segment.get("segment_id", ""))
+        if not segment_id or segment_id in segment_ids:
+            raise ValueError("C2E segment authority is invalid or duplicated")
+        segment_ids.add(segment_id)
+        pair_indices = tuple(int(value) for value in segment.get("pair_indices", ()))
+        source_indices = tuple(int(value) for value in segment.get("source_indices", ()))
+        expected_sources = tuple(sorted({value for pair in pair_indices for value in (pair, pair + 1)}))
+        if pair_indices != tuple(sorted(set(pair_indices))) or source_indices != expected_sources:
+            raise ValueError("C2E segment pair/source authority is inconsistent")
+        parent = segment.get("parent_segment_id")
+        if parent is not None:
+            child_parent[segment_id] = str(parent)
+        for child in segment.get("child_segment_ids", ()):
+            child_parent[str(child)] = segment_id
+        for authority in segment.get("observation_authority", ()):
+            if not isinstance(authority, Mapping):
+                raise ValueError("C2E segment observation authority is invalid")
+            key = (
+                int(authority.get("pair_index", -1)),
+                int(authority.get("component_id", -1)),
+                str(authority.get("support_sha256", "")),
+            )
+            if key not in obligation_keys or key[0] not in pair_indices:
+                raise ValueError("C2E segment references an unknown frozen obligation")
+            covered_keys.add(key)
+            if segment_id in accepted and segment.get("state") == "resolved":
+                resolved_keys.add(key)
+    if not accepted.issubset(segment_ids):
+        raise ValueError("C2E accepted segment authority is unknown")
+    for child, parent in child_parent.items():
+        if child not in segment_ids or parent not in segment_ids or child == parent:
+            raise ValueError("C2E split parent/child authority is invalid")
+        seen = {child}
+        cursor = parent
+        while cursor in child_parent:
+            if cursor in seen:
+                raise ValueError("C2E split lineage contains a cycle")
+            seen.add(cursor)
+            cursor = child_parent[cursor]
+
+    severe = {
+        key for key, row in obligation_keys.items()
+        if row.get("severe") is True and row.get("evaluable") is True
+    }
+    repair_complete = bool(severe) and severe.issubset(resolved_keys)
+    return MappingProxyType({
+        "passed": True,
+        "obligation_count": len(obligation_keys),
+        "covered_obligation_count": len(covered_keys),
+        "uncovered_obligation_count": len(set(obligation_keys) - covered_keys),
+        "severe_evaluable_obligation_count": len(severe),
+        "resolved_severe_obligation_count": len(severe & resolved_keys),
+        "repair_complete": repair_complete,
+    })
 
 
 @dataclass(frozen=True)
@@ -617,25 +956,17 @@ def _line_y(observation: S13EdgeComponentObservation, x: float) -> float:
     return (observation.fitted_line_offset - observation.normal_x * x) / observation.normal_y
 
 
-def _compatibility_score(
+def _compatibility_audit(
     left: S13EdgeComponentObservation,
     right: S13EdgeComponentObservation,
     config: object,
-) -> float | None:
-    if right.pair_index - left.pair_index != 1:
-        return None
-    if left.evidence_state in {"ambiguous", "unevaluable"} or right.evidence_state in {
-        "ambiguous", "unevaluable"
-    }:
-        return None
+) -> dict[str, object]:
+    """Return every frozen identity gate and weighted matching subscore."""
+
     ly0, ly1 = left.global_bbox_xyxy[1], left.global_bbox_xyxy[3]
     ry0, ry1 = right.global_bbox_xyxy[1], right.global_bbox_xyxy[3]
     overlap = max(0, min(ly1, ry1) - max(ly0, ry0)) / max(1, min(ly1 - ly0, ry1 - ry0))
-    if overlap < float(config.minimum_component_y_overlap_fraction):
-        return None
     angle = _angle_difference((left.normal_x, left.normal_y), (right.normal_x, right.normal_y))
-    if angle > float(config.maximum_component_normal_difference_degrees):
-        return None
     left_endpoints = np.asarray([
         (left.global_bbox_xyxy[0], _line_y(left, left.global_bbox_xyxy[0])),
         (left.global_bbox_xyxy[2] - 1, _line_y(left, left.global_bbox_xyxy[2] - 1)),
@@ -647,32 +978,68 @@ def _compatibility_score(
     endpoint_distance = float(np.min(np.linalg.norm(
         left_endpoints[:, None, :] - right_endpoints[None, :, :], axis=2
     )))
-    if endpoint_distance > float(config.maximum_component_endpoint_distance_px):
-        return None
     seam_midpoint = 0.25 * (
         left.global_bbox_xyxy[0] + left.global_bbox_xyxy[2]
         + right.global_bbox_xyxy[0] + right.global_bbox_xyxy[2]
     )
     predicted_y = abs(_line_y(left, seam_midpoint) - _line_y(right, seam_midpoint))
-    if predicted_y > float(config.maximum_predicted_y_disagreement_px):
-        return None
     polarity_product = left.signed_gradient_polarity * right.signed_gradient_polarity
-    if polarity_product <= 0.0:
-        return None
     signed_agreement = min(abs(left.signed_gradient_polarity), abs(right.signed_gradient_polarity))
-    if signed_agreement < float(config.minimum_signed_gradient_agreement):
-        return None
+    gates = {
+        "adjacent_pair": right.pair_index - left.pair_index == 1,
+        "left_evaluable": left.evidence_state not in {"ambiguous", "unevaluable"},
+        "right_evaluable": right.evidence_state not in {"ambiguous", "unevaluable"},
+        "minimum_y_overlap": overlap >= float(config.minimum_component_y_overlap_fraction),
+        "maximum_normal_difference": angle <= float(config.maximum_component_normal_difference_degrees),
+        "maximum_endpoint_distance": endpoint_distance <= float(config.maximum_component_endpoint_distance_px),
+        "maximum_predicted_y_disagreement": predicted_y <= float(config.maximum_predicted_y_disagreement_px),
+        "signed_gradient_polarity": polarity_product > 0.0,
+        "minimum_signed_gradient_agreement": (
+            signed_agreement >= float(config.minimum_signed_gradient_agreement)
+        ),
+    }
     weights = config.component_match_weights
     correlation = min(left.correlation, right.correlation)
     uniqueness = min(left.uniqueness_fraction, right.uniqueness_fraction)
     parts = {
-        "y_overlap": np.clip(overlap, 0.0, 1.0),
-        "predicted_y": np.clip(1.0 - predicted_y / config.maximum_predicted_y_disagreement_px, 0.0, 1.0),
-        "endpoint_distance": np.clip(1.0 - endpoint_distance / config.maximum_component_endpoint_distance_px, 0.0, 1.0),
-        "correlation": np.clip(correlation, 0.0, 1.0),
-        "uniqueness": np.clip(uniqueness, 0.0, 1.0),
+        "y_overlap": float(np.clip(overlap, 0.0, 1.0)),
+        "predicted_y": float(np.clip(1.0 - predicted_y / config.maximum_predicted_y_disagreement_px, 0.0, 1.0)),
+        "endpoint_distance": float(np.clip(1.0 - endpoint_distance / config.maximum_component_endpoint_distance_px, 0.0, 1.0)),
+        "correlation": float(np.clip(correlation, 0.0, 1.0)),
+        "uniqueness": float(np.clip(uniqueness, 0.0, 1.0)),
     }
-    return float(sum(float(weights[name]) * float(parts[name]) for name in parts))
+    eligible = all(gates.values())
+    score = float(sum(float(weights[name]) * parts[name] for name in parts))
+    return {
+        "left_pair_index": int(left.pair_index),
+        "left_component_id": int(left.component_id),
+        "right_pair_index": int(right.pair_index),
+        "right_component_id": int(right.component_id),
+        "measurements": {
+            "y_overlap_fraction": float(overlap),
+            "normal_difference_degrees": float(angle),
+            "endpoint_distance_px": float(endpoint_distance),
+            "predicted_y_disagreement_px": float(predicted_y),
+            "signed_gradient_product": float(polarity_product),
+            "signed_gradient_agreement": float(signed_agreement),
+            "minimum_correlation": float(correlation),
+            "minimum_uniqueness_fraction": float(uniqueness),
+        },
+        "hard_gates": gates,
+        "subscores": parts,
+        "weighted_score": score,
+        "eligible": bool(eligible),
+        "reject_reasons": tuple(name for name, passed in gates.items() if not passed),
+    }
+
+
+def _compatibility_score(
+    left: S13EdgeComponentObservation,
+    right: S13EdgeComponentObservation,
+    config: object,
+) -> float | None:
+    audit = _compatibility_audit(left, right, config)
+    return float(audit["weighted_score"]) if audit["eligible"] is True else None
 
 
 def _maximum_weight_matching(
@@ -717,6 +1084,7 @@ def build_s13_edge_component_chains(
     ],
     *,
     config: object,
+    match_matrix_sink: list[Mapping[str, object]] | None = None,
 ) -> tuple[S13EdgeComponentChain, ...]:
     """Build deterministic physical chains with one-to-one adjacent matching."""
 
@@ -735,11 +1103,15 @@ def build_s13_edge_component_chains(
             continue
         left_indices, right_indices = by_pair[pair_index], by_pair[pair_index + 1]
         scores: dict[tuple[int, int], float] = {}
+        matrix_rows: dict[tuple[int, int], dict[str, object]] = {}
         for li, global_left in enumerate(left_indices):
             for ri, global_right in enumerate(right_indices):
-                score = _compatibility_score(observations[global_left], observations[global_right], config)
-                if score is not None:
-                    scores[li, ri] = score
+                row = _compatibility_audit(
+                    observations[global_left], observations[global_right], config
+                )
+                matrix_rows[li, ri] = row
+                if row["eligible"] is True:
+                    scores[li, ri] = float(row["weighted_score"])
         ambiguous_left: set[int] = set()
         ambiguous_right: set[int] = set()
         for li in range(len(left_indices)):
@@ -750,16 +1122,65 @@ def build_s13_edge_component_chains(
             values = sorted((value for (_, column), value in scores.items() if column == ri), reverse=True)
             if len(values) > 1 and (values[0] - values[1]) / max(abs(values[0]), 1e-12) < margin:
                 ambiguous_right.add(ri)
-        scores = {
+        unambiguous_scores = {
             edge: value for edge, value in scores.items()
             if edge[0] not in ambiguous_left and edge[1] not in ambiguous_right
         }
-        for li, ri in _maximum_weight_matching(
+        winners = set(_maximum_weight_matching(
             [observations[index] for index in left_indices],
             [observations[index] for index in right_indices],
-            scores,
-        ):
+            unambiguous_scores,
+        ))
+        for li, ri in winners:
             links.add((left_indices[li], right_indices[ri]))
+        if match_matrix_sink is not None:
+            serial_rows: list[dict[str, object]] = []
+            for edge in sorted(matrix_rows):
+                li, ri = edge
+                row = dict(matrix_rows[edge])
+                left_values = sorted(
+                    (value for (candidate_left, _), value in scores.items()
+                     if candidate_left == li), reverse=True
+                )
+                right_values = sorted(
+                    (value for (_, candidate_right), value in scores.items()
+                     if candidate_right == ri), reverse=True
+                )
+                left_margin = (
+                    (left_values[0] - left_values[1]) / max(abs(left_values[0]), 1e-12)
+                    if len(left_values) > 1 else None
+                )
+                right_margin = (
+                    (right_values[0] - right_values[1]) / max(abs(right_values[0]), 1e-12)
+                    if len(right_values) > 1 else None
+                )
+                junction_ambiguous = li in ambiguous_left or ri in ambiguous_right
+                reject_reasons = list(row["reject_reasons"])
+                if row["eligible"] is True and junction_ambiguous:
+                    reject_reasons.append("best_vs_second_margin_below_minimum")
+                elif row["eligible"] is True and edge not in winners:
+                    reject_reasons.append("not_selected_by_maximum_weight_matching")
+                row.update({
+                    "left_margin_fraction": (
+                        None if left_margin is None else float(left_margin)
+                    ),
+                    "right_margin_fraction": (
+                        None if right_margin is None else float(right_margin)
+                    ),
+                    "junction_ambiguous": bool(junction_ambiguous),
+                    "winner": edge in winners,
+                    "reject_reasons": reject_reasons,
+                })
+                serial_rows.append(row)
+            match_matrix_sink.append({
+                "left_pair_index": int(pair_index),
+                "right_pair_index": int(pair_index + 1),
+                "minimum_margin_fraction": margin,
+                "candidate_count": len(serial_rows),
+                "eligible_candidate_count": len(scores),
+                "winner_count": len(winners),
+                "candidates": serial_rows,
+            })
     adjacency: dict[int, set[int]] = {index: set() for index in range(len(observations))}
     for left, right in links:
         adjacency[left].add(right)
@@ -806,6 +1227,157 @@ def build_s13_edge_component_chains(
             chain_sha256=sha,
         ))
     return tuple(sorted(chains, key=lambda chain: chain.chain_id))
+
+
+def propagate_s13_edge_component_evidence(
+    seed_evidence_by_pair: Mapping[int, Sequence[tuple[object, object]]],
+    *,
+    available_pair_indices: Sequence[int],
+    pair_evidence_loader: Callable[[int], Sequence[tuple[object, object]]],
+    config: object,
+) -> tuple[tuple[tuple[object, object], ...], Mapping[str, object]]:
+    """Lazily follow exact physical components in both pair directions.
+
+    Only a pair adjacent to an already matched component is loaded.  A loaded
+    pair becomes a new frontier solely through a winner of the same frozen
+    one-to-one match matrix used by the final chain builder.  Thus safe anchors
+    may extend a seed across any number of pairs without paying reverse-search
+    cost eagerly for the full sequence.
+    """
+
+    available = {int(value) for value in available_pair_indices}
+    evidence_by_pair: dict[int, tuple[tuple[object, object], ...]] = {
+        int(pair): tuple(rows)
+        for pair, rows in sorted(seed_evidence_by_pair.items())
+    }
+    seed_pairs = tuple(sorted(evidence_by_pair))
+    active: set[tuple[int, int]] = set()
+    queue: list[tuple[int, int]] = []
+    for pair_index, rows in evidence_by_pair.items():
+        for observation, _evidence in rows:
+            if observation.evidence_state in {"ambiguous", "unevaluable"}:
+                continue
+            key = (int(pair_index), int(observation.component_id))
+            active.add(key)
+            queue.append(key)
+    queue.sort()
+    loader_calls: list[int] = []
+    match_matrices: dict[tuple[int, int], Mapping[str, object]] = {}
+    propagation_links: set[tuple[int, int, int, int]] = set()
+
+    cursor = 0
+    while cursor < len(queue):
+        pair_index, component_id = queue[cursor]
+        cursor += 1
+        for neighbour in (pair_index - 1, pair_index + 1):
+            if neighbour not in available:
+                continue
+            if neighbour not in evidence_by_pair:
+                evidence_by_pair[neighbour] = tuple(pair_evidence_loader(neighbour))
+                loader_calls.append(neighbour)
+            left_pair, right_pair = sorted((pair_index, neighbour))
+            junction = (left_pair, right_pair)
+            if junction not in match_matrices:
+                matrix_sink: list[Mapping[str, object]] = []
+                build_s13_edge_component_chains(
+                    tuple(
+                        row[0]
+                        for candidate_pair in junction
+                        for row in evidence_by_pair.get(candidate_pair, ())
+                    ),
+                    config=config,
+                    match_matrix_sink=matrix_sink,
+                )
+                match_matrices[junction] = (
+                    matrix_sink[0]
+                    if matrix_sink else {
+                        "left_pair_index": left_pair,
+                        "right_pair_index": right_pair,
+                        "minimum_margin_fraction": float(
+                            config.minimum_component_match_margin_fraction
+                        ),
+                        "candidate_count": 0,
+                        "eligible_candidate_count": 0,
+                        "winner_count": 0,
+                        "candidates": [],
+                    }
+                )
+            matrix = match_matrices[junction]
+            for row in matrix["candidates"]:
+                if row["winner"] is not True:
+                    continue
+                left_key = (
+                    int(row["left_pair_index"]), int(row["left_component_id"])
+                )
+                right_key = (
+                    int(row["right_pair_index"]), int(row["right_component_id"])
+                )
+                if (pair_index, component_id) == left_key:
+                    destination = right_key
+                elif (pair_index, component_id) == right_key:
+                    destination = left_key
+                else:
+                    continue
+                propagation_links.add((*left_key, *right_key))
+                if destination not in active:
+                    active.add(destination)
+                    queue.append(destination)
+
+    flattened = tuple(
+        row
+        for pair_index in sorted(evidence_by_pair)
+        for row in sorted(
+            evidence_by_pair[pair_index],
+            key=lambda item: (item[0].pair_index, item[0].component_id),
+        )
+    )
+    audit: Mapping[str, object] = {
+        "policy": "visual_suspect_seed_bidirectional_lazy_safe_anchor_propagation",
+        "seed_pair_indices": list(seed_pairs),
+        "probed_pair_indices": sorted(set(loader_calls)),
+        "reverse_evidence_loader_call_count": len(loader_calls),
+        "exact_pair_count": len(evidence_by_pair),
+        "exact_observation_count": len(flattened),
+        "propagation_link_count": len(propagation_links),
+        "propagation_links": [list(row) for row in sorted(propagation_links)],
+        "match_matrices": [
+            match_matrices[key] for key in sorted(match_matrices)
+        ],
+    }
+    return flattened, _frozen_mapping(audit)
+
+
+def s13_component_segment_budget_priority(
+    segment: object,
+    *,
+    evidence_by_component: Mapping[tuple[int, int], object],
+    maximum_post_edge_p95_px: float,
+) -> tuple[float, float, int, str]:
+    """Frozen pre-evaluation order: excess, confidence, coverage, stable ID."""
+
+    observations = tuple(segment.observations)
+    excess = max(
+        max(
+            0.0,
+            abs(0.5 * (
+                float(row.forward_best_lag_px)
+                - float(row.reverse_best_lag_px)
+            )) - float(maximum_post_edge_p95_px),
+        )
+        for row in observations
+    )
+    confidence = min(
+        float(row.correlation) * float(row.uniqueness_fraction)
+        for row in observations
+    )
+    expected_coverage = len({
+        int(x)
+        for row in observations
+        for x in np.asarray(
+            evidence_by_component[(row.pair_index, row.component_id)].support_xy
+        )[:, 0]
+    })
+    return (-excess, -confidence, -expected_coverage, str(segment.segment_id))
 
 
 @dataclass(frozen=True)
@@ -919,6 +1491,89 @@ def select_s13_component_segment_split_pair(
     return max(rows, key=lambda row: row[0])[1]
 
 
+def split_s13_component_application_segment_at_pair(
+    segment: S13ComponentApplicationSegment,
+    *,
+    split_pair_index: int,
+    reason: str,
+    minimum_pair_count: int = 1,
+) -> tuple[S13ComponentApplicationSegment, ...]:
+    """Remove one failed pair edge and return deterministic viable child segments.
+
+    A split is deliberately not a partition that assigns the failed observation
+    to either child: the selected pair is the local no-op boundary.  Remaining
+    observations on each side retain the outer cut authority of their parent and
+    bind the newly introduced cut on the side adjacent to the removed edge.
+    """
+
+    if not isinstance(split_pair_index, int) or split_pair_index < 0:
+        raise ValueError("C2E split pair index must be nonnegative")
+    if not isinstance(reason, str) or not reason:
+        raise ValueError("C2E split reason must be nonempty")
+    if not isinstance(minimum_pair_count, int) or minimum_pair_count < 1:
+        raise ValueError("C2E minimum child pair count must be positive")
+    if split_pair_index not in segment.pair_indices:
+        raise ValueError("C2E split pair is outside its segment")
+
+    left = tuple(
+        row for row in segment.observations if row.pair_index < split_pair_index
+    )
+    right = tuple(
+        row for row in segment.observations if row.pair_index > split_pair_index
+    )
+    children: list[S13ComponentApplicationSegment] = []
+    if len({row.pair_index for row in left}) >= minimum_pair_count:
+        children.append(S13ComponentApplicationSegment.create(
+            parent_chain_id=segment.parent_chain_id,
+            observations=left,
+            left_cut_reason=segment.left_cut_reason,
+            right_cut_reason=reason,
+        ))
+    if len({row.pair_index for row in right}) >= minimum_pair_count:
+        children.append(S13ComponentApplicationSegment.create(
+            parent_chain_id=segment.parent_chain_id,
+            observations=right,
+            left_cut_reason=reason,
+            right_cut_reason=segment.right_cut_reason,
+        ))
+    return tuple(children)
+
+
+def plan_s13_failed_segment_split(
+    segment: S13ComponentApplicationSegment,
+    *,
+    pair_audits: Sequence[Mapping[str, object]],
+    reason: str,
+    split_depth: int,
+    failure_kind: Literal["solver", "quality"],
+    config: object,
+) -> tuple[int | None, tuple[S13ComponentApplicationSegment, ...]]:
+    """Apply the frozen recursive-split policy to one failed segment."""
+
+    if failure_kind not in {"solver", "quality"}:
+        raise ValueError("C2E segment split failure kind is invalid")
+    if not isinstance(split_depth, int) or split_depth < 0:
+        raise ValueError("C2E segment split depth is invalid")
+    if not getattr(config, "allow_partial_application", False):
+        return None, ()
+    if failure_kind == "solver" and not getattr(config, "split_on_solver_outlier", False):
+        return None, ()
+    maximum_depth = int(getattr(config, "maximum_segment_split_depth"))
+    minimum_pairs = int(getattr(config, "minimum_application_segment_pair_count"))
+    if split_depth >= maximum_depth or len(set(segment.pair_indices)) <= minimum_pairs:
+        return None, ()
+    if not pair_audits:
+        return None, ()
+    split_pair = select_s13_component_segment_split_pair(pair_audits)
+    children = split_s13_component_application_segment_at_pair(
+        segment,
+        split_pair_index=split_pair,
+        reason=reason,
+        minimum_pair_count=minimum_pairs,
+    )
+    return (split_pair, children) if children else (None, ())
+
+
 def _observation_lag(observation: S13EdgeComponentObservation) -> float:
     return 0.5 * (observation.forward_best_lag_px - observation.reverse_best_lag_px)
 
@@ -999,7 +1654,29 @@ def solve_s13_component_segment_source_offsets(
     )
     normalized = np.abs(residuals) / sigma
     if np.any(normalized > float(config.maximum_normalized_solver_residual)):
-        raise ValueError("C2E solver normalized residual exceeded")
+        limit = float(config.maximum_normalized_solver_residual)
+        raise S13ComponentSolverError(
+            "C2E solver normalized residual exceeded",
+            pair_audits=tuple(
+                {
+                    "pair_index": observation.pair_index,
+                    "hard_violation_count": int(value > limit),
+                    "maximum_normalized_gate_excess": max(0.0, value - limit)
+                    / max(abs(limit), 1e-6),
+                    "normalized_solver_residual": float(value),
+                    "baseline_edge_excess_px": max(
+                        0.0,
+                        abs(_observation_lag(observation))
+                        - float(config.maximum_post_edge_p95_px),
+                    ),
+                }
+                for observation, value in zip(
+                    sorted(segment.observations, key=lambda row: row.pair_index),
+                    normalized,
+                    strict=True,
+                )
+            ),
+        )
     maximum = float(config.maximum_source_normal_offset_px)
     if not np.isfinite(solution).all() or np.any(np.abs(solution) > maximum + 1e-9):
         raise ValueError("C2E solver source offset exceeded")
@@ -1017,6 +1694,303 @@ class S13ComponentQualityEvaluation:
     def __post_init__(self) -> None:
         object.__setattr__(self, "rejection_reasons", tuple(self.rejection_reasons))
         object.__setattr__(self, "audit", _frozen_mapping(self.audit))
+
+
+@dataclass(frozen=True)
+class S13RuntimeEdgeTrace:
+    """Deterministic owner-only, exact-seeded per-column physical edge trace."""
+
+    y_edge_px: np.ndarray
+    evaluable: np.ndarray
+    double_edge: np.ndarray
+    seam_side: np.ndarray
+    metrics: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        arrays = (
+            _readonly(self.y_edge_px, np.float64),
+            _readonly(self.evaluable, np.bool_),
+            _readonly(self.double_edge, np.bool_),
+            _readonly(self.seam_side, np.int8),
+        )
+        if any(row.ndim != 1 for row in arrays) or any(
+            row.shape != arrays[0].shape for row in arrays[1:]
+        ):
+            raise ValueError("C2E runtime edge trace arrays disagree")
+        object.__setattr__(self, "y_edge_px", arrays[0])
+        object.__setattr__(self, "evaluable", arrays[1])
+        object.__setattr__(self, "double_edge", arrays[2])
+        object.__setattr__(self, "seam_side", arrays[3])
+        object.__setattr__(self, "metrics", _frozen_mapping(self.metrics))
+
+
+def trace_s13_owner_only_component_edge(
+    image: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    support_xy: np.ndarray,
+    normal_xy: tuple[float, float],
+    signed_gradient_polarity: float,
+    seam_x_by_row: np.ndarray,
+    search_radius_px: int = 6,
+) -> S13RuntimeEdgeTrace:
+    """Trace one seeded edge in a narrow band without selecting another ROI edge."""
+
+    pixels = np.asarray(image)
+    valid = np.asarray(valid_mask, dtype=bool)
+    support = np.asarray(support_xy, dtype=np.float64)
+    seam = np.asarray(seam_x_by_row, dtype=np.int32)
+    if pixels.ndim != 3 or pixels.shape[:2] != valid.shape:
+        raise ValueError("C2E runtime trace image/valid shapes disagree")
+    if support.ndim != 2 or support.shape[1] != 2 or support.shape[0] < 2:
+        raise ValueError("C2E runtime trace exact support is invalid")
+    if seam.shape != (pixels.shape[0],) or search_radius_px < 1:
+        raise ValueError("C2E runtime trace seam/search inputs are invalid")
+    normal = np.asarray(normal_xy, dtype=np.float64)
+    if normal.shape != (2,) or not np.isfinite(normal).all():
+        raise ValueError("C2E runtime trace normal is invalid")
+    normal_norm = float(np.linalg.norm(normal))
+    if normal_norm <= 1e-9 or abs(float(normal[1])) <= 1e-6:
+        raise ValueError("C2E runtime y-edge trace requires a nonvertical line")
+    normal /= normal_norm
+    polarity = float(np.sign(signed_gradient_polarity))
+    if not math.isfinite(float(signed_gradient_polarity)) or polarity == 0.0:
+        raise ValueError("C2E runtime trace polarity is invalid")
+    height, width = valid.shape
+    line_offset = float(np.median(support @ normal))
+    columns = np.arange(width, dtype=np.float64)
+    expected_y = (line_offset - normal[0] * columns) / normal[1]
+    gray = cv2.cvtColor(pixels, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    magnitude = np.hypot(gx, gy)
+    directed = polarity * (gx * float(normal[0]) + gy * float(normal[1]))
+    candidates: list[np.ndarray] = []
+    eligible = np.zeros(width, dtype=bool)
+    positive_samples: list[np.ndarray] = []
+    for column, expected in enumerate(expected_y):
+        lower = max(1, int(math.floor(expected)) - search_radius_px)
+        upper = min(height - 1, int(math.ceil(expected)) + search_radius_px + 1)
+        rows = np.arange(lower, upper, dtype=np.int32)
+        rows = rows[valid[rows, column]] if rows.size else rows
+        candidates.append(rows)
+        if rows.size:
+            eligible[column] = True
+            values = directed[rows, column]
+            positive_samples.append(values[values > 0.0])
+    finite_strength = (
+        np.concatenate([row for row in positive_samples if row.size])
+        if any(row.size for row in positive_samples) else np.empty(0, np.float32)
+    )
+    threshold = (
+        max(12.0, float(np.percentile(finite_strength, 65.0)))
+        if finite_strength.size else math.inf
+    )
+    scale = max(threshold, 1.0)
+    costs: list[np.ndarray] = []
+    predecessors: list[np.ndarray] = []
+    for column, rows in enumerate(candidates):
+        if not rows.size:
+            costs.append(np.empty(0, np.float64))
+            predecessors.append(np.empty(0, np.int32))
+            continue
+        emission = (
+            -directed[rows, column].astype(np.float64) / scale
+            + 0.06 * np.abs(rows.astype(np.float64) - expected_y[column])
+        )
+        if column == 0 or not costs[column - 1].size:
+            costs.append(emission)
+            predecessors.append(np.full(rows.size, -1, np.int32))
+            continue
+        previous_rows = candidates[column - 1]
+        expected_step = expected_y[column] - expected_y[column - 1]
+        transition = 0.35 * np.abs(
+            rows[:, None].astype(np.float64)
+            - previous_rows[None, :].astype(np.float64) - expected_step
+        )
+        combined = transition + costs[column - 1][None, :]
+        previous = np.argmin(combined, axis=1).astype(np.int32)
+        costs.append(emission + combined[np.arange(rows.size), previous])
+        predecessors.append(previous)
+    traced = np.full(width, np.nan, dtype=np.float64)
+    segment_ends = [
+        column for column in range(width) if candidates[column].size
+        and (column + 1 == width or not candidates[column + 1].size)
+    ]
+    for segment_end in segment_ends:
+        state = int(np.argmin(costs[segment_end]))
+        column = segment_end
+        while column >= 0 and candidates[column].size:
+            traced[column] = float(candidates[column][state])
+            if column == 0 or not candidates[column - 1].size:
+                break
+            state = int(predecessors[column][state])
+            column -= 1
+    selected_columns = np.flatnonzero(np.isfinite(traced))
+    if selected_columns.size:
+        selected_rows = np.rint(traced[selected_columns]).astype(np.int32)
+        orientation_ratio = directed[selected_rows, selected_columns] / np.maximum(
+            magnitude[selected_rows, selected_columns], 1e-6
+        )
+        local_threshold = np.asarray([
+            max(12.0, 0.50 * float(np.max(directed[candidates[column], column])))
+            for column in selected_columns
+        ], dtype=np.float64)
+        supported = (
+            (directed[selected_rows, selected_columns] >= local_threshold)
+            & (orientation_ratio >= math.cos(math.radians(35.0)))
+        )
+        traced[selected_columns[~supported]] = np.nan
+    double_edge = np.zeros(width, dtype=bool)
+    for column in np.flatnonzero(np.isfinite(traced)):
+        rows = candidates[column]
+        values = directed[rows, column]
+        primary = int(round(float(traced[column])))
+        primary_strength = float(directed[primary, column])
+        peaks = np.flatnonzero(
+            (values >= np.roll(values, 1)) & (values >= np.roll(values, -1))
+            & (values >= 0.50 * primary_strength)
+        )
+        peaks = peaks[(peaks > 0) & (peaks + 1 < values.size)]
+        double_edge[column] = any(
+            abs(int(rows[index]) - primary) >= 3
+            and float(values[index]) >= 0.50 * primary_strength
+            and float(values[index]) / max(
+                float(magnitude[int(rows[index]), column]), 1e-6
+            ) >= math.cos(math.radians(35.0))
+            for index in peaks
+        )
+    evaluable = np.isfinite(traced)
+    adjacency = evaluable[:-1] & evaluable[1:]
+    slopes = np.diff(traced)[adjacency]
+    expected_slope = float(-normal[0] / normal[1])
+    slope_error = np.abs(slopes - expected_slope)
+    triples = evaluable[:-2] & evaluable[1:-1] & evaluable[2:]
+    second = np.abs(np.diff(traced, n=2)[triples])
+    missing = eligible & ~evaluable
+    longest_break = 0
+    current_break = 0
+    for value in missing:
+        current_break = current_break + 1 if value else 0
+        longest_break = max(longest_break, current_break)
+    seam_side = np.zeros(width, dtype=np.int8)
+    for column in np.flatnonzero(evaluable):
+        row = int(np.clip(round(float(traced[column])), 0, height - 1))
+        seam_side[column] = np.int8(np.sign(column - int(seam[row])))
+    compressed_sides = seam_side[evaluable]
+    compressed_sides = compressed_sides[compressed_sides != 0]
+    seam_crossing_count = int(np.count_nonzero(
+        compressed_sides[:-1] != compressed_sides[1:]
+    ))
+    seam_crossings = np.flatnonzero(
+        evaluable & (seam_side != 0)
+        & (np.arange(width) == np.asarray([
+            int(seam[int(np.clip(round(float(value)), 0, height - 1))])
+            if math.isfinite(float(value)) else -1 for value in traced
+        ]))
+    )
+    metrics = {
+        "evaluable_column_count": int(np.count_nonzero(evaluable)),
+        "eligible_column_count": int(np.count_nonzero(eligible)),
+        "coverage_fraction": float(
+            np.count_nonzero(evaluable) / max(np.count_nonzero(eligible), 1)
+        ),
+        "slope_p50_px": float(np.percentile(slopes, 50.0)) if slopes.size else None,
+        "slope_p95_px": float(np.percentile(np.abs(slopes), 95.0)) if slopes.size else None,
+        "slope_error_p95_px": (
+            float(np.percentile(slope_error, 95.0)) if slope_error.size else None
+        ),
+        "maximum_slope_error_px": float(np.max(slope_error)) if slope_error.size else None,
+        "second_difference_p95_px": (
+            float(np.percentile(second, 95.0)) if second.size else None
+        ),
+        "maximum_second_difference_px": float(np.max(second)) if second.size else None,
+        "missing_column_count": int(np.count_nonzero(missing)),
+        "break_length_px": int(longest_break),
+        "double_edge_length_px": int(np.count_nonzero(double_edge)),
+        "seam_crossing_count": seam_crossing_count,
+        "seam_crossing_columns": seam_crossings.astype(np.int32).tolist(),
+        "search_band_boundary_contact": bool(any(
+            evaluable[column] and candidates[column].size
+            and int(round(float(traced[column]))) in {
+                int(candidates[column][0]), int(candidates[column][-1])
+            }
+            for column in range(width)
+        )),
+        "strength_threshold": threshold if math.isfinite(threshold) else None,
+        "expected_slope_px_per_column": expected_slope,
+    }
+    return S13RuntimeEdgeTrace(
+        y_edge_px=traced, evaluable=evaluable, double_edge=double_edge,
+        seam_side=seam_side, metrics=metrics,
+    )
+
+
+def aggregate_s13_runtime_edge_traces(
+    traces: Sequence[S13RuntimeEdgeTrace],
+    *,
+    search_boundary_hit: bool = False,
+) -> Mapping[str, object]:
+    """Aggregate exact traces into the metric names consumed by quality gates."""
+
+    if not traces:
+        raise ValueError("C2E runtime trace aggregation requires at least one trace")
+    slope_errors: list[np.ndarray] = []
+    second_values: list[np.ndarray] = []
+    for trace in traces:
+        valid = trace.evaluable
+        adjacent = valid[:-1] & valid[1:]
+        slopes = np.diff(trace.y_edge_px)[adjacent]
+        expected_slope = float(trace.metrics["expected_slope_px_per_column"])
+        slope_errors.append(np.abs(slopes - expected_slope))
+        triples = valid[:-2] & valid[1:-1] & valid[2:]
+        second_values.append(np.abs(np.diff(trace.y_edge_px, n=2)[triples]))
+    slopes = np.concatenate(slope_errors) if slope_errors else np.empty(0, np.float64)
+    second = np.concatenate(second_values) if second_values else np.empty(0, np.float64)
+    evaluable_count = sum(
+        int(row.metrics["evaluable_column_count"]) for row in traces
+    )
+    eligible_count = sum(int(row.metrics["eligible_column_count"]) for row in traces)
+    return MappingProxyType({
+        "edge_p50_px": float(np.percentile(slopes, 50.0)) if slopes.size else 0.0,
+        "edge_p95_px": float(np.percentile(slopes, 95.0)) if slopes.size else math.inf,
+        "maximum_step_px": float(np.max(slopes)) if slopes.size else math.inf,
+        "break_length_px": float(max(
+            int(row.metrics["break_length_px"]) for row in traces
+        )),
+        "double_edge_length_px": float(sum(
+            int(row.metrics["double_edge_length_px"]) for row in traces
+        )),
+        "non_target_p95_px": (
+            float(np.percentile(second, 95.0)) if second.size else 0.0
+        ),
+        "second_difference_p95_px": (
+            float(np.percentile(second, 95.0)) if second.size else 0.0
+        ),
+        "evaluable_edge_columns": evaluable_count,
+        "eligible_edge_columns": eligible_count,
+        "coverage_fraction": float(evaluable_count / max(eligible_count, 1)),
+        "seam_crossing_count": int(sum(
+            int(row.metrics["seam_crossing_count"]) for row in traces
+        )),
+        "search_band_boundary_contact": any(
+            row.metrics["search_band_boundary_contact"] is True for row in traces
+        ),
+        "search_boundary_hit": bool(search_boundary_hit),
+        "traces": [
+            {
+                "y_edge_px": [
+                    float(value) if math.isfinite(float(value)) else None
+                    for value in row.y_edge_px
+                ],
+                "evaluable": row.evaluable.astype(np.uint8).tolist(),
+                "double_edge": row.double_edge.astype(np.uint8).tolist(),
+                "seam_side": row.seam_side.tolist(),
+                "metrics": dict(row.metrics),
+            }
+            for row in traces
+        ],
+    })
 
 
 def _finite_metric(metrics: Mapping[str, object], name: str) -> float:
@@ -1064,7 +2038,9 @@ def evaluate_s13_component_candidate_quality(
     else:
         break_reduction = 0.0
     no_break_regression = candidate_break <= baseline_break
-    search_boundary_hit = candidate.get("search_boundary_hit") is True
+    baseline_search_boundary_hit = baseline.get("search_boundary_hit") is True
+    candidate_search_boundary_hit = candidate.get("search_boundary_hit") is True
+    search_boundary_hit = baseline_search_boundary_hit or candidate_search_boundary_hit
     resolved = bool(
         not search_boundary_hit
         and candidate_p95 <= float(config.maximum_post_edge_p95_px)
@@ -1102,6 +2078,8 @@ def evaluate_s13_component_candidate_quality(
         "candidate_break_double_edge_union_length": candidate_break,
         "break_length_reduction_fraction": break_reduction,
         "search_boundary_hit": search_boundary_hit,
+        "baseline_search_boundary_hit": baseline_search_boundary_hit,
+        "candidate_search_boundary_hit": candidate_search_boundary_hit,
         "hard_gate_failures": (),
     }
     if resolved:
@@ -1584,14 +2562,21 @@ __all__ = [
     "S13BaselineC2EObligation", "S13ComponentApplicationSegment",
     "S13ComponentPatchSet", "S13ComponentQualityEvaluation", "S13ComponentSegmentCandidate", "S13EdgeComponentChain",
     "S13EdgeComponentObservation", "S13ExactEdgeComponentEvidence",
-    "S13SourceComponentCorrection", "SourceMapOracle",
+    "S13SourceComponentCorrection", "S13ComponentSolverError",
+    "S13RuntimeEdgeTrace", "SourceMapOracle",
+    "aggregate_s13_runtime_edge_traces",
+    "audit_s13_component_candidate_map_safety", "audit_s13_obligation_coverage",
     "build_s13_edge_component_chains", "build_s13_source_component_correction",
     "compose_s13_source_component_deltas",
     "canonical_s13_support_sha256",
     "canonical_s13_normal_search_lags", "freeze_s13_baseline_c2e_obligations",
     "evaluate_s13_component_candidate_quality", "make_s13_edge_component_observation",
     "make_s13_unevaluable_edge_component_observation",
+    "plan_s13_failed_segment_split",
+    "propagate_s13_edge_component_evidence",
+    "s13_component_segment_budget_priority",
     "select_s13_component_patch_set", "select_s13_component_segment_split_pair",
+    "split_s13_component_application_segment_at_pair",
     "solve_s13_component_segment_source_offsets", "source_map_oracle_from_arrays",
-    "split_s13_edge_component_chain",
+    "split_s13_edge_component_chain", "trace_s13_owner_only_component_edge",
 ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -10,8 +11,12 @@ from panorama_demo.video_s13_m51_r2 import S13M51R4Config
 from panorama_demo.video_s13_m51_r4_component_chain import (
     S13ComponentApplicationSegment,
     S13ComponentSegmentCandidate,
+    S13ComponentSolverError,
     S13EdgeComponentObservation,
     S13SourceComponentCorrection,
+    aggregate_s13_runtime_edge_traces,
+    audit_s13_component_candidate_map_safety,
+    audit_s13_obligation_coverage,
     build_s13_edge_component_chains,
     build_s13_source_component_correction,
     canonical_s13_normal_search_lags,
@@ -21,12 +26,18 @@ from panorama_demo.video_s13_m51_r4_component_chain import (
     freeze_s13_baseline_c2e_obligations,
     freeze_s13_source_correction_registry,
     make_s13_edge_component_observation,
+    plan_s13_failed_segment_split,
+    propagate_s13_edge_component_evidence,
+    s13_component_segment_budget_priority,
     select_s13_component_patch_set,
     select_s13_component_segment_split_pair,
     solve_s13_component_segment_source_offsets,
+    split_s13_component_application_segment_at_pair,
     split_s13_edge_component_chain,
     source_map_oracle_from_arrays,
+    trace_s13_owner_only_component_edge,
 )
+from panorama_demo.video_s13_m5 import _select_s13_component_gain_candidate
 from panorama_demo.video_s13_quality import pair_edge_registration_metrics
 
 
@@ -58,6 +69,10 @@ class _Config:
     minimum_break_length_reduction_fraction: float = 0.50
     maximum_non_target_p95_regression_px: float = 0.10
     maximum_non_target_step_regression_px: float = 0.25
+    minimum_application_segment_pair_count: int = 1
+    split_on_solver_outlier: bool = True
+    allow_partial_application: bool = True
+    maximum_segment_split_depth: int = 4
 
     def __post_init__(self) -> None:
         if self.component_match_weights is None:
@@ -143,6 +158,236 @@ def test_forward_reverse_observation_fits_line_and_freezes_support() -> None:
     assert 15.0 - offsets[3] == pytest.approx(17.0 - offsets[4], abs=1e-6)
 
 
+def _constant_orientation_observation(
+    *, right_angle_degrees: float = 0.0, inverted_rows: int = 0
+) -> S13EdgeComponentObservation:
+    y = np.arange(8, 28, dtype=np.int32)
+    x = np.full_like(y, 20)
+    support = np.column_stack((x, y))
+    magnitude = np.full((40, 40), 10.0, np.float32)
+    left_gx = np.full_like(magnitude, 10.0)
+    left_gy = np.zeros_like(magnitude)
+    angle = np.deg2rad(right_angle_degrees)
+    right_gx = np.full_like(magnitude, 10.0 * np.cos(angle))
+    right_gy = np.full_like(magnitude, 10.0 * np.sin(angle))
+    if inverted_rows:
+        right_gx[y[:inverted_rows], :] *= -1.0
+        right_gy[y[:inverted_rows], :] *= -1.0
+    observation, _evidence = make_s13_edge_component_observation(
+        pair_index=0,
+        component_id=0,
+        source_indices=(0, 1),
+        support_xy=support,
+        left_magnitude=magnitude,
+        right_magnitude=magnitude,
+        left_gradient_x=left_gx,
+        left_gradient_y=left_gy,
+        right_gradient_x=right_gx,
+        right_gradient_y=right_gy,
+        lags=np.asarray([0.0], np.float64),
+        minimum_uniqueness_fraction=-1.0,
+    )
+    return observation
+
+
+def test_modulo_pi_orientation_is_independent_from_partial_gradient_sign() -> None:
+    observation = _constant_orientation_observation(inverted_rows=4)
+
+    assert observation.orientation_difference_degrees == pytest.approx(0.0)
+    assert observation.signed_gradient_agreement == pytest.approx(0.6)
+    assert observation.evidence_state == "safe_anchor"
+
+
+def test_full_contrast_reversal_fails_signed_gate_not_orientation_gate() -> None:
+    observation = _constant_orientation_observation(inverted_rows=20)
+
+    assert observation.orientation_difference_degrees == pytest.approx(0.0)
+    assert observation.signed_gradient_agreement == pytest.approx(-1.0)
+    assert observation.evidence_state == "ambiguous"
+    assert observation.exclusion_reasons == ("signed_gradient_disagrees",)
+
+
+def test_real_orientation_difference_above_ten_degrees_still_fails() -> None:
+    observation = _constant_orientation_observation(right_angle_degrees=15.0)
+
+    assert observation.orientation_difference_degrees == pytest.approx(15.0)
+    assert observation.signed_gradient_agreement > 0.9
+    assert observation.evidence_state == "ambiguous"
+    assert observation.exclusion_reasons == ("orientation_difference_exceeded",)
+
+
+def test_probe_second_edge_geometry_has_one_unique_compatible_link() -> None:
+    left = replace(
+        _observation(71, 9, 3.0, y0=322),
+        global_bbox_xyxy=(1505, 322, 1531, 337),
+        normal_x=0.315199,
+        normal_y=-0.949025,
+        fitted_line_offset=165.470439,
+        correlation=0.978577,
+        uniqueness_fraction=0.349480,
+        signed_gradient_polarity=0.233167,
+    )
+    right = replace(
+        _observation(72, 8, -0.5, y0=321),
+        global_bbox_xyxy=(1511, 321, 1537, 346),
+        normal_x=0.364541,
+        normal_y=-0.931187,
+        fitted_line_offset=243.434758,
+        correlation=0.981253,
+        uniqueness_fraction=0.422243,
+        signed_gradient_polarity=0.336166,
+    )
+
+    chains = build_s13_edge_component_chains((left, right), config=_Config())
+
+    linked = [chain for chain in chains if len(chain.observations) == 2]
+    assert len(linked) == 1
+    assert [(row.pair_index, row.component_id) for row in linked[0].observations] == [
+        (71, 9), (72, 8),
+    ]
+
+
+def test_match_matrix_is_deterministic_and_keeps_components_8_and_9_separate() -> None:
+    observations = (
+        _observation(71, 8, 1.5, y0=288),
+        _observation(71, 9, 3.0, y0=322),
+        _observation(72, 8, 0.5, y0=322),
+        _observation(72, 9, 0.5, y0=288),
+    )
+    first: list[object] = []
+    second: list[object] = []
+
+    chains = build_s13_edge_component_chains(
+        observations, config=_Config(), match_matrix_sink=first
+    )
+    build_s13_edge_component_chains(
+        tuple(reversed(observations)), config=_Config(), match_matrix_sink=second
+    )
+
+    assert first == second
+    assert len(first) == 1
+    candidates = first[0]["candidates"]
+    assert all("hard_gates" in row and "subscores" in row for row in candidates)
+    assert all("winner" in row and "reject_reasons" in row for row in candidates)
+    winner_ids = {
+        (row["left_component_id"], row["right_component_id"])
+        for row in candidates if row["winner"] is True
+    }
+    assert winner_ids == {(8, 9), (9, 8)}
+    assert all(len(set(chain.observations)) == 2 for chain in chains)
+    assert not any(
+        {row.component_id for row in chain.observations} == {8, 9}
+        and len({row.pair_index for row in chain.observations}) == 1
+        for chain in chains
+    )
+
+
+def test_exact_evidence_propagates_bidirectionally_across_multiple_safe_anchors() -> None:
+    rows = {
+        pair: ((_observation(pair, 0, 2.0 if pair == 2 else 0.5), object()),)
+        for pair in range(9)
+    }
+    # Physical identity ends at pair 0 and pair 4. Pairs farther away must not
+    # pay the exact reverse-search cost merely because they exist.
+    rows[0] = ((_observation(0, 0, 0.5, y0=60), object()),)
+    rows[4] = ((_observation(4, 0, 0.5, y0=60), object()),)
+    calls: list[int] = []
+
+    def load(pair_index: int) -> object:
+        calls.append(pair_index)
+        return rows[pair_index]
+
+    evidence, audit = propagate_s13_edge_component_evidence(
+        {2: rows[2]},
+        available_pair_indices=tuple(range(9)),
+        pair_evidence_loader=load,
+        config=_Config(),
+    )
+
+    assert set(calls) == {0, 1, 3, 4}
+    assert 5 not in calls and 8 not in calls
+    assert {(row[0].pair_index, row[0].component_id) for row in evidence} == {
+        (0, 0), (1, 0), (2, 0), (3, 0), (4, 0),
+    }
+    assert audit["seed_pair_indices"] == [2]
+    assert audit["reverse_evidence_loader_call_count"] == 4
+    assert audit["propagation_link_count"] == 2
+
+
+def test_roi_budget_priority_is_deterministic_excess_confidence_then_coverage() -> None:
+    rows = [
+        S13ComponentApplicationSegment.create(
+            parent_chain_id=f"budget-{index}",
+            observations=(_observation(index, index, lag),),
+        )
+        for index, lag in enumerate((1.5, 2.0, 2.0, 2.0))
+    ]
+    rows[2] = S13ComponentApplicationSegment.create(
+        parent_chain_id="budget-confidence",
+        observations=(replace(rows[2].observations[0], correlation=0.99),),
+    )
+    evidence = {
+        (row.observations[0].pair_index, row.observations[0].component_id): (
+            SimpleNamespace(support_xy=np.column_stack((
+                np.arange(5 + index, dtype=np.int32),
+                np.zeros(5 + index, dtype=np.int32),
+            )))
+        )
+        for index, row in enumerate(rows)
+    }
+    ordered = sorted(
+        reversed(rows),
+        key=lambda row: s13_component_segment_budget_priority(
+            row, evidence_by_component=evidence,
+            maximum_post_edge_p95_px=1.0,
+        ),
+    )
+    # Largest excess first; tied excess uses confidence before coverage, and
+    # the lower-excess row is always last regardless of input order.
+    assert ordered[0] is rows[2]
+    assert ordered[-1] is rows[0]
+    assert [row.segment_id for row in ordered] == [
+        row.segment_id for row in sorted(
+            rows,
+            key=lambda row: s13_component_segment_budget_priority(
+                row, evidence_by_component=evidence,
+                maximum_post_edge_p95_px=1.0,
+            ),
+        )
+    ]
+
+
+def _gain_candidate(
+    *, decision: str, gain: float, step: float, p95: float = 0.5
+) -> S13ComponentSegmentCandidate:
+    segment = S13ComponentApplicationSegment.create(
+        parent_chain_id=f"gain-{decision}-{gain}-{step}",
+        observations=(_observation(0, 0, 2.0),),
+    )
+    return S13ComponentSegmentCandidate(
+        segment, (gain,), gain, (), decision, (),
+        {"candidate_metrics": {
+            "maximum_step_px": step, "edge_p95_px": p95,
+            "break_length_px": 0.0, "double_edge_length_px": 0.0,
+        }, "correction_energy": gain},
+    )
+
+
+def test_gain_selection_prefers_resolved_then_uses_frozen_step_tolerance() -> None:
+    improved = _gain_candidate(
+        decision="improved_unresolved", gain=0.5, step=0.2
+    )
+    resolved = _gain_candidate(decision="resolved", gain=1.0, step=1.0)
+    assert _select_s13_component_gain_candidate((improved, resolved)) is resolved
+
+    small = _gain_candidate(decision="resolved", gain=0.5, step=1.14)
+    large = _gain_candidate(decision="resolved", gain=1.0, step=1.0)
+    assert _select_s13_component_gain_candidate((large, small)) is small
+
+    outside = _gain_candidate(decision="resolved", gain=0.5, step=1.16)
+    assert _select_s13_component_gain_candidate((large, outside)) is large
+
+
 def test_obligations_are_frozen_before_chain_filtering() -> None:
     observations = (_observation(0, 0, 2.0), _observation(1, 0, 0.5))
     obligations = freeze_s13_baseline_c2e_obligations(observations)
@@ -150,6 +395,45 @@ def test_obligations_are_frozen_before_chain_filtering() -> None:
     assert obligations[0].severe is True
     assert obligations[1].severe is False
     assert obligations[0].scope == "runtime_detected"
+
+
+def test_obligation_freeze_records_exact_column_trace_and_severity_basis() -> None:
+    support = np.asarray([(column, 10 + column // 4) for column in range(16)], np.int32)
+    observation = replace(
+        _observation(0, 0, 2.0),
+        mask_sha256=canonical_s13_support_sha256(support),
+    )
+    obligations = freeze_s13_baseline_c2e_obligations(
+        (observation,),
+        support_by_authority={
+            (0, 0, observation.mask_sha256): support,
+        },
+        severe_threshold_px=1.0,
+        minimum_evaluable_columns=12,
+    )
+    metrics = obligations[0].baseline_metrics
+    assert obligations[0].severe is True
+    assert obligations[0].evaluable is True
+    assert metrics["trace_unique_column_count"] == 16
+    assert metrics["trace_missing_column_count"] == 0
+    assert metrics["severe_reason"] == "absolute_symmetric_normal_lag_exceeded"
+
+
+def test_obligation_coverage_rejects_pair_source_authority_tamper() -> None:
+    sha = "a" * 64
+    obligation = {
+        "pair_index": 2, "component_id": 7, "support_sha256": sha,
+        "scope": "runtime_detected", "baseline_metrics": {},
+        "severe": True, "evaluable": True,
+    }
+    segment = {
+        "segment_id": "s", "pair_indices": [2], "source_indices": [2, 4],
+        "state": "resolved", "observation_authority": [{
+            "pair_index": 2, "component_id": 7, "support_sha256": sha,
+        }],
+    }
+    with pytest.raises(ValueError, match="pair/source authority"):
+        audit_s13_obligation_coverage((obligation,), (segment,), ("s",))
 
 
 def test_chain_matching_keeps_distinct_y_layers_and_segmentation_cuts_ambiguity() -> None:
@@ -195,6 +479,30 @@ def test_irls_solver_uses_owner_weighted_zero_mean_gauge() -> None:
     assert offsets[1] - offsets[0] == pytest.approx(-2.0, abs=1e-6)
     assert offsets[2] - offsets[1] == pytest.approx(-2.0, abs=1e-6)
     assert sum([offsets[0], 2 * offsets[1], offsets[2]]) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_solver_outlier_failure_carries_deterministic_pair_split_audits() -> None:
+    segment = S13ComponentApplicationSegment.create(
+        parent_chain_id="chain-outlier",
+        observations=tuple(
+            _observation(pair, 0, lag)
+            for pair, lag in enumerate((3.0, -3.0, 3.0, -3.0))
+        ),
+    )
+    config = _Config(maximum_normalized_solver_residual=0.01)
+
+    with pytest.raises(S13ComponentSolverError) as caught:
+        solve_s13_component_segment_source_offsets(
+            segment,
+            config=config,
+            owner_support_by_source={source: 1 for source in segment.source_indices},
+        )
+
+    audits = caught.value.pair_audits
+    assert [row["pair_index"] for row in audits] == [0, 1, 2, 3]
+    assert all(row["normalized_solver_residual"] >= 0.0 for row in audits)
+    assert any(row["hard_violation_count"] == 1 for row in audits)
+    assert select_s13_component_segment_split_pair(audits) in segment.pair_indices
 
 
 def test_correction_is_local_readonly_and_patch_conflicts_choose_utility() -> None:
@@ -304,6 +612,127 @@ def test_source_map_oracle_canonicalizes_invalid_and_negative_zero() -> None:
     assert not oracle.u.flags.writeable
 
 
+def _candidate_map_safety_inputs() -> dict[str, object]:
+    height = width = 10
+    base_u = np.broadcast_to(np.arange(width, dtype=np.float32), (height, width)).copy()
+    base_v = np.broadcast_to(
+        np.arange(height, dtype=np.float32)[:, None], (height, width)
+    ).copy()
+    influence = np.zeros((height, width), bool)
+    influence[2:8, 2:8] = True
+    evidence = np.zeros_like(influence)
+    evidence[4:6, 4:6] = True
+    candidate_u = base_u.copy()
+    candidate_v = base_v.copy()
+    candidate_v[influence] += 0.1
+    return {
+        "base_u": base_u,
+        "base_v": base_v,
+        "base_valid": np.ones_like(influence),
+        "candidate_u": candidate_u,
+        "candidate_v": candidate_v,
+        "candidate_valid": np.ones_like(influence),
+        "owner_mask": np.ones_like(influence),
+        "evidence_mask": evidence,
+        "influence_mask": influence,
+        "source_size": (width, height),
+        "minimum_owner_retention": 1.0,
+        "minimum_evidence_retention": 0.98,
+        "minimum_jacobian": 0.5,
+        "maximum_displacement_px": 8.0,
+        "maximum_halo_regression_px": 0.25,
+    }
+
+
+def test_candidate_map_safety_accepts_local_exact_bounded_map() -> None:
+    audit = audit_s13_component_candidate_map_safety(
+        **_candidate_map_safety_inputs()
+    )
+    assert audit["passed"] is True
+    assert audit["segment_boundary_curvature_spike_px"] <= 0.25
+    assert audit["formal_owner_support_retention"] == 1.0
+    assert audit["evidence_sample_retention"] == 1.0
+    assert audit["exterior_map_exact"] is True
+    assert audit["candidate_minimum_inverse_map_jacobian"] >= 0.5
+    assert audit["minimum_inverse_map_jacobian_ratio"] is not None
+
+
+@pytest.mark.parametrize(
+    ("tamper", "failed_field"),
+    [
+        ("owner_valid", "formal_owner_valid_exact"),
+        ("evidence_valid", "evidence_sample_retention"),
+        ("bounds", "affected_maps_in_bounds"),
+        ("displacement", "maximum_combined_map_displacement_px"),
+        ("jacobian", "candidate_minimum_inverse_map_jacobian"),
+        ("halo", "halo_regression_px"),
+        ("exterior", "exterior_map_exact"),
+    ],
+)
+def test_candidate_map_safety_fails_closed_on_gate_tamper(
+    tamper: str, failed_field: str,
+) -> None:
+    values = _candidate_map_safety_inputs()
+    influence = np.asarray(values["influence_mask"])
+    evidence = np.asarray(values["evidence_mask"])
+    if tamper == "owner_valid":
+        values["candidate_valid"] = np.asarray(values["candidate_valid"]).copy()
+        values["candidate_valid"][1, 1] = False
+    elif tamper == "evidence_valid":
+        values["candidate_valid"] = np.asarray(values["candidate_valid"]).copy()
+        values["candidate_valid"][evidence] = False
+    elif tamper == "bounds":
+        values["candidate_u"] = np.asarray(values["candidate_u"]).copy()
+        values["candidate_u"][influence] = 20.0
+    elif tamper == "displacement":
+        values["candidate_v"] = np.asarray(values["candidate_v"]).copy()
+        values["candidate_v"][influence] += 9.0
+        values["source_size"] = (100, 100)
+    elif tamper == "jacobian":
+        values["candidate_u"] = np.asarray(values["candidate_u"]).copy()
+        values["candidate_u"][:, 2:8] = values["candidate_u"][:, 2:8][:, ::-1]
+        values["maximum_halo_regression_px"] = 20.0
+    elif tamper == "halo":
+        values["candidate_v"] = np.asarray(values["candidate_v"]).copy()
+        values["candidate_v"][influence] += 0.4
+    elif tamper == "exterior":
+        values["candidate_u"] = np.asarray(values["candidate_u"]).copy()
+        values["candidate_u"][0, 0] += 0.01
+    audit = audit_s13_component_candidate_map_safety(**values)
+    assert audit["passed"] is False
+    if failed_field in {"maximum_combined_map_displacement_px", "halo_regression_px"}:
+        assert float(audit[failed_field]) > float(
+            values[
+                "maximum_displacement_px"
+                if failed_field.startswith("maximum_combined")
+                else "maximum_halo_regression_px"
+            ]
+        )
+    elif failed_field == "candidate_minimum_inverse_map_jacobian":
+        assert float(audit[failed_field]) < float(values["minimum_jacobian"])
+    elif failed_field == "evidence_sample_retention":
+        assert float(audit[failed_field]) < float(values["minimum_evidence_retention"])
+    else:
+        assert audit[failed_field] is False
+
+
+def test_rejected_exclusive_domain_stays_exact_under_accepted_patch() -> None:
+    values = _candidate_map_safety_inputs()
+    accepted = np.asarray(values["influence_mask"])
+    rejected_exclusive = np.zeros_like(accepted)
+    rejected_exclusive[0:2, 7:10] = True
+    audit = audit_s13_component_candidate_map_safety(**values)
+    assert audit["passed"] is True
+    assert np.array_equal(
+        np.asarray(values["candidate_u"])[rejected_exclusive],
+        np.asarray(values["base_u"])[rejected_exclusive],
+    )
+    tampered = dict(values)
+    tampered["candidate_u"] = np.asarray(values["candidate_u"]).copy()
+    tampered["candidate_u"][rejected_exclusive] += 0.01
+    assert audit_s13_component_candidate_map_safety(**tampered)["passed"] is False
+
+
 def test_delta_composition_adds_one_winner_and_assigns_canonical_field_id() -> None:
     support = np.zeros((24, 24), bool)
     support[10, 5:19] = True
@@ -350,6 +779,18 @@ def test_quality_classification_and_split_key_are_deterministic() -> None:
         config=_Config(),
     )
     assert boundary.decision == "improved_unresolved"
+    baseline_boundary = evaluate_s13_component_candidate_quality(
+        baseline={"edge_p95_px": 2.0, "maximum_step_px": 1.4,
+                  "break_length_px": 0, "double_edge_length_px": 0,
+                  "non_target_p95_px": 0.2, "search_boundary_hit": True},
+        candidate={"edge_p95_px": 0.9, "maximum_step_px": 1.4,
+                   "break_length_px": 0, "double_edge_length_px": 0,
+                   "non_target_p95_px": 0.2},
+        hard_gates={"map_finite": True},
+        config=_Config(),
+    )
+    assert baseline_boundary.decision == "improved_unresolved"
+    assert baseline_boundary.audit["baseline_search_boundary_hit"] is True
     split = select_s13_component_segment_split_pair((
         {"pair_index": 8, "hard_violation_count": 1,
          "maximum_normalized_gate_excess": 0.2, "normalized_solver_residual": 1.0,
@@ -359,6 +800,114 @@ def test_quality_classification_and_split_key_are_deterministic() -> None:
          "baseline_edge_excess_px": 2.0},
     ))
     assert split == 7
+
+
+def test_recursive_split_removes_failed_edge_and_preserves_outer_lineage() -> None:
+    segment = S13ComponentApplicationSegment.create(
+        parent_chain_id="chain-recursive",
+        observations=tuple(_observation(pair, 0, 2.0) for pair in range(5)),
+        left_cut_reason="outer-left",
+        right_cut_reason="outer-right",
+    )
+
+    children = split_s13_component_application_segment_at_pair(
+        segment,
+        split_pair_index=2,
+        reason="solver_outlier",
+        minimum_pair_count=1,
+    )
+
+    assert [child.pair_indices for child in children] == [(0, 1), (3, 4)]
+    assert children[0].left_cut_reason == "outer-left"
+    assert children[0].right_cut_reason == "solver_outlier"
+    assert children[1].left_cut_reason == "solver_outlier"
+    assert children[1].right_cut_reason == "outer-right"
+    assert all(2 not in child.pair_indices for child in children)
+    assert all(child.parent_chain_id == segment.parent_chain_id for child in children)
+
+
+def test_recursive_split_enforces_minimum_child_pair_count_locally() -> None:
+    segment = S13ComponentApplicationSegment.create(
+        parent_chain_id="chain-minimum",
+        observations=tuple(_observation(pair, 0, 2.0) for pair in range(4)),
+    )
+
+    children = split_s13_component_application_segment_at_pair(
+        segment,
+        split_pair_index=1,
+        reason="candidate_gate_failed",
+        minimum_pair_count=2,
+    )
+
+    assert len(children) == 1
+    assert children[0].pair_indices == (2, 3)
+    assert children[0].left_cut_reason == "candidate_gate_failed"
+
+
+def test_recursive_split_rejects_invalid_authority() -> None:
+    segment = S13ComponentApplicationSegment.create(
+        parent_chain_id="chain-invalid",
+        observations=(_observation(4, 0, 2.0),),
+    )
+    with pytest.raises(ValueError, match="outside"):
+        split_s13_component_application_segment_at_pair(
+            segment, split_pair_index=5, reason="invalid"
+        )
+
+
+def test_failed_segment_split_policy_honors_depth_partial_and_solver_controls() -> None:
+    segment = S13ComponentApplicationSegment.create(
+        parent_chain_id="chain-policy",
+        observations=tuple(_observation(pair, 0, 2.0) for pair in range(5)),
+    )
+    audits = tuple(
+        {
+            "pair_index": pair,
+            "hard_violation_count": int(pair == 2),
+            "maximum_normalized_gate_excess": 0.0,
+            "normalized_solver_residual": 0.0,
+            "baseline_edge_excess_px": 1.0,
+        }
+        for pair in range(5)
+    )
+
+    split_pair, children = plan_s13_failed_segment_split(
+        segment,
+        pair_audits=audits,
+        reason="solver_outlier",
+        split_depth=0,
+        failure_kind="solver",
+        config=_Config(),
+    )
+    assert split_pair == 2
+    assert [child.pair_indices for child in children] == [(0, 1), (3, 4)]
+
+    disabled = _Config(split_on_solver_outlier=False)
+    assert plan_s13_failed_segment_split(
+        segment,
+        pair_audits=audits,
+        reason="solver_outlier",
+        split_depth=0,
+        failure_kind="solver",
+        config=disabled,
+    ) == (None, ())
+    assert plan_s13_failed_segment_split(
+        segment,
+        pair_audits=audits,
+        reason="quality_gate",
+        split_depth=disabled.maximum_segment_split_depth,
+        failure_kind="quality",
+        config=disabled,
+    ) == (None, ())
+    no_partial = _Config(allow_partial_application=False)
+    assert plan_s13_failed_segment_split(
+        segment,
+        pair_audits=audits,
+        reason="quality_gate",
+        split_depth=0,
+        failure_kind="quality",
+        config=no_partial,
+    ) == (None, ())
 
 
 def _runtime_shifted_line() -> tuple[np.ndarray, np.ndarray]:
@@ -506,3 +1055,140 @@ def test_runtime_sink_reuses_forward_rows_and_only_samples_reverse(
     assert len(evidence) == 1
     assert evidence[0][0].evidence_state == "actionable"
     assert calls == 1
+
+
+def test_runtime_forward_cache_carries_unsigned_and_signed_orientation_separately() -> None:
+    left, right = _runtime_shifted_line()
+    contexts: list[object] = []
+    pair_edge_registration_metrics(
+        left,
+        right,
+        np.ones(left.shape[:2], bool),
+        np.ones(right.shape[:2], bool),
+        np.full(left.shape[0], left.shape[1] // 2, np.int32),
+        config=S13M51R4Config(),
+        forward_evidence_sink=contexts,
+        pair_index=5,
+    )
+
+    assert len(contexts) == 1
+    rows = [
+        row
+        for block_rows in contexts[0]["forward_rows_by_block"].values()
+        for row in block_rows
+    ]
+    assert rows
+    assert all("orientation_agreement" in row for row in rows)
+    assert all("signed_gradient_agreement" in row for row in rows)
+    assert all(0.0 <= float(row["orientation_agreement"]) <= 1.0 for row in rows)
+    assert all(-1.0 <= float(row["signed_gradient_agreement"]) <= 1.0 for row in rows)
+
+
+def _runtime_trace(
+    image: np.ndarray,
+    support: np.ndarray,
+    *,
+    normal: tuple[float, float] = (0.0, 1.0),
+    seam_x: int | None = None,
+):
+    height = image.shape[0]
+    return trace_s13_owner_only_component_edge(
+        image,
+        np.ones(image.shape[:2], bool),
+        support_xy=support,
+        normal_xy=normal,
+        signed_gradient_polarity=1.0,
+        seam_x_by_row=np.full(height, image.shape[1] // 2 if seam_x is None else seam_x),
+        search_radius_px=6,
+    )
+
+
+def test_runtime_y_edge_trace_does_not_jump_to_stronger_physical_edge() -> None:
+    image = np.zeros((56, 72, 3), np.uint8)
+    image[20:] = 70
+    image[34:] = 255
+    support = np.asarray([(column, 20) for column in range(18, 54)], np.int32)
+
+    trace = _runtime_trace(image, support)
+
+    assert trace.metrics["coverage_fraction"] >= 0.95
+    assert np.nanmax(trace.y_edge_px) <= 21
+    assert np.nanmin(trace.y_edge_px) >= 18
+
+
+def test_runtime_y_edge_trace_reports_missing_break_and_double_edge() -> None:
+    clean = np.zeros((48, 64, 3), np.uint8)
+    clean[18:] = 100
+    clean[23:] = 220
+    support = np.asarray([(column, 18) for column in range(12, 52)], np.int32)
+    doubled = _runtime_trace(clean, support)
+    broken_image = clean.copy()
+    broken_image[:, 26:36] = 55
+    broken = _runtime_trace(broken_image, support)
+
+    assert doubled.metrics["double_edge_length_px"] >= 40
+    assert broken.metrics["missing_column_count"] >= 8
+    assert broken.metrics["break_length_px"] >= 8
+
+
+def test_runtime_y_edge_trace_reports_slope_curvature_and_seam_crossing() -> None:
+    height, width = 52, 72
+    image = np.zeros((height, width, 3), np.uint8)
+    points = []
+    for column in range(width):
+        row = 12 + column // 4
+        image[row:, column] = 255
+        if 14 <= column < 58:
+            points.append((column, row))
+    support = np.asarray(points, np.int32)
+    slope = 0.25
+    norm = float(np.hypot(slope, 1.0))
+
+    trace = _runtime_trace(
+        image, support, normal=(-slope / norm, 1.0 / norm), seam_x=36
+    )
+    aggregate = aggregate_s13_runtime_edge_traces((trace,))
+
+    assert 0.15 <= float(trace.metrics["expected_slope_px_per_column"]) <= 0.35
+    assert trace.metrics["second_difference_p95_px"] <= 1.0
+    assert trace.metrics["seam_crossing_count"] == 1
+    assert aggregate["evaluable_edge_columns"] >= 60
+    assert aggregate["edge_p95_px"] <= 1.0
+
+
+def test_runtime_y_edge_trace_clips_search_at_image_boundary() -> None:
+    image = np.zeros((28, 48, 3), np.uint8)
+    image[2:] = 255
+    support = np.asarray([(column, 2) for column in range(8, 40)], np.int32)
+
+    trace = _runtime_trace(image, support)
+
+    assert trace.metrics["coverage_fraction"] >= 0.95
+    assert np.nanmin(trace.y_edge_px) >= 1
+    assert np.nanmax(trace.y_edge_px) <= 3
+
+
+def test_candidate_correlation_and_uniqueness_are_explicit_hard_gates() -> None:
+    metrics = {
+        "edge_p95_px": 1.5,
+        "maximum_step_px": 1.5,
+        "break_length_px": 0.0,
+        "double_edge_length_px": 0.0,
+        "non_target_p95_px": 0.0,
+    }
+
+    evaluation = evaluate_s13_component_candidate_quality(
+        baseline=metrics,
+        candidate={**metrics, "edge_p95_px": 0.5, "maximum_step_px": 0.5},
+        hard_gates={
+            "candidate_correlation": False,
+            "candidate_uniqueness": False,
+        },
+        config=S13M51R4Config(),
+    )
+
+    assert evaluation.decision == "rejected"
+    assert evaluation.rejection_reasons == (
+        "hard_gate_failed:candidate_correlation",
+        "hard_gate_failed:candidate_uniqueness",
+    )

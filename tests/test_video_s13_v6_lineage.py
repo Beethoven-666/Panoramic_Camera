@@ -4,6 +4,7 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import numpy as np
@@ -14,8 +15,19 @@ from panorama_demo.video_algorithm import build_algorithm_spec
 from panorama_demo.video_s13_bundle import verify_stage
 from panorama_demo.video_s13_contract import load_s13_config, validate_s13_document
 from panorama_demo.video_s13_experiment import (
+    _ExternalBoxObservationSeed,
+    _box_target_coverage_summary,
+    _component_obligation_outcomes,
+    _external_box_physical_tracks,
+    _seeded_edge_trace_metrics,
+    _segment_authority_support,
     _strong_edge_trace_metrics,
+    _verify_segment_support_asset,
     run_s13_experiment,
+)
+from panorama_demo.video_s13_bundle import sha256_file, write_npz
+from panorama_demo.video_s13_m51_r4_component_chain import (
+    canonical_s13_support_sha256,
 )
 
 
@@ -142,6 +154,41 @@ def test_v6_defaults_to_sealed_p2_and_rejects_m6_or_resume(tmp_path: Path) -> No
     assert completion["p2_replay_schema"] == "gemini305-video-s13-p2-replay/v2"
     assert completion["application_state"] in {"complete", "partial", "none"}
     assert completion["repair_complete"] is False
+    performance = json.loads(
+        (generation / "P2/performance.json").read_text(encoding="utf-8")
+    )
+    component_manifest = json.loads(
+        (generation / "P2/component_chain_transactions/manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "component_match_matrices" in component_manifest
+    assert "exact_evidence_propagation" in component_manifest
+    assert len(component_manifest["decision_payload_stable_sha256"]) == 64
+    source_map_manifest = json.loads(
+        (generation / "P2/source_maps/manifest.json").read_text(encoding="utf-8")
+    )
+    assert performance["p2_full_resolution_render_count"] == 2
+    assert performance["formal_raw_rgb_remap_invocations"] == 2 * len(
+        source_map_manifest["sources"]
+    )
+    assert performance["component_segment_split_count"] == len(
+        component_manifest["split_lineage"]
+    )
+    assert performance["forward_edge_hypothesis_count"] == sum(
+        len(row["forward_scores"])
+        for row in component_manifest["forward_reverse_hypotheses"]
+    )
+    assert performance["reverse_edge_hypothesis_count"] == sum(
+        len(row["reverse_scores"])
+        for row in component_manifest["forward_reverse_hypotheses"]
+    )
+    assert performance["component_propagation_pair_count"] == len(
+        component_manifest["exact_evidence_propagation"]["probed_pair_indices"]
+    )
+    assert performance["gain_enumeration_count"] == performance[
+        "component_gain_candidate_count"
+    ]
     with np.load(generation / "P2/p2_pixel_provenance.npz", allow_pickle=False) as stored:
         assert "component_correction_field_id" in stored.files
     assert report["final_stage"] == "P2"
@@ -222,3 +269,224 @@ def test_external_box_trace_measures_steps_breaks_and_double_edges() -> None:
     broken[:, 20:28] = 127
     broken_metrics, _ = _strong_edge_trace_metrics(broken, valid)
     assert broken_metrics["break_length_px"] >= 6
+
+
+def test_external_box_seeded_trace_does_not_jump_between_physical_edges() -> None:
+    image = np.zeros((80, 96, 3), dtype=np.uint8)
+    upper_support: list[tuple[int, int]] = []
+    lower_support: list[tuple[int, int]] = []
+    for column in range(image.shape[1]):
+        upper = 12 + column // 8
+        lower = 48 + column // 12
+        image[upper:, column] = 96
+        image[lower:, column] = 255
+        if 32 <= column < 64:
+            upper_support.append((column, upper))
+            lower_support.append((column, lower))
+    valid = np.ones(image.shape[:2], dtype=bool)
+    tracks = (
+        {
+            "track_id": "upper",
+            "support_xy": np.asarray(upper_support, dtype=np.int32),
+            "observation_authority": [],
+            "obligation_ids": ["upper-obligation"],
+        },
+        {
+            "track_id": "lower",
+            "support_xy": np.asarray(lower_support, dtype=np.int32),
+            "observation_authority": [],
+            "obligation_ids": ["lower-obligation"],
+        },
+    )
+
+    metrics, overlay = _seeded_edge_trace_metrics(image, valid, tracks)
+
+    assert metrics["track_count"] == 2
+    assert metrics["coverage_fraction"] >= 0.95
+    assert metrics["edge_step_p95_px"] <= 1.0
+    assert metrics["maximum_local_step_px"] <= 1.0
+    assert all(row["maximum_local_step_px"] <= 1.0 for row in metrics["tracks"])
+    assert overlay.shape == image.shape
+
+
+def test_external_box_physical_tracks_keep_nearby_components_separate() -> None:
+    def seed(pair: int, component: int, row: int) -> _ExternalBoxObservationSeed:
+        support = np.asarray(
+            [(column, row + (column - 20) // 8) for column in range(20, 44)],
+            dtype=np.int32,
+        )
+        return _ExternalBoxObservationSeed(
+            pair_index=pair,
+            component_id=component,
+            support_sha256=f"{pair}-{component}",
+            support_xy=support,
+            obligation_id=f"obligation-{pair}-{component}",
+            severe=True,
+            evaluable=True,
+        )
+
+    tracks = _external_box_physical_tracks(
+        (seed(71, 8, 15), seed(71, 9, 45), seed(72, 7, 15), seed(72, 8, 45)),
+        minimum_y_overlap_fraction=0.5,
+        maximum_predicted_y_difference_px=6.0,
+        maximum_normal_difference_degrees=10.0,
+    )
+
+    assert len(tracks) == 2
+    authorities = sorted(
+        sorted((row["pair_index"], row["component_id"])
+               for row in track["observation_authority"])
+        for track in tracks
+    )
+    assert authorities == [[(71, 8), (72, 7)], [(71, 9), (72, 8)]]
+
+
+def test_box_completion_requires_resolved_repair_but_not_nonsevere_anchor() -> None:
+    severe = {
+        "obligation_id": "severe", "pair_index": 71, "component_id": 8,
+        "support_sha256": "severe-sha", "severe": True, "evaluable": True,
+    }
+    anchor = {
+        "obligation_id": "anchor", "pair_index": 72, "component_id": 8,
+        "support_sha256": "anchor-sha", "severe": False, "evaluable": True,
+    }
+    component_doc = {
+        "accepted_segment_ids": ["resolved"],
+        "segments": [{
+            "segment_id": "resolved",
+            "state": "resolved",
+            "observation_authority": [{
+                "pair_index": 71, "component_id": 8,
+                "support_sha256": "severe-sha",
+            }],
+        }],
+    }
+
+    summary = _box_target_coverage_summary(component_doc, (severe, anchor))
+
+    assert summary["box_target_obligation_ids"] == ["severe", "anchor"]
+    assert summary["box_target_repair_obligation_ids"] == ["severe"]
+    assert summary["box_target_anchor_obligation_ids"] == ["anchor"]
+    assert summary["repair_obligations_covered"] is True
+
+
+def test_box_completion_does_not_accept_improved_unresolved_segment() -> None:
+    obligation = {
+        "obligation_id": "severe", "pair_index": 71, "component_id": 9,
+        "support_sha256": "severe-sha", "severe": True, "evaluable": True,
+    }
+    component_doc = {
+        "accepted_segment_ids": ["partial"],
+        "segments": [{
+            "segment_id": "partial",
+            "state": "improved_unresolved",
+            "observation_authority": [{
+                "pair_index": 71, "component_id": 9,
+                "support_sha256": "severe-sha",
+            }],
+        }],
+    }
+
+    summary = _box_target_coverage_summary(component_doc, (obligation,))
+
+    assert summary["repair_obligations_covered"] is False
+    assert summary["box_target_unresolved_repair_obligation_ids"] == ["severe"]
+
+
+def test_segment_support_asset_reverifies_exact_observation_authority(
+    tmp_path: Path,
+) -> None:
+    selected_support = np.asarray(((10, 20), (11, 20), (12, 21)), np.int32)
+    sibling_support = np.asarray(((40, 50), (41, 50), (42, 51)), np.int32)
+    selected_sha = canonical_s13_support_sha256(selected_support)
+    sibling_sha = canonical_s13_support_sha256(sibling_support)
+    selected = SimpleNamespace(
+        pair_index=71, component_id=8, mask_sha256=selected_sha
+    )
+    sibling = SimpleNamespace(
+        pair_index=71, component_id=9, mask_sha256=sibling_sha
+    )
+    pair = SimpleNamespace(component_evidence=(
+        (selected, SimpleNamespace(support_xy=selected_support)),
+        (sibling, SimpleNamespace(support_xy=sibling_support)),
+    ))
+    authority = ({
+        "pair_index": 71,
+        "component_id": 8,
+        "support_sha256": selected_sha,
+    },)
+
+    support, sealed_authority = _segment_authority_support((pair,), authority)
+
+    assert np.array_equal(support, selected_support)
+    assert not np.any(np.all(support[:, None] == sibling_support[None, :], axis=2))
+    transaction_root = tmp_path / "component_chain_transactions"
+    transaction_root.mkdir()
+    observation_asset = "observation_pair_0071_component_0008.npz"
+    write_npz(transaction_root / observation_asset, {"support_xy": selected_support})
+    segment_asset = "s_exact.npz"
+    write_npz(transaction_root / segment_asset, {
+        "support_xy": support,
+        "authority_pair_indices": np.asarray((71,), np.int32),
+        "authority_component_ids": np.asarray((8,), np.int32),
+        "authority_support_sha256": np.asarray((selected_sha,)),
+    })
+    segment_document = {
+        "asset": segment_asset,
+        "asset_sha256": sha256_file(transaction_root / segment_asset),
+        "observation_authority": list(sealed_authority),
+    }
+    evidence_assets = ({
+        "pair_index": 71,
+        "component_id": 8,
+        "support_sha256": selected_sha,
+        "asset": observation_asset,
+        "asset_sha256": sha256_file(transaction_root / observation_asset),
+    },)
+
+    verification = _verify_segment_support_asset(
+        transaction_root, segment_document, evidence_assets
+    )
+
+    assert verification == {
+        "passed": True, "authority_count": 1, "support_sample_count": 3,
+    }
+
+
+def test_component_manifest_explains_every_obligation_outcome() -> None:
+    obligations = [
+        {
+            "obligation_id": "resolved", "pair_index": 1, "component_id": 2,
+            "support_sha256": "r", "severe": True, "evaluable": True,
+        },
+        {
+            "obligation_id": "anchor", "pair_index": 1, "component_id": 3,
+            "support_sha256": "a", "severe": False, "evaluable": True,
+        },
+        {
+            "obligation_id": "missing", "pair_index": 1, "component_id": 4,
+            "support_sha256": "m", "severe": True, "evaluable": True,
+        },
+    ]
+    audit = {
+        "baseline_c2e_obligations": obligations,
+        "accepted_segment_ids": ["winner"],
+        "rejected_segment_ids": [],
+        "deferred_segment_ids": [],
+        "segments": [{
+            "segment_id": "winner", "state": "resolved",
+            "observation_authority": [{
+                "pair_index": 1, "component_id": 2, "support_sha256": "r",
+            }],
+        }],
+    }
+
+    outcomes = _component_obligation_outcomes(audit)
+
+    assert [row["obligation_id"] for row in outcomes] == [
+        "resolved", "anchor", "missing",
+    ]
+    assert [row["outcome"] for row in outcomes] == [
+        "resolved", "safe_anchor", "uncovered",
+    ]
+    assert outcomes[2]["reason"] == "no_segment_contains_exact_authority"
