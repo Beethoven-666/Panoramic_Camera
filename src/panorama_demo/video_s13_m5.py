@@ -962,16 +962,25 @@ def estimate_s13_m5_transactions(
                         final_edge_features = prepare_seam_structure(final_right)
                         if left_edge_features is None or final_edge_features is None:
                             raise ValueError("pair edge feature construction failed")
-                        edge_registration = pair_edge_registration_metrics(
-                            left_edge_features, final_edge_features, left_valid, final_valid, seam_local,
-                            config=successor,
-                            pair_index=pair_index,
-                            global_x_offset=x0,
-                        )
                         lk_p95_value = selected_map.metrics.get("residual_p95_px")
                         lk_p95 = (
                             float(lk_p95_value)
                             if isinstance(lk_p95_value, (int, float)) else None
+                        )
+                        evidence_on_first_pass = bool(
+                            isinstance(successor, S13M51R4Config)
+                            and lk_p95 is not None
+                            and lk_p95 > successor.suspect_edge_p95_px
+                        )
+                        edge_registration = pair_edge_registration_metrics(
+                            left_edge_features, final_edge_features, left_valid, final_valid, seam_local,
+                            config=successor,
+                            exact_evidence_sink=(
+                                candidate_component_evidence
+                                if evidence_on_first_pass else None
+                            ),
+                            pair_index=pair_index,
+                            global_x_offset=x0,
                         )
                         visual_suspect = _edge_visual_suspect_for_pair(
                             edge_registration,
@@ -984,7 +993,10 @@ def estimate_s13_m5_transactions(
                         }
 
                         if visual_suspect:
-                            if isinstance(successor, S13M51R4Config):
+                            if (
+                                isinstance(successor, S13M51R4Config)
+                                and not candidate_component_evidence
+                            ):
                                 # The ordinary forward block audit above is the
                                 # trigger. Only unresolved suspect pairs pay
                                 # for exact physical-component reverse evidence;
