@@ -284,6 +284,7 @@ def _canonicalize_v5_transaction_value(
     value: object,
     *,
     path: str = "$",
+    nonfinite_as_none: bool = False,
 ) -> object:
     """Return the frozen JSON value representation used by M5.1-r2/v5.
 
@@ -295,13 +296,19 @@ def _canonicalize_v5_transaction_value(
     if isinstance(value, Mapping):
         return {
             str(key): _canonicalize_v5_transaction_value(
-                item, path=f"{path}.{key}"
+                item,
+                path=f"{path}.{key}",
+                nonfinite_as_none=nonfinite_as_none,
             )
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
         return [
-            _canonicalize_v5_transaction_value(item, path=f"{path}[{index}]")
+            _canonicalize_v5_transaction_value(
+                item,
+                path=f"{path}[{index}]",
+                nonfinite_as_none=nonfinite_as_none,
+            )
             for index, item in enumerate(value)
         ]
     if isinstance(value, (np.bool_, bool)):
@@ -311,6 +318,8 @@ def _canonicalize_v5_transaction_value(
     if isinstance(value, (np.floating, float)):
         number = float(value)
         if not math.isfinite(number):
+            if nonfinite_as_none:
+                return None
             raise ValueError(
                 f"S1.3 v5 transaction floats must be finite at {path}"
             )
@@ -3438,7 +3447,8 @@ def run_s13_m5(
             "passed": not component_failures,
         })
         normalized_component_audit = _canonicalize_v5_transaction_value(
-            component_chain_audit
+            component_chain_audit,
+            nonfinite_as_none=True,
         )
         if not isinstance(normalized_component_audit, dict):
             raise TypeError("S1.3 component-chain audit must be a mapping")

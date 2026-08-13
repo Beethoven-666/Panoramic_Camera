@@ -13,6 +13,7 @@ from panorama_demo.video_s13_alignment import (
 )
 from panorama_demo.video_s13_m5 import (
     S13M5EstimationResult,
+    _canonicalize_v5_transaction_value,
     build_s13_p2_replay,
     estimate_s13_m5_transactions,
     plan_s13_m5_oracle_domains,
@@ -32,6 +33,16 @@ from panorama_demo.video_s13_vertical import estimate_s13_vertical, render_s13_p
 
 def _calibration() -> CameraIntrinsics:
     return CameraIntrinsics(96, 64, 80.0, 80.0, 47.5, 31.5, ())
+
+
+def test_component_audit_serialization_uses_null_for_unevaluable_metrics():
+    value = {"segments": [{"audit": {"maximum_step_px": np.inf}}]}
+
+    assert _canonicalize_v5_transaction_value(
+        value, nonfinite_as_none=True
+    ) == {"segments": [{"audit": {"maximum_step_px": None}}]}
+    with pytest.raises(ValueError, match=r"\$\.segments\[0\]\.audit\.maximum_step_px"):
+        _canonicalize_v5_transaction_value(value)
 
 
 def _identity_grid() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
