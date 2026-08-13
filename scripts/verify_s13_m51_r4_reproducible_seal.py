@@ -57,7 +57,7 @@ MANIFEST_SCHEMAS = {
 
 def _read(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid or missing JSON asset: {path}") from exc
     if not isinstance(value, dict):
