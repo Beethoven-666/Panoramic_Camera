@@ -1,0 +1,171 @@
+{
+  "branches": {
+    "fast_direct": {
+      "checks": {
+        "canonical_p2_png_exact": true,
+        "current_latest_p2": true,
+        "no_p3_m6_delivery": true,
+        "provenance_arrays_exact": true,
+        "seam_arrays_exact": true,
+        "selected_candidate_and_geometry_exact": true
+      },
+      "generation": "20260813T151426-051725c8c8ac",
+      "pair_71": {
+        "c2e": {
+          "accepted": false,
+          "attempted": false,
+          "enabled": false
+        },
+        "candidate_evaluations": [
+          {
+            "candidate_id": "pair-0071-S2",
+            "evaluation_status": "selected_unresolved_hard_safe_baseline",
+            "hard_gate_passed": true,
+            "model_code": "S2",
+            "visual_suspect": true
+          },
+          {
+            "candidate_id": "pair-0071-S0",
+            "evaluation_status": "visual_suspect_continued",
+            "hard_gate_passed": true,
+            "model_code": "S0",
+            "visual_suspect": true
+          },
+          {
+            "candidate_id": "pair-0071-S1",
+            "evaluation_status": "visual_suspect_continued",
+            "hard_gate_passed": true,
+            "model_code": "S1",
+            "visual_suspect": true
+          }
+        ],
+        "complete_reassessment": true,
+        "diagnostic_13_state": {
+          "all_13_pass": false,
+          "fail_count": 1,
+          "pass_count": 4,
+          "unevaluable_count": 8
+        },
+        "edge_registration": {
+          "actionable_component_count": 6,
+          "ambiguous_component_count": 7,
+          "median_supported_abs_lag_px": 0.75,
+          "p95_supported_abs_lag_px": 3.0,
+          "schema": "gemini305-video-s13-oblique-structure-audit/v2",
+          "visual_suspect": true
+        },
+        "micro_rescue": {
+          "accepted": false,
+          "attempted": false,
+          "enabled": false
+        },
+        "selected_candidate_id": "pair-0071-S2",
+        "selected_geometry_model": "C0_identity"
+      },
+      "pair_count": 84,
+      "performance": {
+        "backward_pyr_lk_call_count": 0,
+        "depth_call_count": 0,
+        "dis_call_count": 0,
+        "extra_full_resolution_render_count": 0,
+        "forward_pyr_lk_call_count": 84,
+        "full_canvas_feature_build_count": 2,
+        "gftt_call_count": 84,
+        "micro_rescue_attempt_count": 0,
+        "open3d_call_count": 0,
+        "orbslam3_call_count_in_m5": 0,
+        "p2_full_resolution_render_count": 2
+      },
+      "selection_continuation_changed_pair_indices": [
+        71
+      ]
+    },
+    "fast_ignore_pose": {
+      "checks": {
+        "canonical_p2_png_exact": true,
+        "current_latest_p2": true,
+        "no_p3_m6_delivery": true,
+        "provenance_arrays_exact": true,
+        "seam_arrays_exact": true,
+        "selected_candidate_and_geometry_exact": true
+      },
+      "generation": "20260813T151532-24a2a29ad94e",
+      "pair_count": 84,
+      "performance": {
+        "backward_pyr_lk_call_count": 0,
+        "depth_call_count": 0,
+        "dis_call_count": 0,
+        "extra_full_resolution_render_count": 0,
+        "forward_pyr_lk_call_count": 84,
+        "full_canvas_feature_build_count": 2,
+        "gftt_call_count": 84,
+        "micro_rescue_attempt_count": 0,
+        "open3d_call_count": 0,
+        "orbslam3_call_count_in_m5": 0,
+        "p2_full_resolution_render_count": 2
+      },
+      "selection_continuation_changed_pair_indices": [
+        71
+      ]
+    },
+    "slow_direct": {
+      "checks": {
+        "canonical_p2_png_exact": true,
+        "current_latest_p2": true,
+        "no_p3_m6_delivery": true,
+        "provenance_arrays_exact": true,
+        "seam_arrays_exact": true,
+        "selected_candidate_and_geometry_exact": true
+      },
+      "generation": "20260813T151614-4f8c94913ae6",
+      "pair_count": 108,
+      "performance": {
+        "backward_pyr_lk_call_count": 0,
+        "depth_call_count": 0,
+        "dis_call_count": 0,
+        "extra_full_resolution_render_count": 0,
+        "forward_pyr_lk_call_count": 108,
+        "full_canvas_feature_build_count": 2,
+        "gftt_call_count": 108,
+        "micro_rescue_attempt_count": 0,
+        "open3d_call_count": 0,
+        "orbslam3_call_count_in_m5": 0,
+        "p2_full_resolution_render_count": 2
+      },
+      "selection_continuation_changed_pair_indices": []
+    },
+    "slow_ignore_pose": {
+      "checks": {
+        "canonical_p2_png_exact": true,
+        "current_latest_p2": true,
+        "no_p3_m6_delivery": true,
+        "provenance_arrays_exact": true,
+        "seam_arrays_exact": true,
+        "selected_candidate_and_geometry_exact": true
+      },
+      "generation": "20260813T151716-389b9854a1bc",
+      "pair_count": 109,
+      "performance": {
+        "backward_pyr_lk_call_count": 0,
+        "depth_call_count": 0,
+        "dis_call_count": 0,
+        "extra_full_resolution_render_count": 0,
+        "forward_pyr_lk_call_count": 109,
+        "full_canvas_feature_build_count": 2,
+        "gftt_call_count": 109,
+        "micro_rescue_attempt_count": 0,
+        "open3d_call_count": 0,
+        "orbslam3_call_count_in_m5": 0,
+        "p2_full_resolution_render_count": 2
+      },
+      "selection_continuation_changed_pair_indices": [
+        71
+      ]
+    }
+  },
+  "c2e_implemented": false,
+  "diagnostic_only": true,
+  "m6_entered": false,
+  "production_eligible": false,
+  "schema": "gemini305-video-s13-m51-r3-four-branch-audit/v1"
+}

@@ -904,6 +904,15 @@ seam. Unevaluable structure is neutral, the long-horizontal catastrophic gate
 remains intact, and unresolved visual evidence is recorded without becoming a
 general P2 hard failure. This successor has no M6 threshold or approval binding,
 cannot resume into v4 M6, and does not create P3 or delivery artifacts.
+
+The diagnostic-only v6 successor keeps v5 pixels and selection authority
+unchanged outside pair 71. It clusters overlapping edge observations into
+physical components so an ambiguous layer cannot silence a separate,
+unambiguous high-lag component, and it fully audits pair 71's S2/S1/S0 seams.
+This audit does not construct or apply C2E: the proposed thirteen C2E gates are
+reported as pass/fail/unevaluable, and missing candidate-improvement evidence
+is fail-closed. V6 remains P2-only, M6-ineligible, production-ineligible, and
+cannot resume into M6/P3 or reuse the v4 threshold/approval lineage.
 P2 is remapped once per real contributor from raw RGB and sealed with replay
 maps for the selected geometry and seam. The canonical chain creates native
 `gemini305-video-s13-p2-completion/v4`, including the frozen M6 evidence and

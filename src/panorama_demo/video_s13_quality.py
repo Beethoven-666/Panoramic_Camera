@@ -105,10 +105,13 @@ def edge_registration_visual_suspect(
 ) -> bool:
     """Return whether sufficient, unambiguous pair-local evidence is risky."""
 
-    if (
-        edge_registration.get("evaluable") is not True
-        or edge_registration.get("multiple_layer_or_ambiguous") is True
-    ):
+    component_local = getattr(config, "component_local_ambiguity_enabled", False) is True
+    if edge_registration.get("evaluable") is not True:
+        return False
+    if component_local:
+        if int(edge_registration.get("actionable_component_count", 0) or 0) < 1:
+            return False
+    elif edge_registration.get("multiple_layer_or_ambiguous") is True:
         return False
 
     def exceeds(value: object, threshold: float) -> bool:
@@ -172,6 +175,92 @@ def _bilinear_feature_samples(
     return sample(feature.gradient), sample(feature.gradient_x), sample(feature.gradient_y), sample_valid
 
 
+def _component_local_edge_summary(
+    observations: Sequence[Mapping[str, object]],
+    *,
+    config: "S13M51R2Config",
+) -> dict[str, object]:
+    """Cluster overlap-block observations without merging distinct edge layers."""
+
+    rows = [dict(row) for row in observations]
+    parents = list(range(len(rows)))
+
+    def root(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = root(left), root(right)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    def orientation_distance(left: float, right: float) -> float:
+        difference = abs(left - right) % 180.0
+        return min(difference, 180.0 - difference)
+
+    for left_index, left in enumerate(rows):
+        for right_index in range(left_index + 1, len(rows)):
+            right = rows[right_index]
+            vertical_overlap = min(int(left["bbox_y1"]), int(right["bbox_y1"])) - max(
+                int(left["bbox_y0"]), int(right["bbox_y0"])
+            )
+            if vertical_overlap <= 0:
+                continue
+            centroid_distance = math.hypot(
+                float(left["centroid_x"]) - float(right["centroid_x"]),
+                float(left["centroid_y"]) - float(right["centroid_y"]),
+            )
+            if centroid_distance > float(config.component_cluster_maximum_centroid_distance_px):
+                continue
+            if orientation_distance(
+                float(left["normal_angle_degrees_modulo_180"]),
+                float(right["normal_angle_degrees_modulo_180"]),
+            ) > float(config.component_cluster_maximum_normal_difference_degrees):
+                continue
+            if abs(float(left["best_lag_px"]) - float(right["best_lag_px"])) > float(
+                config.component_cluster_maximum_lag_difference_px
+            ):
+                continue
+            union(left_index, right_index)
+
+    clusters: dict[int, list[dict[str, object]]] = {}
+    for index, row in enumerate(rows):
+        clusters.setdefault(root(index), []).append(row)
+    component_audits: list[dict[str, object]] = []
+    for component_id, members in enumerate(clusters.values()):
+        weights = np.asarray([int(row["support_count"]) for row in members], np.float64)
+        lags = np.asarray([float(row["best_lag_px"]) for row in members], np.float64)
+        ambiguous = any(row.get("component_ambiguous") is True for row in members)
+        component_audits.append({
+            "component_id": component_id,
+            "ambiguous": ambiguous,
+            "actionable": not ambiguous,
+            "observation_count": len(members),
+            "block_indices": sorted({int(row["block_index"]) for row in members}),
+            "best_lag_px": float(np.average(lags, weights=weights)),
+            "absolute_lag_p95_px": float(np.percentile(np.abs(lags), 95.0)),
+            "minimum_correlation": float(min(float(row["correlation"]) for row in members)),
+            "minimum_uniqueness_margin": float(
+                min(float(row["uniqueness_margin"]) for row in members)
+            ),
+            "maximum_orientation_difference_degrees": float(max(
+                float(row["orientation_difference_degrees"]) for row in members
+            )),
+            "bbox_x0": min(int(row["bbox_x0"]) for row in members),
+            "bbox_x1": max(int(row["bbox_x1"]) for row in members),
+            "bbox_y0": min(int(row["bbox_y0"]) for row in members),
+            "bbox_y1": max(int(row["bbox_y1"]) for row in members),
+        })
+    actionable = [row for row in component_audits if row["actionable"] is True]
+    return {
+        "component_audits": component_audits,
+        "actionable_components": actionable,
+        "ambiguous_component_count": len(component_audits) - len(actionable),
+    }
+
+
 def pair_edge_registration_metrics(
     left: np.ndarray | SeamStructureFeatures,
     right: np.ndarray | SeamStructureFeatures,
@@ -223,9 +312,11 @@ def pair_edge_registration_metrics(
         starts.append(final_start)
     lags = np.arange(-maximum_lag, maximum_lag + 0.25 * lag_step, lag_step)
     accepted: list[dict[str, object]] = []
+    component_observations: list[dict[str, object]] = []
     block_audits: list[dict[str, object]] = []
     ambiguous = False
     nonunique_search_observed = False
+    component_local = getattr(config, "component_local_ambiguity_enabled", False) is True
 
     for block_index, y0 in enumerate(starts):
         y1 = min(height, y0 + block_height)
@@ -268,6 +359,7 @@ def pair_edge_registration_metrics(
                                  "strong_gradient_threshold": threshold})
             continue
         candidates.sort(reverse=True, key=lambda item: item[0])
+        component_ambiguous = False
         if len(candidates) > 1 and candidates[1][0] >= 0.80 * candidates[0][0]:
             first_center = np.asarray(
                 (np.mean(candidates[0][3]), np.mean(candidates[0][2])), dtype=np.float64
@@ -279,6 +371,7 @@ def pair_edge_registration_metrics(
             # physical layer.  Only spatially separate comparable components
             # constitute competing layers.
             if float(np.linalg.norm(first_center - second_center)) > 6.0:
+                component_ambiguous = True
                 ambiguous = True
         _strength, _label, component_rows, component_columns = candidates[0]
         ys = (component_rows + y0).astype(np.float64)
@@ -350,9 +443,96 @@ def pair_edge_registration_metrics(
             "strong_gradient_threshold": threshold,
             "normal_angle_degrees_modulo_180": float(math.degrees(normal_angle)),
         }
+        if component_local:
+            audit.update({
+                "component_ambiguous": bool(
+                    component_ambiguous or failure == "normal_search_not_unique"
+                ),
+                "centroid_x": float(np.mean(xs)),
+                "centroid_y": float(np.mean(ys)),
+                "bbox_x0": int(np.floor(np.min(xs))),
+                "bbox_x1": int(np.ceil(np.max(xs))) + 1,
+                "bbox_y0": int(np.floor(np.min(ys))),
+                "bbox_y1": int(np.ceil(np.max(ys))) + 1,
+            })
         block_audits.append(audit)
+        if component_local and (
+            failure is None or audit.get("component_ambiguous") is True
+        ):
+            component_observations.append(audit)
         if failure is None:
             accepted.append(audit)
+
+    if component_local and accepted:
+        legacy_absolute_lags = np.abs(np.asarray(
+            [row["best_lag_px"] for row in accepted], dtype=np.float64
+        ))
+        legacy_pair_decision = {
+            "evaluable": True,
+            "median_supported_abs_lag_px": float(np.median(legacy_absolute_lags)),
+            "p95_supported_abs_lag_px": float(
+                np.percentile(legacy_absolute_lags, 95.0)
+            ),
+            "multiple_layer_or_ambiguous": bool(ambiguous),
+        }
+        component_summary = _component_local_edge_summary(
+            component_observations, config=config
+        )
+        actionable = list(component_summary["actionable_components"])
+        if not actionable:
+            result = _edge_registration_empty(reason="no_unambiguous_edge_component")
+            result.update({
+                "schema": "gemini305-video-s13-oblique-structure-audit/v2",
+                "multiple_layer_or_ambiguous": True,
+                "component_audits": component_summary["component_audits"],
+                "actionable_component_count": 0,
+                "ambiguous_component_count": component_summary["ambiguous_component_count"],
+                "block_audits": block_audits,
+                "legacy_pair_decision": legacy_pair_decision,
+            })
+            return result
+        absolute_lags = np.abs(np.asarray(
+            [row["best_lag_px"] for row in actionable], dtype=np.float64
+        ))
+        supported_blocks = {
+            int(block_index)
+            for row in actionable
+            for block_index in row["block_indices"]
+        }
+        return {
+            "schema": "gemini305-video-s13-oblique-structure-audit/v2",
+            "evaluable": True,
+            "reason": None,
+            "supported_block_count": len(supported_blocks),
+            "supported_component_count": len(actionable),
+            "actionable_component_count": len(actionable),
+            "ambiguous_component_count": component_summary["ambiguous_component_count"],
+            "component_audits": component_summary["component_audits"],
+            "block_best_lag_px": [float(row["best_lag_px"]) for row in actionable],
+            "median_supported_abs_lag_px": float(np.median(absolute_lags)),
+            "p95_supported_abs_lag_px": float(max(
+                float(row["absolute_lag_p95_px"]) for row in actionable
+            )),
+            "maximum_supported_abs_lag_px": float(max(
+                abs(float(row["best_lag_px"])) for row in actionable
+            )),
+            "minimum_correlation": float(min(
+                float(row["minimum_correlation"]) for row in actionable
+            )),
+            "minimum_uniqueness_margin": float(min(
+                float(row["minimum_uniqueness_margin"]) for row in actionable
+            )),
+            "maximum_orientation_difference_degrees": float(max(
+                float(row["maximum_orientation_difference_degrees"])
+                for row in actionable
+            )),
+            "multiple_layer_or_ambiguous": bool(
+                component_summary["ambiguous_component_count"]
+            ),
+            "ambiguity_scope": "component_local",
+            "block_audits": block_audits,
+            "legacy_pair_decision": legacy_pair_decision,
+        }
 
     if not accepted:
         result = _edge_registration_empty(reason="insufficient_unique_strong_edge_support")

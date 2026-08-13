@@ -43,7 +43,7 @@ from .video_s13_seam import (
     select_s13_seam,
 )
 from .video_s13_replay import S13P2ReplayPair
-from .video_s13_m51_r2 import S13M51R2Config
+from .video_s13_m51_r2 import S13M51R2Config, S13M51R3Config
 from .video_s13_vertical import S13VerticalSolution
 
 
@@ -157,6 +157,55 @@ def _finalize_v5_transaction(value: Mapping[str, object]) -> dict[str, object]:
         raise TypeError("S1.3 v5 transaction must be a mapping")
     normalized["result_stage_sha256"] = _sha_json(normalized)
     return normalized
+
+
+def _successor_transaction_schema(config: S13M51R2Config | None) -> str:
+    if isinstance(config, S13M51R3Config):
+        return "gemini305-video-s13-m5-pair-transaction/v4"
+    if config is not None and config.enabled:
+        return "gemini305-video-s13-m5-pair-transaction/v3"
+    return "gemini305-video-s13-m5-pair-transaction/v2"
+
+
+def _edge_visual_suspect_for_pair(
+    edge_registration: Mapping[str, object],
+    seam_local_lk_p95_px: float | None,
+    *,
+    config: S13M51R2Config,
+    component_local_authority: bool,
+) -> bool:
+    """Keep v5 selection authority outside the explicitly scoped v6 pair."""
+
+    if isinstance(config, S13M51R3Config) and not component_local_authority:
+        legacy = edge_registration.get("legacy_pair_decision")
+        if not isinstance(legacy, Mapping) or legacy.get("evaluable") is not True:
+            return False
+        if legacy.get("multiple_layer_or_ambiguous") is True:
+            return False
+
+        def exceeds(value: object, threshold: float) -> bool:
+            return (
+                isinstance(value, (int, float))
+                and math.isfinite(float(value))
+                and float(value) > threshold
+            )
+
+        return bool(
+            exceeds(seam_local_lk_p95_px, config.suspect_lk_p95_px)
+            or exceeds(
+                legacy.get("median_supported_abs_lag_px"),
+                config.suspect_edge_median_px,
+            )
+            or exceeds(
+                legacy.get("p95_supported_abs_lag_px"),
+                config.suspect_edge_p95_px,
+            )
+        )
+    return edge_registration_visual_suspect(
+        edge_registration,
+        seam_local_lk_p95_px=seam_local_lk_p95_px,
+        config=config,
+    )
 
 
 def _base_calibrated_map(
@@ -422,11 +471,7 @@ def _fallback_pair(
 ) -> S13M5Pair:
     seam = np.full(schedule.canvas_height, schedule.boundaries[pair_index + 1], dtype=np.int32)
     core: dict[str, object] = {
-        "schema": (
-            "gemini305-video-s13-m5-pair-transaction/v3"
-            if m51_r2_config is not None and m51_r2_config.enabled
-            else "gemini305-video-s13-m5-pair-transaction/v2"
-        ),
+        "schema": _successor_transaction_schema(m51_r2_config),
         "transaction_id": f"m5-pair-{pair_index:04d}",
         "parent_stage": "P1",
         "parent_stage_sha256": parent_sha,
@@ -488,6 +533,8 @@ def _fallback_pair(
             "unresolved_oblique_structure": False,
             "unexpected_exception_fallback": False,
             "micro_rescue": {"enabled": False, "attempted": False, "accepted": False},
+            "c2e": {"enabled": False, "attempted": False, "accepted": False},
+            "complete_seam_reassessment_diagnostic": False,
         })
     if m51_r2_config is not None and m51_r2_config.enabled:
         core = _finalize_v5_transaction(core)
@@ -696,6 +743,10 @@ def estimate_s13_m5_transactions(
     ):
         frame_ids = (left_assignment.frame_id, right_assignment.frame_id)
         correspondence_audit: Mapping[str, object] | None = None
+        complete_reassessment = (
+            isinstance(successor, S13M51R3Config)
+            and successor.requires_complete_seam_reassessment(pair_index)
+        )
         try:
             x0, x1 = _pair_domain(schedule, pair_index)
             if x1 - x0 < 12:
@@ -770,7 +821,7 @@ def estimate_s13_m5_transactions(
             unresolved_oblique_structure = False
             hard_safe_baseline: tuple[object, ...] | None = None
             for seam_rank, candidate in enumerate(ordered):
-                if selected_candidate is not None and not audit_all:
+                if selected_candidate is not None and not audit_all and not complete_reassessment:
                     evaluations.append({
                         "candidate_id": candidate.candidate_id,
                         "model_code": candidate.model_code,
@@ -880,9 +931,11 @@ def estimate_s13_m5_transactions(
                             float(lk_p95_value)
                             if isinstance(lk_p95_value, (int, float)) else None
                         )
-                        visual_suspect = edge_registration_visual_suspect(
-                            edge_registration, seam_local_lk_p95_px=lk_p95,
+                        visual_suspect = _edge_visual_suspect_for_pair(
+                            edge_registration,
+                            seam_local_lk_p95_px=lk_p95,
                             config=successor,
+                            component_local_authority=complete_reassessment,
                         )
                         edge_registration = {
                             **dict(edge_registration), "visual_suspect": visual_suspect,
@@ -950,9 +1003,11 @@ def estimate_s13_m5_transactions(
                                     float(alt_lk_value)
                                     if isinstance(alt_lk_value, (int, float)) else None
                                 )
-                                if edge_registration_visual_suspect(
-                                    alternate_edge, seam_local_lk_p95_px=alt_lk,
+                                if _edge_visual_suspect_for_pair(
+                                    alternate_edge,
+                                    seam_local_lk_p95_px=alt_lk,
                                     config=successor,
+                                    component_local_authority=complete_reassessment,
                                 ):
                                     continue
                                 edge_p95_value = alternate_edge.get("p95_supported_abs_lag_px")
@@ -1065,10 +1120,7 @@ def estimate_s13_m5_transactions(
             selected_seam = np.asarray(selected_candidate.seam_x_by_row, dtype=np.int32) + x0
             selected_map = selected_alignment.selected
             core: dict[str, object] = {
-                "schema": (
-                    "gemini305-video-s13-m5-pair-transaction/v3"
-                    if successor.enabled else "gemini305-video-s13-m5-pair-transaction/v2"
-                ),
+                "schema": _successor_transaction_schema(successor),
                 "transaction_id": f"m5-pair-{pair_index:04d}",
                 "parent_stage": "P1",
                 "parent_stage_sha256": parent_stage_sha256,
@@ -1155,6 +1207,12 @@ def estimate_s13_m5_transactions(
                     "micro_rescue": {
                         "enabled": False, "attempted": False, "accepted": False,
                     },
+                    "c2e": {
+                        "enabled": False, "attempted": False, "accepted": False,
+                    },
+                    "complete_seam_reassessment_diagnostic": bool(
+                        complete_reassessment
+                    ),
                 })
             if successor.enabled:
                 core = _finalize_v5_transaction(core)

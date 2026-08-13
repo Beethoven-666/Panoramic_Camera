@@ -36,6 +36,7 @@ from .video_s13_bundle import (
 from .video_s13_contract import (
     S13_FORMAL_M6_ALGORITHM_ID,
     S13_M51_R2_P2_COMPLETION_SCHEMA,
+    S13_M51_R3_P2_COMPLETION_SCHEMA,
     load_s13_config,
 )
 from .video_s13_motion import measure_s13_motion
@@ -349,7 +350,9 @@ def _run_m5(
         transaction_rows = [dict(pair.transaction) for pair in m5.pairs]
         atomic_write_json(pending / "pair_transactions.json", {
             "schema": (
-                "gemini305-video-s13-m5-pair-transactions/v2"
+                "gemini305-video-s13-m5-pair-transactions/v3"
+                if p2_completion_schema == S13_M51_R3_P2_COMPLETION_SCHEMA
+                else "gemini305-video-s13-m5-pair-transactions/v2"
                 if p2_completion_schema == S13_M51_R2_P2_COMPLETION_SCHEMA
                 else "gemini305-video-s13-m5-pair-transactions/v1"
             ),
@@ -433,6 +436,7 @@ def _run_m5(
         elif p2_completion_schema not in (
             P2_COMPLETION_SCHEMA,
             S13_M51_R2_P2_COMPLETION_SCHEMA,
+            S13_M51_R3_P2_COMPLETION_SCHEMA,
         ):
             raise ValueError("S1.3 P2 completion schema is unsupported")
         ranked = sorted(
@@ -1070,21 +1074,34 @@ def run_s13_experiment(
     ):
         raise ValueError("S1.3 dispatch identity/config binding changed after validation")
     if config.p2_only and run_m6 is True:
-        raise ValueError("S1.3 v5 is P2-only and cannot run M6/P3")
+        raise ValueError("S1.3 successor is P2-only and cannot run M6/P3")
     if config.p2_only and resume_generation is not None:
-        raise ValueError("S1.3 v5 is P2-only and cannot resume into M6/P3")
+        raise ValueError("S1.3 successor is P2-only and cannot resume into M6/P3")
     if run_m6 is None:
         run_m6 = config.identity.default_stop_after != "P2"
     if run_m6 and not config.m6_eligible:
         raise ValueError("S1.3 identity is not M6 eligible")
     formal_m6 = configured_algorithm_id == S13_FORMAL_M6_ALGORITHM_ID
-    from .video_s13_m51_r2 import S13M51R2Config
+    from .video_s13_m51_r2 import S13M51R2Config, S13M51R3Config
 
     m51_r2_document = config.component.get("m51_r2")
     if config.m51_r2_enabled:
         if not isinstance(m51_r2_document, Mapping):
-            raise ValueError("S1.3 v5 M5.1-r2 configuration is missing")
-        m51_r2_config = S13M51R2Config(**dict(m51_r2_document))
+            raise ValueError("S1.3 P2 successor M5.1-r2 configuration is missing")
+        if config.m51_r3_enabled:
+            m51_r3_document = config.component.get("m51_r3")
+            if not isinstance(m51_r3_document, Mapping):
+                raise ValueError("S1.3 v6 M5.1-r3 configuration is missing")
+            m51_r2_config = S13M51R3Config(
+                **dict(m51_r2_document),
+                complete_reassessment_pair_indices=tuple(
+                    int(value)
+                    for value in m51_r3_document["reassessment_pair_indices"]
+                ),
+                component_local_ambiguity_enabled=True,
+            )
+        else:
+            m51_r2_config = S13M51R2Config(**dict(m51_r2_document))
     elif os.environ.get("G305_S13_M51_T0_STATS_ONLY", "0") == "1":
         # Development-only instrumentation for the frozen legacy path.  It
         # records PyrLK error distributions in a new generation but preserves

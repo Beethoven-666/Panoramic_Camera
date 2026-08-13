@@ -1,0 +1,123 @@
+{
+  "all_13_pass": false,
+  "applied_to_p2": false,
+  "c2e": {
+    "accepted": false,
+    "attempted": false,
+    "enabled": false
+  },
+  "diagnostic_only": true,
+  "fail_count": 1,
+  "micro_rescue": {
+    "accepted": false,
+    "attempted": false,
+    "enabled": false
+  },
+  "pass_count": 4,
+  "runtime_authority": false,
+  "schema": "gemini305-video-s13-m51-r3-c2e-diagnostic-roi/v1",
+  "source_measurements": {
+    "best_second_uniqueness_fraction": 0.195711,
+    "finite_in_bounds_passed": true,
+    "held_out_edge_p95_px": 3.0,
+    "horizontal_catastrophe_guard_passed": true,
+    "orientation_difference_degrees": 6.561333
+  },
+  "source_pair_transaction_id": "m5-pair-0071",
+  "source_pair_transaction_schema": "gemini305-video-s13-m5-pair-transaction/v4",
+  "source_selected_geometry_model": "C0_identity",
+  "states": [
+    {
+      "direction": "maximum",
+      "name": "held_out_edge_p95_px",
+      "state": "fail",
+      "threshold": 1.0,
+      "value": 3.0
+    },
+    {
+      "direction": "minimum",
+      "name": "absolute_improvement_px",
+      "state": "unevaluable",
+      "threshold": 0.5,
+      "value": null
+    },
+    {
+      "direction": "minimum",
+      "name": "relative_improvement_fraction",
+      "state": "unevaluable",
+      "threshold": 0.3,
+      "value": null
+    },
+    {
+      "direction": "maximum",
+      "name": "forward_reverse_lag_discrepancy_px",
+      "state": "unevaluable",
+      "threshold": 0.5,
+      "value": null
+    },
+    {
+      "direction": "minimum",
+      "name": "best_second_uniqueness_fraction",
+      "state": "pass",
+      "threshold": 0.1,
+      "value": 0.195711
+    },
+    {
+      "direction": "maximum",
+      "name": "orientation_difference_degrees",
+      "state": "pass",
+      "threshold": 10.0,
+      "value": 6.561333
+    },
+    {
+      "direction": "minimum",
+      "name": "support_retention",
+      "state": "unevaluable",
+      "threshold": 0.98,
+      "value": null
+    },
+    {
+      "direction": "minimum",
+      "name": "minimum_jacobian",
+      "state": "unevaluable",
+      "threshold": 0.5,
+      "value": null
+    },
+    {
+      "direction": "maximum",
+      "name": "micro_displacement_px",
+      "state": "unevaluable",
+      "threshold": 3.0,
+      "value": null
+    },
+    {
+      "direction": "maximum",
+      "name": "total_map_displacement_px",
+      "state": "unevaluable",
+      "threshold": 8.0,
+      "value": null
+    },
+    {
+      "direction": "maximum",
+      "name": "halo_regression_px",
+      "state": "unevaluable",
+      "threshold": 0.25,
+      "value": null
+    },
+    {
+      "direction": "must_be_true",
+      "name": "horizontal_catastrophe_guard_passed",
+      "state": "pass",
+      "threshold": true,
+      "value": true
+    },
+    {
+      "direction": "must_be_true",
+      "name": "finite_in_bounds_passed",
+      "state": "pass",
+      "threshold": true,
+      "value": true
+    }
+  ],
+  "unevaluable_count": 8
+}

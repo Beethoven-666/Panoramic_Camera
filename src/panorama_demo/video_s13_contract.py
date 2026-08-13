@@ -26,6 +26,12 @@ S13_M51_R2_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v5"
 S13_M51_R2_IMPLEMENTATION_ID = "s013_output_first_progressive_dense_central_slit_m51_r2"
 S13_M51_R2_CONTRACT_SCHEMA = "gemini305-video-s13-output-first/v5"
 S13_M51_R2_P2_COMPLETION_SCHEMA = "gemini305-video-s13-p2-completion/v5"
+S13_M51_R3_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v6"
+S13_M51_R3_IMPLEMENTATION_ID = (
+    "s013_output_first_progressive_dense_central_slit_m51_r3_component_local_ambiguity"
+)
+S13_M51_R3_CONTRACT_SCHEMA = "gemini305-video-s13-output-first/v6"
+S13_M51_R3_P2_COMPLETION_SCHEMA = "gemini305-video-s13-p2-completion/v6"
 
 _S13_COMPONENT_NAME = "s013_output_first_progressive_dense_central_slit"
 
@@ -37,7 +43,9 @@ class S13IdentityDescriptor:
     p2_only: bool
     requires_m61_bootstrap: bool
     m51_r2_enabled: bool
+    m51_r3_enabled: bool
     m6_eligible: bool
+    required_output_component: str
     default_stop_after: str
     stage_order: tuple[str, ...]
 
@@ -45,15 +53,19 @@ class S13IdentityDescriptor:
 _S13_IDENTITY_CONTRACTS = {
     (S13_ALGORITHM_ID, S13_IMPLEMENTATION_ID): S13IdentityDescriptor(
         S13_CONTRACT_SCHEMA, "gemini305-video-s13-p2-completion/v3", False,
-        False, False, True, "P3", ("P0", "P1", "P2", "P3"),
+        False, False, False, True, "s013_p0_owner_only", "P3", ("P0", "P1", "P2", "P3"),
     ),
     (S13_FORMAL_M6_ALGORITHM_ID, S13_FORMAL_M6_IMPLEMENTATION_ID): S13IdentityDescriptor(
         M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
-        True, False, True, "P3", ("P0", "P1", "P2", "P3", "P4"),
+        True, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3", "P4"),
     ),
     (S13_M51_R2_ALGORITHM_ID, S13_M51_R2_IMPLEMENTATION_ID): S13IdentityDescriptor(
         S13_M51_R2_CONTRACT_SCHEMA, S13_M51_R2_P2_COMPLETION_SCHEMA, True,
-        False, True, False, "P2", ("P0", "P1", "P2"),
+        False, True, False, False, "s013_p2_v5", "P2", ("P0", "P1", "P2"),
+    ),
+    (S13_M51_R3_ALGORITHM_ID, S13_M51_R3_IMPLEMENTATION_ID): S13IdentityDescriptor(
+        S13_M51_R3_CONTRACT_SCHEMA, S13_M51_R3_P2_COMPLETION_SCHEMA, True,
+        False, True, True, False, "s013_p2_v6", "P2", ("P0", "P1", "P2"),
     ),
 }
 
@@ -80,6 +92,10 @@ class S13Config:
     @property
     def m51_r2_enabled(self) -> bool:
         return self.identity.m51_r2_enabled
+
+    @property
+    def m51_r3_enabled(self) -> bool:
+        return self.identity.m51_r3_enabled
 
     @property
     def m6_eligible(self) -> bool:
@@ -208,11 +224,22 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
     if identity_contract.p2_only:
         if "m61_bootstrap" in document:
             raise ValueError("S1.3 P2-only identity forbids an M6.1 bootstrap")
-        if document.get("required_output_components") != ["s013_p2_v5"]:
-            raise ValueError("S1.3 P2-only identity requires only s013_p2_v5")
+        if document.get("required_output_components") != [
+            identity_contract.required_output_component
+        ]:
+            raise ValueError("S1.3 P2-only identity has an invalid required output")
         m51_r2 = _mapping(component.get("m51_r2"), "M5.1-r2 config")
         if m51_r2.get("enabled") is not True:
-            raise ValueError("S1.3 v5 requires M5.1-r2 to be explicitly enabled")
+            raise ValueError("S1.3 P2-only successor requires M5.1-r2 to be enabled")
+        if identity_contract.m51_r3_enabled:
+            m51_r3 = _mapping(component.get("m51_r3"), "M5.1-r3 config")
+            if dict(m51_r3) != {
+                "enabled": True,
+                "reassessment_pair_indices": [71],
+                "micro_rescue_enabled": False,
+                "c2e_enabled": False,
+            }:
+                raise ValueError("S1.3 v6 M5.1-r3 reassessment contract is invalid")
         serialized = repr(document).lower()
         if "quality_thresholds_m61" in serialized or "threshold_approval" in serialized:
             raise ValueError("S1.3 P2-only identity forbids old M6 threshold/approval bindings")
@@ -348,6 +375,10 @@ __all__ = [
     "S13_M51_R2_IMPLEMENTATION_ID",
     "S13_M51_R2_CONTRACT_SCHEMA",
     "S13_M51_R2_P2_COMPLETION_SCHEMA",
+    "S13_M51_R3_ALGORITHM_ID",
+    "S13_M51_R3_IMPLEMENTATION_ID",
+    "S13_M51_R3_CONTRACT_SCHEMA",
+    "S13_M51_R3_P2_COMPLETION_SCHEMA",
     "M61_ALGORITHM_ID",
     "M61_CONTRACT_SCHEMA",
     "M61_IMPLEMENTATION_ID",
