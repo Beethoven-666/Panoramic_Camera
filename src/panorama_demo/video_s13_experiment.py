@@ -884,7 +884,7 @@ def _run_m5(
             "repair": None,
             "artifact_export": None,
             "total_wall_time": time.perf_counter() - started,
-            "total_m5": time.perf_counter() - started,
+            "total_m5": float(m5.performance["total_m5"]),
             "m4_reestimated_in_m5": False,
             "gain_enumeration_count_in_m5": int(m5.performance.get("gain_enumeration_count", 0)),
             "m4_selection_full_resolution_render_count": 0,

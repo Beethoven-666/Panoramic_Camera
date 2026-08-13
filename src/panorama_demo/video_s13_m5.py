@@ -1821,7 +1821,14 @@ def run_s13_m5(
         component_chain_seconds = time.perf_counter() - component_started
     else:
         geometry_seconds = time.perf_counter() - tick
+    frozen_map_cache: dict[
+        tuple[int, int, int], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ] = {}
     def frozen_map_provider(source_index: int, x0: int, x1: int):
+        cache_key = (source_index, x0, x1)
+        cached = frozen_map_cache.get(cache_key)
+        if cached is not None:
+            return cached
         candidate = None
         if source_index > 0 and pairs[source_index - 1].alignment is not None:
             candidate = pairs[source_index - 1].alignment.selected
@@ -1840,7 +1847,9 @@ def run_s13_m5(
         # render, replay and oracle authorities are crop-invariant.
         canonical_u = np.round(np.asarray(maps[0], np.float64), 4).astype(np.float32)
         canonical_v = np.round(np.asarray(maps[1], np.float64), 4).astype(np.float32)
-        return canonical_u, canonical_v, maps[2], maps[3]
+        frozen = canonical_u, canonical_v, maps[2], maps[3]
+        frozen_map_cache[cache_key] = frozen
+        return frozen
 
     tick = time.perf_counter()
     formal_provider = (
@@ -1875,7 +1884,10 @@ def run_s13_m5(
             continue
         x0 = min(row[0] for row in domains)
         x1 = max(row[1] for row in domains)
-        maps = list(frozen_map_provider(source_index, x0, x1))
+        maps = [
+            np.array(value, copy=True)
+            for value in frozen_map_provider(source_index, x0, x1)
+        ]
         owner_rows, owner_columns = np.nonzero(owned[:, x0:x1])
         if owner_rows.size:
             owner_global_columns = owner_columns + x0

@@ -45,7 +45,7 @@ function Invoke-TimedCandidate {
         --candidate-config $Config `
         --trajectory-cache $TrajectoryCache `
         --report-level summary `
-        --artifact-level minimal
+        --artifact-level minimal | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "Paired timing run failed: $Label (exit $LASTEXITCODE)"
     }
