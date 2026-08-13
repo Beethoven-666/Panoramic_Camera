@@ -639,7 +639,9 @@ def pair_edge_registration_metrics(
                 "support_count": 0,
             }
             block_audits.append(audit)
-            if component_local and exact_evidence_sink is not None:
+            if component_local and (
+                exact_evidence_sink is not None or forward_evidence_sink is not None
+            ):
                 component_observations.append(audit)
             continue
         if exact_evidence_sink is not None or forward_evidence_sink is not None:
