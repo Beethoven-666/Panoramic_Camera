@@ -396,15 +396,22 @@ def make_s13_edge_component_observation(
             anchor_xy=support, normal_xy=(nx, ny), lags=lag_values,
         )
     forward_index, forward_uniqueness = _best_hypothesis(forward[0], lag_values)
-    forward_lag = float(lag_values[forward_index])
-    moving_support = support.astype(np.float64) + forward_lag * np.asarray((nx, ny))[None, :]
+    # Hypothesis coordinates describe where the moving edge was sampled.
+    # The public lag is the inverse-map correction convention used by the
+    # solver: a moving edge sampled at +d requires a reported lag of -d.
+    forward_sampling_lag = float(lag_values[forward_index])
+    forward_lag = -forward_sampling_lag
+    moving_support = (
+        support.astype(np.float64)
+        + forward_sampling_lag * np.asarray((nx, ny))[None, :]
+    )
     reverse = _hypothesis_scores(
         reference_magnitude=right_mag, moving_magnitude=left_mag,
         reference_gx=rgx, reference_gy=rgy, moving_gx=lgx, moving_gy=lgy,
         anchor_xy=moving_support, normal_xy=(nx, ny), lags=lag_values,
     )
     reverse_index, reverse_uniqueness = _best_hypothesis(reverse[0], lag_values)
-    reverse_lag = float(lag_values[reverse_index])
+    reverse_lag = -float(lag_values[reverse_index])
     correlation = min(float(forward[1][forward_index]), float(reverse[1][reverse_index]))
     signed_agreement = min(float(forward[2][forward_index]), float(reverse[2][reverse_index]))
     orientation_difference = math.degrees(math.acos(float(np.clip(signed_agreement, -1.0, 1.0))))

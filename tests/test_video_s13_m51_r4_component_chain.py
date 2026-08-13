@@ -121,8 +121,8 @@ def test_forward_reverse_observation_fits_line_and_freezes_support() -> None:
         lags=canonical_s13_normal_search_lags(),
         block_indices=(1,),
     )
-    assert observation.forward_best_lag_px == pytest.approx(2.0)
-    assert observation.reverse_best_lag_px == pytest.approx(-2.0)
+    assert observation.forward_best_lag_px == pytest.approx(-2.0)
+    assert observation.reverse_best_lag_px == pytest.approx(2.0)
     assert abs(observation.forward_best_lag_px + observation.reverse_best_lag_px) <= 0.5
     assert observation.evidence_state == "actionable"
     assert evidence.support_xy.shape == (20, 2)
@@ -130,6 +130,16 @@ def test_forward_reverse_observation_fits_line_and_freezes_support() -> None:
     assert evidence.reverse_scores.shape == (13,)
     assert not evidence.support_xy.flags.writeable
     assert not evidence.forward_scores.flags.writeable
+
+    segment = S13ComponentApplicationSegment.create(
+        parent_chain_id="inverse-map-sign", observations=(observation,)
+    )
+    offsets = solve_s13_component_segment_source_offsets(
+        segment, config=_Config(), owner_support_by_source={3: 1, 4: 1}
+    )
+    assert offsets[4] - offsets[3] == pytest.approx(2.0, abs=1e-6)
+    # In an inverse map, output feature position is raw_position - delta.
+    assert 15.0 - offsets[3] == pytest.approx(17.0 - offsets[4], abs=1e-6)
 
 
 def test_obligations_are_frozen_before_chain_filtering() -> None:
