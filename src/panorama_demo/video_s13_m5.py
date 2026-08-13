@@ -2086,6 +2086,13 @@ def run_s13_m5(
                     "reverse_best_lag_px": observation.reverse_best_lag_px,
                     "correlation": observation.correlation,
                     "uniqueness_fraction": observation.uniqueness_fraction,
+                    "orientation_difference_degrees": (
+                        observation.orientation_difference_degrees
+                    ),
+                    "signed_gradient_polarity": observation.signed_gradient_polarity,
+                    "normal_xy": [observation.normal_x, observation.normal_y],
+                    "fitted_line_offset": observation.fitted_line_offset,
+                    "exclusion_reasons": list(observation.exclusion_reasons),
                     "search_boundary_hit": observation.search_boundary_hit,
                     "support_sha256": observation.mask_sha256,
                     "forward_scores": finite_score_rows(evidence.forward_scores),
