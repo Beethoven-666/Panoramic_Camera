@@ -1011,12 +1011,16 @@ def _run_m5(
             schema=p2_completion_schema,
             metadata=completion_metadata,
         )
-        os.replace(pending, final)
-        verify_stage(final, completion_name="P2_completion.json", schema=p2_completion_schema)
+        verify_stage(pending, completion_name="P2_completion.json", schema=p2_completion_schema)
         if r4_enabled and candidate_identity is not None and not bool(
             candidate_identity.get("working_tree_dirty", True)
         ):
-            verify_s13_v6_r2_p2(final)
+            # Semantic verification is part of the seal boundary.  Verify the
+            # completed staging directory before it becomes the formal P2 so a
+            # fail-closed rejection cannot leave a sealed-looking final tree.
+            verify_s13_v6_r2_p2(pending)
+        os.replace(pending, final)
+        verify_stage(final, completion_name="P2_completion.json", schema=p2_completion_schema)
         if sha256_file(p0_completion_path) != p0_completion_sha:
             raise ValueError("S1.3 M5 immutable P0 completion changed")
         if sha256_file(p1_completion_path) != p1_completion_sha:

@@ -338,6 +338,17 @@ def _acceptance(tmp_path: Path) -> Path:
         root / "paired_timing_runs.json",
         {
             "schema": "gemini305-video-s13-m51-r4-paired-timing-runs/v1",
+            "baseline_source_commit": "e" * 40,
+            "candidate_source_commit": "b" * 40,
+            "baseline_working_tree_dirty": False,
+            "candidate_working_tree_dirty": False,
+            "baseline_implementation_id": (
+                "s013_output_first_progressive_dense_central_slit_m51_r3_component_local_ambiguity"
+            ),
+            "candidate_implementation_id": (
+                "s013_output_first_progressive_dense_central_slit_m51_r4_component_chain_c2e"
+            ),
+            "cold_runs_excluded": True,
             "pairs": [
                 {
                     "pair_id": f"pair-{index}",
@@ -346,6 +357,12 @@ def _acceptance(tmp_path: Path) -> Path:
                     ),
                     "baseline_seconds": 20.0,
                     "candidate_seconds": 20.5,
+                    "baseline_generation_id": f"baseline-{index}",
+                    "candidate_generation_id": f"candidate-{index}",
+                    "baseline_performance_sha256": "1" * 64,
+                    "candidate_performance_sha256": "2" * 64,
+                    "baseline_completion_sha256": "3" * 64,
+                    "candidate_completion_sha256": "4" * 64,
                 }
                 for index in range(5)
             ],
@@ -424,6 +441,12 @@ def test_paired_timing_summary_applies_median_and_maximum_gates() -> None:
                 ),
                 "baseline_seconds": 20.0,
                 "candidate_seconds": candidate,
+                "baseline_generation_id": f"baseline-{index}",
+                "candidate_generation_id": f"candidate-{index}",
+                "baseline_performance_sha256": "1" * 64,
+                "candidate_performance_sha256": "2" * 64,
+                "baseline_completion_sha256": "3" * 64,
+                "candidate_completion_sha256": "4" * 64,
             }
             for index, candidate in enumerate((20.4, 20.5, 20.6, 20.7, 22.1))
         ]
@@ -457,6 +480,26 @@ def test_verify_refuses_to_seal_when_the_paired_timing_gate_fails(
     value["pairs"][0]["candidate_seconds"] = 23.0
     _json(path, value)
     with pytest.raises(ValueError, match="paired timing performance gate"):
+        verify(root)
+
+
+def test_verify_rejects_unbound_or_unfair_paired_timing_authority(
+    tmp_path: Path,
+) -> None:
+    root = _acceptance(tmp_path)
+    path = root / "paired_timing_runs.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["candidate_source_commit"] = "f" * 40
+    _json(path, value)
+    with pytest.raises(ValueError, match="candidate source commit"):
+        verify(root)
+
+    root = _acceptance(tmp_path / "dirty")
+    path = root / "paired_timing_runs.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["baseline_working_tree_dirty"] = True
+    _json(path, value)
+    with pytest.raises(ValueError, match="clean worktrees"):
         verify(root)
 
 

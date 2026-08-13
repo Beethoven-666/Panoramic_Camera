@@ -25,6 +25,7 @@ from .video_s13_alignment import (
 )
 from .video_s13_quality import (
     SeamStructureFeatures,
+    append_s13_exact_component_evidence_from_forward_context,
     prepare_seam_structure,
     long_horizontal_structure_metrics,
     long_horizontal_structure_nondegrading,
@@ -780,6 +781,11 @@ def estimate_s13_m5_transactions(
         zip(schedule.assignments[:-1], schedule.assignments[1:])
     ):
         frame_ids = (left_assignment.frame_id, right_assignment.frame_id)
+        continuation_probe = bool(
+            isinstance(successor, S13M51R4Config)
+            and pairs
+            and pairs[-1].transaction.get("selection_continued_for_structure") is True
+        )
         correspondence_audit: Mapping[str, object] | None = None
         complete_reassessment = (
             isinstance(successor, S13M51R3Config)
@@ -902,6 +908,7 @@ def estimate_s13_m5_transactions(
                 }
                 visual_suspect = False
                 candidate_component_evidence: list[tuple[object, object]] = []
+                candidate_forward_evidence: list[Mapping[str, object]] = []
                 geometry_rank = 0
                 if not failures:
                     alignment = reestimate_s13_final_corridor_alignment(
@@ -967,6 +974,10 @@ def estimate_s13_m5_transactions(
                             config=successor,
                             pair_index=pair_index,
                             global_x_offset=x0,
+                            forward_evidence_sink=(
+                                candidate_forward_evidence
+                                if isinstance(successor, S13M51R4Config) else None
+                            ),
                         )
                         lk_p95_value = selected_map.metrics.get("residual_p95_px")
                         lk_p95 = (
@@ -983,21 +994,27 @@ def estimate_s13_m5_transactions(
                             **dict(edge_registration), "visual_suspect": visual_suspect,
                         }
 
-                        if visual_suspect:
+                        if visual_suspect or continuation_probe:
                             if isinstance(successor, S13M51R4Config):
                                 # The ordinary forward block audit above is the
                                 # trigger. Only unresolved suspect pairs pay
                                 # for exact physical-component reverse evidence;
                                 # cached maps and Sobel features are reused.
                                 candidate_component_evidence.clear()
-                                pair_edge_registration_metrics(
-                                    left_edge_features, final_edge_features,
-                                    left_valid, final_valid, seam_local,
+                                if len(candidate_forward_evidence) != 1:
+                                    raise ValueError(
+                                        "S1.3 C2E forward evidence context is missing"
+                                    )
+                                append_s13_exact_component_evidence_from_forward_context(
+                                    candidate_forward_evidence[0],
+                                    left_features=left_edge_features,
+                                    right_features=final_edge_features,
                                     config=successor,
                                     exact_evidence_sink=candidate_component_evidence,
                                     pair_index=pair_index,
                                     global_x_offset=x0,
                                 )
+                        if visual_suspect:
                             selection_continued_for_structure = True
                             if hard_safe_baseline is None:
                                 hard_safe_baseline = (

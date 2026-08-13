@@ -538,6 +538,32 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
         "parent_component_transaction_manifest_sha256"
     ) != component_sha:
         raise ValueError("S1.3 v6-r2 source correction DAG binding disagrees")
+    application_states = {
+        completion.get("application_state"),
+        component.get("application_state"),
+        corrections.get("application_state"),
+    }
+    if len(application_states) != 1 or next(iter(application_states)) not in {
+        "complete", "partial", "none"
+    }:
+        raise ValueError("S1.3 v6-r2 application state lineage disagrees")
+    application_state = next(iter(application_states))
+    if not isinstance(component.get("repair_complete"), bool) or completion.get(
+        "repair_complete"
+    ) != component.get("repair_complete"):
+        raise ValueError("S1.3 v6-r2 repair-complete lineage disagrees")
+    accepted = component.get("accepted_segment_ids")
+    if (
+        not isinstance(accepted, Sequence)
+        or isinstance(accepted, (str, bytes))
+        or any(not isinstance(value, str) or not value for value in accepted)
+        or len(set(accepted)) != len(accepted)
+    ):
+        raise ValueError("S1.3 v6-r2 accepted segment authority is invalid")
+    if application_state == "none" and accepted:
+        raise ValueError("S1.3 v6-r2 no-op state has accepted correction authority")
+    if application_state in {"partial", "complete"} and not accepted:
+        raise ValueError("S1.3 v6-r2 applied state has no accepted correction authority")
     if oracle_manifest.get("schema") != _ORACLE_MANIFEST_SCHEMA or oracle_manifest.get(
         "parent_source_correction_manifest_sha256"
     ) != corrections_sha:
@@ -559,6 +585,10 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
     } & _all_mapping_keys(corrections):
         raise ValueError("S1.3 v6-r2 source correction manifest contains a reverse DAG binding")
     field_table = _field_table(corrections)
+    if application_state == "none" and field_table:
+        raise ValueError("S1.3 v6-r2 no-op state has correction fields")
+    if application_state in {"partial", "complete"} and not field_table:
+        raise ValueError("S1.3 v6-r2 applied state has no correction fields")
     segment_authorities = _segment_authorities(root, component)
     correction_asset_authorities = _correction_asset_authorities(root, corrections)
     for row in field_table.values():

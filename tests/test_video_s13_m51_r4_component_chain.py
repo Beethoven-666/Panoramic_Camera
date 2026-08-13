@@ -229,6 +229,41 @@ def test_correction_is_local_readonly_and_patch_conflicts_choose_utility() -> No
     assert low.segment.segment_id in patch.rejected_segment_ids
 
 
+def test_repair_complete_requires_every_exact_frozen_obligation() -> None:
+    resolved_observation = _observation(0, 0, 2.0)
+    unresolved_same_pair = _observation(0, 1, 2.0, y0=40)
+    segment = S13ComponentApplicationSegment.create(
+        parent_chain_id="chain-a", observations=(resolved_observation,)
+    )
+    support = np.zeros((80, 80), bool)
+    support[10:30, 20:32] = True
+    correction = build_s13_source_component_correction(
+        segment_id=segment.segment_id,
+        source_index=0,
+        frame_id=100,
+        support_mask=support,
+        source_offset_px=1.0,
+        normal_xy=(0.0, 1.0),
+        config=_Config(),
+    )
+    candidate = S13ComponentSegmentCandidate(
+        segment, (1.0,), 1.0, (correction,), "resolved", (),
+        {"rescued_severe_seam_count": 1, "worst_seam_absolute_improvement": 1.0,
+         "supported_unique_edge_columns": 12, "post_maximum_step": 1.0,
+         "correction_energy": 1.0},
+    )
+    obligations = freeze_s13_baseline_c2e_obligations(
+        (resolved_observation, unresolved_same_pair)
+    )
+
+    patch = select_s13_component_patch_set(
+        (candidate,), config=_Config(), obligations=obligations
+    )
+
+    assert patch.application_state == "partial"
+    assert patch.audit["repair_complete"] is False
+
+
 def test_source_map_oracle_canonicalizes_invalid_and_negative_zero() -> None:
     u = np.asarray([[1.0, -0.0], [3.0, 4.0]], np.float32)
     v = np.asarray([[2.0, 9.0], [-0.0, 5.0]], np.float32)
@@ -431,3 +466,25 @@ def test_runtime_sink_freezes_detected_component_when_all_lags_are_unevaluable()
     obligations = freeze_s13_baseline_c2e_obligations((observation,))
     assert len(obligations) == 1
     assert obligations[0].evaluable is False
+
+
+def test_runtime_sink_reuses_forward_rows_and_only_samples_reverse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import panorama_demo.video_s13_m51_r4_component_chain as component_chain
+
+    original = component_chain._hypothesis_scores
+    calls = 0
+
+    def counted(**kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original(**kwargs)
+
+    monkeypatch.setattr(component_chain, "_hypothesis_scores", counted)
+    metrics, evidence = _runtime_evidence(*_runtime_shifted_line())
+
+    assert metrics["supported_component_count"] == 1
+    assert len(evidence) == 1
+    assert evidence[0][0].evidence_state == "actionable"
+    assert calls == 1

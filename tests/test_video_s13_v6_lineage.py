@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -166,3 +167,37 @@ def test_v6_defaults_to_sealed_p2_and_rejects_m6_or_resume(tmp_path: Path) -> No
         )
     assert (generation / "P2/P2_completion.json").read_bytes() == sealed_p2
     assert not (generation / "P3").exists()
+
+
+def test_clean_v6_semantic_rejection_does_not_publish_a_sealed_p2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _video_session(tmp_path)
+    output = tmp_path / "out"
+    spec = replace(
+        build_algorithm_spec(V6_CONFIG, expected_role="candidate"),
+        working_tree_dirty=False,
+    )
+
+    monkeypatch.setattr(
+        "panorama_demo.video_s13_experiment.verify_s13_v6_r2_p2",
+        lambda _path: (_ for _ in ()).throw(ValueError("semantic rejection")),
+    )
+    report = run_s13_experiment(
+        input_path=session,
+        output=output,
+        candidate_config=V6_CONFIG,
+        algorithm_spec=spec,
+        trajectory_cache=None,
+        reuse_online_trajectory=False,
+        run_offline_orb=False,
+        ignore_pose=True,
+        config_path=None,
+    )
+
+    generation = Path(str(report["generation"]))
+    assert report["m5"]["state"] == "failed_parent_preserved"
+    assert report["m5"]["error"] == "semantic rejection"
+    assert not (generation / "P2").exists()
+    latest = json.loads((output / "current_latest.json").read_text(encoding="utf-8"))
+    assert latest["stage"] == "P1"

@@ -265,6 +265,170 @@ def _component_local_edge_summary(
     }
 
 
+def append_s13_exact_component_evidence_from_forward_context(
+    context: Mapping[str, object],
+    *,
+    left_features: SeamStructureFeatures,
+    right_features: SeamStructureFeatures,
+    config: "S13M51R2Config",
+    exact_evidence_sink: list[tuple[object, object]],
+    pair_index: int,
+    global_x_offset: int,
+) -> None:
+    """Reuse the ordinary block forward search and add only reverse hypotheses."""
+
+    from dataclasses import replace
+    from .video_s13_m51_r4_component_chain import (
+        S13ExactEdgeComponentEvidence,
+        canonical_s13_support_sha256,
+        make_s13_edge_component_observation,
+        make_s13_unevaluable_edge_component_observation,
+    )
+
+    components = context.get("component_audits")
+    supports_value = context.get("support_by_block")
+    rows_value = context.get("forward_rows_by_block")
+    lags = np.asarray(context.get("lags"), dtype=np.float64)
+    if (
+        not isinstance(components, Sequence)
+        or not isinstance(supports_value, Mapping)
+        or not isinstance(rows_value, Mapping)
+        or lags.ndim != 1
+        or lags.size != 13
+    ):
+        raise ValueError("S1.3 C2E forward evidence context is invalid")
+    for component in components:
+        if not isinstance(component, Mapping):
+            raise ValueError("S1.3 C2E component forward evidence is invalid")
+        blocks = tuple(int(value) for value in component["block_indices"])
+        supports = []
+        for value in blocks:
+            if value not in supports_value:
+                continue
+            coordinate_pair = supports_value[value]
+            if (
+                not isinstance(coordinate_pair, tuple)
+                or len(coordinate_pair) != 2
+            ):
+                raise ValueError("S1.3 C2E forward support coordinates are invalid")
+            supports.append(np.column_stack(coordinate_pair).astype(np.int32))
+        if not supports:
+            continue
+        support = np.unique(np.concatenate(supports), axis=0)
+        score_sum = np.zeros(lags.shape, np.float64)
+        correlation_sum = np.zeros(lags.shape, np.float64)
+        agreement_sum = np.zeros(lags.shape, np.float64)
+        counts = np.zeros(lags.shape, np.int32)
+        for block in blocks:
+            block_rows = rows_value.get(block, ())
+            if not isinstance(block_rows, Sequence):
+                raise ValueError("S1.3 C2E block forward evidence is invalid")
+            for row in block_rows:
+                if not isinstance(row, Mapping):
+                    raise ValueError("S1.3 C2E forward hypothesis row is invalid")
+                lag = float(row["lag"])
+                block_normal_x = float(row.get("normal_x", 1.0))
+                block_normal_y = float(row.get("normal_y", 0.0))
+                if block_normal_x < 0.0 or (
+                    block_normal_x == 0.0 and block_normal_y < 0.0
+                ):
+                    lag = -lag
+                indices = np.flatnonzero(np.isclose(lags, lag, rtol=0.0, atol=1e-12))
+                if indices.size != 1:
+                    raise ValueError("S1.3 C2E forward lag is outside the frozen grid")
+                index = int(indices[0])
+                count = int(row["support"])
+                if count <= 0:
+                    continue
+                correlation = float(row["correlation"])
+                orientation = float(row["orientation_difference"])
+                score_sum[index] += count * float(row["score"])
+                correlation_sum[index] += count * correlation
+                agreement_sum[index] += count * math.cos(math.radians(orientation))
+                counts[index] += count
+        finite = counts > 0
+        forward_scores = np.full(lags.shape, -math.inf, np.float64)
+        forward_correlations = np.zeros(lags.shape, np.float64)
+        forward_agreements = np.zeros(lags.shape, np.float64)
+        forward_scores[finite] = score_sum[finite] / counts[finite]
+        forward_correlations[finite] = correlation_sum[finite] / counts[finite]
+        forward_agreements[finite] = agreement_sum[finite] / counts[finite]
+        try:
+            observation, evidence = make_s13_edge_component_observation(
+                pair_index=int(pair_index),
+                component_id=int(component["component_id"]),
+                source_indices=(int(pair_index), int(pair_index) + 1),
+                support_xy=support,
+                left_magnitude=left_features.gradient,
+                right_magnitude=right_features.gradient,
+                left_gradient_x=left_features.gradient_x,
+                left_gradient_y=left_features.gradient_y,
+                right_gradient_x=right_features.gradient_x,
+                right_gradient_y=right_features.gradient_y,
+                lags=lags,
+                block_indices=blocks,
+                minimum_correlation=float(getattr(config, "minimum_c2e_correlation", 0.75)),
+                minimum_uniqueness_fraction=float(getattr(config, "minimum_c2e_uniqueness_fraction", 0.10)),
+                maximum_orientation_difference_degrees=float(
+                    config.maximum_orientation_difference_degrees
+                ),
+                maximum_forward_reverse_discrepancy_px=float(
+                    getattr(config, "maximum_forward_reverse_discrepancy_px", 0.5)
+                ),
+                minimum_signed_gradient_agreement=float(
+                    getattr(config, "minimum_signed_gradient_agreement", 0.10)
+                ),
+                precomputed_forward_scores=forward_scores,
+                precomputed_forward_correlations=forward_correlations,
+                precomputed_forward_agreements=forward_agreements,
+                precomputed_forward_support_counts=counts,
+            )
+        except ValueError as exc:
+            observation, evidence = make_s13_unevaluable_edge_component_observation(
+                pair_index=int(pair_index),
+                component_id=int(component["component_id"]),
+                source_indices=(int(pair_index), int(pair_index) + 1),
+                support_xy=support,
+                left_magnitude=left_features.gradient,
+                left_gradient_x=left_features.gradient_x,
+                left_gradient_y=left_features.gradient_y,
+                lags=lags,
+                block_indices=blocks,
+                reason=f"symmetric_hypothesis_failed:{type(exc).__name__}",
+            )
+        if component.get("ambiguous") is True:
+            observation = replace(
+                observation,
+                evidence_state="ambiguous",
+                exclusion_reasons=tuple(sorted(set(
+                    (*observation.exclusion_reasons, "component_match_ambiguous")
+                ))),
+            )
+        global_support = np.array(evidence.support_xy, copy=True)
+        global_support[:, 0] += int(global_x_offset)
+        global_evidence = S13ExactEdgeComponentEvidence(
+            support_xy=global_support,
+            forward_scores=evidence.forward_scores,
+            reverse_scores=evidence.reverse_scores,
+            forward_correlations=evidence.forward_correlations,
+            reverse_correlations=evidence.reverse_correlations,
+            forward_support_counts=evidence.forward_support_counts,
+            reverse_support_counts=evidence.reverse_support_counts,
+        )
+        bbox = list(observation.global_bbox_xyxy)
+        bbox[0] += int(global_x_offset)
+        bbox[2] += int(global_x_offset)
+        exact_evidence_sink.append((replace(
+            observation,
+            global_bbox_xyxy=tuple(bbox),
+            fitted_line_offset=(
+                observation.fitted_line_offset
+                + observation.normal_x * int(global_x_offset)
+            ),
+            mask_sha256=canonical_s13_support_sha256(global_support),
+        ), global_evidence))
+
+
 def pair_edge_registration_metrics(
     left: np.ndarray | SeamStructureFeatures,
     right: np.ndarray | SeamStructureFeatures,
@@ -274,6 +438,7 @@ def pair_edge_registration_metrics(
     *,
     config: "S13M51R2Config",
     exact_evidence_sink: list[tuple[object, object]] | None = None,
+    forward_evidence_sink: list[Mapping[str, object]] | None = None,
     pair_index: int = -1,
     global_x_offset: int = 0,
 ) -> dict[str, object]:
@@ -324,7 +489,8 @@ def pair_edge_registration_metrics(
     ambiguous = False
     nonunique_search_observed = False
     component_local = getattr(config, "component_local_ambiguity_enabled", False) is True
-    exact_support_by_block: dict[int, np.ndarray] = {}
+    exact_support_by_block: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    forward_rows_by_block: dict[int, tuple[Mapping[str, object], ...]] = {}
 
     for block_index, y0 in enumerate(starts):
         y1 = min(height, y0 + block_height)
@@ -396,10 +562,11 @@ def pair_edge_registration_metrics(
             continue
         normal_angle = float(np.mod(0.5 * np.angle(doubled), np.pi))
         nx, ny = math.cos(normal_angle), math.sin(normal_angle)
-        if exact_evidence_sink is not None:
-            exact_support_by_block[int(block_index)] = np.column_stack((xs, ys)).astype(
-                np.int32
-            )
+        if exact_evidence_sink is not None or forward_evidence_sink is not None:
+            # Retain the already allocated coordinate vectors by reference.
+            # Materialize canonical int32 Nx2 support only for a pair that is
+            # subsequently confirmed visual-suspect.
+            exact_support_by_block[int(block_index)] = (xs, ys)
         lag_rows: list[dict[str, float | int]] = []
         for lag in lags:
             sampled_magnitude, sampled_gx, sampled_gy, sample_valid = _bilinear_feature_samples(
@@ -420,8 +587,11 @@ def pair_edge_registration_metrics(
             score = correlation * max(0.0, math.cos(math.radians(orientation_difference)))
             lag_rows.append({"lag": float(lag), "correlation": correlation,
                              "orientation_difference": orientation_difference,
-                             "score": score, "support": int(keep.sum())})
+                             "score": score, "support": int(keep.sum()),
+                             "normal_x": float(nx), "normal_y": float(ny)})
         if not lag_rows:
+            if exact_evidence_sink is not None or forward_evidence_sink is not None:
+                forward_rows_by_block[int(block_index)] = ()
             audit = {
                 "block_index": block_index, "y0": y0, "y1": y1,
                 "supported": False, "reason": "no_valid_normal_samples",
@@ -440,6 +610,8 @@ def pair_edge_registration_metrics(
             if component_local and exact_evidence_sink is not None:
                 component_observations.append(audit)
             continue
+        if exact_evidence_sink is not None or forward_evidence_sink is not None:
+            forward_rows_by_block[int(block_index)] = tuple(lag_rows)
         best = max(lag_rows, key=lambda row: (float(row["score"]), -abs(float(row["lag"]))))
         # Adjacent half-pixel hypotheses sample the same Sobel response and
         # are not independent alternatives.  Compare against a hypothesis at
@@ -517,82 +689,24 @@ def pair_edge_registration_metrics(
         component_summary = _component_local_edge_summary(
             component_observations, config=config
         )
+        forward_context: Mapping[str, object] = {
+            "component_audits": tuple(component_summary["component_audits"]),
+            "support_by_block": exact_support_by_block,
+            "forward_rows_by_block": dict(forward_rows_by_block),
+            "lags": np.asarray(lags, dtype=np.float64),
+        }
+        if forward_evidence_sink is not None:
+            forward_evidence_sink.append(forward_context)
         if exact_evidence_sink is not None:
-            from dataclasses import replace
-            from .video_s13_m51_r4_component_chain import (
-                S13ExactEdgeComponentEvidence,
-                canonical_s13_support_sha256,
-                make_s13_edge_component_observation,
-                make_s13_unevaluable_edge_component_observation,
+            append_s13_exact_component_evidence_from_forward_context(
+                forward_context,
+                left_features=left_features,
+                right_features=right_features,
+                config=config,
+                exact_evidence_sink=exact_evidence_sink,
+                pair_index=pair_index,
+                global_x_offset=global_x_offset,
             )
-
-            for component in component_summary["component_audits"]:
-                blocks = tuple(int(value) for value in component["block_indices"])
-                supports = [exact_support_by_block[value] for value in blocks if value in exact_support_by_block]
-                if not supports:
-                    continue
-                support = np.unique(np.concatenate(supports), axis=0)
-                try:
-                    observation, evidence = make_s13_edge_component_observation(
-                        pair_index=int(pair_index),
-                        component_id=int(component["component_id"]),
-                        source_indices=(int(pair_index), int(pair_index) + 1),
-                        support_xy=support,
-                        left_magnitude=left_features.gradient,
-                        right_magnitude=right_features.gradient,
-                        left_gradient_x=left_features.gradient_x,
-                        left_gradient_y=left_features.gradient_y,
-                        right_gradient_x=right_features.gradient_x,
-                        right_gradient_y=right_features.gradient_y,
-                        lags=lags,
-                        block_indices=blocks,
-                        minimum_correlation=float(getattr(config, "minimum_c2e_correlation", 0.75)),
-                        minimum_uniqueness_fraction=float(getattr(config, "minimum_c2e_uniqueness_fraction", 0.10)),
-                        maximum_orientation_difference_degrees=float(config.maximum_orientation_difference_degrees),
-                        maximum_forward_reverse_discrepancy_px=float(getattr(config, "maximum_forward_reverse_discrepancy_px", 0.5)),
-                        minimum_signed_gradient_agreement=float(getattr(config, "minimum_signed_gradient_agreement", 0.10)),
-                    )
-                except ValueError as exc:
-                    observation, evidence = make_s13_unevaluable_edge_component_observation(
-                        pair_index=int(pair_index),
-                        component_id=int(component["component_id"]),
-                        source_indices=(int(pair_index), int(pair_index) + 1),
-                        support_xy=support,
-                        left_magnitude=left_features.gradient,
-                        left_gradient_x=left_features.gradient_x,
-                        left_gradient_y=left_features.gradient_y,
-                        lags=lags,
-                        block_indices=blocks,
-                        reason=f"symmetric_hypothesis_failed:{type(exc).__name__}",
-                    )
-                if component.get("ambiguous") is True:
-                    observation = replace(
-                        observation,
-                        evidence_state="ambiguous",
-                        exclusion_reasons=tuple(sorted(set(
-                            (*observation.exclusion_reasons, "component_match_ambiguous")
-                        ))),
-                    )
-                global_support = np.array(evidence.support_xy, copy=True)
-                global_support[:, 0] += int(global_x_offset)
-                global_evidence = S13ExactEdgeComponentEvidence(
-                    support_xy=global_support,
-                    forward_scores=evidence.forward_scores,
-                    reverse_scores=evidence.reverse_scores,
-                    forward_correlations=evidence.forward_correlations,
-                    reverse_correlations=evidence.reverse_correlations,
-                    forward_support_counts=evidence.forward_support_counts,
-                    reverse_support_counts=evidence.reverse_support_counts,
-                )
-                bbox = list(observation.global_bbox_xyxy)
-                bbox[0] += int(global_x_offset)
-                bbox[2] += int(global_x_offset)
-                exact_evidence_sink.append((replace(
-                    observation,
-                    global_bbox_xyxy=tuple(bbox),
-                    fitted_line_offset=observation.fitted_line_offset + observation.normal_x * int(global_x_offset),
-                    mask_sha256=canonical_s13_support_sha256(global_support),
-                ), global_evidence))
         actionable = list(component_summary["actionable_components"])
         if not actionable:
             result = _edge_registration_empty(reason="no_unambiguous_edge_component")

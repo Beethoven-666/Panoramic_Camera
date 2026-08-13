@@ -168,6 +168,24 @@ def summarize_paired_timings(rows: Sequence[Mapping[str, object]]) -> dict[str, 
             raise ValueError(f"paired timing row {index} is not finite")
         if baseline <= 0.0 or candidate <= 0.0:
             raise ValueError(f"paired timing row {index} must be positive")
+        authority: dict[str, str] = {}
+        for key in (
+            "baseline_generation_id",
+            "candidate_generation_id",
+            "baseline_performance_sha256",
+            "candidate_performance_sha256",
+            "baseline_completion_sha256",
+            "candidate_completion_sha256",
+        ):
+            value = row.get(key)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"paired timing row {index} authority is missing: {key}")
+            if key.endswith("sha256") and (
+                len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value.lower())
+            ):
+                raise ValueError(f"paired timing row {index} authority hash is invalid: {key}")
+            authority[key] = value
         delta = candidate - baseline
         baselines.append(baseline)
         deltas.append(delta)
@@ -178,6 +196,7 @@ def summarize_paired_timings(rows: Sequence[Mapping[str, object]]) -> dict[str, 
                 "baseline_seconds": baseline,
                 "candidate_seconds": candidate,
                 "delta_seconds": delta,
+                **authority,
             }
         )
     observed_orders = {str(row["order"]) for row in normalized_rows}
@@ -776,6 +795,33 @@ def verify(root: Path) -> dict[str, object]:
     timing_rows = timing_input.get("pairs")
     if not isinstance(timing_rows, list) or not all(isinstance(row, Mapping) for row in timing_rows):
         raise ValueError("paired timing input rows are invalid")
+    expected_candidate_commit = next(iter(commits))
+    timing_identity = {
+        "baseline_implementation_id": (
+            "s013_output_first_progressive_dense_central_slit_m51_r3_component_local_ambiguity"
+        ),
+        "candidate_implementation_id": (
+            "s013_output_first_progressive_dense_central_slit_m51_r4_component_chain_c2e"
+        ),
+    }
+    if timing_input.get("cold_runs_excluded") is not True:
+        raise ValueError("paired timing cold runs were not explicitly excluded")
+    if (
+        timing_input.get("baseline_working_tree_dirty") is not False
+        or timing_input.get("candidate_working_tree_dirty") is not False
+    ):
+        raise ValueError("paired timing authority requires two clean worktrees")
+    for key, expected in timing_identity.items():
+        if timing_input.get(key) != expected:
+            raise ValueError(f"paired timing implementation authority is invalid: {key}")
+    baseline_commit = timing_input.get("baseline_source_commit")
+    candidate_commit = timing_input.get("candidate_source_commit")
+    if not isinstance(baseline_commit, str) or len(baseline_commit) != 40:
+        raise ValueError("paired timing baseline source commit is invalid")
+    if candidate_commit != expected_candidate_commit:
+        raise ValueError("paired timing candidate source commit does not match the 4x2 seal")
+    if baseline_commit == candidate_commit:
+        raise ValueError("paired timing baseline and candidate commits must be distinct")
     paired_summary = summarize_paired_timings(timing_rows)
     if not paired_summary["median_passed"] or not paired_summary["maximum_passed"]:
         raise ValueError("paired timing performance gate failed")

@@ -265,6 +265,8 @@ def _build_fixture(tmp_path: Path) -> Path:
         "working_tree_dirty": False,
         "hard_audit_passed": True,
         "m6_eligible": False,
+        "application_state": "none",
+        "repair_complete": False,
         "provenance_schema": "gemini305-video-s13-p2-provenance/v6-r2",
         "p2_replay_schema": "gemini305-video-s13-p2-replay/v2",
         "component_transaction_manifest_sha256": component_sha,
@@ -292,6 +294,19 @@ def test_v6_r2_verifier_requires_completion_identity(tmp_path: Path) -> None:
     completion.pop("implementation_id")
     _json(p2 / "P2_completion.json", completion)
     with pytest.raises(ValueError, match="identity"):
+        verify_s13_v6_r2_p2(p2)
+
+
+def test_v6_r2_verifier_rejects_application_state_lineage_tamper(
+    tmp_path: Path,
+) -> None:
+    p2 = _build_fixture(tmp_path)
+    completion_path = p2 / "P2_completion.json"
+    completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    completion["application_state"] = "complete"
+    completion_path.write_text(json.dumps(completion), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="application state lineage"):
         verify_s13_v6_r2_p2(p2)
 
 

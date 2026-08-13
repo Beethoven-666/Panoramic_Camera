@@ -340,6 +340,10 @@ def make_s13_edge_component_observation(
     maximum_orientation_difference_degrees: float = 10.0,
     maximum_forward_reverse_discrepancy_px: float = 0.5,
     minimum_signed_gradient_agreement: float = 0.10,
+    precomputed_forward_scores: np.ndarray | None = None,
+    precomputed_forward_correlations: np.ndarray | None = None,
+    precomputed_forward_agreements: np.ndarray | None = None,
+    precomputed_forward_support_counts: np.ndarray | None = None,
 ) -> tuple[S13EdgeComponentObservation, S13ExactEdgeComponentEvidence]:
     """Fit one exact component and evaluate symmetric normal-lag hypotheses."""
 
@@ -368,11 +372,29 @@ def make_s13_edge_component_observation(
         support, weights, lgx[y, x], lgy[y, x]
     )
     lag_values = canonical_s13_normal_search_lags() if lags is None else _readonly(lags, np.float64)
-    forward = _hypothesis_scores(
-        reference_magnitude=left_mag, moving_magnitude=right_mag,
-        reference_gx=lgx, reference_gy=lgy, moving_gx=rgx, moving_gy=rgy,
-        anchor_xy=support, normal_xy=(nx, ny), lags=lag_values,
+    precomputed = (
+        precomputed_forward_scores,
+        precomputed_forward_correlations,
+        precomputed_forward_agreements,
+        precomputed_forward_support_counts,
     )
+    if any(value is not None for value in precomputed):
+        if not all(value is not None for value in precomputed):
+            raise ValueError("C2E precomputed forward hypothesis arrays are incomplete")
+        forward = (
+            np.asarray(precomputed_forward_scores, dtype=np.float64),
+            np.asarray(precomputed_forward_correlations, dtype=np.float64),
+            np.asarray(precomputed_forward_agreements, dtype=np.float64),
+            np.asarray(precomputed_forward_support_counts, dtype=np.int32),
+        )
+        if any(value.shape != lag_values.shape for value in forward):
+            raise ValueError("C2E precomputed forward hypothesis shapes disagree")
+    else:
+        forward = _hypothesis_scores(
+            reference_magnitude=left_mag, moving_magnitude=right_mag,
+            reference_gx=lgx, reference_gy=lgy, moving_gx=rgx, moving_gy=rgy,
+            anchor_xy=support, normal_xy=(nx, ny), lags=lag_values,
+        )
     forward_index, forward_uniqueness = _best_hypothesis(forward[0], lag_values)
     forward_lag = float(lag_values[forward_index])
     moving_support = support.astype(np.float64) + forward_lag * np.asarray((nx, ny))[None, :]
@@ -1389,13 +1411,22 @@ def select_s13_component_patch_set(
         for row in candidates if row.decision != "resolved" or row.segment.segment_id in rejected
     )
     severe_obligations = [row for row in obligations if row.severe and row.evaluable]
-    resolved_pairs = {
-        observation.pair_index
+    resolved_observations = {
+        (
+            observation.pair_index,
+            observation.component_id,
+            observation.mask_sha256,
+        )
         for candidate in winners if candidate.decision == "resolved"
         for observation in candidate.segment.observations
     }
     complete = bool(severe_obligations) and all(
-        obligation.pair_index in resolved_pairs for obligation in severe_obligations
+        (
+            obligation.pair_index,
+            obligation.component_id,
+            obligation.support_sha256,
+        ) in resolved_observations
+        for obligation in severe_obligations
     )
     state: Literal["complete", "partial", "none"]
     if not winners:
