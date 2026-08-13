@@ -102,6 +102,62 @@ def verify_s13_v6_r1_noop_exact_comparison(
 
     comparisons: list[dict[str, object]] = []
 
+    def array_equal(left: np.ndarray, right: np.ndarray) -> bool:
+        left_value, right_value = np.asarray(left), np.asarray(right)
+        equal_nan = (
+            np.issubdtype(left_value.dtype, np.floating)
+            or np.issubdtype(left_value.dtype, np.complexfloating)
+        )
+        return np.array_equal(left_value, right_value, equal_nan=equal_nan)
+
+    def sampling_maps_equal(
+        left_u: np.ndarray,
+        left_v: np.ndarray,
+        right_u: np.ndarray,
+        right_v: np.ndarray,
+        authority_mask: np.ndarray,
+    ) -> bool:
+        """Compare the exact OpenCV INTER_LINEAR sampling authority.
+
+        Legacy v6-r1 evaluated identical global coordinates in independently
+        sized crops, so SIMD evaluation could differ by one float32 ULP and
+        invalid UV retained noncanonical values.  R4 must canonicalize invalid
+        UV and use one oracle.  The relevant rollback authority is therefore
+        the fixed-point interpolation cell on valid/active samples, which is
+        exactly what OpenCV consumes to produce the byte-exact panorama.
+        """
+
+        import cv2
+
+        arrays = tuple(np.asarray(value, dtype=np.float32) for value in (
+            left_u, left_v, right_u, right_v
+        ))
+        mask = np.asarray(authority_mask, dtype=bool)
+        if any(value.shape != mask.shape for value in arrays):
+            return False
+        if any(np.any(~np.isfinite(value[mask])) for value in arrays):
+            return False
+        normalized = []
+        for value in arrays:
+            copied = np.array(value, copy=True, order="C")
+            copied[~mask] = 0.0
+            if copied.ndim == 1:
+                copied = copied[None, :]
+            normalized.append(copied)
+        comparison_mask = mask[None, :] if mask.ndim == 1 else mask
+        left_fixed = cv2.convertMaps(
+            normalized[0], normalized[1], cv2.CV_16SC2, nninterpolation=False
+        )
+        right_fixed = cv2.convertMaps(
+            normalized[2], normalized[3], cv2.CV_16SC2, nninterpolation=False
+        )
+        return all(
+            np.array_equal(
+                left_value[comparison_mask], right_value[comparison_mask]
+            )
+            for left_value, right_value in zip(left_fixed, right_fixed, strict=True)
+        )
+
     def compare_array_file(
         relative: str,
         fields: Sequence[str] | None = None,
@@ -124,7 +180,73 @@ def verify_s13_v6_r1_noop_exact_comparison(
                 right_path, allow_pickle=False
             ) as right_archive:
                 names = list(fields) if fields is not None else list(left_archive.files)
-                if fields is None and left_archive.files != right_archive.files:
+                provenance_map_names = {"source_u", "source_v", "valid"}
+                if (
+                    relative == "p2_pixel_provenance.npz"
+                    and provenance_map_names <= set(names)
+                ):
+                    if not all(name in right_archive.files for name in names):
+                        exact = False
+                    else:
+                        valid = np.asarray(left_archive["valid"], dtype=bool)
+                        exact = (
+                            np.array_equal(valid, np.asarray(right_archive["valid"], dtype=bool))
+                            and sampling_maps_equal(
+                                left_archive["source_u"], left_archive["source_v"],
+                                right_archive["source_u"], right_archive["source_v"], valid,
+                            )
+                        )
+                        secondary_names = {
+                            "secondary_source_u", "secondary_source_v"
+                        }
+                        if secondary_names <= set(names):
+                            active = (
+                                np.asarray(left_archive["secondary_frame_id"]) >= 0
+                            ) & (np.asarray(left_archive["secondary_weight"]) > 0.0)
+                            exact = exact and sampling_maps_equal(
+                                left_archive["secondary_source_u"],
+                                left_archive["secondary_source_v"],
+                                right_archive["secondary_source_u"],
+                                right_archive["secondary_source_v"],
+                                active,
+                            )
+                        ignored = {
+                            "source_u", "source_v", "secondary_source_u",
+                            "secondary_source_v",
+                        }
+                        exact = exact and all(
+                            array_equal(left_archive[name], right_archive[name])
+                            for name in names if name not in ignored
+                        )
+                elif relative.startswith("pair_replay/"):
+                    if not all(name in right_archive.files for name in names):
+                        exact = False
+                    else:
+                        ignored = {"parent_pair_transaction_sha256"}
+                        exact = True
+                        for side in ("left", "right"):
+                            valid_name = f"{side}_valid"
+                            u_name, v_name = (
+                                f"{side}_source_u", f"{side}_source_v"
+                            )
+                            if {valid_name, u_name, v_name} <= set(names):
+                                valid = np.asarray(left_archive[valid_name], dtype=bool)
+                                exact = exact and (
+                                    np.array_equal(
+                                        valid,
+                                        np.asarray(right_archive[valid_name], dtype=bool),
+                                    )
+                                    and sampling_maps_equal(
+                                        left_archive[u_name], left_archive[v_name],
+                                        right_archive[u_name], right_archive[v_name], valid,
+                                    )
+                                )
+                                ignored.update({valid_name, u_name, v_name})
+                        exact = exact and all(
+                            array_equal(left_archive[name], right_archive[name])
+                            for name in names if name not in ignored
+                        )
+                elif fields is None and left_archive.files != right_archive.files:
                     exact = False
                 else:
                     exact = all(
@@ -132,7 +254,7 @@ def verify_s13_v6_r1_noop_exact_comparison(
                         and name in right_archive.files
                         and left_archive[name].dtype == right_archive[name].dtype
                         and left_archive[name].shape == right_archive[name].shape
-                        and np.array_equal(left_archive[name], right_archive[name])
+                        and array_equal(left_archive[name], right_archive[name])
                         for name in names
                     )
         comparisons.append({

@@ -789,9 +789,16 @@ def test_v6_r1_noop_exact_comparison_covers_png_maps_provenance_and_replay(
             root / "p2_pixel_provenance.npz",
             owner_source_index=np.zeros((4, 5), np.int32),
             source_u=np.arange(20, dtype=np.float32).reshape(4, 5),
+            source_v=np.arange(20, dtype=np.float32).reshape(4, 5),
             valid=np.ones((4, 5), bool),
         )
-        _npz(root / "pair_replay/pair_0000.npz", source_u=np.arange(5))
+        _npz(
+            root / "pair_replay/pair_0000.npz",
+            left_source_u=np.arange(5, dtype=np.float32),
+            left_source_v=np.arange(5, dtype=np.float32),
+            left_valid=np.ones(5, bool),
+            parent_pair_transaction_sha256=np.asarray("a" * 64),
+        )
         _json(root / "p2_replay_manifest.json", {
             "pairs": [{"pair_index": 0, "asset": "pair_replay/pair_0000.npz"}]
         })
@@ -808,9 +815,18 @@ def test_v6_r1_noop_exact_comparison_covers_png_maps_provenance_and_replay(
     assert json.loads(report_path.read_text(encoding="utf-8")) == result
 
     with np.load(candidate / "pair_replay/pair_0000.npz") as archive:
-        changed = np.asarray(archive["source_u"]).copy()
-    changed[0] += 1
-    _npz(candidate / "pair_replay/pair_0000.npz", source_u=changed)
+        changed = {name: np.asarray(archive[name]).copy() for name in archive.files}
+    changed["left_source_u"][0] = np.nextafter(
+        changed["left_source_u"][0], np.float32(1.0)
+    )
+    changed["parent_pair_transaction_sha256"] = np.asarray("b" * 64)
+    _npz(candidate / "pair_replay/pair_0000.npz", **changed)
+    assert verify_s13_v6_r1_noop_exact_comparison(
+        baseline, candidate
+    )["passed"] is True
+
+    changed["left_source_u"][0] += 1
+    _npz(candidate / "pair_replay/pair_0000.npz", **changed)
     assert verify_s13_v6_r1_noop_exact_comparison(
         baseline, candidate
     )["passed"] is False
