@@ -443,6 +443,26 @@ class S13EdgeComponentObservation:
             raise ValueError("C2E observation contains nonfinite metrics")
         if not math.isclose(normal_norm, 1.0, rel_tol=0.0, abs_tol=1e-6):
             raise ValueError("C2E observation normal must be unit length")
+        # OpenCV/LAPACK may differ by a few last bits across otherwise exact
+        # repeated runs.  Freeze the physical observation before it becomes
+        # chain/match authority; five-decimal metric quantization is then
+        # serialized by the existing canonical-six-decimal JSON contract.
+        quantized_normal = np.asarray(
+            (round(float(self.normal_x), 5), round(float(self.normal_y), 5)),
+            dtype=np.float64,
+        )
+        quantized_norm = float(np.linalg.norm(quantized_normal))
+        if quantized_norm <= 0.0:
+            raise ValueError("C2E quantized observation normal is invalid")
+        quantized_normal /= quantized_norm
+        object.__setattr__(self, "normal_x", float(quantized_normal[0]))
+        object.__setattr__(self, "normal_y", float(quantized_normal[1]))
+        for name in (
+            "fitted_line_offset", "forward_best_lag_px", "reverse_best_lag_px",
+            "correlation", "uniqueness_fraction", "orientation_difference_degrees",
+            "signed_gradient_polarity", "signed_gradient_agreement",
+        ):
+            object.__setattr__(self, name, round(float(getattr(self, name)), 5))
         if len(self.mask_sha256) != 64:
             raise ValueError("C2E observation mask SHA is invalid")
         if self.evidence_state not in {"actionable", "safe_anchor", "ambiguous", "unevaluable"}:
@@ -488,7 +508,7 @@ class S13ExactEdgeComponentEvidence:
             "forward_scores", "reverse_scores", "forward_correlations", "reverse_correlations"
         ):
             values = np.asarray(getattr(self, name), dtype=np.float64)
-            values = np.where(np.isfinite(values), np.round(values, 6), values)
+            values = np.where(np.isfinite(values), np.round(values, 5), values)
             object.__setattr__(self, name, _readonly(values, np.float64))
         for name in ("forward_support_counts", "reverse_support_counts"):
             object.__setattr__(self, name, _readonly(getattr(self, name), np.int32))

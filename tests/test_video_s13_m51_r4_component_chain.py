@@ -13,6 +13,7 @@ from panorama_demo.video_s13_m51_r4_component_chain import (
     S13ComponentSegmentCandidate,
     S13ComponentSolverError,
     S13EdgeComponentObservation,
+    S13ExactEdgeComponentEvidence,
     S13SourceComponentCorrection,
     aggregate_s13_runtime_edge_traces,
     audit_s13_component_candidate_map_safety,
@@ -117,6 +118,39 @@ def test_canonical_lags_are_exactly_thirteen_half_pixel_states() -> None:
     assert lags.dtype == np.float64
     assert lags.tolist() == pytest.approx([x / 2 for x in range(-6, 7)])
     assert not lags.flags.writeable
+
+
+def test_observation_and_exact_evidence_freeze_sub_micro_run_drift() -> None:
+    left = _observation(3, 4, 1.5)
+    right = replace(
+        left,
+        normal_x=0.0000004,
+        normal_y=0.99999999999992,
+        fitted_line_offset=20.0000009,
+        correlation=0.9500009,
+    )
+    assert left.normal_x == right.normal_x
+    assert left.normal_y == right.normal_y
+    assert left.fitted_line_offset == right.fitted_line_offset
+    assert left.correlation == right.correlation
+
+    kwargs = {
+        "support_xy": np.asarray(((1, 2), (2, 3)), np.int32),
+        "reverse_scores": np.linspace(0.1, 1.3, 13),
+        "forward_correlations": np.linspace(0.2, 0.8, 13),
+        "reverse_correlations": np.linspace(0.3, 0.9, 13),
+        "forward_support_counts": np.full(13, 20, np.int32),
+        "reverse_support_counts": np.full(13, 20, np.int32),
+    }
+    first = S13ExactEdgeComponentEvidence(
+        forward_scores=np.asarray([0.287031, *np.linspace(0.2, 0.8, 12)]),
+        **kwargs,
+    )
+    second = S13ExactEdgeComponentEvidence(
+        forward_scores=np.asarray([0.287032, *np.linspace(0.2, 0.8, 12)]),
+        **kwargs,
+    )
+    np.testing.assert_array_equal(first.forward_scores, second.forward_scores)
 
 
 def test_forward_reverse_observation_fits_line_and_freezes_support() -> None:
