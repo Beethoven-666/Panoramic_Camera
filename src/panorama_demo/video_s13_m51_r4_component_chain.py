@@ -1208,9 +1208,18 @@ def build_s13_source_component_correction(
             endpoint_weight /= float(endpoint_weight.max())
         weight *= endpoint_weight.astype(np.float32)
     weight[~np.isfinite(weight)] = 0.0
-    weight = np.clip(weight, 0.0, 1.0).astype(np.float32)
-    delta_u = weight * np.float32(source_offset_px * normal[0])
-    delta_v = weight * np.float32(source_offset_px * normal[1])
+    # OpenCV's distance transform may differ by a few float32 ULPs across
+    # worker scheduling. Canonicalize well below the 1e-4 pixel audit scale
+    # before hashing so repeated clean runs produce byte-exact fields.
+    weight = np.round(
+        np.clip(weight, 0.0, 1.0).astype(np.float64), decimals=6
+    ).astype(np.float32)
+    delta_u = np.round(
+        weight.astype(np.float64) * (source_offset_px * normal[0]), decimals=6
+    ).astype(np.float32)
+    delta_v = np.round(
+        weight.astype(np.float64) * (source_offset_px * normal[1]), decimals=6
+    ).astype(np.float32)
     payload = {
         "segment_id": segment_id, "source_index": source_index, "frame_id": frame_id,
         "domain_xyxy": (x0, y0, x1, y1), "array_sha256": _array_sha(delta_u, delta_v, weight),

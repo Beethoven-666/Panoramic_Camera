@@ -217,6 +217,8 @@ def test_correction_is_local_readonly_and_patch_conflicts_choose_utility() -> No
     assert np.all(correction.delta_u == 0.0)
     assert np.all(correction.delta_v[correction.weight == 0] == 0.0)
     assert not correction.delta_v.flags.writeable
+    for values in (correction.weight, correction.delta_u, correction.delta_v):
+        assert np.allclose(values.astype(np.float64) * 1e6, np.rint(values * 1e6))
     low = S13ComponentSegmentCandidate(
         segment, (2.0,), 1.0, (correction,), "resolved", (),
         {"rescued_severe_seam_count": 1, "worst_seam_absolute_improvement": 0.5,
