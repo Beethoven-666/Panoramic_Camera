@@ -1779,12 +1779,18 @@ def _run_m5(
                     "right_source_map_slice_sha256": right_slice_sha,
                     "relevant_segment_ids": [
                         row["segment_id"] for row in component_audit.get("segments", [])
-                        if segment_affects_pair(row, bound_pair.pair_index)
+                        if (
+                            str(row["segment_id"]) in accepted_segment_ids
+                            and segment_affects_pair(row, bound_pair.pair_index)
+                        )
                     ],
                     "relevant_segment_transaction_sha256": [
                         segment_asset_by_id[str(row["segment_id"])]["json_sha256"]
                         for row in component_audit.get("segments", [])
-                        if segment_affects_pair(row, bound_pair.pair_index)
+                        if (
+                            str(row["segment_id"]) in accepted_segment_ids
+                            and segment_affects_pair(row, bound_pair.pair_index)
+                        )
                     ],
                 })
             replay_manifest_rows.append(replay_row)
