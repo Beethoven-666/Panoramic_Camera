@@ -1968,25 +1968,22 @@ def run_s13_m5(
                 exterior & ((oracle.u != base_u) | (oracle.v != base_v))
             ))
             valid_mismatch += int(np.count_nonzero((oracle.valid != 0) != base[2]))
-            du_dy, du_dx = np.gradient(oracle.u.astype(np.float64))
-            dv_dy, dv_dx = np.gradient(oracle.v.astype(np.float64))
-            determinant = du_dx * dv_dy - du_dy * dv_dx
             valid = oracle.valid != 0
             interior_valid = valid.copy()
             interior_valid[1:, :] &= valid[:-1, :]
             interior_valid[:-1, :] &= valid[1:, :]
             interior_valid[:, 1:] &= valid[:, :-1]
             interior_valid[:, :-1] &= valid[:, 1:]
-            evaluable = (
-                interior_valid
-                & formal_owner
-                & (oracle.field_id >= 0)
-                & np.isfinite(determinant)
-            )
-            if np.any(evaluable):
-                minimum_jacobian = min(
-                    minimum_jacobian, float(np.min(determinant[evaluable]))
-                )
+            correction_domain = interior_valid & formal_owner & (oracle.field_id >= 0)
+            if np.any(correction_domain):
+                du_dy, du_dx = np.gradient(oracle.u.astype(np.float64))
+                dv_dy, dv_dx = np.gradient(oracle.v.astype(np.float64))
+                determinant = du_dx * dv_dy - du_dy * dv_dx
+                evaluable = correction_domain & np.isfinite(determinant)
+                if np.any(evaluable):
+                    minimum_jacobian = min(
+                        minimum_jacobian, float(np.min(determinant[evaluable]))
+                    )
         component_failures = []
         if exterior_mismatch:
             component_failures.append("omega_out_exterior_map_changed")
