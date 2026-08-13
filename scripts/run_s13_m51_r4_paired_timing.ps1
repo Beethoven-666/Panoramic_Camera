@@ -56,7 +56,7 @@ function Invoke-TimedCandidate {
     $performance = Join-Path $RunRoot (Join-Path $pointer.generation 'P2\performance.json')
     $document = Get-Content -LiteralPath $performance -Raw -Encoding utf8 | ConvertFrom-Json
     $seconds = [double]$document.total_m5
-    if (-not [double]::IsFinite($seconds) -or $seconds -le 0.0) {
+    if ([double]::IsNaN($seconds) -or [double]::IsInfinity($seconds) -or $seconds -le 0.0) {
         throw "Paired timing run has invalid total_m5: $Label"
     }
     return $seconds
