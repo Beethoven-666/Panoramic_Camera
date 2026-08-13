@@ -697,7 +697,11 @@ def pair_edge_registration_metrics(
             accepted.append(audit)
 
     if component_local and (
-        accepted or (exact_evidence_sink is not None and component_observations)
+        accepted
+        or (
+            (exact_evidence_sink is not None or forward_evidence_sink is not None)
+            and component_observations
+        )
     ):
         if accepted:
             legacy_absolute_lags = np.abs(np.asarray(

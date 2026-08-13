@@ -1377,6 +1377,26 @@ def test_runtime_sink_freezes_detected_component_when_all_lags_are_unevaluable()
     assert obligations[0].evaluable is False
 
 
+def test_runtime_forward_context_survives_all_lags_unevaluable() -> None:
+    left, _right = _runtime_shifted_line()
+    contexts: list[object] = []
+
+    metrics = pair_edge_registration_metrics(
+        left,
+        np.zeros_like(left),
+        np.ones(left.shape[:2], bool),
+        np.ones(left.shape[:2], bool),
+        np.full(left.shape[0], left.shape[1] // 2, np.int32),
+        config=S13M51R4Config(),
+        forward_evidence_sink=contexts,
+        pair_index=5,
+    )
+
+    assert metrics["evaluable"] is False
+    assert len(contexts) == 1
+    assert contexts[0]["component_audits"]
+
+
 def test_runtime_sink_reuses_forward_rows_and_only_samples_reverse(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
