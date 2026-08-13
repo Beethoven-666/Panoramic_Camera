@@ -1608,6 +1608,55 @@ def _overlay_seams(image: np.ndarray, pairs: Sequence[S13M5Pair]) -> np.ndarray:
     return overlay
 
 
+def render_s13_component_roi_from_raw(
+    schedule: S012Schedule,
+    calibration: CameraIntrinsics,
+    image_loader: Callable[[int], np.ndarray],
+    vertical: S13VerticalSolution,
+    pairs: Sequence[S13M5Pair],
+    roi_xyxy: tuple[int, int, int, int],
+    *,
+    patch_set: S13ComponentPatchSet | None,
+    field_ids: Mapping[str, int] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Render one owner-only validation ROI without a full-canvas render."""
+
+    x0, y0, x1, y1 = roi_xyxy
+    if not (0 <= x0 < x1 <= schedule.canvas_width):
+        raise ValueError("S1.3 component ROI x-domain is invalid")
+    if not (0 <= y0 < y1 <= schedule.canvas_height):
+        raise ValueError("S1.3 component ROI y-domain is invalid")
+    seams = _seams_array(schedule, pairs, final=True)[:, y0:y1]
+    columns = np.arange(x0, x1, dtype=np.int32)[None, :]
+    owner = np.zeros((y1 - y0, x1 - x0), dtype=np.int32)
+    for seam in seams:
+        owner += columns >= seam[:, None]
+    output = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
+    valid_output = np.zeros(owner.shape, dtype=bool)
+    for source_index in np.unique(owner):
+        source = int(source_index)
+        alignment = None
+        if source > 0 and pairs[source - 1].alignment is not None:
+            alignment = pairs[source - 1].alignment.selected
+        corrections = tuple(
+            () if patch_set is None
+            else patch_set.corrections_by_source.get(source, ())
+        )
+        maps = _map_crop(
+            schedule, calibration, source, x0, x1,
+            vertical.global_offsets_px[source], alignment, corrections,
+            field_ids,
+        )
+        sampled, valid = _sample_crop(
+            np.asarray(image_loader(int(schedule.assignments[source].frame_id))),
+            tuple(row[y0:y1] for row in maps),
+        )
+        selected = (owner == source) & valid
+        output[selected] = sampled[selected]
+        valid_output[selected] = True
+    return output, valid_output
+
+
 def run_s13_m5(
     schedule: S012Schedule,
     calibration: CameraIntrinsics,
@@ -1870,6 +1919,14 @@ def run_s13_m5(
                     "segment_id": segment.segment_id,
                     "pair_indices": list(segment.pair_indices),
                     "source_indices": list(segment.source_indices),
+                    "observation_authority": [
+                        {
+                            "pair_index": row.pair_index,
+                            "component_id": row.component_id,
+                            "support_sha256": row.mask_sha256,
+                        }
+                        for row in segment.observations
+                    ],
                     "source_offsets_px": {str(key): value for key, value in offsets.items()},
                     "gain": selected.gain,
                     "state": selected.decision,

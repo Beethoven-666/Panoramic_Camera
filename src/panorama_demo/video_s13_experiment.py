@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import time
 import uuid
@@ -41,7 +42,11 @@ from .video_s13_contract import (
     load_s13_config,
 )
 from .video_s13_motion import measure_s13_motion
-from .video_s13_m5 import _finalize_v5_transaction, run_s13_m5
+from .video_s13_m5 import (
+    _finalize_v5_transaction,
+    render_s13_component_roi_from_raw,
+    run_s13_m5,
+)
 from .video_s13_m61_evidence import (
     P2_V4_COMPLETION_SCHEMA,
     S13PhotometricEvidenceConfig,
@@ -72,6 +77,83 @@ from .video_s13_v6_r2_verifier import (
     canonical_source_map_slice_sha256,
     verify_s13_v6_r2_p2,
 )
+
+
+def _strong_edge_trace_metrics(
+    image: np.ndarray, valid: np.ndarray
+) -> tuple[dict[str, object], np.ndarray]:
+    """Measure the dominant per-column edge trace in an external validation ROI."""
+
+    if image.ndim != 3 or image.shape[:2] != valid.shape:
+        raise ValueError("S1.3 box ROI image/valid shapes disagree")
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    magnitude = np.hypot(gx, gy)
+    finite_values = magnitude[valid]
+    threshold = (
+        max(20.0, float(np.percentile(finite_values, 75.0)))
+        if finite_values.size else math.inf
+    )
+    trace = np.full(image.shape[1], -1, dtype=np.int32)
+    double_edge = np.zeros(image.shape[1], dtype=bool)
+    for column in range(image.shape[1]):
+        values = magnitude[:, column].copy()
+        values[~valid[:, column]] = 0.0
+        if values.size < 3:
+            continue
+        peaks = np.flatnonzero(
+            (values >= np.roll(values, 1)) & (values >= np.roll(values, -1))
+            & (values >= threshold)
+        )
+        peaks = peaks[(peaks > 0) & (peaks + 1 < values.size)]
+        if peaks.size == 0:
+            continue
+        primary = min((int(row) for row in peaks), key=lambda row: (-values[row], row))
+        trace[column] = primary
+        double_edge[column] = any(
+            abs(int(row) - primary) >= 3
+            and values[int(row)] >= 0.65 * values[primary]
+            for row in peaks if int(row) != primary
+        )
+    adjacent = (trace[:-1] >= 0) & (trace[1:] >= 0)
+    steps = np.abs(np.diff(trace.astype(np.float64))[adjacent])
+    second_evaluable = (trace[:-2] >= 0) & (trace[1:-1] >= 0) & (trace[2:] >= 0)
+    second = np.abs(np.diff(trace.astype(np.float64), n=2)[second_evaluable])
+    missing = trace < 0
+    longest_break = 0
+    current_break = 0
+    for value in missing:
+        current_break = current_break + 1 if value else 0
+        longest_break = max(longest_break, current_break)
+    signed_steps = np.diff(trace.astype(np.float64))[adjacent]
+    nonzero_signs = np.sign(signed_steps[np.abs(signed_steps) >= 0.5])
+    backtrack_count = int(np.count_nonzero(np.diff(nonzero_signs) != 0))
+    overlay = image.copy()
+    columns = np.flatnonzero(trace >= 0)
+    overlay[trace[columns], columns] = (0, 0, 255)
+    metrics: dict[str, object] = {
+        "evaluable_column_count": int(columns.size),
+        "coverage_fraction": float(columns.size / max(len(trace), 1)),
+        "edge_step_p50_px": (
+            float(np.percentile(steps, 50.0)) if steps.size else None
+        ),
+        "edge_step_p95_px": (
+            float(np.percentile(steps, 95.0)) if steps.size else None
+        ),
+        "maximum_local_step_px": float(np.max(steps)) if steps.size else None,
+        "second_difference_p95_px": (
+            float(np.percentile(second, 95.0)) if second.size else None
+        ),
+        "break_length_px": int(longest_break),
+        "double_edge_length_px": int(np.count_nonzero(double_edge)),
+        "break_double_edge_union_length_px": int(
+            np.count_nonzero(missing | double_edge)
+        ),
+        "backtrack_count": backtrack_count,
+        "threshold": threshold if math.isfinite(threshold) else None,
+    }
+    return metrics, overlay
 
 
 REPORT_SCHEMA = "gemini305-video-s13-output-first-report/v1"
@@ -363,28 +445,124 @@ def _run_m5(
             y0, y1 = max(0, min(height, 280)), max(0, min(height, 350))
             if x1 <= x0 or y1 <= y0:
                 x0, x1, y0, y1 = 0, width, 0, height
-            current_roi = m5.geometry_result.image[y0:y1, x0:x1]
-            candidate_roi = m5.final_result.image[y0:y1, x0:x1]
+            validation_raw_cache: dict[int, np.ndarray] = {}
+
+            def validation_image_loader(frame_id: int) -> np.ndarray:
+                if frame_id not in validation_raw_cache:
+                    validation_raw_cache[frame_id] = np.asarray(image_loader(frame_id))
+                return validation_raw_cache[frame_id]
+
+            component_doc = dict(m5.component_chain_audit or {})
+            field_ids = {
+                str(key): int(value)
+                for key, value in dict(component_doc.get("field_id_table", {})).items()
+            }
+            current_roi, current_valid = render_s13_component_roi_from_raw(
+                schedule, calibration, validation_image_loader, vertical, m5.pairs,
+                (x0, y0, x1, y1), patch_set=None,
+            )
+            candidate_roi, candidate_valid = render_s13_component_roi_from_raw(
+                schedule, calibration, validation_image_loader, vertical, m5.pairs,
+                (x0, y0, x1, y1), patch_set=m5.component_patch_set,
+                field_ids=field_ids,
+            )
+            current_metrics, current_overlay = _strong_edge_trace_metrics(
+                current_roi, current_valid
+            )
+            candidate_metrics, candidate_overlay = _strong_edge_trace_metrics(
+                candidate_roi, candidate_valid
+            )
             write_image(validation_root / "current_roi.png", current_roi)
             write_image(validation_root / "candidate_roi.png", candidate_roi)
             write_image(
                 validation_root / "current_vs_candidate.png",
                 np.concatenate((current_roi, candidate_roi), axis=1),
             )
-            overlay_roi = m5.seam_overlay[y0:y1, x0:x1]
-            write_image(validation_root / "edge_trace_overlay.png", overlay_roi)
-            write_image(validation_root / "component_masks_overlay.png", overlay_roi)
-            component_doc = dict(m5.component_chain_audit or {})
+            write_image(
+                validation_root / "edge_trace_overlay.png",
+                np.concatenate((current_overlay, candidate_overlay), axis=1),
+            )
+            mask_overlay = candidate_roi.copy()
+            field = m5.final_result.pixel_provenance[
+                "component_correction_field_id"
+            ][y0:y1, x0:x1]
+            corrected = field >= 0
+            mask_overlay[corrected] = (
+                0.5 * mask_overlay[corrected].astype(np.float32)
+                + np.asarray((0, 127, 0), dtype=np.float32)
+            ).astype(np.uint8)
+            write_image(validation_root / "component_masks_overlay.png", mask_overlay)
             pair_rows = [
                 row for row in component_doc.get("forward_reverse_hypotheses", [])
                 if 68 <= int(row.get("pair_index", -1)) <= 78
+            ]
+            relevant_obligations = [
+                row for row in component_doc.get("baseline_c2e_obligations", [])
+                if int(row["bbox_xyxy"][0]) < x1
+                and int(row["bbox_xyxy"][2]) > x0
+                and int(row["bbox_xyxy"][1]) < y1
+                and int(row["bbox_xyxy"][3]) > y0
+            ]
+            accepted_authority = {
+                (
+                    int(row["pair_index"]), int(row["component_id"]),
+                    str(row["support_sha256"]),
+                )
+                for segment in component_doc.get("segments", [])
+                if segment.get("state") in {"resolved", "improved_unresolved"}
+                for row in segment.get("observation_authority", [])
+            }
+            obligations_covered = bool(relevant_obligations) and all(
+                (int(row["pair_index"]), int(row["component_id"]), str(row["support_sha256"]))
+                in accepted_authority
+                for row in relevant_obligations
+            )
+            baseline_union = int(current_metrics["break_double_edge_union_length_px"])
+            candidate_union = int(candidate_metrics["break_double_edge_union_length_px"])
+            break_gate = (
+                candidate_union <= math.floor(0.5 * baseline_union)
+                if baseline_union >= 4 else candidate_union <= baseline_union
+            )
+            p95 = candidate_metrics["edge_step_p95_px"]
+            maximum_step = candidate_metrics["maximum_local_step_px"]
+            coverage_gate = float(candidate_metrics["coverage_fraction"]) >= float(
+                getattr(m51_r2_config, "minimum_evaluable_transition_fraction", 0.5)
+            )
+            box_target_repair_complete = bool(
+                obligations_covered
+                and coverage_gate
+                and isinstance(p95, (int, float)) and float(p95) <= 1.0
+                and isinstance(maximum_step, (int, float))
+                and float(maximum_step) <= 1.5
+                and break_gate
+                and int(candidate_metrics["backtrack_count"])
+                <= int(current_metrics["backtrack_count"])
+            )
+            failed_box_gates = [
+                name for name, passed in {
+                    "target_obligations_covered": obligations_covered,
+                    "edge_coverage": coverage_gate,
+                    "edge_step_p95": isinstance(p95, (int, float)) and float(p95) <= 1.0,
+                    "maximum_local_step": isinstance(maximum_step, (int, float))
+                    and float(maximum_step) <= 1.5,
+                    "break_double_edge": break_gate,
+                    "no_new_backtrack": int(candidate_metrics["backtrack_count"])
+                    <= int(current_metrics["backtrack_count"]),
+                }.items() if not passed
             ]
             atomic_write_json(validation_root / "pair_0068_0078_metrics.json", {
                 "schema": "gemini305-video-s13-box-pair-metrics/v1",
                 "roi_xyxy": [x0, y0, x1, y1],
                 "pairs": pair_rows,
-                "box_target_repair_complete": False,
-                "reason": "external_roi_quality_gate_not_complete",
+                "baseline_edge_trace": current_metrics,
+                "candidate_edge_trace": candidate_metrics,
+                "box_target_obligation_ids": [
+                    row["obligation_id"] for row in relevant_obligations
+                ],
+                "box_target_repair_complete": box_target_repair_complete,
+                "failed_gates": failed_box_gates,
+                "reason": None if box_target_repair_complete
+                else "external_roi_quality_gate_not_complete",
             })
             atomic_write_json(
                 validation_root / "component_chain_audit.json", component_doc
@@ -479,6 +657,8 @@ def _run_m5(
                 ),
                 "chains": component_audit.get("chains", []),
                 "segments": component_audit.get("segments", []),
+                "roi_candidate_pixels": component_audit.get("roi_candidate_pixels", 0),
+                "roi_preview_count": component_audit.get("roi_preview_count", 0),
                 "evidence_assets": evidence_assets,
                 "segment_assets": segment_assets,
             }
@@ -491,6 +671,14 @@ def _run_m5(
                 ),
                 "chains": component_audit.get("chains", []),
                 "segments": component_audit.get("segments", []),
+                "observation_count": component_audit.get("observation_count", 0),
+                "chain_count": component_audit.get("chain_count", 0),
+                "raw_partition_chain_count": component_audit.get(
+                    "raw_partition_chain_count", 0
+                ),
+                "segment_count": component_audit.get("segment_count", 0),
+                "roi_candidate_pixels": component_audit.get("roi_candidate_pixels", 0),
+                "roi_preview_count": component_audit.get("roi_preview_count", 0),
                 "forward_reverse_hypotheses": component_audit.get(
                     "forward_reverse_hypotheses", []
                 ),

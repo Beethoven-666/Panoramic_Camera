@@ -13,6 +13,7 @@ from panorama_demo.video_s13_alignment import (
 from panorama_demo.video_s13_m5 import (
     build_s13_p2_replay,
     estimate_s13_m5_transactions,
+    render_s13_component_roi_from_raw,
     render_s13_p2_from_raw,
     run_s13_m5,
 )
@@ -447,6 +448,26 @@ def test_frozen_source_map_provider_is_shared_by_render_and_replay() -> None:
     assert np.all(replay[0].left_component_correction_field_id == 0)
     assert np.all(replay[0].right_component_correction_field_id == 1)
     assert calls
+
+
+def test_component_roi_renderer_matches_uncorrected_formal_owner_crop() -> None:
+    calibration, schedule, images, vertical = _m5_inputs()
+    pairs = estimate_s13_m5_transactions(
+        schedule, calibration, images.__getitem__, vertical,
+        parent_stage_sha256="f" * 64,
+    )
+    rendered = render_s13_p2_from_raw(
+        schedule, calibration, images.__getitem__, vertical, pairs,
+        final_seams=True,
+    )
+    roi = (8, 7, schedule.canvas_width - 8, schedule.canvas_height - 7)
+    image, valid = render_s13_component_roi_from_raw(
+        schedule, calibration, images.__getitem__, vertical, pairs, roi,
+        patch_set=None,
+    )
+    x0, y0, x1, y1 = roi
+    assert np.array_equal(image, rendered.image[y0:y1, x0:x1])
+    assert np.array_equal(valid, rendered.valid_mask[y0:y1, x0:x1])
 
 
 def test_transactions_record_same_geometry_seam_and_independent_seam_audits() -> None:

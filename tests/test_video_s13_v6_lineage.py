@@ -13,7 +13,10 @@ from panorama_demo.synthetic import generate_sequence
 from panorama_demo.video_algorithm import build_algorithm_spec
 from panorama_demo.video_s13_bundle import verify_stage
 from panorama_demo.video_s13_contract import load_s13_config, validate_s13_document
-from panorama_demo.video_s13_experiment import run_s13_experiment
+from panorama_demo.video_s13_experiment import (
+    _strong_edge_trace_metrics,
+    run_s13_experiment,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -201,3 +204,21 @@ def test_clean_v6_semantic_rejection_does_not_publish_a_sealed_p2(
     assert not (generation / "P2").exists()
     latest = json.loads((output / "current_latest.json").read_text(encoding="utf-8"))
     assert latest["stage"] == "P1"
+
+
+def test_external_box_trace_measures_steps_breaks_and_double_edges() -> None:
+    clean = np.zeros((48, 64, 3), dtype=np.uint8)
+    for column in range(clean.shape[1]):
+        row = 12 + column // 4
+        clean[row:, column] = 255
+    valid = np.ones(clean.shape[:2], dtype=bool)
+    clean_metrics, overlay = _strong_edge_trace_metrics(clean, valid)
+    assert clean_metrics["edge_step_p95_px"] <= 1.0
+    assert clean_metrics["maximum_local_step_px"] <= 1.0
+    assert clean_metrics["break_length_px"] == 0
+    assert overlay.shape == clean.shape
+
+    broken = clean.copy()
+    broken[:, 20:28] = 127
+    broken_metrics, _ = _strong_edge_trace_metrics(broken, valid)
+    assert broken_metrics["break_length_px"] >= 6
