@@ -47,11 +47,13 @@ from .video_s13_replay import S13P2ReplayPair
 from .video_s13_m51_r2 import S13M51R2Config, S13M51R3Config, S13M51R4Config
 from .video_s13_vertical import S13VerticalSolution
 from .video_s13_m51_r4_component_chain import (
+    SourceCorrectionRegistry,
     SourceMapOracle,
     build_s13_edge_component_chains,
     build_s13_source_component_correction,
     evaluate_s13_component_candidate_quality,
     freeze_s13_baseline_c2e_obligations,
+    freeze_s13_source_correction_registry,
     make_s13_edge_component_observation,
     S13ComponentSegmentCandidate,
     S13ComponentPatchSet,
@@ -145,6 +147,7 @@ class S13M5Result:
     source_map_oracles: tuple[SourceMapOracle, ...] = ()
     component_chain_audit: Mapping[str, object] | None = None
     component_patch_set: S13ComponentPatchSet | None = None
+    source_correction_registry: SourceCorrectionRegistry | None = None
 
 
 @dataclass(frozen=True)
@@ -1616,7 +1619,7 @@ def render_s13_component_roi_from_raw(
     pairs: Sequence[S13M5Pair],
     roi_xyxy: tuple[int, int, int, int],
     *,
-    patch_set: S13ComponentPatchSet | None,
+    registry: SourceCorrectionRegistry | None,
     field_ids: Mapping[str, int] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Render one owner-only validation ROI without a full-canvas render."""
@@ -1639,8 +1642,8 @@ def render_s13_component_roi_from_raw(
         if source > 0 and pairs[source - 1].alignment is not None:
             alignment = pairs[source - 1].alignment.selected
         corrections = tuple(
-            () if patch_set is None
-            else patch_set.corrections_by_source.get(source, ())
+            () if registry is None
+            else registry.corrections_by_source.get(source, ())
         )
         maps = _map_crop(
             schedule, calibration, source, x0, x1,
@@ -1690,6 +1693,7 @@ def run_s13_m5(
     component_chain_audit: dict[str, object] | None = None
     component_chain_seconds = 0.0
     component_patch_set: S13ComponentPatchSet | None = None
+    source_correction_registry: SourceCorrectionRegistry | None = None
     component_field_ids: dict[str, int] = {}
     geometry_seconds = 0.0
     roi_candidate_pixels = 0
@@ -1941,13 +1945,132 @@ def run_s13_m5(
                     "state": "rejected",
                     "reason": f"solver_rejected:{exc}",
                 })
-        component_patch_set = select_s13_component_patch_set(
-            segment_candidates, config=m51_r2_config, obligations=obligations
+        dependency_group_audits: list[dict[str, object]] = []
+        while True:
+            component_patch_set = select_s13_component_patch_set(
+                segment_candidates, config=m51_r2_config, obligations=obligations
+            )
+            accepted_by_id = {
+                row.segment.segment_id: row for row in segment_candidates
+                if row.segment.segment_id in component_patch_set.accepted_segment_ids
+            }
+            pending_ids = set(accepted_by_id)
+            dependency_groups: list[tuple[str, ...]] = []
+            while pending_ids:
+                seed = min(pending_ids)
+                group = {seed}
+                frontier = [seed]
+                pending_ids.remove(seed)
+                while frontier:
+                    current = accepted_by_id[frontier.pop()]
+                    current_sources = set(current.segment.source_indices)
+                    current_pairs = {
+                        pair
+                        for source in current_sources
+                        for pair in (source - 1, source)
+                        if 0 <= pair < len(pairs)
+                    }
+                    linked = []
+                    for other_id in sorted(pending_ids):
+                        other = accepted_by_id[other_id]
+                        other_sources = set(other.segment.source_indices)
+                        other_pairs = {
+                            pair
+                            for source in other_sources
+                            for pair in (source - 1, source)
+                            if 0 <= pair < len(pairs)
+                        }
+                        if current_sources & other_sources or current_pairs & other_pairs:
+                            linked.append(other_id)
+                    for other_id in linked:
+                        pending_ids.remove(other_id)
+                        group.add(other_id)
+                        frontier.append(other_id)
+                dependency_groups.append(tuple(sorted(group)))
+            dependency_group_audits = []
+            failed_group: tuple[str, ...] | None = None
+            for group_index, group_ids in enumerate(dependency_groups):
+                group_candidates = [accepted_by_id[row] for row in group_ids]
+                group_observations = tuple(
+                    observation for candidate in group_candidates
+                    for observation in candidate.segment.observations
+                )
+                group_corrections = tuple(
+                    correction for candidate in group_candidates
+                    for correction in candidate.corrections
+                )
+                baseline = _component_trace_metrics(
+                    group_observations, config=m51_r2_config
+                )
+                candidate = measure_candidate_roi(
+                    group_observations, group_corrections
+                )
+                quality = evaluate_s13_component_candidate_quality(
+                    baseline=baseline,
+                    candidate=candidate,
+                    hard_gates={
+                        "individual_segment_gates": all(
+                            row.decision in {"resolved", "improved_unresolved"}
+                            for row in group_candidates
+                        ),
+                        "exclusive_correction_fields": True,
+                    },
+                    config=m51_r2_config,
+                )
+                passed = quality.decision in {"resolved", "improved_unresolved"}
+                dependency_group_audits.append({
+                    "group_id": f"c2e-dependency-{group_index:04d}",
+                    "segment_ids": list(group_ids),
+                    "source_indices": sorted({
+                        source for row in group_candidates
+                        for source in row.segment.source_indices
+                    }),
+                    "affected_pair_indices": sorted({
+                        pair
+                        for row in group_candidates
+                        for source in row.segment.source_indices
+                        for pair in (source - 1, source)
+                        if 0 <= pair < len(pairs)
+                    }),
+                    "baseline_metrics": baseline,
+                    "candidate_metrics": candidate,
+                    "decision": quality.decision,
+                    "rejection_reasons": list(quality.rejection_reasons),
+                    "passed": passed,
+                })
+                if not passed:
+                    failed_group = group_ids
+                    break
+            if failed_group is None:
+                break
+            weakest = min(
+                (accepted_by_id[row] for row in failed_group),
+                key=lambda row: (
+                    float(row.audit.get("rescued_severe_seam_count", 0)),
+                    float(row.audit.get("worst_seam_absolute_improvement", 0.0)),
+                    float(row.audit.get("supported_unique_edge_columns", 0)),
+                    -float(row.audit.get("post_maximum_step", math.inf)),
+                    -float(row.audit.get("correction_energy", math.inf)),
+                    row.segment.segment_id,
+                ),
+            )
+            segment_candidates = [
+                replace(
+                    row,
+                    decision="rejected",
+                    rejection_reasons=tuple(row.rejection_reasons)
+                    + ("dependency_group_composite_gate_failed",),
+                ) if row.segment.segment_id == weakest.segment.segment_id else row
+                for row in segment_candidates
+            ]
+            for solved in solved_rows:
+                if solved.get("segment_id") == weakest.segment.segment_id:
+                    solved["state"] = "rejected"
+                    solved["reason"] = ["dependency_group_composite_gate_failed"]
+        source_correction_registry = freeze_s13_source_correction_registry(
+            component_patch_set
         )
-        component_field_ids = {
-            segment_id: index
-            for index, segment_id in enumerate(component_patch_set.accepted_segment_ids)
-        }
+        component_field_ids = dict(source_correction_registry.field_id_by_segment)
         hypothesis_rows = []
         def finite_score_rows(values: np.ndarray) -> list[float | None]:
             return [float(value) if np.isfinite(value) else None for value in values]
@@ -2006,6 +2129,7 @@ def run_s13_m5(
             "rejected_segment_ids": list(component_patch_set.rejected_segment_ids),
             "deferred_segment_ids": list(component_patch_set.deferred_segment_ids),
             "field_id_table": component_field_ids,
+            "dependency_groups": dependency_group_audits,
             "forward_reverse_hypotheses": hypothesis_rows,
             "fatal_failures": [],
             "passed": True,
@@ -2031,7 +2155,7 @@ def run_s13_m5(
             vertical.global_offsets_px[source_index], candidate,
             tuple(
                 () if component_patch_set is None
-                else component_patch_set.corrections_by_source.get(source_index, ())
+                else source_correction_registry.corrections_by_source.get(source_index, ())
             ),
             component_field_ids,
         )
@@ -2128,6 +2252,9 @@ def run_s13_m5(
         exterior_mismatch = 0
         valid_mismatch = 0
         minimum_jacobian = math.inf
+        maximum_combined_displacement = 0.0
+        field_authority_valid = True
+        known_field_ids = set(component_field_ids.values())
         for oracle in source_map_oracles:
             x0, _y0, x1, _y1 = oracle.domain_xyxy
             candidate = None
@@ -2139,6 +2266,8 @@ def run_s13_m5(
             )
             base_u = np.array(base[0], dtype=np.float32, copy=True)
             base_v = np.array(base[1], dtype=np.float32, copy=True)
+            raw_base_u = base_u.copy()
+            raw_base_v = base_v.copy()
             formal_owner = (
                 final.pixel_provenance["owner_source_index"][:, x0:x1]
                 == oracle.source_index
@@ -2165,7 +2294,18 @@ def run_s13_m5(
             interior_valid[:, 1:] &= valid[:, :-1]
             interior_valid[:, :-1] &= valid[:, 1:]
             correction_domain = interior_valid & formal_owner & (oracle.field_id >= 0)
+            field_authority_valid = field_authority_valid and set(
+                np.unique(oracle.field_id).tolist()
+            ).issubset({-1, *known_field_ids})
             if np.any(correction_domain):
+                displacement = np.hypot(
+                    oracle.u.astype(np.float64) - raw_base_u.astype(np.float64),
+                    oracle.v.astype(np.float64) - raw_base_v.astype(np.float64),
+                )
+                maximum_combined_displacement = max(
+                    maximum_combined_displacement,
+                    float(np.max(displacement[correction_domain])),
+                )
                 du_dy, du_dx = np.gradient(oracle.u.astype(np.float64))
                 dv_dy, dv_dx = np.gradient(oracle.v.astype(np.float64))
                 determinant = du_dx * dv_dy - du_dy * dv_dx
@@ -2181,12 +2321,34 @@ def run_s13_m5(
             component_failures.append("formal_owner_valid_support_changed")
         if minimum_jacobian < m51_r2_config.minimum_jacobian:
             component_failures.append("minimum_jacobian_failed")
+        if maximum_combined_displacement > (
+            m51_r2_config.maximum_combined_map_displacement_px + 1e-6
+        ):
+            component_failures.append("combined_map_displacement_exceeded")
+        provenance_fields = final.pixel_provenance[
+            "component_correction_field_id"
+        ]
+        field_authority_valid = field_authority_valid and set(
+            np.unique(provenance_fields).tolist()
+        ).issubset({-1, *known_field_ids})
+        if not field_authority_valid:
+            component_failures.append("component_field_authority_invalid")
+        dependency_groups = component_chain_audit.get("dependency_groups", [])
+        grouped_segments = {
+            str(segment_id) for group in dependency_groups
+            for segment_id in group.get("segment_ids", [])
+            if group.get("passed") is True
+        }
+        if grouped_segments != set(component_patch_set.accepted_segment_ids):
+            component_failures.append("dependency_group_coverage_invalid")
         component_chain_audit.update({
             "omega_out_exterior_uv_mismatch_count": exterior_mismatch,
             "valid_support_mismatch_count": valid_mismatch,
             "minimum_final_inverse_map_jacobian": (
                 None if not math.isfinite(minimum_jacobian) else minimum_jacobian
             ),
+            "maximum_combined_map_displacement_px": maximum_combined_displacement,
+            "field_authority_valid": field_authority_valid,
             "fatal_failures": component_failures,
             "passed": not component_failures,
         })
@@ -2454,7 +2616,10 @@ def run_s13_m5(
                 )
             ),
             "component_segment_split_count": 0,
-            "component_dependency_group_count": 0,
+            "component_dependency_group_count": int(
+                0 if component_chain_audit is None
+                else len(component_chain_audit.get("dependency_groups", []))
+            ),
             "component_observation_count": int(
                 0 if component_chain_audit is None else component_chain_audit["observation_count"]
             ),
@@ -2469,9 +2634,9 @@ def run_s13_m5(
             ),
             "chain_roi_preview_count": roi_preview_count,
             "component_correction_pixel_count": int(
-                0 if component_patch_set is None else sum(
+                0 if source_correction_registry is None else sum(
                     np.count_nonzero(correction.weight > 0.0)
-                    for corrections in component_patch_set.corrections_by_source.values()
+                    for corrections in source_correction_registry.corrections_by_source.values()
                     for correction in corrections
                 )
             ),
@@ -2480,6 +2645,7 @@ def run_s13_m5(
         source_map_oracles=tuple(source_map_oracles),
         component_chain_audit=component_chain_audit,
         component_patch_set=component_patch_set,
+        source_correction_registry=source_correction_registry,
     )
 
 

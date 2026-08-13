@@ -19,6 +19,7 @@ from panorama_demo.video_s13_m51_r4_component_chain import (
     compose_s13_source_component_deltas,
     evaluate_s13_component_candidate_quality,
     freeze_s13_baseline_c2e_obligations,
+    freeze_s13_source_correction_registry,
     make_s13_edge_component_observation,
     select_s13_component_patch_set,
     select_s13_component_segment_split_pair,
@@ -222,11 +223,11 @@ def test_correction_is_local_readonly_and_patch_conflicts_choose_utility() -> No
          "supported_unique_edge_columns": 10, "post_maximum_step": 1.0,
          "correction_energy": 100.0},
     )
-    high_correction = S13SourceComponentCorrection(
-        **{**correction.__dict__, "segment_id": "higher"}
-    )
     high_segment = S13ComponentApplicationSegment.create(
         parent_chain_id="chain-b", observations=(observation,)
+    )
+    high_correction = S13SourceComponentCorrection(
+        **{**correction.__dict__, "segment_id": high_segment.segment_id}
     )
     high = S13ComponentSegmentCandidate(
         high_segment, (2.0,), 1.0, (high_correction,), "resolved", (),
@@ -237,6 +238,11 @@ def test_correction_is_local_readonly_and_patch_conflicts_choose_utility() -> No
     patch = select_s13_component_patch_set((low, high), config=_Config())
     assert patch.accepted_segment_ids == (high.segment.segment_id,)
     assert low.segment.segment_id in patch.rejected_segment_ids
+    registry = freeze_s13_source_correction_registry(patch)
+    assert registry.accepted_segment_ids == patch.accepted_segment_ids
+    assert dict(registry.field_id_by_segment) == {high.segment.segment_id: 0}
+    with pytest.raises(TypeError):
+        registry.corrections_by_source[99] = ()
 
 
 def test_repair_complete_requires_every_exact_frozen_obligation() -> None:

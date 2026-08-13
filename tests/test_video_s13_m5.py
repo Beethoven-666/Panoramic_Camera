@@ -463,7 +463,7 @@ def test_component_roi_renderer_matches_uncorrected_formal_owner_crop() -> None:
     roi = (8, 7, schedule.canvas_width - 8, schedule.canvas_height - 7)
     image, valid = render_s13_component_roi_from_raw(
         schedule, calibration, images.__getitem__, vertical, pairs, roi,
-        patch_set=None,
+        registry=None,
     )
     x0, y0, x1, y1 = roi
     assert np.array_equal(image, rendered.image[y0:y1, x0:x1])

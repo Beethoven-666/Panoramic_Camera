@@ -459,11 +459,11 @@ def _run_m5(
             }
             current_roi, current_valid = render_s13_component_roi_from_raw(
                 schedule, calibration, validation_image_loader, vertical, m5.pairs,
-                (x0, y0, x1, y1), patch_set=None,
+                (x0, y0, x1, y1), registry=None,
             )
             candidate_roi, candidate_valid = render_s13_component_roi_from_raw(
                 schedule, calibration, validation_image_loader, vertical, m5.pairs,
-                (x0, y0, x1, y1), patch_set=m5.component_patch_set,
+                (x0, y0, x1, y1), registry=m5.source_correction_registry,
                 field_ids=field_ids,
             )
             current_metrics, current_overlay = _strong_edge_trace_metrics(
@@ -657,6 +657,7 @@ def _run_m5(
                 ),
                 "chains": component_audit.get("chains", []),
                 "segments": component_audit.get("segments", []),
+                "dependency_groups": component_audit.get("dependency_groups", []),
                 "roi_candidate_pixels": component_audit.get("roi_candidate_pixels", 0),
                 "roi_preview_count": component_audit.get("roi_preview_count", 0),
                 "evidence_assets": evidence_assets,
@@ -671,6 +672,7 @@ def _run_m5(
                 ),
                 "chains": component_audit.get("chains", []),
                 "segments": component_audit.get("segments", []),
+                "dependency_groups": component_audit.get("dependency_groups", []),
                 "observation_count": component_audit.get("observation_count", 0),
                 "chain_count": component_audit.get("chain_count", 0),
                 "raw_partition_chain_count": component_audit.get(

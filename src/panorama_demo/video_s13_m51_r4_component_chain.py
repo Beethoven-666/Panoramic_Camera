@@ -1317,6 +1317,52 @@ class S13ComponentPatchSet:
         object.__setattr__(self, "audit", _frozen_mapping(self.audit))
 
 
+@dataclass(frozen=True)
+class SourceCorrectionRegistry:
+    """Frozen sole authority for every applied source-local correction field."""
+
+    application_state: Literal["complete", "partial", "none"]
+    accepted_segment_ids: tuple[str, ...]
+    corrections_by_source: Mapping[int, tuple[S13SourceComponentCorrection, ...]]
+    field_id_by_segment: Mapping[str, int]
+
+    def __post_init__(self) -> None:
+        accepted = tuple(sorted(str(value) for value in self.accepted_segment_ids))
+        corrections = {
+            int(source): tuple(sorted(rows, key=lambda row: row.segment_id))
+            for source, rows in self.corrections_by_source.items()
+        }
+        fields = {str(key): int(value) for key, value in self.field_id_by_segment.items()}
+        contributors = {
+            row.segment_id for rows in corrections.values() for row in rows
+        }
+        if contributors != set(accepted) or set(fields) != set(accepted):
+            raise ValueError("C2E correction registry authority is incomplete")
+        if len(set(fields.values())) != len(fields) or any(value < 0 for value in fields.values()):
+            raise ValueError("C2E correction registry field IDs are invalid")
+        if self.application_state == "none" and accepted:
+            raise ValueError("C2E none registry cannot contain corrections")
+        if self.application_state != "none" and not accepted:
+            raise ValueError("C2E applied registry must contain corrections")
+        object.__setattr__(self, "accepted_segment_ids", accepted)
+        object.__setattr__(self, "corrections_by_source", MappingProxyType(corrections))
+        object.__setattr__(self, "field_id_by_segment", MappingProxyType(fields))
+
+
+def freeze_s13_source_correction_registry(
+    patch_set: S13ComponentPatchSet,
+) -> SourceCorrectionRegistry:
+    segment_ids = tuple(sorted(patch_set.accepted_segment_ids))
+    return SourceCorrectionRegistry(
+        application_state=patch_set.application_state,
+        accepted_segment_ids=segment_ids,
+        corrections_by_source=patch_set.corrections_by_source,
+        field_id_by_segment={
+            segment_id: index for index, segment_id in enumerate(segment_ids)
+        },
+    )
+
+
 def _corrections_overlap(
     left: S13SourceComponentCorrection, right: S13SourceComponentCorrection
 ) -> bool:
