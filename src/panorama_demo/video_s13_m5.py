@@ -280,7 +280,11 @@ def _sha_json(value: Mapping[str, object]) -> str:
 _V5_TRANSACTION_FLOAT_DECIMAL_PLACES = 6
 
 
-def _canonicalize_v5_transaction_value(value: object) -> object:
+def _canonicalize_v5_transaction_value(
+    value: object,
+    *,
+    path: str = "$",
+) -> object:
     """Return the frozen JSON value representation used by M5.1-r2/v5.
 
     Candidate selection consumes the full-precision in-memory metrics before
@@ -290,11 +294,16 @@ def _canonicalize_v5_transaction_value(value: object) -> object:
 
     if isinstance(value, Mapping):
         return {
-            str(key): _canonicalize_v5_transaction_value(item)
+            str(key): _canonicalize_v5_transaction_value(
+                item, path=f"{path}.{key}"
+            )
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
-        return [_canonicalize_v5_transaction_value(item) for item in value]
+        return [
+            _canonicalize_v5_transaction_value(item, path=f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
     if isinstance(value, (np.bool_, bool)):
         return bool(value)
     if isinstance(value, (np.integer, int)):
@@ -302,7 +311,9 @@ def _canonicalize_v5_transaction_value(value: object) -> object:
     if isinstance(value, (np.floating, float)):
         number = float(value)
         if not math.isfinite(number):
-            raise ValueError("S1.3 v5 transaction floats must be finite")
+            raise ValueError(
+                f"S1.3 v5 transaction floats must be finite at {path}"
+            )
         rounded = round(number, _V5_TRANSACTION_FLOAT_DECIMAL_PLACES)
         return 0.0 if rounded == 0.0 else rounded
     return value
