@@ -5,8 +5,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Candidate,
     [Parameter(Mandatory = $true)]
-    [string]$Output,
-    [string]$Input = 'D:\central_strip_Panoramic_Camera\data\captures\video\run_20260807_140140',
+    [string]$TimingOutput,
+    [string]$FastInput = 'D:\central_strip_Panoramic_Camera\data\captures\video\run_20260807_140140',
     [string]$TrajectoryCache = 'D:\central_strip_Panoramic_Camera\data\captures\video\run_20260807_140140\orbslam3_trajectory.json',
     [string]$Experiment = 'D:\Panoramic_Camera\.conda\Scripts\g305-video-experiment.exe',
     [ValidateRange(5, 100)]
@@ -14,14 +14,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if (Test-Path -LiteralPath $Output) {
-    throw "Paired timing output must be new and absent: $Output"
+if (Test-Path -LiteralPath $TimingOutput) {
+    throw "Paired timing output must be new and absent: $TimingOutput"
 }
-$resultPath = Join-Path (Split-Path -Parent $Output) 'paired_timing_runs.json'
+$resultPath = Join-Path (Split-Path -Parent $TimingOutput) 'paired_timing_runs.json'
 if (Test-Path -LiteralPath $resultPath) {
     throw "Paired timing result must be new and absent: $resultPath"
 }
-foreach ($required in @($BaselineCandidate, $Candidate, $Input, $TrajectoryCache, $Experiment)) {
+foreach ($required in @($BaselineCandidate, $Candidate, $FastInput, $TrajectoryCache, $Experiment)) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Required paired timing input is missing: $required"
     }
@@ -30,7 +30,7 @@ if ((Resolve-Path -LiteralPath $BaselineCandidate).Path -eq (Resolve-Path -Liter
     throw 'Baseline and candidate configs must be distinct files from their respective commits.'
 }
 
-New-Item -ItemType Directory -Path $Output | Out-Null
+New-Item -ItemType Directory -Path $TimingOutput | Out-Null
 
 function Invoke-TimedCandidate {
     param(
@@ -39,7 +39,7 @@ function Invoke-TimedCandidate {
         [string]$RunRoot
     )
     & $Experiment `
-        $Input `
+        $FastInput `
         --output $RunRoot `
         --algorithm candidate `
         --candidate-config $Config `
@@ -63,12 +63,12 @@ function Invoke-TimedCandidate {
 }
 
 # One cold run per implementation is intentionally excluded from the statistics.
-[void](Invoke-TimedCandidate 'cold_baseline' $BaselineCandidate (Join-Path $Output 'cold_baseline'))
-[void](Invoke-TimedCandidate 'cold_candidate' $Candidate (Join-Path $Output 'cold_candidate'))
+[void](Invoke-TimedCandidate 'cold_baseline' $BaselineCandidate (Join-Path $TimingOutput 'cold_baseline'))
+[void](Invoke-TimedCandidate 'cold_candidate' $Candidate (Join-Path $TimingOutput 'cold_candidate'))
 
 $pairs = @()
 for ($index = 0; $index -lt $PairCount; $index++) {
-    $pairRoot = Join-Path $Output ('pair_{0:d2}' -f $index)
+    $pairRoot = Join-Path $TimingOutput ('pair_{0:d2}' -f $index)
     if (($index % 2) -eq 0) {
         $order = 'v6-r1_then_v6-r2'
         $baseline = Invoke-TimedCandidate "pair_${index}_baseline" $BaselineCandidate (Join-Path $pairRoot 'baseline')
