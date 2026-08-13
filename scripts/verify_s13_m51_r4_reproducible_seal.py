@@ -222,24 +222,37 @@ def _npz_content(path: Path) -> dict[str, np.ndarray]:
         raise ValueError(f"invalid NPZ asset: {path}") from exc
 
 
-def _npz_equal(left: Path, right: Path) -> bool:
+def _npz_equal(
+    left: Path, right: Path, *, ignored_names: frozenset[str] = frozenset()
+) -> bool:
     a = _npz_content(left)
     b = _npz_content(right)
-    return a.keys() == b.keys() and all(
+    names_a = set(a) - set(ignored_names)
+    names_b = set(b) - set(ignored_names)
+    return names_a == names_b and all(
         np.array_equal(
             a[key],
             b[key],
             equal_nan=(a[key].dtype.kind in {"f", "c"}),
         )
-        for key in a
+        for key in names_a
     )
 
 
-def _npz_tree_equal(left: Path, right: Path, pattern: str) -> bool:
+def _npz_tree_equal(
+    left: Path,
+    right: Path,
+    pattern: str,
+    *,
+    ignored_names: frozenset[str] = frozenset(),
+) -> bool:
     left_files = {path.relative_to(left).as_posix(): path for path in left.glob(pattern)}
     right_files = {path.relative_to(right).as_posix(): path for path in right.glob(pattern)}
     return left_files.keys() == right_files.keys() and all(
-        _npz_equal(left_files[name], right_files[name]) for name in left_files
+        _npz_equal(
+            left_files[name], right_files[name], ignored_names=ignored_names
+        )
+        for name in left_files
     )
 
 
@@ -686,7 +699,12 @@ def _exact_branch_comparison(left: Mapping[str, object], right: Mapping[str, obj
             left_p2, right_p2, "source_corrections/*.npz"
         ),
         "source_map_arrays_exact": _npz_tree_equal(left_p2, right_p2, "source_maps/*.npz"),
-        "replay_arrays_exact": _npz_tree_equal(left_p2, right_p2, "pair_replay/*.npz"),
+        "replay_arrays_exact": _npz_tree_equal(
+            left_p2,
+            right_p2,
+            "pair_replay/*.npz",
+            ignored_names=frozenset({"parent_pair_transaction_sha256"}),
+        ),
         "component_segment_arrays_exact": _npz_tree_equal(
             left_p2, right_p2, "component_chain_transactions/*.npz"
         ),

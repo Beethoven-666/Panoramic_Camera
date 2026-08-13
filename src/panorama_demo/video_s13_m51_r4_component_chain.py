@@ -185,7 +185,9 @@ class S13ExactEdgeComponentEvidence:
         for name in (
             "forward_scores", "reverse_scores", "forward_correlations", "reverse_correlations"
         ):
-            object.__setattr__(self, name, _readonly(getattr(self, name), np.float64))
+            values = np.asarray(getattr(self, name), dtype=np.float64)
+            values = np.where(np.isfinite(values), np.round(values, 6), values)
+            object.__setattr__(self, name, _readonly(values, np.float64))
         for name in ("forward_support_counts", "reverse_support_counts"):
             object.__setattr__(self, name, _readonly(getattr(self, name), np.int32))
 
