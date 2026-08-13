@@ -318,6 +318,7 @@ def audit_s13_p2_stage(
     pair_transaction_count: int,
     expected_support_mask: np.ndarray | None,
     config: S13HardAuditConfig | None = None,
+    require_component_correction_fields: bool = False,
 ) -> dict[str, object]:
     """Audit a rendered owner-only P2 before it can be sealed."""
 
@@ -339,6 +340,8 @@ def audit_s13_p2_stage(
         "geometry_transaction_id", "seam_transaction_id", "secondary_frame_id",
         "secondary_weight",
     }
+    if require_component_correction_fields:
+        required.add("component_correction_field_id")
     missing = sorted(required - set(pixel_provenance))
     if missing:
         failures.append("pixel_provenance_fields_missing")
@@ -403,6 +406,14 @@ def audit_s13_p2_stage(
             np.all(np.asarray(pixel_provenance["secondary_frame_id"]) == -1)
             and np.all(np.asarray(pixel_provenance["secondary_weight"]) == 0.0)
         )
+        component_fields_valid = True
+        if require_component_correction_fields:
+            fields = np.asarray(pixel_provenance["component_correction_field_id"])
+            component_fields_valid = bool(
+                np.issubdtype(fields.dtype, np.signedinteger)
+                and np.all(fields[valid] >= -1)
+                and np.all(fields[~valid] == -1)
+            )
         checks = {
             "valid_owner_consistent": valid_owner_consistent,
             "provenance_valid_consistent": provenance_valid_consistent,
@@ -413,6 +424,7 @@ def audit_s13_p2_stage(
             "transaction_ids_valid": tx_valid,
             "transaction_ids_owner_consistent": tx_owner_consistent,
             "secondary_owner_only": secondary_owner_only,
+            "component_correction_fields_valid": component_fields_valid,
         }
         topology.update(checks)
         failures.extend(name for name, passed in checks.items() if not passed)

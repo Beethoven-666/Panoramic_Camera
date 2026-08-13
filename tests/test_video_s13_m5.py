@@ -11,6 +11,7 @@ from panorama_demo.video_s13_alignment import (
     reestimate_s13_final_corridor_alignment,
 )
 from panorama_demo.video_s13_m5 import (
+    build_s13_p2_replay,
     estimate_s13_m5_transactions,
     render_s13_p2_from_raw,
     run_s13_m5,
@@ -403,6 +404,49 @@ def test_transactions_cover_every_pair_and_p2_remaps_each_raw_source_once() -> N
     assert np.isfinite(result.pixel_provenance["source_v"][valid]).all()
     assert np.all(result.pixel_provenance["secondary_frame_id"] == -1)
     assert np.all(result.pixel_provenance["secondary_weight"] == 0.0)
+
+
+def test_frozen_source_map_provider_is_shared_by_render_and_replay() -> None:
+    calibration, schedule, images, vertical = _m5_inputs()
+    pairs = estimate_s13_m5_transactions(
+        schedule, calibration, images.__getitem__, vertical,
+        parent_stage_sha256="e" * 64,
+    )
+    calls: list[tuple[int, int, int]] = []
+
+    def provider(source_index: int, x0: int, x1: int):
+        calls.append((source_index, x0, x1))
+        height = schedule.canvas_height
+        width = x1 - x0
+        u = np.broadcast_to(
+            np.arange(x0, x1, dtype=np.float32)[None, :], (height, width)
+        ).copy()
+        v = np.broadcast_to(
+            np.arange(height, dtype=np.float32)[:, None], (height, width)
+        ).copy()
+        valid = np.ones((height, width), dtype=bool)
+        field = np.full((height, width), source_index, dtype=np.int32)
+        return u, v, valid, field
+
+    rendered = render_s13_p2_from_raw(
+        schedule, calibration, images.__getitem__, vertical, pairs,
+        final_seams=True, map_provider=provider,
+    )
+    replay = build_s13_p2_replay(
+        schedule, calibration, vertical, pairs, map_provider=provider,
+    )
+
+    assert np.array_equal(
+        rendered.pixel_provenance["component_correction_field_id"][
+            rendered.pixel_provenance["owner_source_index"] == 1
+        ],
+        np.ones(np.count_nonzero(
+            rendered.pixel_provenance["owner_source_index"] == 1
+        ), dtype=np.int32),
+    )
+    assert np.all(replay[0].left_component_correction_field_id == 0)
+    assert np.all(replay[0].right_component_correction_field_id == 1)
+    assert calls
 
 
 def test_transactions_record_same_geometry_seam_and_independent_seam_audits() -> None:

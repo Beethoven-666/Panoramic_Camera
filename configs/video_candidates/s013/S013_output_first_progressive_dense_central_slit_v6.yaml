@@ -3,18 +3,18 @@ role: candidate
 candidate_id: S013_output_first_progressive_dense_central_slit_v6
 parent_candidate_id: S013_output_first_progressive_dense_central_slit_v5
 algorithm_id: S013_output_first_progressive_dense_central_slit_v6
-implementation_id: s013_output_first_progressive_dense_central_slit_m51_r3_component_local_ambiguity
+implementation_id: s013_output_first_progressive_dense_central_slit_m51_r4_component_chain_c2e
 allow_baseline_fallback: false
 changed_components: [s013_output_first_progressive_dense_central_slit]
 required_evidence_components: [real_rgb_sources, rgb_motion_telemetry]
 required_output_components: [s013_p2_v6]
 replaces_output_components: []
 model_sha256: {}
-config_sha256: f490b9b183754954ba5cccc609940e3851603a747062ed8add39e5e2841bdbb4
+config_sha256: 126853cecb0d898d9dc158e69076ca1f7b875face5430775f319549b67eb05c5
 
 components:
   s013_output_first_progressive_dense_central_slit:
-    contract_schema: gemini305-video-s13-output-first/v6
+    contract_schema: gemini305-video-s13-output-first/v6-r2
     diagnostic_only: true
     production_eligible: false
     production_lock_eligible: false
@@ -119,6 +119,61 @@ components:
       reassessment_pair_indices: [71]
       micro_rescue_enabled: false
       c2e_enabled: false
+    m51_r4:
+      enabled: true
+      component_chain_c2e_enabled: true
+      minimum_chain_pair_count: 2
+      minimum_application_segment_pair_count: 1
+      maximum_pair_gap: 1
+      split_on_ambiguous_or_unevaluable_observation: true
+      split_on_solver_outlier: true
+      minimum_component_y_overlap_fraction: 0.50
+      maximum_component_normal_difference_degrees: 10.0
+      maximum_component_endpoint_distance_px: 8.0
+      maximum_predicted_y_disagreement_px: 6.0
+      minimum_component_match_margin_fraction: 0.10
+      component_match_weights:
+        y_overlap: 0.30
+        predicted_y: 0.25
+        endpoint_distance: 0.20
+        correlation: 0.15
+        uniqueness: 0.10
+      minimum_signed_gradient_agreement: 0.10
+      normal_search_minimum_px: -3.0
+      normal_search_maximum_px: 3.0
+      normal_search_step_px: 0.5
+      minimum_c2e_correlation: 0.75
+      minimum_c2e_uniqueness_fraction: 0.10
+      maximum_forward_reverse_discrepancy_px: 0.5
+      source_offset_regularization: 0.05
+      maximum_solver_condition_number: 1000000.0
+      solver_huber_delta_px: 0.75
+      maximum_normalized_solver_residual: 3.0
+      maximum_source_normal_offset_px: 3.0
+      correction_gain_candidates: [1.0, 0.75, 0.5]
+      edge_core_radius_px: 2
+      normal_taper_radius_px: 8
+      endpoint_taper_px: 12
+      maximum_post_edge_p95_px: 1.0
+      maximum_post_edge_step_px: 1.5
+      minimum_evaluable_edge_columns: 12
+      minimum_evaluable_transition_fraction: 0.50
+      minimum_resolved_improvement_px: 0.10
+      minimum_absolute_improvement_px: 0.5
+      minimum_relative_improvement_fraction: 0.30
+      minimum_break_length_reduction_fraction: 0.50
+      maximum_non_target_p95_regression_px: 0.10
+      maximum_non_target_step_regression_px: 0.25
+      minimum_formal_owner_support_retention: 1.0
+      minimum_evidence_sample_retention: 0.98
+      minimum_jacobian: 0.5
+      maximum_combined_map_displacement_px: 8.0
+      maximum_halo_regression_px: 0.25
+      allow_partial_application: true
+      maximum_segment_split_depth: 4
+      maximum_candidates_per_segment: 3
+      maximum_total_roi_candidate_pixels: 1000000
+      maximum_exact_conflict_group_nodes: 12
     forward_pipeline:
       stage_order: [P0, P1, P2]
       default_stop_after: P2
@@ -126,7 +181,7 @@ components:
       current_preview_runtime_authority: false
     p2_replay:
       enabled: true
-      completion_schema: gemini305-video-s13-p2-completion/v6
+      completion_schema: gemini305-video-s13-p2-completion/v6-r2
       maximum_secondary_corridor_width_px: 8
       require_transaction_hash_match: true
     selection:

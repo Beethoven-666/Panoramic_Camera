@@ -14,6 +14,7 @@ from .video_s13_bundle import sha256_file, verify_p0_completion, verify_stage
 
 
 P2_REPLAY_SCHEMA = "gemini305-video-s13-p2-replay/v1"
+P2_REPLAY_V2_SCHEMA = "gemini305-video-s13-p2-replay/v2"
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,8 @@ class S13P2ReplayPair:
     geometry_transaction_numeric_id: int
     seam_transaction_numeric_id: int
     parent_pair_transaction_sha256: str
+    left_component_correction_field_id: np.ndarray | None = None
+    right_component_correction_field_id: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -52,7 +55,7 @@ class S13VerifiedP2:
 
 
 def replay_pair_arrays(pair: S13P2ReplayPair) -> dict[str, np.ndarray]:
-    return {
+    arrays = {
         "pair_index": np.asarray(pair.pair_index, dtype=np.int32),
         "left_source_index": np.asarray(pair.left_source_index, dtype=np.int32),
         "right_source_index": np.asarray(pair.right_source_index, dtype=np.int32),
@@ -76,6 +79,15 @@ def replay_pair_arrays(pair: S13P2ReplayPair) -> dict[str, np.ndarray]:
         ),
         "parent_pair_transaction_sha256": np.asarray(pair.parent_pair_transaction_sha256),
     }
+    if pair.left_component_correction_field_id is not None:
+        arrays["left_component_correction_field_id"] = np.asarray(
+            pair.left_component_correction_field_id, dtype=np.int32
+        )
+    if pair.right_component_correction_field_id is not None:
+        arrays["right_component_correction_field_id"] = np.asarray(
+            pair.right_component_correction_field_id, dtype=np.int32
+        )
+    return arrays
 
 
 def _scalar(archive: Mapping[str, np.ndarray], name: str) -> int:
@@ -99,7 +111,11 @@ def load_replay_pair(path: Path) -> S13P2ReplayPair:
         "geometry_transaction_numeric_id", "seam_transaction_numeric_id",
         "parent_pair_transaction_sha256",
     }
-    if set(arrays) != required:
+    optional = {
+        "left_component_correction_field_id",
+        "right_component_correction_field_id",
+    }
+    if set(arrays) not in (required, required | optional):
         raise ValueError(f"S1.3 P2 replay fields disagree: {path.name}")
     x0, x1 = _scalar(arrays, "corridor_x0"), _scalar(arrays, "corridor_x1")
     seam = np.asarray(arrays["seam_x_by_row"], dtype=np.int32)
@@ -112,6 +128,9 @@ def load_replay_pair(path: Path) -> S13P2ReplayPair:
     ):
         if arrays[name].shape != shape:
             raise ValueError(f"S1.3 P2 replay map shape disagrees: {path.name}:{name}")
+    for name in optional & set(arrays):
+        if arrays[name].shape != shape or arrays[name].dtype != np.int32:
+            raise ValueError(f"S1.3 P2 replay field labels disagree: {path.name}:{name}")
     left_valid = np.asarray(arrays["left_valid"], dtype=bool)
     right_valid = np.asarray(arrays["right_valid"], dtype=bool)
     for prefix, valid in (("left", left_valid), ("right", right_valid)):
@@ -141,6 +160,14 @@ def load_replay_pair(path: Path) -> S13P2ReplayPair:
         geometry_transaction_numeric_id=_scalar(arrays, "geometry_transaction_numeric_id"),
         seam_transaction_numeric_id=_scalar(arrays, "seam_transaction_numeric_id"),
         parent_pair_transaction_sha256=parent_sha,
+        left_component_correction_field_id=(
+            np.asarray(arrays["left_component_correction_field_id"], dtype=np.int32)
+            if "left_component_correction_field_id" in arrays else None
+        ),
+        right_component_correction_field_id=(
+            np.asarray(arrays["right_component_correction_field_id"], dtype=np.int32)
+            if "right_component_correction_field_id" in arrays else None
+        ),
     )
 
 

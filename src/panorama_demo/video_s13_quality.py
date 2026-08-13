@@ -230,13 +230,17 @@ def _component_local_edge_summary(
         clusters.setdefault(root(index), []).append(row)
     component_audits: list[dict[str, object]] = []
     for component_id, members in enumerate(clusters.values()):
-        weights = np.asarray([int(row["support_count"]) for row in members], np.float64)
+        weights = np.asarray(
+            [max(1, int(row["support_count"])) for row in members], np.float64
+        )
         lags = np.asarray([float(row["best_lag_px"]) for row in members], np.float64)
         ambiguous = any(row.get("component_ambiguous") is True for row in members)
+        evaluable = any(row.get("supported") is True for row in members)
         component_audits.append({
             "component_id": component_id,
             "ambiguous": ambiguous,
-            "actionable": not ambiguous,
+            "evaluable": evaluable,
+            "actionable": evaluable and not ambiguous,
             "observation_count": len(members),
             "block_indices": sorted({int(row["block_index"]) for row in members}),
             "best_lag_px": float(np.average(lags, weights=weights)),
@@ -269,6 +273,9 @@ def pair_edge_registration_metrics(
     seam_x_by_row: np.ndarray,
     *,
     config: "S13M51R2Config",
+    exact_evidence_sink: list[tuple[object, object]] | None = None,
+    pair_index: int = -1,
+    global_x_offset: int = 0,
 ) -> dict[str, object]:
     """Measure pair-local strong-edge registration along each edge's normal.
 
@@ -317,6 +324,7 @@ def pair_edge_registration_metrics(
     ambiguous = False
     nonunique_search_observed = False
     component_local = getattr(config, "component_local_ambiguity_enabled", False) is True
+    exact_support_by_block: dict[int, np.ndarray] = {}
 
     for block_index, y0 in enumerate(starts):
         y1 = min(height, y0 + block_height)
@@ -388,6 +396,10 @@ def pair_edge_registration_metrics(
             continue
         normal_angle = float(np.mod(0.5 * np.angle(doubled), np.pi))
         nx, ny = math.cos(normal_angle), math.sin(normal_angle)
+        if exact_evidence_sink is not None:
+            exact_support_by_block[int(block_index)] = np.column_stack((xs, ys)).astype(
+                np.int32
+            )
         lag_rows: list[dict[str, float | int]] = []
         for lag in lags:
             sampled_magnitude, sampled_gx, sampled_gy, sample_valid = _bilinear_feature_samples(
@@ -410,8 +422,23 @@ def pair_edge_registration_metrics(
                              "orientation_difference": orientation_difference,
                              "score": score, "support": int(keep.sum())})
         if not lag_rows:
-            block_audits.append({"block_index": block_index, "y0": y0, "y1": y1,
-                                 "supported": False, "reason": "no_valid_normal_samples"})
+            audit = {
+                "block_index": block_index, "y0": y0, "y1": y1,
+                "supported": False, "reason": "no_valid_normal_samples",
+                "component_ambiguous": False,
+                "centroid_x": float(np.mean(xs)), "centroid_y": float(np.mean(ys)),
+                "bbox_x0": int(np.floor(np.min(xs))),
+                "bbox_x1": int(np.ceil(np.max(xs))) + 1,
+                "bbox_y0": int(np.floor(np.min(ys))),
+                "bbox_y1": int(np.ceil(np.max(ys))) + 1,
+                "normal_angle_degrees_modulo_180": float(math.degrees(normal_angle)),
+                "best_lag_px": 0.0, "correlation": 0.0,
+                "uniqueness_margin": 0.0, "orientation_difference_degrees": 0.0,
+                "support_count": 0,
+            }
+            block_audits.append(audit)
+            if component_local and exact_evidence_sink is not None:
+                component_observations.append(audit)
             continue
         best = max(lag_rows, key=lambda row: (float(row["score"]), -abs(float(row["lag"]))))
         # Adjacent half-pixel hypotheses sample the same Sobel response and
@@ -457,27 +484,115 @@ def pair_edge_registration_metrics(
             })
         block_audits.append(audit)
         if component_local and (
-            failure is None or audit.get("component_ambiguous") is True
+            failure is None
+            or audit.get("component_ambiguous") is True
+            or exact_evidence_sink is not None
         ):
             component_observations.append(audit)
         if failure is None:
             accepted.append(audit)
 
-    if component_local and accepted:
-        legacy_absolute_lags = np.abs(np.asarray(
-            [row["best_lag_px"] for row in accepted], dtype=np.float64
-        ))
-        legacy_pair_decision = {
-            "evaluable": True,
-            "median_supported_abs_lag_px": float(np.median(legacy_absolute_lags)),
-            "p95_supported_abs_lag_px": float(
-                np.percentile(legacy_absolute_lags, 95.0)
-            ),
-            "multiple_layer_or_ambiguous": bool(ambiguous),
-        }
+    if component_local and (
+        accepted or (exact_evidence_sink is not None and component_observations)
+    ):
+        if accepted:
+            legacy_absolute_lags = np.abs(np.asarray(
+                [row["best_lag_px"] for row in accepted], dtype=np.float64
+            ))
+            legacy_pair_decision = {
+                "evaluable": True,
+                "median_supported_abs_lag_px": float(np.median(legacy_absolute_lags)),
+                "p95_supported_abs_lag_px": float(
+                    np.percentile(legacy_absolute_lags, 95.0)
+                ),
+                "multiple_layer_or_ambiguous": bool(ambiguous),
+            }
+        else:
+            legacy_pair_decision = {
+                "evaluable": False,
+                "median_supported_abs_lag_px": None,
+                "p95_supported_abs_lag_px": None,
+                "multiple_layer_or_ambiguous": bool(ambiguous),
+            }
         component_summary = _component_local_edge_summary(
             component_observations, config=config
         )
+        if exact_evidence_sink is not None:
+            from dataclasses import replace
+            from .video_s13_m51_r4_component_chain import (
+                S13ExactEdgeComponentEvidence,
+                canonical_s13_support_sha256,
+                make_s13_edge_component_observation,
+                make_s13_unevaluable_edge_component_observation,
+            )
+
+            for component in component_summary["component_audits"]:
+                blocks = tuple(int(value) for value in component["block_indices"])
+                supports = [exact_support_by_block[value] for value in blocks if value in exact_support_by_block]
+                if not supports:
+                    continue
+                support = np.unique(np.concatenate(supports), axis=0)
+                try:
+                    observation, evidence = make_s13_edge_component_observation(
+                        pair_index=int(pair_index),
+                        component_id=int(component["component_id"]),
+                        source_indices=(int(pair_index), int(pair_index) + 1),
+                        support_xy=support,
+                        left_magnitude=left_features.gradient,
+                        right_magnitude=right_features.gradient,
+                        left_gradient_x=left_features.gradient_x,
+                        left_gradient_y=left_features.gradient_y,
+                        right_gradient_x=right_features.gradient_x,
+                        right_gradient_y=right_features.gradient_y,
+                        lags=lags,
+                        block_indices=blocks,
+                        minimum_correlation=float(getattr(config, "minimum_c2e_correlation", 0.75)),
+                        minimum_uniqueness_fraction=float(getattr(config, "minimum_c2e_uniqueness_fraction", 0.10)),
+                        maximum_orientation_difference_degrees=float(config.maximum_orientation_difference_degrees),
+                        maximum_forward_reverse_discrepancy_px=float(getattr(config, "maximum_forward_reverse_discrepancy_px", 0.5)),
+                        minimum_signed_gradient_agreement=float(getattr(config, "minimum_signed_gradient_agreement", 0.10)),
+                    )
+                except ValueError as exc:
+                    observation, evidence = make_s13_unevaluable_edge_component_observation(
+                        pair_index=int(pair_index),
+                        component_id=int(component["component_id"]),
+                        source_indices=(int(pair_index), int(pair_index) + 1),
+                        support_xy=support,
+                        left_magnitude=left_features.gradient,
+                        left_gradient_x=left_features.gradient_x,
+                        left_gradient_y=left_features.gradient_y,
+                        lags=lags,
+                        block_indices=blocks,
+                        reason=f"symmetric_hypothesis_failed:{type(exc).__name__}",
+                    )
+                if component.get("ambiguous") is True:
+                    observation = replace(
+                        observation,
+                        evidence_state="ambiguous",
+                        exclusion_reasons=tuple(sorted(set(
+                            (*observation.exclusion_reasons, "component_match_ambiguous")
+                        ))),
+                    )
+                global_support = np.array(evidence.support_xy, copy=True)
+                global_support[:, 0] += int(global_x_offset)
+                global_evidence = S13ExactEdgeComponentEvidence(
+                    support_xy=global_support,
+                    forward_scores=evidence.forward_scores,
+                    reverse_scores=evidence.reverse_scores,
+                    forward_correlations=evidence.forward_correlations,
+                    reverse_correlations=evidence.reverse_correlations,
+                    forward_support_counts=evidence.forward_support_counts,
+                    reverse_support_counts=evidence.reverse_support_counts,
+                )
+                bbox = list(observation.global_bbox_xyxy)
+                bbox[0] += int(global_x_offset)
+                bbox[2] += int(global_x_offset)
+                exact_evidence_sink.append((replace(
+                    observation,
+                    global_bbox_xyxy=tuple(bbox),
+                    fitted_line_offset=observation.fitted_line_offset + observation.normal_x * int(global_x_offset),
+                    mask_sha256=canonical_s13_support_sha256(global_support),
+                ), global_evidence))
         actionable = list(component_summary["actionable_components"])
         if not actionable:
             result = _edge_registration_empty(reason="no_unambiguous_edge_component")

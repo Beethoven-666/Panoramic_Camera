@@ -201,3 +201,20 @@ def test_p2_stage_rejects_internal_hole_but_allows_external_invalid_region() -> 
         expected_support_mask=np.ones_like(valid),
     )
     assert external["internal_holes"]["passed"] is True
+
+
+def test_v6_r2_hard_audit_requires_component_correction_field() -> None:
+    valid, provenance, seams = _p2_fixture()
+    audit = audit_s13_p2_stage(
+        valid_mask=valid,
+        pixel_provenance=provenance,
+        seams_x_by_row=seams,
+        assignment_frame_ids=(10, 11),
+        source_sizes=((8, 5), (8, 5)),
+        pair_transaction_count=1,
+        expected_support_mask=np.ones_like(valid),
+        require_component_correction_fields=True,
+    )
+
+    assert audit["passed"] is False
+    assert "pixel_provenance_fields_missing" in audit["fatal_failures"]

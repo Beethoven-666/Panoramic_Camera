@@ -37,10 +37,11 @@ from .video_s13_contract import (
     S13_FORMAL_M6_ALGORITHM_ID,
     S13_M51_R2_P2_COMPLETION_SCHEMA,
     S13_M51_R3_P2_COMPLETION_SCHEMA,
+    S13_M51_R4_P2_COMPLETION_SCHEMA,
     load_s13_config,
 )
 from .video_s13_motion import measure_s13_motion
-from .video_s13_m5 import run_s13_m5
+from .video_s13_m5 import _finalize_v5_transaction, run_s13_m5
 from .video_s13_m61_evidence import (
     P2_V4_COMPLETION_SCHEMA,
     S13PhotometricEvidenceConfig,
@@ -53,6 +54,7 @@ from .video_s13_p3_hard_audit import audit_s13_p3_stage, verify_sealed_s13_p3
 from .video_s13_photometric import photometric_solution_document
 from .video_s13_replay import (
     P2_REPLAY_SCHEMA,
+    P2_REPLAY_V2_SCHEMA,
     load_verified_s13_p2_for_m6,
     replay_pair_arrays,
 )
@@ -66,6 +68,10 @@ from .video_s13_vertical import (
     save_s13_vertical_solution,
 )
 from .video_s13_selection import select_s13_vertical_parent
+from .video_s13_v6_r2_verifier import (
+    canonical_source_map_slice_sha256,
+    verify_s13_v6_r2_p2,
+)
 
 
 REPORT_SCHEMA = "gemini305-video-s13-output-first-report/v1"
@@ -283,6 +289,7 @@ def _run_m5(
     m61_evidence_run_id: str = "",
     raw_rgb_sha256_by_frame: Mapping[int, str] | None = None,
     m51_r2_config: object | None = None,
+    candidate_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     from .session import CameraIntrinsics
     from .video_s12_schedule import S012Schedule
@@ -294,6 +301,8 @@ def _run_m5(
     if final.exists():
         raise FileExistsError(f"S1.3 M5 P2 already exists: {final}")
     pending.mkdir()
+    r4_enabled = p2_completion_schema == S13_M51_R4_P2_COMPLETION_SCHEMA
+    replay_schema = P2_REPLAY_V2_SCHEMA if r4_enabled else P2_REPLAY_SCHEMA
     p0_completion_path = generation / "P0" / "P0_completion.json"
     p1_completion_path = generation / "P1" / "P1_completion.json"
     p0_completion_sha = sha256_file(p0_completion_path)
@@ -347,10 +356,330 @@ def _run_m5(
         write_image(pending / "seam_overlay.png", m5.seam_overlay)
         write_image(pending / "p2_valid_mask.png", m5.final_result.valid_mask.astype(np.uint8) * 255)
         write_npz(pending / "p2_pixel_provenance.npz", m5.final_result.pixel_provenance)
+        if r4_enabled:
+            validation_root = pending / "validation/box_component_chain"
+            height, width = m5.final_result.image.shape[:2]
+            x0, x1 = max(0, min(width, 1470)), max(0, min(width, 1610))
+            y0, y1 = max(0, min(height, 280)), max(0, min(height, 350))
+            if x1 <= x0 or y1 <= y0:
+                x0, x1, y0, y1 = 0, width, 0, height
+            current_roi = m5.geometry_result.image[y0:y1, x0:x1]
+            candidate_roi = m5.final_result.image[y0:y1, x0:x1]
+            write_image(validation_root / "current_roi.png", current_roi)
+            write_image(validation_root / "candidate_roi.png", candidate_roi)
+            write_image(
+                validation_root / "current_vs_candidate.png",
+                np.concatenate((current_roi, candidate_roi), axis=1),
+            )
+            overlay_roi = m5.seam_overlay[y0:y1, x0:x1]
+            write_image(validation_root / "edge_trace_overlay.png", overlay_roi)
+            write_image(validation_root / "component_masks_overlay.png", overlay_roi)
+            component_doc = dict(m5.component_chain_audit or {})
+            pair_rows = [
+                row for row in component_doc.get("forward_reverse_hypotheses", [])
+                if 68 <= int(row.get("pair_index", -1)) <= 78
+            ]
+            atomic_write_json(validation_root / "pair_0068_0078_metrics.json", {
+                "schema": "gemini305-video-s13-box-pair-metrics/v1",
+                "roi_xyxy": [x0, y0, x1, y1],
+                "pairs": pair_rows,
+                "box_target_repair_complete": False,
+                "reason": "external_roi_quality_gate_not_complete",
+            })
+            atomic_write_json(
+                validation_root / "component_chain_audit.json", component_doc
+            )
+            atomic_write_json(validation_root / "source_offsets.json", {
+                "schema": "gemini305-video-s13-box-source-offsets/v1",
+                "segments": component_doc.get("segments", []),
+            })
+            atomic_write_json(validation_root / "forward_reverse_hypotheses.json", {
+                "schema": "gemini305-video-s13-box-forward-reverse-hypotheses/v1",
+                "hypotheses": pair_rows,
+            })
+        component_manifest_sha: str | None = None
+        source_correction_manifest_sha: str | None = None
+        source_map_manifest_sha: str | None = None
+        if r4_enabled:
+            component_audit = dict(m5.component_chain_audit or {})
+            (pending / "component_chain_transactions").mkdir(parents=True, exist_ok=True)
+            (pending / "source_corrections").mkdir(parents=True, exist_ok=True)
+            (pending / "source_maps").mkdir(parents=True, exist_ok=True)
+            evidence_assets: list[dict[str, object]] = []
+            for pair in m5.pairs:
+                for observation, evidence in pair.component_evidence:
+                    asset = (
+                        f"observation_pair_{observation.pair_index:04d}_"
+                        f"component_{observation.component_id:04d}.npz"
+                    )
+                    write_npz(pending / "component_chain_transactions" / asset, {
+                        "support_xy": evidence.support_xy,
+                        "forward_scores": evidence.forward_scores,
+                        "reverse_scores": evidence.reverse_scores,
+                        "forward_correlations": evidence.forward_correlations,
+                        "reverse_correlations": evidence.reverse_correlations,
+                        "forward_support_counts": evidence.forward_support_counts,
+                        "reverse_support_counts": evidence.reverse_support_counts,
+                    })
+                    evidence_assets.append({
+                        "pair_index": observation.pair_index,
+                        "component_id": observation.component_id,
+                        "asset": asset,
+                        "asset_sha256": sha256_file(
+                            pending / "component_chain_transactions" / asset
+                        ),
+                        "support_sha256": observation.mask_sha256,
+                    })
+            segment_assets: list[dict[str, object]] = []
+            for segment in component_audit.get("segments", []):
+                segment_id = str(segment["segment_id"])
+                short_id = segment_id.rsplit("-", 1)[-1]
+                json_name = f"s_{short_id}.json"
+                npz_name = f"s_{short_id}.npz"
+                supports = [
+                    np.asarray(evidence.support_xy, dtype=np.int32)
+                    for pair in m5.pairs
+                    for observation, evidence in pair.component_evidence
+                    if observation.pair_index in segment.get("pair_indices", [])
+                ]
+                support = (
+                    np.unique(np.concatenate(supports), axis=0)
+                    if supports else np.empty((0, 2), dtype=np.int32)
+                )
+                write_npz(pending / "component_chain_transactions" / npz_name, {
+                    "support_xy": support,
+                    "pair_indices": np.asarray(segment.get("pair_indices", []), np.int32),
+                    "source_indices": np.asarray(segment.get("source_indices", []), np.int32),
+                })
+                segment_document = {
+                    "schema": "gemini305-video-s13-component-segment-transaction/v1",
+                    **dict(segment),
+                    "asset": npz_name,
+                    "asset_sha256": sha256_file(
+                        pending / "component_chain_transactions" / npz_name
+                    ),
+                }
+                atomic_write_json(
+                    pending / "component_chain_transactions" / json_name,
+                    segment_document,
+                )
+                segment_assets.append({
+                    "segment_id": segment_id,
+                    "json": json_name,
+                    "json_sha256": sha256_file(
+                        pending / "component_chain_transactions" / json_name
+                    ),
+                    "npz": npz_name,
+                    "npz_sha256": segment_document["asset_sha256"],
+                })
+            stable_payload = {
+                "application_state": component_audit.get("application_state", "none"),
+                "baseline_c2e_obligations": component_audit.get(
+                    "baseline_c2e_obligations", []
+                ),
+                "chains": component_audit.get("chains", []),
+                "segments": component_audit.get("segments", []),
+                "evidence_assets": evidence_assets,
+                "segment_assets": segment_assets,
+            }
+            component_manifest = {
+                "schema": "gemini305-video-s13-component-chain-transactions/v1",
+                "application_state": component_audit.get("application_state", "none"),
+                "repair_complete": component_audit.get("repair_complete", False),
+                "baseline_c2e_obligations": component_audit.get(
+                    "baseline_c2e_obligations", []
+                ),
+                "chains": component_audit.get("chains", []),
+                "segments": component_audit.get("segments", []),
+                "forward_reverse_hypotheses": component_audit.get(
+                    "forward_reverse_hypotheses", []
+                ),
+                "evidence_assets": evidence_assets,
+                "segment_assets": segment_assets,
+                "segment_transaction_assets": [
+                    {
+                        "segment_id": row["segment_id"],
+                        "asset": f"component_chain_transactions/{row['json']}",
+                        "sha256": row["json_sha256"],
+                        "evidence_asset": f"component_chain_transactions/{row['npz']}",
+                        "evidence_sha256": row["npz_sha256"],
+                    }
+                    for row in segment_assets
+                ],
+                "accepted_segment_ids": component_audit.get("accepted_segment_ids", []),
+                "rejected_segment_ids": component_audit.get("rejected_segment_ids", []),
+                "deferred_segment_ids": component_audit.get("deferred_segment_ids", []),
+                "unresolved_regions": component_audit.get("segments", []),
+                "decision_payload_stable_sha256": hashlib.sha256(
+                    json.dumps(
+                        stable_payload, sort_keys=True, separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8")
+                ).hexdigest(),
+            }
+            atomic_write_json(
+                pending / "component_chain_transactions/manifest.json",
+                component_manifest,
+            )
+            component_manifest_sha = sha256_file(
+                pending / "component_chain_transactions/manifest.json"
+            )
+            correction_sources: list[dict[str, object]] = []
+            correction_asset_by_source: dict[int, dict[str, object]] = {}
+            patch_set = m5.component_patch_set
+            if patch_set is not None:
+                for source_index, corrections in patch_set.corrections_by_source.items():
+                    asset = f"source_{source_index:04d}.npz"
+                    correction_arrays: dict[str, np.ndarray] = {
+                        "segment_ids": np.asarray([row.segment_id for row in corrections]),
+                        "domains_xyxy": np.asarray([
+                            (row.x0, row.y0, row.x1, row.y1) for row in corrections
+                        ], dtype=np.int32),
+                        "correction_sha256": np.asarray([
+                            row.correction_sha256 for row in corrections
+                        ]),
+                    }
+                    for index, correction in enumerate(corrections):
+                        correction_arrays[f"delta_u_{index:04d}"] = correction.delta_u
+                        correction_arrays[f"delta_v_{index:04d}"] = correction.delta_v
+                        correction_arrays[f"weight_{index:04d}"] = correction.weight
+                    write_npz(pending / "source_corrections" / asset, correction_arrays)
+                    correction_asset_by_source[source_index] = {
+                        "source_index": source_index,
+                        "contributors": [row.segment_id for row in corrections],
+                        "correction_asset": f"source_corrections/{asset}",
+                        "correction_asset_sha256": sha256_file(
+                            pending / "source_corrections" / asset
+                        ),
+                    }
+            oracle_by_source = {
+                oracle.source_index: oracle for oracle in m5.source_map_oracles
+            }
+            for source_index, oracle in sorted(oracle_by_source.items()):
+                correction_sources.append({
+                    "source_index": source_index,
+                    "contributors": correction_asset_by_source.get(
+                        source_index, {}
+                    ).get("contributors", []),
+                    "source_map_oracle_sha256": oracle.oracle_sha256,
+                    **correction_asset_by_source.get(source_index, {}),
+                })
+            segment_asset_by_id = {
+                str(row["segment_id"]): row for row in segment_assets
+            }
+            correction_sha_by_segment = {
+                str(segment_id): str(source["correction_asset_sha256"])
+                for source in correction_sources
+                if "correction_asset_sha256" in source
+                for segment_id in source.get("contributors", [])
+            }
+            support_sha_by_segment = {
+                str(segment.get("segment_id")): hashlib.sha256(
+                    json.dumps(
+                        sorted(
+                            str(row.get("support_sha256"))
+                            for row in component_audit.get("baseline_c2e_obligations", [])
+                            if row.get("pair_index") in segment.get("pair_indices", [])
+                        ),
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                for segment in component_audit.get("segments", [])
+            }
+            field_table = [
+                {
+                    "field_id": int(field_id),
+                    "segment_id": str(segment_id),
+                    "segment_transaction_sha256": segment_asset_by_id[
+                        str(segment_id)
+                    ]["json_sha256"],
+                    "support_sha256": support_sha_by_segment[str(segment_id)],
+                    "source_correction_asset_sha256": correction_sha_by_segment[
+                        str(segment_id)
+                    ],
+                }
+                for segment_id, field_id in sorted(
+                    dict(component_audit.get("field_id_table", {})).items(),
+                    key=lambda row: row[1],
+                )
+            ]
+            source_correction_manifest = {
+                "schema": "gemini305-video-s13-source-corrections/v1",
+                "parent_component_transaction_manifest_sha256": component_manifest_sha,
+                "application_state": component_audit.get("application_state", "none"),
+                "contributors": component_audit.get("accepted_segment_ids", []),
+                "field_id_table": field_table,
+                "sources": correction_sources,
+            }
+            atomic_write_json(
+                pending / "source_corrections/manifest.json",
+                source_correction_manifest,
+            )
+            source_correction_manifest_sha = sha256_file(
+                pending / "source_corrections/manifest.json"
+            )
+            source_rows: list[dict[str, object]] = []
+            for oracle in m5.source_map_oracles:
+                asset = f"source_{oracle.source_index:04d}.npz"
+                write_npz(pending / "source_maps" / asset, {
+                    "source_index": np.asarray(oracle.source_index, dtype=np.int32),
+                    "domain_xyxy": np.asarray(oracle.domain_xyxy, dtype=np.int32),
+                    "u": oracle.u,
+                    "v": oracle.v,
+                    "valid": oracle.valid,
+                    "field_id": oracle.field_id,
+                })
+                source_rows.append({
+                    "source_index": oracle.source_index,
+                    "domain_xyxy": list(oracle.domain_xyxy),
+                    "asset": f"source_maps/{asset}",
+                    "asset_sha256": sha256_file(pending / "source_maps" / asset),
+                    "oracle_sha256": oracle.oracle_sha256,
+                })
+            atomic_write_json(pending / "source_maps/manifest.json", {
+                "schema": "gemini305-video-s13-source-map-oracles/v1",
+                "parent_source_correction_manifest_sha256": source_correction_manifest_sha,
+                "source_count": len(source_rows),
+                "sources": source_rows,
+            })
+            source_map_manifest_sha = sha256_file(pending / "source_maps/manifest.json")
         transaction_rows = [dict(pair.transaction) for pair in m5.pairs]
+        if r4_enabled:
+            for index, row in enumerate(transaction_rows):
+                row["component_chain_c2e"] = {
+                    "schema": "gemini305-video-s13-component-chain-c2e-pair-ref/v1",
+                    "application_state": component_audit.get("application_state", "none"),
+                    "reason": (
+                        "no_actionable_component_segment"
+                        if component_audit.get("application_state", "none") == "none"
+                        else None
+                    ),
+                    "component_transaction_manifest_sha256": component_manifest_sha,
+                    "source_correction_manifest_sha256": source_correction_manifest_sha,
+                    "source_map_oracle_manifest_sha256": source_map_manifest_sha,
+                    "refs": [
+                        {
+                            "segment_id": segment["segment_id"],
+                            "segment_transaction_sha256": segment_asset_by_id[
+                                str(segment["segment_id"])
+                            ]["json_sha256"],
+                            "role": "rescued" if segment.get("state") in {
+                                "resolved", "improved_unresolved"
+                            } else "cut",
+                            "state": segment.get("state", "rejected"),
+                            "affected_source_indices": segment.get("source_indices", []),
+                        }
+                        for segment in component_audit.get("segments", [])
+                        if int(row["transaction_id"].split("-")[-1])
+                        in segment.get("pair_indices", [])
+                    ],
+                }
+                transaction_rows[index] = _finalize_v5_transaction(row)
         atomic_write_json(pending / "pair_transactions.json", {
             "schema": (
-                "gemini305-video-s13-m5-pair-transactions/v3"
+                "gemini305-video-s13-m5-pair-transactions/v4"
+                if r4_enabled
+                else "gemini305-video-s13-m5-pair-transactions/v3"
                 if p2_completion_schema == S13_M51_R3_P2_COMPLETION_SCHEMA
                 else "gemini305-video-s13-m5-pair-transactions/v2"
                 if p2_completion_schema == S13_M51_R2_P2_COMPLETION_SCHEMA
@@ -358,19 +687,45 @@ def _run_m5(
             ),
             "all_pairs_reported": len(transaction_rows) == len(schedule.assignments) - 1,
             "pairs": transaction_rows,
+            **({
+                "component_transaction_manifest_sha256": component_manifest_sha,
+                "source_correction_manifest_sha256": source_correction_manifest_sha,
+                "source_map_oracle_manifest_sha256": source_map_manifest_sha,
+            } if r4_enabled else {}),
         })
         atomic_write_json(pending / "p2_selection.json", dict(m5.selection_audit))
-        atomic_write_json(pending / "hard_audit.json", dict(m5.hard_audit))
+        hard_audit_document = dict(m5.hard_audit)
+        if r4_enabled:
+            hard_audit_document["component_chain_c2e"] = dict(
+                m5.component_chain_audit or {}
+            )
+        atomic_write_json(pending / "hard_audit.json", hard_audit_document)
         atomic_write_json(
             pending / "diagnostic_quality_report.json", dict(m5.diagnostic_quality)
         )
-        for pair in m5.pairs:
+        for pair_index, pair in enumerate(m5.pairs):
             atomic_write_json(
                 pending / "pair_transactions" / f"pair_{int(pair.transaction['transaction_id'].split('-')[-1]):04d}.json",
-                dict(pair.transaction),
+                transaction_rows[pair_index],
             )
+        aggregate_path = pending / "pair_transactions.json"
+        aggregate_document = json.loads(aggregate_path.read_text(encoding="utf-8"))
+        aggregate_document["pair_transaction_assets"] = [
+            {
+                "pair_index": pair_index,
+                "asset": f"pair_transactions/pair_{pair_index:04d}.json",
+                "sha256": sha256_file(
+                    pending / "pair_transactions" / f"pair_{pair_index:04d}.json"
+                ),
+            }
+            for pair_index in range(len(m5.pairs))
+        ]
+        atomic_write_json(aggregate_path, aggregate_document)
         replay_manifest_rows: list[dict[str, object]] = []
         replay_pairs = []
+        oracle_by_source = {
+            oracle.source_index: oracle for oracle in m5.source_map_oracles
+        }
         for replay_pair in m5.replay_pairs:
             transaction_asset = (
                 pending / "pair_transactions" / f"pair_{replay_pair.pair_index:04d}.json"
@@ -381,7 +736,7 @@ def _run_m5(
             )
             replay_asset = Path("pair_replay") / f"pair_{bound_pair.pair_index:04d}.npz"
             write_npz(pending / replay_asset, replay_pair_arrays(bound_pair))
-            replay_manifest_rows.append({
+            replay_row = {
                 "pair_index": bound_pair.pair_index,
                 "asset": replay_asset.as_posix(),
                 "left_source_index": bound_pair.left_source_index,
@@ -392,7 +747,45 @@ def _run_m5(
                     f"pair_transactions/pair_{bound_pair.pair_index:04d}.json"
                 ),
                 "parent_pair_transaction_sha256": transaction_sha,
-            })
+            }
+            if r4_enabled:
+                def oracle_slice_sha(source_index: int) -> tuple[str, str]:
+                    oracle = oracle_by_source[source_index]
+                    return oracle.oracle_sha256, canonical_source_map_slice_sha256(
+                        oracle,
+                        (
+                            bound_pair.corridor_x0,
+                            0,
+                            bound_pair.corridor_x1,
+                            schedule.canvas_height,
+                        ),
+                    )
+
+                left_oracle_sha, left_slice_sha = oracle_slice_sha(
+                    bound_pair.left_source_index
+                )
+                right_oracle_sha, right_slice_sha = oracle_slice_sha(
+                    bound_pair.right_source_index
+                )
+                replay_row.update({
+                    "component_transaction_manifest_sha256": component_manifest_sha,
+                    "source_correction_manifest_sha256": source_correction_manifest_sha,
+                    "source_map_oracle_manifest_sha256": source_map_manifest_sha,
+                    "left_source_map_oracle_sha256": left_oracle_sha,
+                    "right_source_map_oracle_sha256": right_oracle_sha,
+                    "left_source_map_slice_sha256": left_slice_sha,
+                    "right_source_map_slice_sha256": right_slice_sha,
+                    "relevant_segment_ids": [
+                        row["segment_id"] for row in component_audit.get("segments", [])
+                        if bound_pair.pair_index in row.get("pair_indices", [])
+                    ],
+                    "relevant_segment_transaction_sha256": [
+                        segment_asset_by_id[str(row["segment_id"])]["json_sha256"]
+                        for row in component_audit.get("segments", [])
+                        if bound_pair.pair_index in row.get("pair_indices", [])
+                    ],
+                })
+            replay_manifest_rows.append(replay_row)
             replay_pairs.append(bound_pair)
         write_npz(pending / "p2_seams.npz", {
             "seams_x_by_row": np.stack(
@@ -401,12 +794,20 @@ def _run_m5(
             "base_boundaries_x": np.asarray(schedule.boundaries[1:-1], np.int32),
         })
         atomic_write_json(pending / "p2_replay_manifest.json", {
-            "schema": P2_REPLAY_SCHEMA,
+            "schema": replay_schema,
             "pair_count": len(replay_manifest_rows),
             "source_count": len(schedule.assignments),
             "maximum_secondary_corridor_width_px": 8,
             "reestimation_performed": False,
             "pairs": replay_manifest_rows,
+            **({
+                "component_transaction_manifest_sha256": component_manifest_sha,
+                "source_correction_manifest_sha256": source_correction_manifest_sha,
+                "source_map_oracle_manifest_sha256": source_map_manifest_sha,
+                "aggregate_pair_transaction_manifest_sha256": sha256_file(
+                    pending / "pair_transactions.json"
+                ),
+            } if r4_enabled else {}),
         })
         photometric_replay: Mapping[str, object] | None = None
         if p2_completion_schema == P2_V4_COMPLETION_SCHEMA:
@@ -437,6 +838,7 @@ def _run_m5(
             P2_COMPLETION_SCHEMA,
             S13_M51_R2_P2_COMPLETION_SCHEMA,
             S13_M51_R3_P2_COMPLETION_SCHEMA,
+            S13_M51_R4_P2_COMPLETION_SCHEMA,
         ):
             raise ValueError("S1.3 P2 completion schema is unsupported")
         ranked = sorted(
@@ -531,7 +933,7 @@ def _run_m5(
                     bool(pair.transaction.get("fallback_used")) for pair in m5.pairs
                 ),
                 "source_count": len(schedule.assignments),
-                "p2_replay_schema": P2_REPLAY_SCHEMA,
+                "p2_replay_schema": replay_schema,
                 "p2_replay_pair_count": len(replay_pairs),
                 "p2_replay_manifest_sha256": sha256_file(
                     pending / "p2_replay_manifest.json"
@@ -549,6 +951,29 @@ def _run_m5(
                     "depth", "mesh", "source_rescue", "production_renderer",
                 ],
                 "m6_eligible": bool(m6_eligible),
+                **(dict(candidate_identity or {}) if r4_enabled else {}),
+                **({
+                    "component_transaction_manifest_sha256": component_manifest_sha,
+                    "source_correction_manifest_sha256": source_correction_manifest_sha,
+                    "source_map_oracle_manifest_sha256": source_map_manifest_sha,
+                    "aggregate_pair_transaction_manifest_sha256": sha256_file(
+                        pending / "pair_transactions.json"
+                    ),
+                    "application_state": component_audit.get("application_state", "none"),
+                    "repair_complete": component_audit.get("repair_complete", False),
+                    "applied_segment_ids": component_audit.get("accepted_segment_ids", []),
+                    "resolved_segment_ids": [
+                        row["segment_id"] for row in component_audit.get("segments", [])
+                        if row.get("state") == "resolved"
+                    ],
+                    "improved_segment_ids": [
+                        row["segment_id"] for row in component_audit.get("segments", [])
+                        if row.get("state") == "improved_unresolved"
+                    ],
+                    "rejected_segment_ids": component_audit.get("rejected_segment_ids", []),
+                    "deferred_segment_ids": component_audit.get("deferred_segment_ids", []),
+                    "provenance_schema": "gemini305-video-s13-p2-provenance/v6-r2",
+                } if r4_enabled else {}),
             }
         if not m6_eligible:
             if not isinstance(m6_blocked_reason, str) or not m6_blocked_reason:
@@ -582,6 +1007,10 @@ def _run_m5(
         )
         os.replace(pending, final)
         verify_stage(final, completion_name="P2_completion.json", schema=p2_completion_schema)
+        if r4_enabled and candidate_identity is not None and not bool(
+            candidate_identity.get("working_tree_dirty", True)
+        ):
+            verify_s13_v6_r2_p2(final)
         if sha256_file(p0_completion_path) != p0_completion_sha:
             raise ValueError("S1.3 M5 immutable P0 completion changed")
         if sha256_file(p1_completion_path) != p1_completion_sha:
@@ -1082,13 +1511,29 @@ def run_s13_experiment(
     if run_m6 and not config.m6_eligible:
         raise ValueError("S1.3 identity is not M6 eligible")
     formal_m6 = configured_algorithm_id == S13_FORMAL_M6_ALGORITHM_ID
-    from .video_s13_m51_r2 import S13M51R2Config, S13M51R3Config
+    from .video_s13_m51_r2 import S13M51R2Config, S13M51R3Config, S13M51R4Config
 
     m51_r2_document = config.component.get("m51_r2")
     if config.m51_r2_enabled:
         if not isinstance(m51_r2_document, Mapping):
             raise ValueError("S1.3 P2 successor M5.1-r2 configuration is missing")
-        if config.m51_r3_enabled:
+        if config.m51_r4_enabled:
+            m51_r3_document = config.component.get("m51_r3")
+            m51_r4_document = config.component.get("m51_r4")
+            if not isinstance(m51_r3_document, Mapping) or not isinstance(
+                m51_r4_document, Mapping
+            ):
+                raise ValueError("S1.3 v6-r2 M5.1-r4 configuration is missing")
+            arguments = dict(m51_r2_document)
+            arguments.update(dict(m51_r4_document))
+            arguments.update({
+                "complete_reassessment_pair_indices": tuple(
+                    int(value) for value in m51_r3_document["reassessment_pair_indices"]
+                ),
+                "component_local_ambiguity_enabled": True,
+            })
+            m51_r2_config = S13M51R4Config(**arguments)
+        elif config.m51_r3_enabled:
             m51_r3_document = config.component.get("m51_r3")
             if not isinstance(m51_r3_document, Mapping):
                 raise ValueError("S1.3 v6 M5.1-r3 configuration is missing")
@@ -1584,6 +2029,22 @@ def run_s13_experiment(
                         if formal_m6 else None
                     ),
                     m51_r2_config=m51_r2_config,
+                    candidate_identity={
+                        "algorithm_id": configured_algorithm_id,
+                        "implementation_id": config.document["implementation_id"],
+                        "contract_schema": config.component["contract_schema"],
+                        "config_sha256": algorithm_spec.config_sha256,
+                        "candidate_manifest_sha256": algorithm_spec.candidate_manifest_sha256,
+                        "candidate_config_sha256": algorithm_spec.config_sha256,
+                        "s13_local_manifest_sha256": sha256_file(
+                            config.path.parent / "candidate_manifest.json"
+                        ),
+                        "generation_manifest_sha256": sha256_file(
+                            generation / "generation_manifest.json"
+                        ),
+                        "source_commit": algorithm_spec.source_commit,
+                        "working_tree_dirty": algorithm_spec.working_tree_dirty,
+                    },
                 )
             except Exception as exc:
                 m5 = {

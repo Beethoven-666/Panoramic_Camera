@@ -43,8 +43,27 @@ from .video_s13_seam import (
     select_s13_seam,
 )
 from .video_s13_replay import S13P2ReplayPair
-from .video_s13_m51_r2 import S13M51R2Config, S13M51R3Config
+from .video_s13_m51_r2 import S13M51R2Config, S13M51R3Config, S13M51R4Config
 from .video_s13_vertical import S13VerticalSolution
+from .video_s13_m51_r4_component_chain import (
+    SourceMapOracle,
+    build_s13_edge_component_chains,
+    build_s13_source_component_correction,
+    evaluate_s13_component_candidate_quality,
+    freeze_s13_baseline_c2e_obligations,
+    S13ComponentSegmentCandidate,
+    S13ComponentPatchSet,
+    select_s13_component_patch_set,
+    solve_s13_component_segment_source_offsets,
+    source_map_oracle_from_arrays,
+    split_s13_edge_component_chain,
+    compose_s13_source_component_deltas,
+)
+
+
+S13SourceMapProvider = Callable[
+    [int, int, int], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+]
 
 
 @dataclass(frozen=True)
@@ -52,6 +71,7 @@ class S13M5Pair:
     transaction: Mapping[str, object]
     seam_x_by_row: np.ndarray
     alignment: S13PairAlignment | None
+    component_evidence: tuple[tuple[object, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,6 +99,9 @@ class S13M5Result:
     after_mean_score: float | None
     selection_audit: Mapping[str, object]
     performance: Mapping[str, float]
+    source_map_oracles: tuple[SourceMapOracle, ...] = ()
+    component_chain_audit: Mapping[str, object] | None = None
+    component_patch_set: S13ComponentPatchSet | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +183,8 @@ def _finalize_v5_transaction(value: Mapping[str, object]) -> dict[str, object]:
 
 
 def _successor_transaction_schema(config: S13M51R2Config | None) -> str:
+    if isinstance(config, S13M51R4Config):
+        return "gemini305-video-s13-m5-pair-transaction/v5"
     if isinstance(config, S13M51R3Config):
         return "gemini305-video-s13-m5-pair-transaction/v4"
     if config is not None and config.enabled:
@@ -243,7 +268,9 @@ def _map_crop(
     x1: int,
     global_vertical_offset: float,
     candidate: S13AlignmentCandidate | None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    component_corrections: tuple[object, ...] = (),
+    component_field_ids: Mapping[str, int] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     assignment = schedule.assignments[source_index]
     height = schedule.canvas_height
     canvas_x = np.broadcast_to(np.arange(x0, x1, dtype=np.float32)[None, :], (height, x1 - x0))
@@ -257,6 +284,15 @@ def _map_crop(
             source = np.s_[:, overlap0 - candidate.x0:overlap1 - candidate.x0]
             delta_u[target] = candidate.target_delta_u[source]
             delta_v[target] = candidate.target_delta_v[source]
+    field_id = np.full(canvas_x.shape, -1, dtype=np.int32)
+    if component_corrections:
+        delta_u, delta_v, field_id = compose_s13_source_component_deltas(
+            base_delta_u=delta_u,
+            base_delta_v=delta_v,
+            domain_xyxy=(x0, 0, x1, height),
+            corrections=component_corrections,
+            field_ids=component_field_ids,
+        )
     calibrated_x = float(calibration.cx) + canvas_x - float(assignment.center_x) + delta_u
     calibrated_y = canvas_y - float(global_vertical_offset) + delta_v
     inverse = undistortion_maps(calibration)
@@ -272,14 +308,16 @@ def _map_crop(
         & (source_u >= 0.0) & (source_u <= int(calibration.width) - 1)
         & (source_v >= 0.0) & (source_v <= int(calibration.height) - 1)
     )
-    return source_u.astype(np.float32), source_v.astype(np.float32), valid
+    return source_u.astype(np.float32), source_v.astype(np.float32), valid, np.asarray(
+        field_id, dtype=np.int32
+    )
 
 
 def _sample_crop(
     raw: np.ndarray,
-    maps: tuple[np.ndarray, np.ndarray, np.ndarray],
+    maps: tuple[np.ndarray, ...],
 ) -> tuple[np.ndarray, np.ndarray]:
-    u, v, valid = maps
+    u, v, valid = maps[:3]
     sampled = accelerated_remap(raw, u, v, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
     return sampled, valid
 
@@ -815,6 +853,7 @@ def estimate_s13_m5_transactions(
                 "median_supported_abs_lag_px": None,
                 "p95_supported_abs_lag_px": None, "ambiguous": False,
             }
+            selected_component_evidence: tuple[tuple[object, object], ...] = ()
             selected_seam_rank = 0
             selected_geometry_rank = 0
             selection_continued_for_structure = False
@@ -862,6 +901,7 @@ def estimate_s13_m5_transactions(
                     "p95_supported_abs_lag_px": None, "ambiguous": False,
                 }
                 visual_suspect = False
+                candidate_component_evidence: list[tuple[object, object]] = []
                 geometry_rank = 0
                 if not failures:
                     alignment = reestimate_s13_final_corridor_alignment(
@@ -925,6 +965,8 @@ def estimate_s13_m5_transactions(
                         edge_registration = pair_edge_registration_metrics(
                             left_edge_features, final_edge_features, left_valid, final_valid, seam_local,
                             config=successor,
+                            pair_index=pair_index,
+                            global_x_offset=x0,
                         )
                         lk_p95_value = selected_map.metrics.get("residual_p95_px")
                         lk_p95 = (
@@ -942,14 +984,28 @@ def estimate_s13_m5_transactions(
                         }
 
                         if visual_suspect:
+                            if isinstance(successor, S13M51R4Config):
+                                # The ordinary forward block audit above is the
+                                # trigger. Only unresolved suspect pairs pay
+                                # for exact physical-component reverse evidence;
+                                # cached maps and Sobel features are reused.
+                                candidate_component_evidence.clear()
+                                pair_edge_registration_metrics(
+                                    left_edge_features, final_edge_features,
+                                    left_valid, final_valid, seam_local,
+                                    config=successor,
+                                    exact_evidence_sink=candidate_component_evidence,
+                                    pair_index=pair_index,
+                                    global_x_offset=x0,
+                                )
                             selection_continued_for_structure = True
                             if hard_safe_baseline is None:
                                 hard_safe_baseline = (
                                     candidate, alignment, before_metrics, after_metrics,
                                     before_horizontal, after_horizontal, edge_registration,
-                                    seam_rank, 0,
+                                    seam_rank, 0, tuple(candidate_component_evidence),
                                 )
-                            clean_alternatives: list[tuple[float, int, int, object, object]] = []
+                            clean_alternatives: list[tuple[float, int, int, object, object, object]] = []
                             simplicity = {
                                 "C0_identity": 0, "C1_accepted_vertical": 1,
                                 "C2_subpixel_translation": 2,
@@ -997,6 +1053,8 @@ def estimate_s13_m5_transactions(
                                 alternate_edge = pair_edge_registration_metrics(
                                     left_edge_features, alternate_edge_features, left_valid,
                                     alternate_valid, seam_local, config=successor,
+                                    pair_index=pair_index,
+                                    global_x_offset=x0,
                                 )
                                 alt_lk_value = alternate.metrics.get("residual_p95_px")
                                 alt_lk = (
@@ -1019,6 +1077,7 @@ def estimate_s13_m5_transactions(
                                     edge_p95, simplicity.get(alternate.model, 99),
                                     alternate_index, alternate_after,
                                     (alternate_horizontal, alternate_edge),
+                                    (),
                                 ))
                             if clean_alternatives:
                                 minimum_edge = min(item[0] for item in clean_alternatives)
@@ -1041,6 +1100,7 @@ def estimate_s13_m5_transactions(
                                     **dict(alternate_details[1]),  # type: ignore[arg-type,index]
                                     "visual_suspect": False,
                                 }
+                                candidate_component_evidence = list(chosen[5])
                                 visual_suspect = False
                     map_delta_sha = _sha_array(selected_map.target_delta_u, selected_map.target_delta_v)
                     corridor_bounds = [
@@ -1088,11 +1148,13 @@ def estimate_s13_m5_transactions(
                     selected_edge_registration = edge_registration
                     selected_seam_rank = seam_rank
                     selected_geometry_rank = geometry_rank
+                    selected_component_evidence = tuple(candidate_component_evidence)
             if selected_candidate is None and hard_safe_baseline is not None:
                 (
                     selected_candidate, selected_alignment, selected_before, selected_after,
                     selected_before_horizontal, selected_after_horizontal,
                     selected_edge_registration, selected_seam_rank, selected_geometry_rank,
+                    selected_component_evidence,
                 ) = hard_safe_baseline
                 unresolved_oblique_structure = True
                 for row in evaluations:
@@ -1218,7 +1280,9 @@ def estimate_s13_m5_transactions(
                 core = _finalize_v5_transaction(core)
             else:
                 core["result_stage_sha256"] = _sha_json(core)
-            pairs.append(S13M5Pair(core, selected_seam, selected_alignment))
+            pairs.append(S13M5Pair(
+                core, selected_seam, selected_alignment, selected_component_evidence
+            ))
         except Exception as exc:
             if successor.enabled:
                 raise
@@ -1298,6 +1362,7 @@ def build_s13_p2_replay(
     pairs: Sequence[S13M5Pair],
     *,
     corridor_half_width_px: int = 8,
+    map_provider: S13SourceMapProvider | None = None,
 ) -> tuple[S13P2ReplayPair, ...]:
     """Serialize selected P2 sampling without re-estimating geometry or seams."""
 
@@ -1315,14 +1380,20 @@ def build_s13_p2_replay(
             else None
         )
         right_candidate = pair.alignment.selected if pair.alignment is not None else None
-        left_maps = _map_crop(
-            schedule, calibration, pair_index, x0, x1,
-            vertical.global_offsets_px[pair_index], left_candidate,
-        )
-        right_maps = _map_crop(
-            schedule, calibration, pair_index + 1, x0, x1,
-            vertical.global_offsets_px[pair_index + 1], right_candidate,
-        )
+        if map_provider is None:
+            left_base = _map_crop(
+                schedule, calibration, pair_index, x0, x1,
+                vertical.global_offsets_px[pair_index], left_candidate,
+            )
+            right_base = _map_crop(
+                schedule, calibration, pair_index + 1, x0, x1,
+                vertical.global_offsets_px[pair_index + 1], right_candidate,
+            )
+            left_maps = left_base
+            right_maps = right_base
+        else:
+            left_maps = map_provider(pair_index, x0, x1)
+            right_maps = map_provider(pair_index + 1, x0, x1)
         canvas_x = np.arange(x0, x1, dtype=np.int32)[None, :]
         owner_right = canvas_x >= seam[:, None]
         replay.append(S13P2ReplayPair(
@@ -1344,6 +1415,12 @@ def build_s13_p2_replay(
             geometry_transaction_numeric_id=pair_index,
             seam_transaction_numeric_id=pair_index,
             parent_pair_transaction_sha256="",
+            left_component_correction_field_id=(
+                np.asarray(left_maps[3], dtype=np.int32) if map_provider is not None else None
+            ),
+            right_component_correction_field_id=(
+                np.asarray(right_maps[3], dtype=np.int32) if map_provider is not None else None
+            ),
         ))
     return tuple(replay)
 
@@ -1358,6 +1435,7 @@ def render_s13_p2_from_raw(
     final_seams: bool,
     selected_hypothesis_ids: tuple[int, ...] | None = None,
     placement_methods: tuple[str, ...] | None = None,
+    map_provider: S13SourceMapProvider | None = None,
 ) -> S13P2Result:
     """Formally remap each real contributor once from raw RGB for this P2 asset."""
 
@@ -1379,31 +1457,39 @@ def render_s13_p2_from_raw(
     seam_tx = np.full((height, width), -1, dtype=np.int32)
     hypothesis = np.full((height, width), -1, dtype=np.int32)
     placement = np.full((height, width), -1, dtype=np.int16)
+    component_field = np.full((height, width), -1, dtype=np.int32)
     decoded: list[int] = []
     expected_support = np.zeros((height, width), dtype=bool)
     for source_index, assignment in enumerate(schedule.assignments):
         candidate = None
         if source_index > 0 and pairs[source_index - 1].alignment is not None:
             candidate = pairs[source_index - 1].alignment.selected
-        expected_maps = _map_crop(
-            schedule, calibration, source_index, 0, width,
-            vertical.global_offsets_px[source_index], candidate,
-        )
+        if map_provider is None:
+            expected_maps = _map_crop(
+                schedule, calibration, source_index, 0, width,
+                vertical.global_offsets_px[source_index], candidate,
+            )
+        else:
+            expected_maps = map_provider(source_index, 0, width)[:3]
         expected_support |= expected_maps[2]
         mask = owner_index == source_index
         if not np.any(mask):
             continue
         columns = np.flatnonzero(np.any(mask, axis=0))
         x0, x1 = int(columns[0]), int(columns[-1]) + 1
-        maps = _map_crop(
-            schedule, calibration, source_index, x0, x1,
-            vertical.global_offsets_px[source_index], candidate,
-        )
+        if map_provider is None:
+            base_maps = _map_crop(
+                schedule, calibration, source_index, x0, x1,
+                vertical.global_offsets_px[source_index], candidate,
+            )
+            maps = base_maps
+        else:
+            maps = map_provider(source_index, x0, x1)
         raw = np.asarray(image_loader(assignment.frame_id))
         decoded.append(assignment.frame_id)
         if raw.shape != (height, int(calibration.width), 3) or raw.dtype != np.uint8:
             raise ValueError("S1.3 M5 raw RGB source shape/type changed")
-        sampled, map_valid = _sample_crop(raw, maps)
+        sampled, map_valid = _sample_crop(raw, maps[:3])
         owned = mask[:, x0:x1] & map_valid
         roi = np.s_[:, x0:x1]
         output[roi][owned] = sampled[owned]
@@ -1412,6 +1498,7 @@ def render_s13_p2_from_raw(
         assignment_full[roi][owned] = source_index
         source_u_full[roi][owned] = maps[0][owned]
         source_v_full[roi][owned] = maps[1][owned]
+        component_field[roi][owned] = np.asarray(maps[3], dtype=np.int32)[owned]
         if source_index > 0:
             pair_index = source_index - 1
             geometry_tx[roi][owned] = pair_index
@@ -1440,6 +1527,8 @@ def render_s13_p2_from_raw(
         "secondary_source_v": np.full((height, width), np.nan, np.float32),
         "secondary_weight": np.zeros((height, width), np.float32),
     }
+    if map_provider is not None:
+        pixel["component_correction_field_id"] = component_field
     if not np.array_equal(valid_full, owner >= 0):
         raise ValueError("S1.3 M5 valid and owner topology disagree")
     finite = valid_full & (~np.isfinite(source_u_full) | ~np.isfinite(source_v_full))
@@ -1483,17 +1572,431 @@ def run_s13_m5(
         p0_ancestor_completion_sha256=p0_ancestor_completion_sha256,
         m51_r2_config=m51_r2_config,
     )
-    geometry_seconds = time.perf_counter() - tick
+    component_chain_audit: dict[str, object] | None = None
+    component_chain_seconds = 0.0
+    component_patch_set: S13ComponentPatchSet | None = None
+    component_field_ids: dict[str, int] = {}
+    geometry_seconds = 0.0
+    if isinstance(m51_r2_config, S13M51R4Config):
+        component_started = time.perf_counter()
+        geometry_seconds = component_started - tick
+        observations = [
+            row[0] for pair in pairs for row in pair.component_evidence
+        ]
+        obligations = freeze_s13_baseline_c2e_obligations(observations)
+        all_chains = build_s13_edge_component_chains(observations, config=m51_r2_config)
+        chains = tuple(
+            chain for chain in all_chains
+            if len(set(chain.pair_indices)) >= m51_r2_config.minimum_chain_pair_count
+            and any(
+                item.evidence_state == "actionable"
+                and abs(item.forward_best_lag_px) > 1.0
+                for item in chain.observations
+            )
+        )
+        segments = tuple(
+            segment
+            for chain in chains
+            for segment in split_s13_edge_component_chain(chain, config=m51_r2_config)
+        )
+        solved_rows: list[dict[str, object]] = []
+        segment_candidates: list[S13ComponentSegmentCandidate] = []
+        evidence_by_component = {
+            (observation.pair_index, observation.component_id): evidence
+            for pair in pairs for observation, evidence in pair.component_evidence
+        }
+        chain_by_id = {chain.chain_id: chain for chain in chains}
+        final_seams_for_gauge = _seams_array(schedule, pairs, final=True)
+        gauge_owner = np.zeros(
+            (schedule.canvas_height, schedule.canvas_width), dtype=np.int32
+        )
+        for seam in final_seams_for_gauge:
+            gauge_owner += np.arange(schedule.canvas_width)[None, :] >= seam[:, None]
+        for segment in segments:
+            try:
+                x0, y0, x1, y1 = segment.global_bbox_xyxy
+                owner_support = {
+                    source: int(np.count_nonzero(
+                        gauge_owner[y0:y1, x0:x1] == source
+                    ))
+                    for source in segment.source_indices
+                }
+                offsets = solve_s13_component_segment_source_offsets(
+                    segment, config=m51_r2_config,
+                    owner_support_by_source=owner_support,
+                )
+                chain = chain_by_id[segment.parent_chain_id]
+                selected: S13ComponentSegmentCandidate | None = None
+                lags = np.asarray([
+                    0.5 * (row.forward_best_lag_px - row.reverse_best_lag_px)
+                    for row in segment.observations
+                ], dtype=np.float64)
+                baseline_metrics = {
+                    "edge_p95_px": float(np.percentile(np.abs(lags), 95.0)),
+                    "maximum_step_px": float(np.max(np.abs(lags))),
+                    "break_length_px": 0.0,
+                    "double_edge_length_px": 0.0,
+                    "non_target_p95_px": 0.0,
+                }
+                for gain in m51_r2_config.correction_gain_candidates:
+                    corrections = []
+                    for source in segment.source_indices:
+                        support_mask = np.zeros(
+                            (schedule.canvas_height, schedule.canvas_width), dtype=bool
+                        )
+                        for observation in segment.observations:
+                            evidence = evidence_by_component.get(
+                                (observation.pair_index, observation.component_id)
+                            )
+                            if evidence is None or source not in observation.source_indices:
+                                continue
+                            xy = np.asarray(evidence.support_xy, dtype=np.int32)
+                            support_mask[xy[:, 1], xy[:, 0]] = True
+                        if not np.any(support_mask):
+                            raise ValueError("segment_source_support_missing")
+                        corrections.append(build_s13_source_component_correction(
+                            segment_id=segment.segment_id,
+                            source_index=source,
+                            frame_id=int(schedule.assignments[source].frame_id),
+                            support_mask=support_mask,
+                            source_offset_px=float(offsets[source]) * float(gain),
+                            normal_xy=chain.canonical_normal_xy,
+                            config=m51_r2_config,
+                        ))
+                    residuals = np.asarray([
+                        0.5 * (row.forward_best_lag_px - row.reverse_best_lag_px)
+                        + float(gain) * (
+                            float(offsets[row.source_indices[1]])
+                            - float(offsets[row.source_indices[0]])
+                        )
+                        for row in segment.observations
+                    ], dtype=np.float64)
+                    candidate_metrics = {
+                        "edge_p95_px": float(np.percentile(np.abs(residuals), 95.0)),
+                        "maximum_step_px": float(np.max(np.abs(residuals))),
+                        "break_length_px": 0.0,
+                        "double_edge_length_px": 0.0,
+                        "non_target_p95_px": 0.0,
+                        "search_boundary_hit": any(
+                            row.search_boundary_hit for row in segment.observations
+                        ),
+                    }
+                    quality = evaluate_s13_component_candidate_quality(
+                        baseline=baseline_metrics,
+                        candidate=candidate_metrics,
+                        hard_gates={
+                            "forward_reverse": all(
+                                abs(row.forward_best_lag_px + row.reverse_best_lag_px)
+                                <= m51_r2_config.maximum_forward_reverse_discrepancy_px
+                                for row in segment.observations
+                            ),
+                            "offset_bounds": all(
+                                abs(float(value) * float(gain))
+                                <= m51_r2_config.maximum_source_normal_offset_px
+                                for value in offsets.values()
+                            ),
+                            "owner_support": all(value > 0 for value in owner_support.values()),
+                        },
+                        config=m51_r2_config,
+                    )
+                    audit = {
+                        **dict(quality.audit),
+                        "rescued_severe_seam_count": sum(abs(value) > 1.0 for value in lags),
+                        "worst_seam_absolute_improvement": float(
+                            np.max(np.abs(lags)) - np.max(np.abs(residuals))
+                        ),
+                        "supported_unique_edge_columns": int(
+                            sum(row.reference_support_samples for row in segment.observations)
+                        ),
+                        "post_maximum_step": candidate_metrics["maximum_step_px"],
+                        "correction_energy": float(sum(
+                            np.sum(row.delta_u.astype(np.float64) ** 2 + row.delta_v.astype(np.float64) ** 2)
+                            for row in corrections
+                        )),
+                        "baseline_metrics": baseline_metrics,
+                        "candidate_metrics": candidate_metrics,
+                    }
+                    candidate_row = S13ComponentSegmentCandidate(
+                        segment=segment,
+                        source_offsets_px=tuple(float(offsets[source]) for source in segment.source_indices),
+                        gain=float(gain),
+                        corrections=tuple(corrections),
+                        decision=quality.decision,
+                        rejection_reasons=quality.rejection_reasons,
+                        audit=audit,
+                    )
+                    if candidate_row.decision in {"resolved", "improved_unresolved"}:
+                        selected = candidate_row
+                        break
+                if selected is None:
+                    selected = candidate_row
+                segment_candidates.append(selected)
+                solved_rows.append({
+                    "segment_id": segment.segment_id,
+                    "pair_indices": list(segment.pair_indices),
+                    "source_indices": list(segment.source_indices),
+                    "source_offsets_px": {str(key): value for key, value in offsets.items()},
+                    "gain": selected.gain,
+                    "state": selected.decision,
+                    "reason": None if not selected.rejection_reasons else list(selected.rejection_reasons),
+                    "audit": dict(selected.audit),
+                })
+            except ValueError as exc:
+                solved_rows.append({
+                    "segment_id": segment.segment_id,
+                    "pair_indices": list(segment.pair_indices),
+                    "source_indices": list(segment.source_indices),
+                    "state": "rejected",
+                    "reason": f"solver_rejected:{exc}",
+                })
+        component_patch_set = select_s13_component_patch_set(
+            segment_candidates, config=m51_r2_config, obligations=obligations
+        )
+        component_field_ids = {
+            segment_id: index
+            for index, segment_id in enumerate(component_patch_set.accepted_segment_ids)
+        }
+        hypothesis_rows = []
+        def finite_score_rows(values: np.ndarray) -> list[float | None]:
+            return [float(value) if np.isfinite(value) else None for value in values]
+
+        for pair in pairs:
+            for observation, evidence in pair.component_evidence:
+                hypothesis_rows.append({
+                    "pair_index": observation.pair_index,
+                    "component_id": observation.component_id,
+                    "bbox_xyxy": list(observation.global_bbox_xyxy),
+                    "evidence_state": observation.evidence_state,
+                    "forward_best_lag_px": observation.forward_best_lag_px,
+                    "reverse_best_lag_px": observation.reverse_best_lag_px,
+                    "correlation": observation.correlation,
+                    "uniqueness_fraction": observation.uniqueness_fraction,
+                    "search_boundary_hit": observation.search_boundary_hit,
+                    "support_sha256": observation.mask_sha256,
+                    "forward_scores": finite_score_rows(evidence.forward_scores),
+                    "reverse_scores": finite_score_rows(evidence.reverse_scores),
+                    "forward_support_counts": np.asarray(
+                        evidence.forward_support_counts
+                    ).tolist(),
+                    "reverse_support_counts": np.asarray(
+                        evidence.reverse_support_counts
+                    ).tolist(),
+                })
+        component_chain_audit = {
+            "schema": "gemini305-video-s13-component-chain-c2e-hard-audit/v1",
+            "application_state": component_patch_set.application_state,
+            "repair_complete": bool(component_patch_set.audit.get("repair_complete", False)),
+            "observation_count": len(observations),
+            "chain_count": len(chains),
+            "raw_partition_chain_count": len(all_chains),
+            "segment_count": len(segments),
+            "baseline_c2e_obligations": [
+                {
+                    "obligation_id": row.obligation_id,
+                    "pair_index": row.pair_index,
+                    "component_id": row.component_id,
+                    "bbox_xyxy": list(row.global_bbox_xyxy),
+                    "support_sha256": row.support_sha256,
+                    "severe": row.severe,
+                    "evaluable": row.evaluable,
+                }
+                for row in obligations
+            ],
+            "chains": [{
+                "chain_id": row.chain_id,
+                "pair_indices": list(row.pair_indices),
+                "source_indices": list(row.source_indices),
+                "component_ids": [item.component_id for item in row.observations],
+                "chain_sha256": row.chain_sha256,
+            } for row in chains],
+            "segments": solved_rows,
+            "accepted_segment_ids": list(component_patch_set.accepted_segment_ids),
+            "rejected_segment_ids": list(component_patch_set.rejected_segment_ids),
+            "deferred_segment_ids": list(component_patch_set.deferred_segment_ids),
+            "field_id_table": component_field_ids,
+            "forward_reverse_hypotheses": hypothesis_rows,
+            "fatal_failures": [],
+            "passed": True,
+        }
+        component_chain_seconds = time.perf_counter() - component_started
+    else:
+        geometry_seconds = time.perf_counter() - tick
+    def frozen_map_provider(source_index: int, x0: int, x1: int):
+        candidate = None
+        if source_index > 0 and pairs[source_index - 1].alignment is not None:
+            candidate = pairs[source_index - 1].alignment.selected
+        maps = _map_crop(
+            schedule, calibration, source_index, x0, x1,
+            vertical.global_offsets_px[source_index], candidate,
+            tuple(
+                () if component_patch_set is None
+                else component_patch_set.corrections_by_source.get(source_index, ())
+            ),
+            component_field_ids,
+        )
+        # OpenCV's inverse-map interpolation can differ by one float32 ULP
+        # when the identical global coordinate is evaluated in crops with a
+        # different x origin.  Freeze a sub-1/10000 px canonical grid so the
+        # render, replay and oracle authorities are crop-invariant.
+        canonical_u = np.round(np.asarray(maps[0], np.float64), 4).astype(np.float32)
+        canonical_v = np.round(np.asarray(maps[1], np.float64), 4).astype(np.float32)
+        return canonical_u, canonical_v, maps[2], maps[3]
+
     tick = time.perf_counter()
+    formal_provider = (
+        frozen_map_provider if isinstance(m51_r2_config, S13M51R4Config) else None
+    )
     geometry = render_s13_p2_from_raw(
         schedule, calibration, image_loader, vertical, pairs, final_seams=False,
         selected_hypothesis_ids=selected_hypothesis_ids, placement_methods=placement_methods,
+        map_provider=formal_provider,
     )
     final = render_s13_p2_from_raw(
         schedule, calibration, image_loader, vertical, pairs, final_seams=True,
         selected_hypothesis_ids=selected_hypothesis_ids, placement_methods=placement_methods,
+        map_provider=formal_provider,
     )
-    replay_pairs = build_s13_p2_replay(schedule, calibration, vertical, pairs)
+    replay_pairs = build_s13_p2_replay(
+        schedule, calibration, vertical, pairs, map_provider=formal_provider
+    )
+    source_map_oracles: list[SourceMapOracle] = []
+    for source_index in (
+        range(len(schedule.assignments)) if formal_provider is not None else ()
+    ):
+        domains: list[tuple[int, int]] = []
+        owned = final.pixel_provenance["owner_source_index"] == source_index
+        if np.any(owned):
+            columns = np.flatnonzero(np.any(owned, axis=0))
+            domains.append((int(columns[0]), int(columns[-1]) + 1))
+        for replay in replay_pairs:
+            if source_index in (replay.left_source_index, replay.right_source_index):
+                domains.append((replay.corridor_x0, replay.corridor_x1))
+        if not domains:
+            continue
+        x0 = min(row[0] for row in domains)
+        x1 = max(row[1] for row in domains)
+        maps = list(frozen_map_provider(source_index, x0, x1))
+        owner_rows, owner_columns = np.nonzero(owned[:, x0:x1])
+        if owner_rows.size:
+            owner_global_columns = owner_columns + x0
+            maps[0][owner_rows, owner_columns] = final.pixel_provenance["source_u"][
+                owner_rows, owner_global_columns
+            ]
+            maps[1][owner_rows, owner_columns] = final.pixel_provenance["source_v"][
+                owner_rows, owner_global_columns
+            ]
+            maps[2][owner_rows, owner_columns] = True
+            maps[3][owner_rows, owner_columns] = final.pixel_provenance[
+                "component_correction_field_id"
+            ][owner_rows, owner_global_columns]
+        source_map_oracles.append(source_map_oracle_from_arrays(
+            source_index=source_index,
+            domain_xyxy=(x0, 0, x1, schedule.canvas_height),
+            u=maps[0], v=maps[1], valid=maps[2], field_id=maps[3],
+        ))
+    if formal_provider is not None:
+        oracle_by_source = {row.source_index: row for row in source_map_oracles}
+        canonical_replay: list[S13P2ReplayPair] = []
+        for replay in replay_pairs:
+            left = oracle_by_source[replay.left_source_index]
+            right = oracle_by_source[replay.right_source_index]
+            left_local = np.s_[
+                :, replay.corridor_x0 - left.domain_xyxy[0]:
+                replay.corridor_x1 - left.domain_xyxy[0]
+            ]
+            right_local = np.s_[
+                :, replay.corridor_x0 - right.domain_xyxy[0]:
+                replay.corridor_x1 - right.domain_xyxy[0]
+            ]
+            canonical_replay.append(replace(
+                replay,
+                left_source_u=left.u[left_local],
+                left_source_v=left.v[left_local],
+                left_valid=left.valid[left_local] != 0,
+                left_component_correction_field_id=left.field_id[left_local],
+                right_source_u=right.u[right_local],
+                right_source_v=right.v[right_local],
+                right_valid=right.valid[right_local] != 0,
+                right_component_correction_field_id=right.field_id[right_local],
+            ))
+        replay_pairs = tuple(canonical_replay)
+    if component_chain_audit is not None:
+        exterior_mismatch = 0
+        valid_mismatch = 0
+        minimum_jacobian = math.inf
+        for oracle in source_map_oracles:
+            x0, _y0, x1, _y1 = oracle.domain_xyxy
+            candidate = None
+            if oracle.source_index > 0 and pairs[oracle.source_index - 1].alignment is not None:
+                candidate = pairs[oracle.source_index - 1].alignment.selected
+            base = _map_crop(
+                schedule, calibration, oracle.source_index, x0, x1,
+                vertical.global_offsets_px[oracle.source_index], candidate,
+            )
+            base_u = np.array(base[0], dtype=np.float32, copy=True)
+            base_v = np.array(base[1], dtype=np.float32, copy=True)
+            base_u = np.round(base_u.astype(np.float64), 4).astype(np.float32)
+            base_v = np.round(base_v.astype(np.float64), 4).astype(np.float32)
+            formal_owner = (
+                final.pixel_provenance["owner_source_index"][:, x0:x1]
+                == oracle.source_index
+            )
+            base_u[formal_owner] = final.pixel_provenance["source_u"][:, x0:x1][
+                formal_owner
+            ]
+            base_v[formal_owner] = final.pixel_provenance["source_v"][:, x0:x1][
+                formal_owner
+            ]
+            base_u[~base[2]] = 0.0
+            base_v[~base[2]] = 0.0
+            base_u[base_u == 0.0] = 0.0
+            base_v[base_v == 0.0] = 0.0
+            exterior = oracle.field_id < 0
+            exterior_mismatch += int(np.count_nonzero(
+                exterior & ((oracle.u != base_u) | (oracle.v != base_v))
+            ))
+            valid_mismatch += int(np.count_nonzero((oracle.valid != 0) != base[2]))
+            du_dy, du_dx = np.gradient(oracle.u.astype(np.float64))
+            dv_dy, dv_dx = np.gradient(oracle.v.astype(np.float64))
+            determinant = du_dx * dv_dy - du_dy * dv_dx
+            valid = oracle.valid != 0
+            interior_valid = valid.copy()
+            interior_valid[1:, :] &= valid[:-1, :]
+            interior_valid[:-1, :] &= valid[1:, :]
+            interior_valid[:, 1:] &= valid[:, :-1]
+            interior_valid[:, :-1] &= valid[:, 1:]
+            evaluable = (
+                interior_valid
+                & formal_owner
+                & (oracle.field_id >= 0)
+                & np.isfinite(determinant)
+            )
+            if np.any(evaluable):
+                minimum_jacobian = min(
+                    minimum_jacobian, float(np.min(determinant[evaluable]))
+                )
+        component_failures = []
+        if exterior_mismatch:
+            component_failures.append("omega_out_exterior_map_changed")
+        if valid_mismatch:
+            component_failures.append("formal_owner_valid_support_changed")
+        if minimum_jacobian < m51_r2_config.minimum_jacobian:
+            component_failures.append("minimum_jacobian_failed")
+        component_chain_audit.update({
+            "omega_out_exterior_uv_mismatch_count": exterior_mismatch,
+            "valid_support_mismatch_count": valid_mismatch,
+            "minimum_final_inverse_map_jacobian": (
+                None if not math.isfinite(minimum_jacobian) else minimum_jacobian
+            ),
+            "fatal_failures": component_failures,
+            "passed": not component_failures,
+        })
+        normalized_component_audit = _canonicalize_v5_transaction_value(
+            component_chain_audit
+        )
+        if not isinstance(normalized_component_audit, dict):
+            raise TypeError("S1.3 component-chain audit must be a mapping")
+        component_chain_audit = normalized_component_audit
     seam_seconds = time.perf_counter() - tick
     geometry_features = prepare_seam_structure(geometry.image)
     final_features = prepare_seam_structure(final.image)
@@ -1630,9 +2133,20 @@ def run_s13_m5(
         ),
         pair_transaction_count=len(pairs),
         expected_support_mask=final.expected_support_mask,
+        require_component_correction_fields=isinstance(m51_r2_config, S13M51R4Config),
     )
+    if component_chain_audit is not None and component_chain_audit.get("passed") is not True:
+        hard_audit = {
+            **dict(hard_audit),
+            "passed": False,
+            "fatal_failures": [
+                *list(hard_audit.get("fatal_failures", [])),
+                "component_chain_c2e_hard_audit_failed",
+            ],
+        }
     hard_audit = {
         **dict(hard_audit),
+        **({"component_chain_c2e": dict(component_chain_audit)} if component_chain_audit is not None else {}),
         "parent_verification_deferred_to_stage_sealer": True,
         "pair_fallback_count": sum(
             bool(pair.transaction.get("fallback_used"))
@@ -1673,6 +2187,13 @@ def run_s13_m5(
         if isinstance(evaluation, Mapping)
         and evaluation.get("evaluation_status") != "skipped_after_higher_rank_safe_candidate"
     ]
+    if component_chain_audit is not None:
+        normalized_component_audit = _canonicalize_v5_transaction_value(
+            component_chain_audit
+        )
+        if not isinstance(normalized_component_audit, dict):
+            raise TypeError("S1.3 component-chain audit must be a mapping")
+        component_chain_audit = normalized_component_audit
     return S13M5Result(
         pairs=pairs,
         replay_pairs=replay_pairs,
@@ -1708,7 +2229,58 @@ def run_s13_m5(
             "orbslam3_call_count_in_m5": 0,
             "m4_geometry_reestimation_count": 0,
             "gain_enumeration_count": 0,
+            "component_chain_detection_count": int(isinstance(m51_r2_config, S13M51R4Config)),
+            "component_chain_candidate_count": int(
+                0 if component_chain_audit is None else component_chain_audit["chain_count"]
+            ),
+            "component_chain_accepted_count": int(
+                0 if component_patch_set is None
+                else len(component_patch_set.accepted_segment_ids)
+            ),
+            "component_segment_candidate_count": int(
+                0 if component_chain_audit is None else component_chain_audit["segment_count"]
+            ),
+            "component_segment_resolved_count": sum(
+                row.get("state") == "resolved"
+                for row in (() if component_chain_audit is None else component_chain_audit["segments"])
+            ),
+            "component_segment_improved_unresolved_count": sum(
+                row.get("state") == "improved_unresolved"
+                for row in (() if component_chain_audit is None else component_chain_audit["segments"])
+            ),
+            "component_segment_rejected_count": int(
+                0 if component_chain_audit is None else sum(
+                    row.get("state") == "rejected"
+                    for row in component_chain_audit["segments"]
+                )
+            ),
+            "component_segment_split_count": 0,
+            "component_dependency_group_count": 0,
+            "component_observation_count": int(
+                0 if component_chain_audit is None else component_chain_audit["observation_count"]
+            ),
+            "forward_edge_hypothesis_count": int(
+                0 if component_chain_audit is None else 13 * component_chain_audit["observation_count"]
+            ),
+            "reverse_edge_hypothesis_count": int(
+                0 if component_chain_audit is None else 13 * component_chain_audit["observation_count"]
+            ),
+            "chain_linear_solve_count": int(
+                0 if component_chain_audit is None else component_chain_audit["segment_count"]
+            ),
+            "chain_roi_preview_count": 0,
+            "component_correction_pixel_count": int(
+                0 if component_patch_set is None else sum(
+                    np.count_nonzero(correction.weight > 0.0)
+                    for corrections in component_patch_set.corrections_by_source.values()
+                    for correction in corrections
+                )
+            ),
+            "component_chain_seconds": component_chain_seconds,
         },
+        source_map_oracles=tuple(source_map_oracles),
+        component_chain_audit=component_chain_audit,
+        component_patch_set=component_patch_set,
     )
 
 

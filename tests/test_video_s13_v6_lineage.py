@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+import numpy as np
 import yaml
 
 from panorama_demo.synthetic import generate_sequence
@@ -19,7 +20,7 @@ CONFIG_ROOT = ROOT / "configs/video_candidates/s013"
 V4_CONFIG = CONFIG_ROOT / "S013_output_first_progressive_dense_central_slit_v4.yaml"
 V5_CONFIG = CONFIG_ROOT / "S013_output_first_progressive_dense_central_slit_v5.yaml"
 V6_CONFIG = CONFIG_ROOT / "S013_output_first_progressive_dense_central_slit_v6.yaml"
-P2_V6_SCHEMA = "gemini305-video-s13-p2-completion/v6"
+P2_V6_SCHEMA = "gemini305-video-s13-p2-completion/v6-r2"
 V5_FILE_SHA256 = "7a30885c031b2c2ad07f6bca315de3e2df1776b7f42ae9e5fce5ff990028b975"
 V5_CONFIG_SHA256 = "3766a1f322fe3671381b1b617a19c81c45b3c5b91839da47f6db5e21f5bce813"
 
@@ -73,7 +74,7 @@ def test_v6_identity_is_an_isolated_p2_only_successor() -> None:
         "S013_output_first_progressive_dense_central_slit_v5"
     )
     assert config.document["implementation_id"] == (
-        "s013_output_first_progressive_dense_central_slit_m51_r3_component_local_ambiguity"
+        "s013_output_first_progressive_dense_central_slit_m51_r4_component_chain_c2e"
     )
     assert config.document["required_output_components"] == ["s013_p2_v6"]
     assert config.p2_completion_schema == P2_V6_SCHEMA
@@ -129,8 +130,16 @@ def test_v6_defaults_to_sealed_p2_and_rejects_m6_or_resume(tmp_path: Path) -> No
         (generation / "P2/pair_transactions.json").read_text(encoding="utf-8")
     )
     assert transactions["schema"] == (
-        "gemini305-video-s13-m5-pair-transactions/v3"
+        "gemini305-video-s13-m5-pair-transactions/v4"
     )
+    assert (generation / "P2/component_chain_transactions/manifest.json").is_file()
+    assert (generation / "P2/source_corrections/manifest.json").is_file()
+    assert (generation / "P2/source_maps/manifest.json").is_file()
+    assert completion["p2_replay_schema"] == "gemini305-video-s13-p2-replay/v2"
+    assert completion["application_state"] in {"complete", "partial", "none"}
+    assert completion["repair_complete"] is False
+    with np.load(generation / "P2/p2_pixel_provenance.npz", allow_pickle=False) as stored:
+        assert "component_correction_field_id" in stored.files
     assert report["final_stage"] == "P2"
     assert completion["m6_eligible"] is False
     assert completion["m6_blocked_reason"] == (
