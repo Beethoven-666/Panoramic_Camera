@@ -841,6 +841,16 @@ def _run_m5(
             source_map_manifest_sha = sha256_file(pending / "source_maps/manifest.json")
         transaction_rows = [dict(pair.transaction) for pair in m5.pairs]
         if r4_enabled:
+            def segment_affects_pair(
+                segment: Mapping[str, object], pair_index: int
+            ) -> bool:
+                return pair_index in {
+                    affected_pair
+                    for source in segment.get("source_indices", [])
+                    for affected_pair in (int(source) - 1, int(source))
+                    if 0 <= affected_pair < len(m5.pairs)
+                }
+
             for index, row in enumerate(transaction_rows):
                 row["component_chain_c2e"] = {
                     "schema": "gemini305-video-s13-component-chain-c2e-pair-ref/v1",
@@ -863,11 +873,17 @@ def _run_m5(
                                 "resolved", "improved_unresolved"
                             } else "cut",
                             "state": segment.get("state", "rejected"),
+                            "field_id": (
+                                component_audit.get("field_id_table", {}).get(
+                                    str(segment["segment_id"]), -1
+                                )
+                            ),
                             "affected_source_indices": segment.get("source_indices", []),
                         }
                         for segment in component_audit.get("segments", [])
-                        if int(row["transaction_id"].split("-")[-1])
-                        in segment.get("pair_indices", [])
+                        if segment_affects_pair(
+                            segment, int(row["transaction_id"].split("-")[-1])
+                        )
                     ],
                 }
                 transaction_rows[index] = _finalize_v5_transaction(row)
@@ -973,12 +989,12 @@ def _run_m5(
                     "right_source_map_slice_sha256": right_slice_sha,
                     "relevant_segment_ids": [
                         row["segment_id"] for row in component_audit.get("segments", [])
-                        if bound_pair.pair_index in row.get("pair_indices", [])
+                        if segment_affects_pair(row, bound_pair.pair_index)
                     ],
                     "relevant_segment_transaction_sha256": [
                         segment_asset_by_id[str(row["segment_id"])]["json_sha256"]
                         for row in component_audit.get("segments", [])
-                        if bound_pair.pair_index in row.get("pair_indices", [])
+                        if segment_affects_pair(row, bound_pair.pair_index)
                     ],
                 })
             replay_manifest_rows.append(replay_row)
