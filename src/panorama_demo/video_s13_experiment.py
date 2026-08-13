@@ -78,6 +78,7 @@ from .video_s13_v6_r2_verifier import (
     canonical_source_map_slice_sha256,
     component_decision_stable_payload,
     component_decision_stable_sha256,
+    segment_decision_stable_sha256,
     verify_s13_v6_r2_p2,
 )
 
@@ -1306,6 +1307,7 @@ def _run_m5(
                 audit = dict(segment.get("audit", {}))
                 segment_document = {
                     "schema": "gemini305-video-s13-component-segment-transaction/v1",
+                    "config_sha256": str(candidate_identity["config_sha256"]),
                     **dict(segment),
                     "parent_segment_id": segment.get("parent_segment_id"),
                     "root_segment_id": segment.get("root_segment_id", segment_id),
@@ -1341,6 +1343,9 @@ def _run_m5(
                         pending / "component_chain_transactions" / npz_name
                     ),
                 }
+                segment_document["decision_payload_stable_sha256"] = (
+                    segment_decision_stable_sha256(segment_document)
+                )
                 atomic_write_json(
                     pending / "component_chain_transactions" / json_name,
                     segment_document,

@@ -110,6 +110,9 @@ def summarize_acceptance(root: Path, output: Path) -> tuple[Path, ...]:
         "matrix": {"branch_count": 4, "round_count": 2, "cell_count": 8},
         "all_p2_hard_passed": seal["run_specific_lineage"]["passed"],
         "all_exact_reproducibility_passed": seal["exact_comparison"]["passed"],
+        "all_required_v6_r1_noop_exact_comparisons_passed": seal[
+            "v6_r1_noop_exact_comparison"
+        ]["passed"],
         "all_box_assets_present": all(
             cell["box_asset_audit"]["passed"] for cell in required_box_cells
         ),

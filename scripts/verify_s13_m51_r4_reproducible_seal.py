@@ -13,6 +13,15 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+try:
+    from panorama_demo.video_s13_v6_r2_verifier import (
+        verify_s13_v6_r1_noop_exact_comparison,
+    )
+except ModuleNotFoundError:  # Direct ``python scripts/...`` execution.
+    from src.panorama_demo.video_s13_v6_r2_verifier import (
+        verify_s13_v6_r1_noop_exact_comparison,
+    )
+
 
 BRANCHES = ("fast_direct", "fast_ignore_pose", "slow_direct", "slow_ignore_pose")
 ROUNDS = ("round_a", "round_b")
@@ -771,6 +780,51 @@ def _public_cell(cell: Mapping[str, object]) -> dict[str, object]:
     return result
 
 
+def _verify_v6_r1_noop_cells(
+    root: Path, cells: Sequence[Mapping[str, object]]
+) -> dict[str, object]:
+    reports: list[dict[str, object]] = []
+    for cell in cells:
+        completion = cell.get("completion")
+        if not isinstance(completion, Mapping) or completion.get("application_state") != "none":
+            continue
+        round_name = str(cell["round"])
+        branch = str(cell["branch"])
+        baseline = root / "v6_r1_noop_baselines" / branch / "P2"
+        if not baseline.is_dir():
+            raise ValueError(
+                f"{round_name}/{branch} no-op cell requires a v6-r1 exact baseline: {baseline}"
+            )
+        output = root / "noop_exact_comparisons" / f"{round_name}_{branch}.json"
+        result = verify_s13_v6_r1_noop_exact_comparison(
+            baseline, Path(str(cell["p2_root"])), output_path=output
+        )
+        if result.get("passed") is not True:
+            failed = [
+                str(row.get("asset"))
+                for row in result.get("comparisons", [])
+                if isinstance(row, Mapping) and row.get("passed") is not True
+            ]
+            raise ValueError(
+                f"{round_name}/{branch} v6-r1 no-op exact comparison failed: {failed}"
+            )
+        reports.append({
+            "round": round_name,
+            "branch": branch,
+            "baseline_p2_root": str(baseline),
+            "candidate_p2_root": str(cell["p2_root"]),
+            "report": output.relative_to(root).as_posix(),
+            "report_sha256": _sha_file(output),
+            "comparison_count": result.get("comparison_count"),
+            "passed": True,
+        })
+    return {
+        "required_cell_count": len(reports),
+        "passed": True,
+        "reports": reports,
+    }
+
+
 def verify(root: Path) -> dict[str, object]:
     """Verify and return the compact reproducibility seal document."""
 
@@ -848,6 +902,7 @@ def verify(root: Path) -> dict[str, object]:
         for value in round_value.values()
     ):
         raise ValueError("4x2 timing values must be finite")
+    noop_exact_comparison = _verify_v6_r1_noop_cells(root, cells)
     public_cells = [_public_cell(cell) for cell in cells]
     return {
         "schema": SEAL_SCHEMA,
@@ -873,6 +928,7 @@ def verify(root: Path) -> dict[str, object]:
             "passed": all(result["passed"] for result in exact_branches.values()),
             "branches": exact_branches,
         },
+        "v6_r1_noop_exact_comparison": noop_exact_comparison,
         "run_specific_lineage": {
             "passed": True,
             "policy": "each cell is schema-, asset-, and P2-hard-audit-valid; hashes may differ",

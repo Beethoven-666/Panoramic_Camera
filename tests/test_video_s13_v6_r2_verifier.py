@@ -14,6 +14,7 @@ from panorama_demo.video_s13_v6_r2_verifier import (
     component_decision_stable_sha256,
     canonical_pair_transaction_sha256,
     canonical_source_map_slice_sha256,
+    segment_decision_stable_sha256,
     verify_s13_v6_r2_p2,
     verify_s13_v6_r1_noop_exact_comparison,
 )
@@ -54,6 +55,74 @@ def _refresh_completion_assets(p2: Path) -> None:
         if path.is_file() and path != completion_path
     }
     _json(completion_path, completion)
+
+
+def _rebind_component_dag(p2: Path) -> None:
+    component_path = p2 / "component_chain_transactions/manifest.json"
+    component_sha = _sha(component_path)
+    corrections_path = p2 / "source_corrections/manifest.json"
+    corrections = json.loads(corrections_path.read_text(encoding="utf-8"))
+    corrections["parent_component_transaction_manifest_sha256"] = component_sha
+    _json(corrections_path, corrections)
+    corrections_sha = _sha(corrections_path)
+    source_maps_path = p2 / "source_maps/manifest.json"
+    source_maps = json.loads(source_maps_path.read_text(encoding="utf-8"))
+    source_maps["parent_source_correction_manifest_sha256"] = corrections_sha
+    _json(source_maps_path, source_maps)
+    source_maps_sha = _sha(source_maps_path)
+    pair_path = p2 / "pair_transactions.json"
+    pair = json.loads(pair_path.read_text(encoding="utf-8"))
+    pair.update({
+        "component_transaction_manifest_sha256": component_sha,
+        "source_correction_manifest_sha256": corrections_sha,
+        "source_map_oracle_manifest_sha256": source_maps_sha,
+    })
+    rebound_pairs = []
+    for row in pair.get("pairs", []):
+        row["component_chain_c2e"].update({
+            "component_transaction_manifest_sha256": component_sha,
+            "source_correction_manifest_sha256": corrections_sha,
+            "source_map_oracle_manifest_sha256": source_maps_sha,
+        })
+        row["result_stage_sha256"] = canonical_pair_transaction_sha256(row)
+        rebound_pairs.append(row)
+    for asset_row, rebound in zip(
+        pair.get("pair_transaction_assets", []), rebound_pairs, strict=True
+    ):
+        asset = p2 / str(asset_row["asset"])
+        _json(asset, rebound)
+        asset_row["sha256"] = _sha(asset)
+    _json(pair_path, pair)
+    pair_sha = _sha(pair_path)
+    replay_path = p2 / "p2_replay_manifest.json"
+    replay = json.loads(replay_path.read_text(encoding="utf-8"))
+    replay.update({
+        "component_transaction_manifest_sha256": component_sha,
+        "source_correction_manifest_sha256": corrections_sha,
+        "source_map_oracle_manifest_sha256": source_maps_sha,
+        "aggregate_pair_transaction_manifest_sha256": pair_sha,
+    })
+    for replay_row, pair_asset_row in zip(
+        replay.get("pairs", []), pair.get("pair_transaction_assets", []), strict=True
+    ):
+        replay_row["parent_pair_transaction_sha256"] = pair_asset_row["sha256"]
+        replay_asset = p2 / str(replay_row["asset"])
+        with np.load(replay_asset, allow_pickle=False) as stored:
+            arrays = {name: np.array(stored[name], copy=True) for name in stored.files}
+        arrays["parent_pair_transaction_sha256"] = np.asarray(pair_asset_row["sha256"])
+        _npz(replay_asset, **arrays)
+    _json(replay_path, replay)
+    completion_path = p2 / "P2_completion.json"
+    completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    completion.update({
+        "component_transaction_manifest_sha256": component_sha,
+        "source_correction_manifest_sha256": corrections_sha,
+        "source_map_oracle_manifest_sha256": source_maps_sha,
+        "aggregate_pair_transaction_manifest_sha256": pair_sha,
+        "p2_replay_manifest_sha256": _sha(replay_path),
+    })
+    _json(completion_path, completion)
+    _refresh_completion_assets(p2)
 
 
 def _build_fixture(tmp_path: Path) -> Path:
@@ -512,6 +581,49 @@ def test_component_stable_sha_binds_match_and_propagation_authority(
     }
     _json(path, component)
     with pytest.raises(ValueError, match="stable decision authority"):
+        verify_s13_v6_r2_p2(p2)
+
+
+def test_segment_json_has_independent_config_and_stable_decision_authority(
+    tmp_path: Path,
+) -> None:
+    p2 = _build_fixture(tmp_path)
+    segment_path = p2 / "component_chain_transactions/segment_test.json"
+    segment = {
+        "schema": "gemini305-video-s13-component-segment-transaction/v1",
+        "segment_id": "segment-test",
+        "state": "rejected",
+        "config_sha256": CONFIG_SHA,
+        "pair_indices": [0],
+        "source_indices": [0, 1],
+        "decision": {"reason": "synthetic_authority_test"},
+    }
+    segment["decision_payload_stable_sha256"] = segment_decision_stable_sha256(segment)
+    _json(segment_path, segment)
+    component_path = p2 / "component_chain_transactions/manifest.json"
+    component = json.loads(component_path.read_text(encoding="utf-8"))
+    component["segment_transaction_assets"] = [{
+        "segment_id": "segment-test",
+        "asset": segment_path.relative_to(p2).as_posix(),
+        "sha256": _sha(segment_path),
+    }]
+    component["decision_payload_stable_sha256"] = component_decision_stable_sha256(
+        component
+    )
+    _json(component_path, component)
+    _rebind_component_dag(p2)
+    assert verify_s13_v6_r2_p2(p2)["passed"] is True
+
+    segment["decision"]["reason"] = "tampered"
+    _json(segment_path, segment)
+    component = json.loads(component_path.read_text(encoding="utf-8"))
+    component["segment_transaction_assets"][0]["sha256"] = _sha(segment_path)
+    component["decision_payload_stable_sha256"] = component_decision_stable_sha256(
+        component
+    )
+    _json(component_path, component)
+    _rebind_component_dag(p2)
+    with pytest.raises(ValueError, match="segment stable decision authority"):
         verify_s13_v6_r2_p2(p2)
 
 

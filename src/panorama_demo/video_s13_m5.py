@@ -58,6 +58,7 @@ from .video_s13_m51_r4_component_chain import (
     freeze_s13_baseline_c2e_obligations,
     freeze_s13_source_correction_registry,
     make_s13_edge_component_observation,
+    locate_s13_dependency_failure_subset,
     plan_s13_failed_segment_split,
     propagate_s13_edge_component_evidence,
     s13_component_segment_budget_priority,
@@ -2376,6 +2377,10 @@ def run_s13_m5(
                             source_offset_px=float(offsets[source]) * float(gain),
                             normal_xy=chain.canonical_normal_xy,
                             config=m51_r2_config,
+                            local_normal_observations=tuple(
+                                observation for observation in segment.observations
+                                if source in observation.source_indices
+                            ),
                         ))
                     candidate_metrics, measured_observations, candidate_safety = (
                         measure_candidate_roi(
@@ -2445,6 +2450,9 @@ def run_s13_m5(
                         "baseline_metrics": baseline_metrics,
                         "candidate_metrics": candidate_metrics,
                         "candidate_map_safety": candidate_safety,
+                        "local_normal_field_audits": [
+                            dict(row.normal_field_audit) for row in corrections
+                        ],
                     }
                     candidate_row = S13ComponentSegmentCandidate(
                         segment=segment,
@@ -2596,6 +2604,7 @@ def run_s13_m5(
                 "audit": failure_candidate_audit,
             })
         dependency_group_audits: list[dict[str, object]] = []
+        dependency_failure_lineage: list[dict[str, object]] = []
         while True:
             component_patch_set = select_s13_component_patch_set(
                 segment_candidates, config=m51_r2_config, obligations=obligations
@@ -2703,30 +2712,122 @@ def run_s13_m5(
                     break
             if failed_group is None:
                 break
-            weakest = min(
-                (accepted_by_id[row] for row in failed_group),
-                key=lambda row: (
+            failed_candidates = {
+                row: accepted_by_id[row] for row in failed_group
+            }
+            utility_by_candidate = {
+                segment_id: (
                     float(row.audit.get("rescued_severe_seam_count", 0)),
                     float(row.audit.get("worst_seam_absolute_improvement", 0.0)),
                     float(row.audit.get("supported_unique_edge_columns", 0)),
                     -float(row.audit.get("post_maximum_step", math.inf)),
                     -float(row.audit.get("correction_energy", math.inf)),
-                    row.segment.segment_id,
-                ),
+                )
+                for segment_id, row in failed_candidates.items()
+            }
+            pixel_support_by_candidate: dict[str, np.ndarray] = {}
+            for segment_id, row in failed_candidates.items():
+                supports: list[np.ndarray] = []
+                for correction in row.corrections:
+                    yy, xx = np.nonzero(np.asarray(correction.weight) > 0.0)
+                    supports.append(np.column_stack((
+                        xx.astype(np.int32) + int(correction.x0),
+                        yy.astype(np.int32) + int(correction.y0),
+                    )))
+                pixel_support_by_candidate[segment_id] = (
+                    np.unique(np.concatenate(supports), axis=0)
+                    if supports else np.empty((0, 2), np.int32)
+                )
+            subset_cache: dict[tuple[str, ...], tuple[bool, Mapping[str, object]]] = {}
+
+            def evaluate_dependency_subset(
+                subset_ids: tuple[str, ...],
+            ) -> tuple[bool, Mapping[str, object]]:
+                cached = subset_cache.get(subset_ids)
+                if cached is not None:
+                    return cached
+                subset = [failed_candidates[row] for row in subset_ids]
+                subset_observations = tuple(
+                    observation for candidate in subset
+                    for observation in candidate.segment.observations
+                )
+                subset_corrections = tuple(
+                    correction for candidate in subset
+                    for correction in candidate.corrections
+                )
+                candidate, measured, safety = measure_candidate_roi(
+                    subset_observations, subset_corrections
+                )
+                baseline = dict(candidate.pop("baseline_runtime_trace"))
+                evaluation = evaluate_s13_component_candidate_quality(
+                    baseline=baseline,
+                    candidate=candidate,
+                    hard_gates={
+                        "individual_segment_gates": all(
+                            row.decision in {"resolved", "improved_unresolved"}
+                            for row in subset
+                        ),
+                        "exclusive_correction_fields": True,
+                        "composite_map_safety": safety["passed"] is True,
+                        "candidate_correlation": all(
+                            float(row.correlation)
+                            >= m51_r2_config.minimum_c2e_correlation
+                            for row in measured
+                        ),
+                        "candidate_uniqueness": all(
+                            float(row.uniqueness_fraction)
+                            >= m51_r2_config.minimum_c2e_uniqueness_fraction
+                            for row in measured
+                        ),
+                    },
+                    config=m51_r2_config,
+                )
+                passed = evaluation.decision in {
+                    "resolved", "improved_unresolved"
+                }
+                result = (passed, {
+                    "decision": evaluation.decision,
+                    "rejection_reasons": list(evaluation.rejection_reasons),
+                    "baseline_metrics": baseline,
+                    "candidate_metrics": candidate,
+                    "candidate_map_safety": safety,
+                })
+                subset_cache[subset_ids] = result
+                return result
+
+            removal_id, failure_localization = (
+                locate_s13_dependency_failure_subset(
+                    failed_group,
+                    pixel_support_by_candidate=pixel_support_by_candidate,
+                    evaluate_subset=evaluate_dependency_subset,
+                    utility_by_candidate=utility_by_candidate,
+                )
             )
+            dependency_failure_lineage.append({
+                "failed_group_segment_ids": list(failed_group),
+                "removed_segment_id": removal_id,
+                **dict(failure_localization),
+            })
+            for row in dependency_group_audits:
+                if tuple(row.get("segment_ids", [])) == tuple(failed_group):
+                    row["failure_localization"] = dict(failure_localization)
+                    break
             segment_candidates = [
                 replace(
                     row,
                     decision="rejected",
                     rejection_reasons=tuple(row.rejection_reasons)
                     + ("dependency_group_composite_gate_failed",),
-                ) if row.segment.segment_id == weakest.segment.segment_id else row
+                ) if row.segment.segment_id == removal_id else row
                 for row in segment_candidates
             ]
             for solved in solved_rows:
-                if solved.get("segment_id") == weakest.segment.segment_id:
+                if solved.get("segment_id") == removal_id:
                     solved["state"] = "rejected"
                     solved["reason"] = ["dependency_group_composite_gate_failed"]
+                    solved["dependency_failure_localization"] = dict(
+                        failure_localization
+                    )
         if split_lineage:
             component_patch_set = replace(
                 component_patch_set,
@@ -2821,6 +2922,7 @@ def run_s13_m5(
             ],
             "field_id_table": component_field_ids,
             "dependency_groups": dependency_group_audits,
+            "dependency_failure_lineage": dependency_failure_lineage,
             "forward_reverse_hypotheses": hypothesis_rows,
             "component_match_matrices": component_match_matrices,
             "exact_evidence_propagation": next((

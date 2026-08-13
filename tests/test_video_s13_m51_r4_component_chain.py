@@ -25,6 +25,7 @@ from panorama_demo.video_s13_m51_r4_component_chain import (
     evaluate_s13_component_candidate_quality,
     freeze_s13_baseline_c2e_obligations,
     freeze_s13_source_correction_registry,
+    locate_s13_dependency_failure_subset,
     make_s13_edge_component_observation,
     plan_s13_failed_segment_split,
     propagate_s13_edge_component_evidence,
@@ -466,6 +467,83 @@ def test_chain_matching_keeps_distinct_y_layers_and_segmentation_cuts_ambiguity(
     assert segments[0].left_cut_reason == "ambiguous_observation"
 
 
+def test_chain_matching_rejects_pair_gap_and_reversed_gradient_polarity() -> None:
+    config = replace(_Config(), minimum_chain_pair_count=1)
+    gap = build_s13_edge_component_chains(
+        (_observation(0, 0, 2.0), _observation(2, 0, 2.0)), config=config
+    )
+    assert [chain.pair_indices for chain in gap] == [(0,), (2,)]
+
+    reversed_polarity = replace(
+        _observation(1, 0, 2.0), signed_gradient_polarity=-1.0
+    )
+    polarity = build_s13_edge_component_chains(
+        (_observation(0, 0, 2.0), reversed_polarity), config=config
+    )
+    assert {chain.pair_indices for chain in polarity} == {(0,), (1,)}
+
+
+def test_ten_seam_alternating_sign_chain_solves_and_renders_local_map() -> None:
+    observations = tuple(
+        _observation(pair, 0, 1.5 if pair % 2 == 0 else -1.5)
+        for pair in range(10)
+    )
+    chains = build_s13_edge_component_chains(observations, config=_Config())
+    assert len(chains) == 1
+    assert chains[0].pair_indices == tuple(range(10))
+    segment = S13ComponentApplicationSegment.create(
+        parent_chain_id=chains[0].chain_id, observations=observations
+    )
+    offsets = solve_s13_component_segment_source_offsets(
+        segment,
+        config=_Config(),
+        owner_support_by_source={source: 1 for source in segment.source_indices},
+    )
+    assert max(abs(value) for value in offsets.values()) <= 3.0
+    support = np.zeros((48, 64), bool)
+    support[20, 8:56] = True
+    correction = build_s13_source_component_correction(
+        segment_id=segment.segment_id,
+        source_index=1,
+        frame_id=101,
+        support_mask=support,
+        source_offset_px=offsets[1],
+        normal_xy=(0.0, 1.0),
+        config=_Config(),
+    )
+    base = np.zeros((48, 64), np.float32)
+    _du, rendered_dv, field = compose_s13_source_component_deltas(
+        base_delta_u=base,
+        base_delta_v=base,
+        domain_xyxy=(0, 0, 64, 48),
+        corrections=(correction,),
+    )
+    assert np.any(rendered_dv != 0.0)
+    assert np.any(field == 0)
+
+
+def test_solver_rejects_offset_limit_and_ill_conditioned_system() -> None:
+    segment = S13ComponentApplicationSegment.create(
+        parent_chain_id="bounds",
+        observations=tuple(_observation(pair, 0, 3.0) for pair in range(4)),
+    )
+    support = {source: 1 for source in segment.source_indices}
+    with pytest.raises(ValueError, match="offset"):
+        solve_s13_component_segment_source_offsets(
+            segment, config=_Config(), owner_support_by_source=support
+        )
+    with pytest.raises(ValueError, match="condition"):
+        solve_s13_component_segment_source_offsets(
+            segment,
+            config=replace(
+                _Config(),
+                maximum_source_normal_offset_px=100.0,
+                maximum_solver_condition_number=1.0,
+            ),
+            owner_support_by_source=support,
+        )
+
+
 def test_irls_solver_uses_owner_weighted_zero_mean_gauge() -> None:
     observations = (_observation(0, 0, 2.0), _observation(1, 0, 2.0))
     segment = S13ComponentApplicationSegment.create(
@@ -553,6 +631,160 @@ def test_correction_is_local_readonly_and_patch_conflicts_choose_utility() -> No
     assert dict(registry.field_id_by_segment) == {high.segment.segment_id: 0}
     with pytest.raises(TypeError):
         registry.corrections_by_source[99] = ()
+
+
+def test_same_source_nonintersecting_segments_are_both_selected() -> None:
+    candidates = []
+    for component_id, x_slice in ((0, slice(5, 17)), (1, slice(43, 55))):
+        observation = _observation(0, component_id, 2.0, y0=10 + 20 * component_id)
+        segment = S13ComponentApplicationSegment.create(
+            parent_chain_id=f"chain-{component_id}", observations=(observation,)
+        )
+        support = np.zeros((64, 64), bool)
+        support[12 + 20 * component_id, x_slice] = True
+        correction = build_s13_source_component_correction(
+            segment_id=segment.segment_id,
+            source_index=0,
+            frame_id=100,
+            support_mask=support,
+            source_offset_px=1.0,
+            normal_xy=(0.0, 1.0),
+            config=_Config(),
+        )
+        candidates.append(S13ComponentSegmentCandidate(
+            segment, (1.0,), 1.0, (correction,), "resolved", (),
+            {"rescued_severe_seam_count": 1,
+             "worst_seam_absolute_improvement": 1.0,
+             "supported_unique_edge_columns": 12,
+             "post_maximum_step": 1.0,
+             "correction_energy": 1.0},
+        ))
+    patch = select_s13_component_patch_set(tuple(candidates), config=_Config())
+    assert set(patch.accepted_segment_ids) == {
+        candidate.segment.segment_id for candidate in candidates
+    }
+    assert len(patch.corrections_by_source[0]) == 2
+
+
+def test_roi_budget_defers_lower_priority_segments_deterministically() -> None:
+    segments = [S13ComponentApplicationSegment.create(
+        parent_chain_id=name,
+        observations=(_observation(index, index, lag),),
+    ) for index, (name, lag) in enumerate((
+        ("low", 1.2), ("high", 3.0), ("middle", 2.0)
+    ))]
+    evidence = {
+        (segment.observations[0].pair_index, segment.observations[0].component_id):
+        SimpleNamespace(support_xy=np.column_stack((
+            np.arange(30 + index * 10), np.zeros(30 + index * 10)
+        )))
+        for index, segment in enumerate(segments)
+    }
+    ordered = sorted(
+        segments,
+        key=lambda segment: s13_component_segment_budget_priority(
+            segment,
+            evidence_by_component=evidence,
+            maximum_post_edge_p95_px=1.0,
+        ),
+    )
+    names = {segment.segment_id: segment.parent_chain_id for segment in segments}
+    costs = {"high": 60, "middle": 40, "low": 30}
+    used = 0
+    selected, deferred = [], []
+    for segment in ordered:
+        name = names[segment.segment_id]
+        cost = costs[name]
+        if used + cost > 100:
+            deferred.append(name)
+        else:
+            selected.append(name)
+            used += cost
+    assert selected == ["high", "middle"]
+    assert deferred == ["low"]
+
+
+def _normal_observation(pair: int, angle_degrees: float, *, negate: bool = False):
+    angle = np.deg2rad(angle_degrees)
+    nx, ny = float(np.sin(angle)), float(np.cos(angle))
+    if negate:
+        nx, ny = -nx, -ny
+    x0 = 8 + pair * 20
+    return replace(
+        _observation(pair, 0, 2.0, y0=10),
+        global_bbox_xyxy=(x0, 10, x0 + 8, 30),
+        normal_x=nx,
+        normal_y=ny,
+        fitted_line_offset=ny * 20.0 + nx * (x0 + 3.5),
+    )
+
+
+def test_local_normal_field_bends_deterministically_between_fitted_lines() -> None:
+    support = np.zeros((40, 48), bool)
+    support[20, 8:36] = True
+    correction = build_s13_source_component_correction(
+        segment_id="curved", source_index=1, frame_id=10,
+        support_mask=support, source_offset_px=2.0, normal_xy=(0.0, 1.0),
+        config=_Config(),
+        local_normal_observations=(
+            _normal_observation(0, -8.0), _normal_observation(1, 8.0),
+        ),
+    )
+    active = correction.weight > 0.5
+    global_columns = np.indices(active.shape)[1] + correction.x0
+    assert float(np.mean(correction.delta_u[active & (global_columns < 18)])) < 0.0
+    assert float(np.mean(correction.delta_u[active & (global_columns > 27)])) > 0.0
+    assert correction.normal_field_audit["node_count"] == 2
+    assert correction.normal_field_audit["maximum_pixel_angle_degrees"] <= 8.0 + 1e-6
+    assert not correction.delta_u.flags.writeable
+
+
+def test_local_normal_field_canonicalizes_opposite_hemisphere_exactly() -> None:
+    support = np.zeros((40, 48), bool)
+    support[20, 8:36] = True
+    kwargs = dict(
+        segment_id="sign", source_index=1, frame_id=10,
+        support_mask=support, source_offset_px=1.0, normal_xy=(0.0, 1.0),
+        config=_Config(),
+    )
+    positive = build_s13_source_component_correction(
+        **kwargs, local_normal_observations=(_normal_observation(0, 8.0),)
+    )
+    negated = build_s13_source_component_correction(
+        **kwargs, local_normal_observations=(_normal_observation(0, 8.0, negate=True),)
+    )
+    assert np.array_equal(positive.delta_u, negated.delta_u)
+    assert np.array_equal(positive.delta_v, negated.delta_v)
+    assert positive.correction_sha256 == negated.correction_sha256
+
+
+def test_local_normal_field_rejects_node_outside_canonical_angle() -> None:
+    support = np.zeros((40, 48), bool)
+    support[20, 8:36] = True
+    with pytest.raises(ValueError, match="normal node.*angle"):
+        build_s13_source_component_correction(
+            segment_id="angle", source_index=1, frame_id=10,
+            support_mask=support, source_offset_px=1.0, normal_xy=(0.0, 1.0),
+            config=_Config(), local_normal_observations=(_normal_observation(0, 11.0),),
+        )
+
+
+def test_single_straight_local_normal_is_array_and_hash_exact_compatible() -> None:
+    support = np.zeros((32, 32), bool)
+    support[16, 6:26] = True
+    kwargs = dict(
+        segment_id="straight", source_index=1, frame_id=10,
+        support_mask=support, source_offset_px=1.25, normal_xy=(0.0, 1.0),
+        config=_Config(),
+    )
+    legacy = build_s13_source_component_correction(**kwargs)
+    fitted = build_s13_source_component_correction(
+        **kwargs, local_normal_observations=(_normal_observation(0, 0.0),)
+    )
+    assert np.array_equal(legacy.delta_u, fitted.delta_u)
+    assert np.array_equal(legacy.delta_v, fitted.delta_v)
+    assert np.array_equal(legacy.weight, fitted.weight)
+    assert legacy.correction_sha256 == fitted.correction_sha256
 
 
 def test_repair_complete_requires_every_exact_frozen_obligation() -> None:
@@ -1192,3 +1424,80 @@ def test_candidate_correlation_and_uniqueness_are_explicit_hard_gates() -> None:
         "hard_gate_failed:candidate_correlation",
         "hard_gate_failed:candidate_uniqueness",
     )
+
+
+def test_dependency_localization_does_not_remove_unrelated_low_utility() -> None:
+    supports = {
+        "a": np.asarray(((0, 0), (1, 0), (2, 0)), np.int32),
+        "b": np.asarray(((1, 0), (2, 0), (3, 0)), np.int32),
+        "unrelated": np.asarray(((20, 20), (21, 20)), np.int32),
+    }
+
+    def evaluate(subset: tuple[str, ...]):
+        failed = {"a", "b"}.issubset(subset)
+        return not failed, {"failed": failed}
+
+    removed, audit = locate_s13_dependency_failure_subset(
+        ("unrelated", "b", "a"),
+        pixel_support_by_candidate=supports,
+        evaluate_subset=evaluate,
+        utility_by_candidate={"a": (1,), "b": (2,), "unrelated": (-100,)},
+    )
+
+    assert removed == "a"
+    assert audit["localized_candidate_ids"] == ["a", "b"]
+    assert "unrelated" not in audit["minimal_failure_candidate_ids"]
+
+
+def test_dependency_localization_uses_leave_one_out_for_joint_failure() -> None:
+    support = np.asarray(((0, 0), (1, 0)), np.int32)
+    calls: list[tuple[str, ...]] = []
+
+    def evaluate(subset: tuple[str, ...]):
+        calls.append(subset)
+        failed = {"a", "b"}.issubset(subset)
+        return not failed, {"failed": failed}
+
+    removed, audit = locate_s13_dependency_failure_subset(
+        ("a", "b", "c"),
+        pixel_support_by_candidate={"a": support, "b": support, "c": support},
+        evaluate_subset=evaluate,
+        utility_by_candidate={"a": (4,), "b": (1,), "c": (0,)},
+    )
+
+    assert removed == "b"
+    assert audit["localization_method"] == "leave_one_out"
+    assert audit["minimal_failure_candidate_ids"] == ["a", "b"]
+    assert calls == [("b", "c"), ("a", "c"), ("a", "b")]
+
+
+def test_dependency_localization_ddmin_is_deterministic() -> None:
+    support = np.asarray(((0, 0), (1, 0)), np.int32)
+
+    def evaluate(subset: tuple[str, ...]):
+        failed = (
+            {"a", "b"}.issubset(subset)
+            or {"c", "d"}.issubset(subset)
+        )
+        return not failed, {"failed": failed}
+
+    kwargs = {
+        "pixel_support_by_candidate": {
+            key: support for key in ("a", "b", "c", "d")
+        },
+        "evaluate_subset": evaluate,
+        "utility_by_candidate": {
+            "a": (2,), "b": (1,), "c": (4,), "d": (3,),
+        },
+    }
+    first_removed, first_audit = locate_s13_dependency_failure_subset(
+        ("d", "b", "a", "c"), **kwargs
+    )
+    second_removed, second_audit = locate_s13_dependency_failure_subset(
+        ("a", "b", "c", "d"), **kwargs
+    )
+
+    assert first_removed == second_removed == "b"
+    assert first_audit["localization_method"] == "deterministic_ddmin"
+    assert first_audit["minimal_failure_candidate_ids"] == ["a", "b"]
+    assert first_audit == second_audit

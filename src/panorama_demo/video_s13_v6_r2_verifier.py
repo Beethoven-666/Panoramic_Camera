@@ -60,6 +60,27 @@ def component_decision_stable_sha256(
     ).encode("utf-8")).hexdigest()
 
 
+def segment_decision_stable_payload(
+    segment_document: Mapping[str, object],
+) -> dict[str, object]:
+    """Canonical segment authority excluding only its own digest."""
+
+    return {
+        str(key): value
+        for key, value in segment_document.items()
+        if key != "decision_payload_stable_sha256"
+    }
+
+
+def segment_decision_stable_sha256(
+    segment_document: Mapping[str, object],
+) -> str:
+    return hashlib.sha256(json.dumps(
+        segment_decision_stable_payload(segment_document),
+        sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+
+
 def verify_s13_v6_r1_noop_exact_comparison(
     baseline_p2: str | Path,
     candidate_p2: str | Path,
@@ -408,7 +429,7 @@ def _all_mapping_keys(value: object) -> set[str]:
 
 
 def _segment_authorities(
-    p2: Path, component: Mapping[str, object]
+    p2: Path, component: Mapping[str, object], *, config_sha256: str
 ) -> set[str]:
     rows = component.get("segment_transaction_assets", [])
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
@@ -421,6 +442,13 @@ def _segment_authorities(
         expected = _require_sha(row.get("sha256"), "segment transaction SHA")
         if not path.is_file() or sha256_file(path) != expected:
             raise ValueError("S1.3 v6-r2 segment transaction asset SHA mismatch")
+        document = _json(path, "segment transaction")
+        if document.get("config_sha256") != config_sha256:
+            raise ValueError("S1.3 v6-r2 segment transaction config authority disagrees")
+        if document.get("decision_payload_stable_sha256") != (
+            segment_decision_stable_sha256(document)
+        ):
+            raise ValueError("S1.3 v6-r2 segment stable decision authority disagrees")
         if expected in result:
             raise ValueError("S1.3 v6-r2 segment transaction SHA is duplicated")
         result.add(expected)
@@ -802,7 +830,9 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
         raise ValueError("S1.3 v6-r2 no-op state has correction fields")
     if application_state in {"partial", "complete"} and not field_table:
         raise ValueError("S1.3 v6-r2 applied state has no correction fields")
-    segment_authorities = _segment_authorities(root, component)
+    segment_authorities = _segment_authorities(
+        root, component, config_sha256=str(completion["config_sha256"])
+    )
     correction_asset_authorities = _correction_asset_authorities(root, corrections)
     correction_semantics = _verify_correction_asset_semantics(root, corrections)
     for row in field_table.values():
@@ -888,6 +918,8 @@ __all__ = [
     "canonical_source_map_slice_sha256",
     "component_decision_stable_payload",
     "component_decision_stable_sha256",
+    "segment_decision_stable_payload",
+    "segment_decision_stable_sha256",
     "verify_s13_v6_r1_noop_exact_comparison",
     "verify_s13_v6_r2_p2",
 ]

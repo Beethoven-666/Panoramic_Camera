@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import cv2
 
 from scripts.summarize_s13_m51_r4_validation import summarize_acceptance
 from scripts.verify_s13_m51_r4_reproducible_seal import (
@@ -13,6 +14,7 @@ from scripts.verify_s13_m51_r4_reproducible_seal import (
     normalize_json,
     summarize_paired_timings,
     verify,
+    _verify_v6_r1_noop_cells,
 )
 
 
@@ -42,6 +44,24 @@ def _npz(path: Path, value: int) -> None:
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _noop_exact_assets(root: Path) -> None:
+    (root / "pair_replay").mkdir(parents=True, exist_ok=True)
+    image = np.arange(60, dtype=np.uint8).reshape(4, 5, 3)
+    assert cv2.imwrite(str(root / "geometry_and_seam_panorama_owner_only.png"), image)
+    np.savez_compressed(root / "p2_seams.npz", seams=np.arange(5, dtype=np.int32))
+    np.savez_compressed(
+        root / "p2_pixel_provenance.npz",
+        owner_source_index=np.zeros((4, 5), np.int32),
+        source_u=np.arange(20, dtype=np.float32).reshape(4, 5),
+    )
+    np.savez_compressed(
+        root / "pair_replay/pair_0000.npz", source_u=np.arange(5, dtype=np.float32)
+    )
+    _json(root / "p2_replay_manifest.json", {
+        "pairs": [{"pair_index": 0, "asset": "pair_replay/pair_0000.npz"}]
+    })
 
 
 def _rebind_p2(p2: Path) -> None:
@@ -407,6 +427,39 @@ def test_verify_builds_four_by_two_cell_seal_and_three_comparison_classes(
     assert seal["timing_comparison"]["paired_summary"]["pair_count"] == 5
     assert seal["timing_comparison"]["paired_summary"]["median_passed"] is True
     assert all(cell["box_asset_audit"]["passed"] for cell in seal["cells"])
+    assert seal["v6_r1_noop_exact_comparison"]["required_cell_count"] == 0
+
+
+def test_noop_cell_requires_v6_r1_exact_baseline_and_persists_report(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "acceptance"
+    candidate = root / "round_a/fast_direct/P2"
+    baseline = root / "v6_r1_noop_baselines/fast_direct/P2"
+    for p2 in (candidate, baseline):
+        _noop_exact_assets(p2)
+    _json(candidate / "component_chain_transactions/manifest.json", {
+        "application_state": "none", "accepted_segment_ids": []
+    })
+    cell = {
+        "round": "round_a",
+        "branch": "fast_direct",
+        "p2_root": str(candidate),
+        "completion": {"application_state": "none"},
+    }
+    result = _verify_v6_r1_noop_cells(root, [cell])
+    assert result["required_cell_count"] == 1
+    assert result["passed"] is True
+    report = root / str(result["reports"][0]["report"])
+    assert report.is_file()
+    assert _sha(report) == result["reports"][0]["report_sha256"]
+
+    with np.load(candidate / "pair_replay/pair_0000.npz") as stored:
+        changed = np.asarray(stored["source_u"]).copy()
+    changed[0] += 1
+    np.savez_compressed(candidate / "pair_replay/pair_0000.npz", source_u=changed)
+    with pytest.raises(ValueError, match="no-op exact comparison failed"):
+        _verify_v6_r1_noop_cells(root, [cell])
 
 
 def test_verify_rejects_nonallowlisted_payload_drift_or_missing_box_asset(

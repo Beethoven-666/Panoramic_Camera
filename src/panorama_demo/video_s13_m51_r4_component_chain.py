@@ -9,7 +9,7 @@ supplying immutable P0-derived maps and for applying only audited patch sets.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import math
@@ -24,6 +24,151 @@ EvidenceState = Literal["actionable", "safe_anchor", "ambiguous", "unevaluable"]
 CandidateDecision = Literal[
     "resolved", "improved_unresolved", "rejected", "budget_deferred"
 ]
+
+
+def locate_s13_dependency_failure_subset(
+    candidate_ids: Sequence[str],
+    *,
+    pixel_support_by_candidate: Mapping[str, np.ndarray],
+    evaluate_subset: Callable[
+        [tuple[str, ...]], tuple[bool, Mapping[str, object]]
+    ],
+    utility_by_candidate: Mapping[str, tuple[object, ...]],
+) -> tuple[str, Mapping[str, object]]:
+    """Locate a composite failure before choosing one candidate to remove.
+
+    Pairwise support overlap first excludes unrelated candidates.  Leave-one-out
+    then identifies necessary offenders; when no single removal repairs the
+    composite, deterministic ddmin finds a smaller failing subset.  Utility is
+    consulted only inside the localized failing set.
+    """
+
+    ids = tuple(sorted(str(value) for value in candidate_ids))
+    if len(ids) < 2 or len(set(ids)) != len(ids):
+        raise ValueError("C2E dependency failure locator requires unique candidates")
+    if set(ids) != set(pixel_support_by_candidate) or set(ids) != set(
+        utility_by_candidate
+    ):
+        raise ValueError("C2E dependency failure locator authority is incomplete")
+    canonical_support: dict[str, np.ndarray] = {}
+    support_sets: dict[str, set[tuple[int, int]]] = {}
+    for candidate_id in ids:
+        support = np.asarray(pixel_support_by_candidate[candidate_id], np.int32)
+        if support.ndim != 2 or support.shape[1] != 2:
+            raise ValueError("C2E dependency pixel support must be xy coordinates")
+        support = np.unique(support, axis=0)
+        canonical_support[candidate_id] = support
+        support_sets[candidate_id] = {
+            (int(row[0]), int(row[1])) for row in support
+        }
+    overlap_rows: list[dict[str, object]] = []
+    overlap_pixels: set[tuple[int, int]] = set()
+    localized: set[str] = set()
+    for left_index, left_id in enumerate(ids):
+        for right_id in ids[left_index + 1:]:
+            overlap = support_sets[left_id] & support_sets[right_id]
+            overlap_rows.append({
+                "left_segment_id": left_id,
+                "right_segment_id": right_id,
+                "overlap_pixel_count": len(overlap),
+                "overlap_support_sha256": _array_sha(
+                    np.asarray(sorted(overlap), dtype="<i4").reshape(-1, 2)
+                ),
+            })
+            if overlap:
+                localized.update((left_id, right_id))
+                overlap_pixels.update(overlap)
+    localized_ids = tuple(sorted(localized)) if len(localized) >= 2 else ids
+    evaluations: list[dict[str, object]] = []
+
+    def evaluate(kind: str, subset: Sequence[str]) -> bool:
+        subset_ids = tuple(sorted(subset))
+        passed, audit = evaluate_subset(subset_ids)
+        evaluations.append({
+            "kind": kind,
+            "candidate_ids": list(subset_ids),
+            "passed": bool(passed),
+            "audit": dict(audit),
+        })
+        return bool(passed)
+
+    necessary: list[str] = []
+    for candidate_id in localized_ids:
+        remainder = tuple(row for row in localized_ids if row != candidate_id)
+        if remainder and evaluate("leave_one_out", remainder):
+            necessary.append(candidate_id)
+    ddmin_trace: list[dict[str, object]] = []
+    if necessary:
+        minimal_failure_ids = tuple(sorted(necessary))
+        method = "leave_one_out"
+    else:
+        current = localized_ids
+        granularity = 2
+        while len(current) >= 2:
+            chunk_size = int(math.ceil(len(current) / granularity))
+            chunks = tuple(
+                current[index:index + chunk_size]
+                for index in range(0, len(current), chunk_size)
+            )
+            reduced: tuple[str, ...] | None = None
+            for chunk in chunks:
+                if len(chunk) >= 2 and not evaluate("ddmin_chunk", chunk):
+                    reduced = chunk
+                    ddmin_trace.append({
+                        "operation": "failing_chunk", "candidate_ids": list(chunk)
+                    })
+                    break
+            if reduced is None:
+                for chunk in chunks:
+                    complement = tuple(row for row in current if row not in set(chunk))
+                    if len(complement) >= 2 and not evaluate(
+                        "ddmin_complement", complement
+                    ):
+                        reduced = complement
+                        ddmin_trace.append({
+                            "operation": "failing_complement",
+                            "candidate_ids": list(complement),
+                        })
+                        break
+            if reduced is not None:
+                current = tuple(sorted(reduced))
+                granularity = max(2, granularity - 1)
+            elif granularity >= len(current):
+                break
+            else:
+                granularity = min(len(current), granularity * 2)
+        minimal_failure_ids = current
+        method = "deterministic_ddmin"
+    removed = min(
+        minimal_failure_ids,
+        key=lambda row: (utility_by_candidate[row], row),
+    )
+    audit = {
+        "schema": "gemini305-video-s13-dependency-failure-localization/v1",
+        "candidate_ids": list(ids),
+        "localized_candidate_ids": list(localized_ids),
+        "minimal_failure_candidate_ids": list(minimal_failure_ids),
+        "selected_removal_segment_id": removed,
+        "localization_method": method,
+        "overlap_pixel_count": len(overlap_pixels),
+        "overlap_support_sha256": _array_sha(
+            np.asarray(sorted(overlap_pixels), dtype="<i4").reshape(-1, 2)
+        ),
+        "candidate_support_authority": [
+            {
+                "segment_id": candidate_id,
+                "pixel_count": int(canonical_support[candidate_id].shape[0]),
+                "support_sha256": _array_sha(
+                    np.asarray(canonical_support[candidate_id], dtype="<i4")
+                ),
+            }
+            for candidate_id in ids
+        ],
+        "pairwise_support_overlap": overlap_rows,
+        "subset_evaluations": evaluations,
+        "ddmin_trace": ddmin_trace,
+    }
+    return removed, MappingProxyType(audit)
 
 
 class S13ComponentSolverError(ValueError):
@@ -2117,6 +2262,7 @@ class S13SourceComponentCorrection:
     delta_v: np.ndarray
     weight: np.ndarray
     correction_sha256: str
+    normal_field_audit: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         shape = (self.y1 - self.y0, self.x1 - self.x0)
@@ -2133,11 +2279,93 @@ class S13SourceComponentCorrection:
             raise ValueError("C2E correction leaks outside its weight support")
         if len(self.correction_sha256) != 64:
             raise ValueError("C2E correction SHA is invalid")
+        object.__setattr__(self, "normal_field_audit", _frozen_mapping(self.normal_field_audit))
 
 
 def _smoothstep(value: np.ndarray) -> np.ndarray:
     clipped = np.clip(value, 0.0, 1.0)
     return clipped * clipped * (3.0 - 2.0 * clipped)
+
+
+def _s13_local_normal_field(
+    global_x: np.ndarray,
+    *,
+    canonical_normal_xy: tuple[float, float],
+    observations: Sequence[S13EdgeComponentObservation],
+    maximum_angle_degrees: float,
+) -> tuple[np.ndarray, np.ndarray, Mapping[str, object]]:
+    canonical = np.asarray(canonical_normal_xy, np.float64)
+    canonical /= float(np.linalg.norm(canonical))
+    if not observations:
+        return (
+            np.full(global_x.shape, canonical[0], np.float64),
+            np.full(global_x.shape, canonical[1], np.float64),
+            MappingProxyType({
+                "policy": "single_canonical_normal_exact", "node_count": 1,
+                "maximum_node_angle_degrees": 0.0,
+                "maximum_pixel_angle_degrees": 0.0,
+                "canonical_hemisphere_enforced": True,
+            }),
+        )
+    nodes: list[tuple[float, float, float, float, int, int]] = []
+    maximum_node_angle = 0.0
+    for observation in observations:
+        normal = np.asarray((observation.normal_x, observation.normal_y), np.float64)
+        normal /= float(np.linalg.norm(normal))
+        if float(np.dot(normal, canonical)) < 0.0:
+            normal *= -1.0
+        angle = math.degrees(math.acos(float(np.clip(np.dot(normal, canonical), -1.0, 1.0))))
+        maximum_node_angle = max(maximum_node_angle, angle)
+        x0, _y0, x1, _y1 = observation.global_bbox_xyxy
+        anchor_x = 0.5 * float(x0 + x1 - 1)
+        nodes.append((
+            anchor_x, _line_y(observation, anchor_x),
+            float(normal[0]), float(normal[1]),
+            observation.pair_index, observation.component_id,
+        ))
+    if maximum_node_angle > maximum_angle_degrees + 1e-9:
+        raise ValueError("C2E local normal node exceeds canonical angle limit")
+    nodes.sort(key=lambda row: (row[0], row[1], row[4], row[5]))
+    collapsed: list[tuple[float, float, float, float]] = []
+    for anchor_x in sorted({row[0] for row in nodes}):
+        group = [row for row in nodes if row[0] == anchor_x]
+        normal = np.mean(np.asarray([(row[2], row[3]) for row in group]), axis=0)
+        normal /= float(np.linalg.norm(normal))
+        collapsed.append((
+            anchor_x, float(np.mean([row[1] for row in group])),
+            float(normal[0]), float(normal[1]),
+        ))
+    anchors_x = np.asarray([row[0] for row in collapsed], np.float64)
+    normals_x = np.asarray([row[2] for row in collapsed], np.float64)
+    normals_y = np.asarray([row[3] for row in collapsed], np.float64)
+    if len(collapsed) == 1:
+        nx = np.full(global_x.shape, normals_x[0], np.float64)
+        ny = np.full(global_x.shape, normals_y[0], np.float64)
+        policy = "single_fitted_line_exact"
+    else:
+        anchors_y = np.asarray([row[1] for row in collapsed], np.float64)
+        arc = np.concatenate((np.asarray([0.0]), np.cumsum(
+            np.hypot(np.diff(anchors_x), np.diff(anchors_y))
+        )))
+        local_arc = np.interp(global_x, anchors_x, arc)
+        nx = np.interp(local_arc, arc, normals_x)
+        ny = np.interp(local_arc, arc, normals_y)
+        length = np.hypot(nx, ny)
+        nx, ny = nx / length, ny / length
+        policy = "fitted_line_x_to_arc_length_linear_normal"
+    pixel_angle = np.degrees(np.arccos(np.clip(
+        nx * canonical[0] + ny * canonical[1], -1.0, 1.0
+    )))
+    maximum_pixel_angle = float(np.max(pixel_angle))
+    if maximum_pixel_angle > maximum_angle_degrees + 1e-9:
+        raise ValueError("C2E local normal field exceeds canonical angle limit")
+    return nx, ny, MappingProxyType({
+        "policy": policy, "node_count": len(collapsed),
+        "maximum_node_angle_degrees": maximum_node_angle,
+        "maximum_pixel_angle_degrees": maximum_pixel_angle,
+        "maximum_allowed_angle_degrees": float(maximum_angle_degrees),
+        "canonical_hemisphere_enforced": True,
+    })
 
 
 def build_s13_source_component_correction(
@@ -2149,6 +2377,7 @@ def build_s13_source_component_correction(
     source_offset_px: float,
     normal_xy: tuple[float, float],
     config: object,
+    local_normal_observations: Sequence[S13EdgeComponentObservation] = (),
 ) -> S13SourceComponentCorrection:
     mask = np.asarray(support_mask, dtype=bool)
     if mask.ndim != 2 or not np.any(mask):
@@ -2192,11 +2421,17 @@ def build_s13_source_component_correction(
     weight = np.round(
         np.clip(weight, 0.0, 1.0).astype(np.float64), decimals=6
     ).astype(np.float32)
+    local_normal_x, local_normal_y, normal_field_audit = _s13_local_normal_field(
+        global_x,
+        canonical_normal_xy=(float(normal[0]), float(normal[1])),
+        observations=local_normal_observations,
+        maximum_angle_degrees=float(config.maximum_component_normal_difference_degrees),
+    )
     delta_u = np.round(
-        weight.astype(np.float64) * (source_offset_px * normal[0]), decimals=6
+        weight.astype(np.float64) * (source_offset_px * local_normal_x), decimals=6
     ).astype(np.float32)
     delta_v = np.round(
-        weight.astype(np.float64) * (source_offset_px * normal[1]), decimals=6
+        weight.astype(np.float64) * (source_offset_px * local_normal_y), decimals=6
     ).astype(np.float32)
     payload = {
         "segment_id": segment_id, "source_index": source_index, "frame_id": frame_id,
@@ -2207,6 +2442,7 @@ def build_s13_source_component_correction(
         x0=x0, x1=x1, y0=y0, y1=y1,
         delta_u=delta_u, delta_v=delta_v, weight=weight,
         correction_sha256=_json_sha(payload),
+        normal_field_audit=normal_field_audit,
     )
 
 
@@ -2572,6 +2808,7 @@ __all__ = [
     "canonical_s13_normal_search_lags", "freeze_s13_baseline_c2e_obligations",
     "evaluate_s13_component_candidate_quality", "make_s13_edge_component_observation",
     "make_s13_unevaluable_edge_component_observation",
+    "locate_s13_dependency_failure_subset",
     "plan_s13_failed_segment_split",
     "propagate_s13_edge_component_evidence",
     "s13_component_segment_budget_priority",
