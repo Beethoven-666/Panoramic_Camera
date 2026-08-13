@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "D:\central_strip_Panoramic_Camera\scripts\_temporary_d3_full_scan_preview.py", line 30, in <module>
+    report = video_pipeline.run_video_algorithm(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\central_strip_Panoramic_Camera\src\panorama_demo\video_pipeline.py", line 567, in run_video_algorithm
+    published = run_legacy(legacy_args)
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\central_strip_Panoramic_Camera\src\panorama_demo\video_panorama.py", line 1049, in run_legacy
+    raise RuntimeError("D1 requires M2 full-support compact annotation measurement context")
+RuntimeError: D1 requires M2 full-support compact annotation measurement context

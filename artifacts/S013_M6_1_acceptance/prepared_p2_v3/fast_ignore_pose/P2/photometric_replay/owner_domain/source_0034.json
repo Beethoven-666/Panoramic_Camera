@@ -1,0 +1,145 @@
+{
+  "arrays": {
+    "canvas_tile_x": {
+      "dtype": "<i4",
+      "sha256": "9898a483c0cb3ec5515cde157fef9dcc93e505e1d836c4ada924878ddd36bbba",
+      "shape": [
+        7955
+      ]
+    },
+    "canvas_tile_y": {
+      "dtype": "<i4",
+      "sha256": "3e4eeac6d7a31ff5373c26c15031fe31a3948e4b59221ad035abea59add665ed",
+      "shape": [
+        7955
+      ]
+    },
+    "canvas_x": {
+      "dtype": "<i4",
+      "sha256": "93f0c48bdffbc0c8b357bd319dfc7aaf1d98ea1d4704fb76edd07bb89134f0e7",
+      "shape": [
+        7955
+      ]
+    },
+    "canvas_y": {
+      "dtype": "<i4",
+      "sha256": "611fd338ae65922e74a5b802c0f7a2581efc4c49b1ba9a3c918e9cb232972420",
+      "shape": [
+        7955
+      ]
+    },
+    "central_stable_domain": {
+      "dtype": "|b1",
+      "sha256": "afdde436c8f540814cd2697e3d050e164b4e6605b84d6f65c7e530f1af167a59",
+      "shape": [
+        7955
+      ]
+    },
+    "excluded_guard": {
+      "dtype": "|b1",
+      "sha256": "81a7105b394fa2b04315f5a83593b6156d650013cd398b04dab84451dc3f70ec",
+      "shape": [
+        7955
+      ]
+    },
+    "expected_valid": {
+      "dtype": "|b1",
+      "sha256": "f288fecc281abf39a4fd4f1be23d5bd55e3293726100a2ee08f8277bf7cc6aba",
+      "shape": [
+        7955
+      ]
+    },
+    "lab_profile_input": {
+      "dtype": "<f4",
+      "sha256": "c4f383f83b0bfddc4174a49b11c7eeb0b20c8e811e04891339b1e4d2e30b2320",
+      "shape": [
+        7955,
+        3
+      ]
+    },
+    "protected": {
+      "dtype": "|b1",
+      "sha256": "303adb06c9ce4c036668ae9e7df2ae64c8a790830da6a2a48a6ff3b49985511b",
+      "shape": [
+        7955
+      ]
+    },
+    "safe": {
+      "dtype": "|b1",
+      "sha256": "b9b7e452ddc16feaf46364e670d3a9e12faaf80ef82f478f16881665d273a8df",
+      "shape": [
+        7955
+      ]
+    },
+    "sample_class": {
+      "dtype": "|u1",
+      "sha256": "c42d9625283c7861b774bda45e84f3c4a42453ebc4742f4dbd99721b7cd92e29",
+      "shape": [
+        7955
+      ]
+    },
+    "seam_shoulder_exclusion": {
+      "dtype": "|b1",
+      "sha256": "f288fecc281abf39a4fd4f1be23d5bd55e3293726100a2ee08f8277bf7cc6aba",
+      "shape": [
+        7955
+      ]
+    },
+    "source_u": {
+      "dtype": "<f4",
+      "sha256": "b6a3ea2edba3077e6380ec31297e48c0a4ed54b34d0acd2e2e7df30e387fe029",
+      "shape": [
+        7955
+      ]
+    },
+    "source_v": {
+      "dtype": "<f4",
+      "sha256": "8df5f2271c148f6dae678bc580702d84260085b03d1014899d4c02a501e91591",
+      "shape": [
+        7955
+      ]
+    },
+    "train": {
+      "dtype": "|b1",
+      "sha256": "8d2e9447bc6d315b893f51c37338f70b21a517ec7e67eac5120b2ef03037f0f7",
+      "shape": [
+        7955
+      ]
+    },
+    "upstream_support": {
+      "dtype": "|b1",
+      "sha256": "5315e32243a92911e5ef6ed74b47e07b8f0df176b466c7feee940f464a02ce19",
+      "shape": [
+        7955
+      ]
+    },
+    "valid": {
+      "dtype": "|b1",
+      "sha256": "f288fecc281abf39a4fd4f1be23d5bd55e3293726100a2ee08f8277bf7cc6aba",
+      "shape": [
+        7955
+      ]
+    },
+    "validation": {
+      "dtype": "|b1",
+      "sha256": "384da43a270c3734bd799d702f23fa1094b12c467ac34cebfdf72161024487d2",
+      "shape": [
+        7955
+      ]
+    }
+  },
+  "asset": "source_0034.npz",
+  "asset_sha256": "33bd01652f423874ccbe4d1bd82d08ac73f5c2cdd2726afa41a0280ec25d36a1",
+  "frame_id": 71,
+  "neighbor_owner_relations": {
+    "left": 33,
+    "right": 35
+  },
+  "p2_owner_identity": {
+    "owner_frame_id": 71,
+    "owner_source_index": 34
+  },
+  "raw_rgb_sha256": "6d079e68b6822f7ce50e35848d0025a25c76561eb62d6281b66275edcb2fb58f",
+  "schema": "gemini305-video-s13-p2-owner-domain-source/v1",
+  "source_index": 34
+}

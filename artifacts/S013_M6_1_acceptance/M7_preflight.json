@@ -1,0 +1,19 @@
+{
+  "authorization_mode": "completed_manual_forward",
+  "authorized": true,
+  "automatic_quality_records_preserved": true,
+  "core_registry": [
+    "R0_keep_p3",
+    "R1_b1_2px_to_b0_owner_only",
+    "R2_downgrade_seam_reestimate_geometry",
+    "R3_downgrade_geometry_reselect_seam"
+  ],
+  "diagnostic_only": true,
+  "failures": [],
+  "optional_gates_all_disabled": true,
+  "original_automatic_status": "blocked",
+  "p4_created": false,
+  "pointer_updated": false,
+  "runtime_authority": false,
+  "schema": "gemini305-video-s13-m7-preflight/v2"
+}

@@ -21,7 +21,9 @@ from panorama_demo.video_visual_renderer_v2 import (
     TorchCudaC6SafeMultiBandAlgorithm,
     TorchCudaC7PhotometricGraphAlgorithm,
     TorchCudaC8MultilabelWindowAlgorithm,
+    TorchCudaC12JointOwnerFinalGridAlgorithm,
     TorchCudaStripOwnerAlgorithm,
+    _finalize_component_execution,
     _median_exposure_anchor_index,
     build_cuda_strips_from_pushbroom_layout,
 )
@@ -44,6 +46,106 @@ def _source_with_red_ramp(frame_id: int) -> CudaRealSource:
     return CudaRealSource(frame_id, frame_id * 10, rgb, np.full((8, 8), 600, dtype=np.uint16), np.eye(4))
 
 
+def test_component_execution_requires_final_output_pixels_and_preserves_c4_parent_lineage():
+    audit: dict[str, object] = {
+        "c1_constrained_owner": {"owner_pixels_changed_from_initial_hard_strip": 12},
+        "c4_raft_rgbd_layered_mesh": {
+            "pair_audits": [
+                {"actual_output_mesh_pixel_count": 7, "maximum_mesh_displacement_px": 2.5},
+                {"actual_output_mesh_pixel_count": 0, "fallback_to_c1_hard_owner": True},
+            ],
+        },
+    }
+
+    _finalize_component_execution(
+        audit,
+        required_components=("c1_constrained_owner", "c3_raft_mesh", "c4_depth_layered_mesh"),
+    )
+
+    records = audit["component_execution"]
+    assert isinstance(records, dict)
+    assert records["c3_raft_mesh"]["applied_output_pixel_count"] == 7
+    assert records["c3_raft_mesh"]["applied_to_output"] is True
+    assert records["c4_depth_layered_mesh"]["fallback_pair_count"] == 1
+    assert audit["candidate_run_state"] == "completed"
+
+
+def test_component_execution_marks_zero_output_required_component_invalid():
+    audit: dict[str, object] = {
+        "c1_constrained_owner": {"owner_pixels_changed_from_initial_hard_strip": 12},
+        "c3_raft_mesh": {"pair_audits": [{"actual_output_mesh_pixel_count": 0, "fallback_to_c1_hard_owner": True}]},
+    }
+
+    _finalize_component_execution(audit, required_components=("c1_constrained_owner", "c3_raft_mesh"))
+
+    assert audit["candidate_run_state"] == "invalid_component_execution"
+    assert audit["selection_eligible"] is False
+    assert audit["component_execution_failure_components"] == ["c3_raft_mesh"]
+
+
+def test_component_execution_requires_c10_depth_conditioned_grid_to_reach_output():
+    audit: dict[str, object] = {
+        "c1_constrained_owner": {"owner_pixels_changed_from_initial_hard_strip": 12},
+        "c4_raft_rgbd_layered_mesh": {"pair_audits": [{"actual_output_mesh_pixel_count": 5}]},
+        "c10_depth_conditioned_multi_perspective_layout": {
+            "pair_audits": [{"actual_output_layout_pixel_count": 5}],
+        },
+    }
+
+    _finalize_component_execution(
+        audit,
+        required_components=(
+            "c1_constrained_owner", "c3_raft_mesh", "c4_depth_layered_mesh", "c10_depth_conditioned_layout",
+        ),
+    )
+
+    records = audit["component_execution"]
+    assert isinstance(records, dict)
+    assert records["c10_depth_conditioned_layout"]["applied_output_pixel_count"] == 5
+    assert audit["candidate_run_state"] == "completed"
+
+
+def test_component_execution_requires_c12_joint_owner_grid_to_recompose_actual_output():
+    audit: dict[str, object] = {
+        "c1_constrained_owner": {"owner_pixels_changed_from_initial_hard_strip": 12},
+        "c4_raft_rgbd_layered_mesh": {"pair_audits": [{"actual_output_mesh_pixel_count": 5}]},
+        "c10_depth_conditioned_multi_perspective_layout": {"pair_audits": [{"actual_output_layout_pixel_count": 5}]},
+        "c12_joint_owner_final_grid": {
+            "window_audits": [{"actual_output_joint_owner_grid_pixel_count": 9}],
+        },
+    }
+
+    _finalize_component_execution(
+        audit,
+        required_components=(
+            "c1_constrained_owner", "c3_raft_mesh", "c4_depth_layered_mesh",
+            "c10_depth_conditioned_layout", "c12_joint_owner_final_grid",
+        ),
+    )
+
+    records = audit["component_execution"]
+    assert isinstance(records, dict)
+    assert records["c12_joint_owner_final_grid"]["applied_output_pixel_count"] == 9
+    assert records["c12_joint_owner_final_grid"]["applied_to_output"] is True
+
+
+def test_c12_component_execution_keeps_a_real_window_rejection_observable():
+    audit: dict[str, object] = {
+        "c12_joint_owner_final_grid": {
+            "window_audits": [
+                {"c12_exception": "no feasible genuine owner", "fallback_to_c10": True,
+                 "actual_output_joint_owner_grid_pixel_count": 0},
+            ],
+        },
+    }
+    _finalize_component_execution(audit, required_components=("c12_joint_owner_final_grid",))
+
+    record = audit["component_execution"]["c12_joint_owner_final_grid"]
+    assert record["attempted_pair_count"] == 1
+    assert record["fallback_pair_count"] == 1
+    assert record["rejection_reasons"] == {"c12_exception": 1}
+
+
 def test_c7_median_exposure_anchor_uses_real_metadata_and_deterministic_fixture_fallback():
     # Real session metadata selects the actual median exposure source.
     assert _median_exposure_anchor_index((4, 6, 10, 20, 30)) == 2
@@ -52,6 +154,17 @@ def test_c7_median_exposure_anchor_uses_real_metadata_and_deterministic_fixture_
     assert _median_exposure_anchor_index((None, None, None, None)) == 2
     with pytest.raises(VideoAlgorithmContractError, match="all absent or all positive"):
         _median_exposure_anchor_index((6, None, 8))
+
+
+def test_c12_partitions_a_full_real_sequence_into_only_five_to_seven_source_solver_windows():
+    assert TorchCudaC12JointOwnerFinalGridAlgorithm._source_window_indexes(5) == (  # noqa: SLF001
+        (0, 1, 2, 3, 4),
+    )
+    assert TorchCudaC12JointOwnerFinalGridAlgorithm._source_window_indexes(12) == (  # noqa: SLF001
+        (0, 1, 2, 3, 4, 5, 6), (7, 8, 9, 10, 11),
+    )
+    with pytest.raises(VideoAlgorithmContractError, match="at least five"):
+        TorchCudaC12JointOwnerFinalGridAlgorithm._source_window_indexes(4)  # noqa: SLF001
 
 
 @pytest.mark.skipif(not _torch().cuda.is_available(), reason="requires actual CUDA")

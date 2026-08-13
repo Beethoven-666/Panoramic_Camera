@@ -1,0 +1,2082 @@
+{
+  "bounds_schema": "gemini305-video-s13-photometric-bounds/v1",
+  "candidate_audits": [
+    {
+      "gain_maximum": 1.0,
+      "gain_minimum": 1.0,
+      "hard_safe": true,
+      "heldout": {
+        "evaluable": true,
+        "reason": null,
+        "residual_median_linear": 0.008200546728873905,
+        "residual_p95_linear": 0.017031436237163137,
+        "sample_count": 53242
+      },
+      "identity_fallback_source_count": 109,
+      "maximum_absolute_bias_linear": 0.0,
+      "model": "Q0_identity",
+      "selected": true,
+      "train": {
+        "evaluable": true,
+        "reason": null,
+        "residual_median_linear": 0.008200546728873905,
+        "residual_p95_linear": 0.017073347921436683,
+        "sample_count": 160020
+      }
+    },
+    {
+      "gain_maximum": 1.2279505064457263,
+      "gain_minimum": 0.8266864066865559,
+      "hard_safe": true,
+      "heldout": {
+        "evaluable": true,
+        "reason": null,
+        "residual_median_linear": 0.00835357543967125,
+        "residual_p95_linear": 0.017058806242404218,
+        "sample_count": 53242
+      },
+      "identity_fallback_source_count": 0,
+      "maximum_absolute_bias_linear": 0.0,
+      "model": "Q1_scalar_luminance_gain",
+      "selected": false,
+      "train": {
+        "evaluable": true,
+        "reason": null,
+        "residual_median_linear": 0.008331459108928739,
+        "residual_p95_linear": 0.01696478883508851,
+        "sample_count": 160020
+      }
+    },
+    {
+      "gain_maximum": 1.2275876763366778,
+      "gain_minimum": 0.8061833923878041,
+      "hard_safe": true,
+      "heldout": {
+        "evaluable": true,
+        "reason": null,
+        "residual_median_linear": 0.008122157067694091,
+        "residual_p95_linear": 0.020619357682708606,
+        "sample_count": 53242
+      },
+      "identity_fallback_source_count": 8,
+      "maximum_absolute_bias_linear": 0.0,
+      "model": "Q2_rgb_diagonal_gain",
+      "selected": false,
+      "train": {
+        "evaluable": true,
+        "reason": null,
+        "residual_median_linear": 0.008090790586107779,
+        "residual_p95_linear": 0.02111094153491004,
+        "sample_count": 160020
+      }
+    },
+    {
+      "gain_maximum": 1.0,
+      "gain_minimum": 0.8261190999444886,
+      "hard_safe": true,
+      "heldout": {
+        "evaluable": true,
+        "reason": null,
+        "residual_median_linear": 0.008361092442207884,
+        "residual_p95_linear": 0.017607103415632975,
+        "sample_count": 53242
+      },
+      "identity_fallback_source_count": 103,
+      "maximum_absolute_bias_linear": 0.027002968559874496,
+      "model": "Q3_bounded_rgb_gain_bias",
+      "selected": false,
+      "train": {
+        "evaluable": true,
+        "reason": null,
+        "residual_median_linear": 0.008344037639336175,
+        "residual_p95_linear": 0.01759550091842333,
+        "sample_count": 160020
+      }
+    }
+  ],
+  "diagnostic_only": true,
+  "heldout_audit": {
+    "evaluable": true,
+    "reason": null,
+    "residual_median_linear": 0.008200546728873905,
+    "residual_p95_linear": 0.017031436237163137,
+    "sample_count": 53242
+  },
+  "low_frequency_luminance_field_enabled": false,
+  "model_family": "Q0_identity",
+  "runtime_authority": false,
+  "schema": "gemini305-video-s13-photometric-solution/v1",
+  "source_parameters": [
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 0,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 0,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 0
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 1,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 68,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 1
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 2,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 80,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 2
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 3,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 89,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 3
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 4,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 96,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 4
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 5,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 103,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 5
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 6,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 110,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 6
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 7,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 118,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 7
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 8,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 126,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 8
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 9,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 134,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 9
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 10,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 141,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 10
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 11,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 148,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 11
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 12,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 155,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 12
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 13,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 163,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 13
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 14,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 171,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 14
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 15,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 179,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 15
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 16,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 187,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 16
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 17,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 195,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 17
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 18,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 204,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 18
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 19,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 213,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 19
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 20,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 221,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 20
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 21,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 230,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 21
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 22,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 238,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 22
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 23,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 246,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 23
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 24,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 254,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 24
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 25,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 262,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 25
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 26,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 271,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 26
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 27,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 280,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 27
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 28,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 287,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 28
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 29,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 295,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 29
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 30,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 303,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 30
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 31,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 313,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 31
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 32,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 324,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 32
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 33,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 333,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 33
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 34,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 342,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 34
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 35,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 349,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 35
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 36,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 355,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 36
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 37,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 362,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 37
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 38,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 368,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 38
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 39,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 373,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 39
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 40,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 379,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 40
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 41,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 384,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 41
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 42,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 391,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 42
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 43,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 397,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 43
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 44,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 403,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 44
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 45,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 408,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 45
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 46,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 414,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 46
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 47,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 421,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 47
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 48,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 428,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 48
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 49,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 434,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 49
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 50,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 441,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 50
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 51,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 447,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 51
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 52,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 453,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 52
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 53,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 459,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 53
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 54,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 465,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 54
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 55,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 470,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 55
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 56,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 476,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 56
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 57,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 482,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 57
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 58,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 488,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 58
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 59,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 495,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 59
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 60,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 502,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 60
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 61,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 509,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 61
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 62,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 515,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 62
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 63,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 521,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 63
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 64,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 527,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 64
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 65,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 533,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 65
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 66,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 540,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 66
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 67,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 548,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 67
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 68,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 556,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 68
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 69,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 563,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 69
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 70,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 571,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 70
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 71,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 578,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 71
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 72,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 584,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 72
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 73,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 591,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 73
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 74,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 597,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 74
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 75,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 603,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 75
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 76,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 610,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 76
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 77,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 618,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 77
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 78,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 625,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 78
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 79,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 632,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 79
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 80,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 639,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 80
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 81,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 646,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 81
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 82,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 653,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 82
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 83,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 660,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 83
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 84,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 667,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 84
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 85,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 675,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 85
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 86,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 683,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 86
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 87,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 691,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 87
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 88,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 697,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 88
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 89,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 703,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 89
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 90,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 708,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 90
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 91,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 715,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 91
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 92,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 722,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 92
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 93,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 729,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 93
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 94,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 736,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 94
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 95,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 743,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 95
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 96,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 750,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 96
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 97,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 757,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 97
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 98,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 763,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 98
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 99,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 772,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 99
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 100,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 783,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 100
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 101,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 793,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 101
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 102,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 802,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 102
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 103,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 810,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 103
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 104,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 818,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 104
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 105,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 828,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 105
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 106,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 837,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 106
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 107,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 846,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 107
+    },
+    {
+      "bias_bgr": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "component_id": 108,
+      "evidence_weight": 0.0,
+      "fallback_reason": "identity_candidate",
+      "frame_id": 848,
+      "gain_bgr": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "model": "Q0_identity",
+      "source_index": 108
+    }
+  ],
+  "split_seed": 20260804,
+  "train_audit": {
+    "evaluable": true,
+    "reason": null,
+    "residual_median_linear": 0.008200546728873905,
+    "residual_p95_linear": 0.017073347921436683,
+    "sample_count": 160020
+  },
+  "train_fraction": 0.75
+}

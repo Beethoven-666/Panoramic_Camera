@@ -1,0 +1,95 @@
+{
+  "diagnostic_only": true,
+  "direct_local_delta_is_fatal": false,
+  "fallback_counts": {
+    "F0": 99,
+    "F1": 0,
+    "F2": 0,
+    "F3": 0,
+    "F4": 0,
+    "F5": 29,
+    "F6": 0,
+    "F7": 0
+  },
+  "fallback_progress_edge_count": 0,
+  "fallback_unclassified_count": 0,
+  "generation_id": "20260811T215245-0768121051c2",
+  "hypothesis_count_histogram": {
+    "0": 2,
+    "1": 119,
+    "2": 61,
+    "3": 198
+  },
+  "lineage_switch_count": 98,
+  "m4": {
+    "reason": "optimizer_all_fail_probe",
+    "state": "not_run"
+  },
+  "m5": {
+    "reason": "optimizer_all_fail_probe",
+    "state": "not_run"
+  },
+  "manual_review_required": true,
+  "motion_graph_connected_telemetry": false,
+  "motion_graph_disconnection_is_fatal": false,
+  "observed_pause_expansion_count": 0,
+  "observed_pause_expansion_px": 0.0,
+  "optimizer": {
+    "all_failed": true,
+    "attempt_count": 3,
+    "failures": [
+      {
+        "error": "injected optimizer failure after immutable P0",
+        "optimizer": "vertical_selection"
+      },
+      {
+        "error": "injected optimizer failure after immutable P0",
+        "optimizer": "geometry"
+      },
+      {
+        "error": "injected optimizer failure after immutable P0",
+        "optimizer": "seam_transaction"
+      }
+    ],
+    "p0_hash_unchanged": true,
+    "p0_hash_unchanged_after_m4": true,
+    "p0_hash_unchanged_after_m5": true,
+    "p0_parent_preserved": true,
+    "requested": true
+  },
+  "optimizer_state": "post_p0_not_run",
+  "p0_parent": "P0/P0_completion.json",
+  "panorama_claim": "visual_nonmetric",
+  "performance": {
+    "stage_seconds": {
+      "input_and_preflight": 0.5357082999980776,
+      "motion_measurement": 2.956424700001662,
+      "p0_render_and_export": 1.2193473000006634,
+      "progress_and_layout": 0.004694700000982266,
+      "trajectory": 1.5400000847876072e-05
+    }
+  },
+  "production_eligible": false,
+  "production_lock_eligible": false,
+  "raw_rgb_adjacent_edge_count": 128,
+  "raw_rgb_motion_edge_count": 380,
+  "raw_rgb_motion_pair_count": 128,
+  "render_pair_count": 84,
+  "render_source_count": 85,
+  "render_state": "base_generated",
+  "schema": "gemini305-video-s13-output-first-report/v1",
+  "source_u_statistics": {
+    "configured_cap_px": 169,
+    "maximum": 847.2669067382812,
+    "maximum_internal_owner_width_px": 24,
+    "minimum": 0.0,
+    "span": 847.2669067382812
+  },
+  "subpixel_motion_edge_count": 0,
+  "trajectory": {
+    "direct_pose_count": 0,
+    "pose_supported": false,
+    "source": "ignore_pose"
+  },
+  "zero_duplicate_edge_count": 29
+}

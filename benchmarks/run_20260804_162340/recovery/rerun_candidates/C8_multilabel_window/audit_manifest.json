@@ -1,0 +1,57 @@
+{
+  "audit_archives": {
+    "central_strips": true,
+    "central_strips_owner_only": true
+  },
+  "audit_artifacts": {},
+  "observability": {
+    "artifact_level": "audit",
+    "report_level": "full"
+  },
+  "primary_artifacts": {
+    "video_delivery.json": {
+      "bytes": 1627,
+      "path": "video_delivery.json",
+      "sha256": "e0d1536e99cc38b5ff30a4b0749d70c4b5eb423ea9de365f4895ae4b64e87517"
+    },
+    "video_panorama.jpg": {
+      "bytes": 121291,
+      "path": "video_panorama.jpg",
+      "sha256": "6722009f3d48f3c7ec65f3595f174eb4059b93459641f11304fb6bb328d2c548"
+    },
+    "video_panorama.png": {
+      "bytes": 540541,
+      "path": "video_panorama.png",
+      "sha256": "e3d21cc83cb0d7923969348d3bbb7c720f195b65c15a5e07a6c57d690fc5bfea"
+    },
+    "video_pixel_provenance.npz": {
+      "bytes": 6809,
+      "path": "video_pixel_provenance.npz",
+      "sha256": "ffac57ed10367ec852d3e160d0d8a9a0784759ca53c03760046c589be4f8a575"
+    },
+    "video_report.json": {
+      "bytes": 454684,
+      "path": "video_report.json",
+      "sha256": "32cd192d157ea763b0b30febdab161beb892e473593bd1c42290384031f53ef2"
+    }
+  },
+  "provenance_artifacts": {
+    "owner_boundary_overlay.png": {
+      "bytes": 572285,
+      "path": "owner_boundary_overlay.png",
+      "sha256": "2310118baffa2a3b074385b56cca3fa1bade9b3cb0aa2b3a091906349f735bbc"
+    },
+    "owner_component_report.json": {
+      "bytes": 6584,
+      "path": "owner_component_report.json",
+      "sha256": "5d5d030fbc0dc8663c3d6f23304146e4a11dd75d7d58811b9ed85d472708ba7d"
+    },
+    "owner_map_color.png": {
+      "bytes": 24152,
+      "path": "owner_map_color.png",
+      "sha256": "a30d8e3eeeac57ee0e1257f3330b16a06c5b8c3ee5df8c7bc37948090921fed0"
+    }
+  },
+  "schema": "gemini305-video-audit-manifest/v1",
+  "status": "published"
+}

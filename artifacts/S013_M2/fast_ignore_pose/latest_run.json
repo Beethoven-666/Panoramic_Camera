@@ -1,0 +1,39 @@
+{
+  "algorithm_id": "S013_output_first_progressive_dense_central_slit_v3",
+  "column_provenance": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M2\\fast_ignore_pose\\generations\\20260810T200536-d88d2ce2d260\\P0\\base_column_provenance.npz",
+  "completion": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M2\\fast_ignore_pose\\generations\\20260810T200536-d88d2ce2d260\\P0\\P0_completion.json",
+  "current_base": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M2\\fast_ignore_pose\\current_base.json",
+  "diagnostic_only": true,
+  "direct_local_delta_is_fatal": false,
+  "generation": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M2\\fast_ignore_pose\\generations\\20260810T200536-d88d2ce2d260",
+  "generation_id": "20260810T200536-d88d2ce2d260",
+  "layout": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M2\\fast_ignore_pose\\generations\\20260810T200536-d88d2ce2d260\\P0\\base_layout.json",
+  "manual_review_required": true,
+  "motion_graph_connected_telemetry": false,
+  "motion_graph_disconnection_is_fatal": false,
+  "optimizer": {
+    "all_failed": false,
+    "attempt_count": 0,
+    "failures": [],
+    "p0_hash_unchanged": true,
+    "p0_parent_preserved": true,
+    "requested": false
+  },
+  "owner_overlay": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M2\\fast_ignore_pose\\generations\\20260810T200536-d88d2ce2d260\\P0\\owner_boundary_overlay.png",
+  "panorama": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M2\\fast_ignore_pose\\generations\\20260810T200536-d88d2ce2d260\\P0\\base_panorama_owner_only.png",
+  "panorama_claim": "visual_nonmetric",
+  "pixel_provenance": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M2\\fast_ignore_pose\\generations\\20260810T200536-d88d2ce2d260\\P0\\base_pixel_provenance.npz",
+  "production_eligible": false,
+  "production_lock_eligible": false,
+  "render_state": "base_generated",
+  "schema": "gemini305-video-s13-output-first-report/v1",
+  "stage_seconds": {
+    "input_and_preflight": 0.6201923000044189,
+    "motion_measurement": 2.505330199986929,
+    "p0_render_and_export": 0.9942546999955084,
+    "progress_and_layout": 0.0001815000141505152,
+    "trajectory": 9.399984264746308e-06
+  },
+  "time_to_P0_seconds": 4.16909380001016,
+  "total_wall_seconds": 4.179489400004968
+}

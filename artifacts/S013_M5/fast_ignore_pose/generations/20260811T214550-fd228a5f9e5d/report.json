@@ -1,0 +1,106 @@
+{
+  "diagnostic_only": true,
+  "direct_local_delta_is_fatal": false,
+  "fallback_counts": {
+    "F0": 99,
+    "F1": 0,
+    "F2": 0,
+    "F3": 0,
+    "F4": 0,
+    "F5": 29,
+    "F6": 0,
+    "F7": 0
+  },
+  "fallback_progress_edge_count": 0,
+  "fallback_unclassified_count": 0,
+  "generation_id": "20260811T214550-fd228a5f9e5d",
+  "hypothesis_count_histogram": {
+    "0": 2,
+    "1": 119,
+    "2": 61,
+    "3": 198
+  },
+  "lineage_switch_count": 98,
+  "m4": {
+    "applied_pair_count": 0,
+    "completion": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M5\\fast_ignore_pose\\generations\\20260811T214550-fd228a5f9e5d\\P1\\P1_completion.json",
+    "current_preview": null,
+    "formal_raw_rgb_remap_invocations": 85,
+    "owner_overlay": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M5\\fast_ignore_pose\\generations\\20260811T214550-fd228a5f9e5d\\P1\\vertical_owner_boundary_overlay.png",
+    "pair_count": 84,
+    "panorama": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M5\\fast_ignore_pose\\generations\\20260811T214550-fd228a5f9e5d\\P1\\vertical_panorama_owner_only.png",
+    "pixel_provenance": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M5\\fast_ignore_pose\\generations\\20260811T214550-fd228a5f9e5d\\P1\\vertical_pixel_provenance.npz",
+    "selected_global_gain": 1.0,
+    "state": "P1_vertical_candidate_generated"
+  },
+  "m5": {
+    "applied_pair_count": 84,
+    "completion": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M5\\fast_ignore_pose\\generations\\20260811T214550-fd228a5f9e5d\\P2\\P2_completion.json",
+    "current_preview": null,
+    "formal_raw_rgb_remap_invocations": 85,
+    "geometry": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M5\\fast_ignore_pose\\generations\\20260811T214550-fd228a5f9e5d\\P2\\geometry_panorama_owner_only.png",
+    "pair_count": 84,
+    "pair_transactions": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M5\\fast_ignore_pose\\generations\\20260811T214550-fd228a5f9e5d\\P2\\pair_transactions.json",
+    "panorama": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M5\\fast_ignore_pose\\generations\\20260811T214550-fd228a5f9e5d\\P2\\geometry_and_seam_panorama_owner_only.png",
+    "performance": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M5\\fast_ignore_pose\\generations\\20260811T214550-fd228a5f9e5d\\P2\\performance.json",
+    "pixel_provenance": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M5\\fast_ignore_pose\\generations\\20260811T214550-fd228a5f9e5d\\P2\\p2_pixel_provenance.npz",
+    "seam_overlay": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M5\\fast_ignore_pose\\generations\\20260811T214550-fd228a5f9e5d\\P2\\seam_overlay.png",
+    "selected_as_best": false,
+    "selected_global_gain": 0.0,
+    "selected_vertical_parent": "P0_identity",
+    "state": "P2_generated_parent_retained",
+    "vertical_parent": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M5\\fast_ignore_pose\\generations\\20260811T214550-fd228a5f9e5d\\P2\\selected_vertical_parent.png",
+    "worst_seam_crops": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M5\\fast_ignore_pose\\generations\\20260811T214550-fd228a5f9e5d\\P2\\worst_seam_crops"
+  },
+  "manual_review_required": true,
+  "motion_graph_connected_telemetry": false,
+  "motion_graph_disconnection_is_fatal": false,
+  "observed_pause_expansion_count": 0,
+  "observed_pause_expansion_px": 0.0,
+  "optimizer": {
+    "all_failed": false,
+    "attempt_count": 0,
+    "failures": [],
+    "p0_hash_unchanged": true,
+    "p0_hash_unchanged_after_m4": true,
+    "p0_hash_unchanged_after_m5": true,
+    "p0_parent_preserved": true,
+    "p1_hash_unchanged_after_m5": true,
+    "requested": false
+  },
+  "optimizer_state": "m5_generated_parent_retained",
+  "p0_parent": "P0/P0_completion.json",
+  "panorama_claim": "visual_nonmetric",
+  "performance": {
+    "stage_seconds": {
+      "input_and_preflight": 0.5568261000007624,
+      "motion_measurement": 2.8924307999986922,
+      "p0_render_and_export": 1.1440899000008358,
+      "progress_and_layout": 0.004400400001031812,
+      "trajectory": 1.0900002962443978e-05
+    }
+  },
+  "production_eligible": false,
+  "production_lock_eligible": false,
+  "raw_rgb_adjacent_edge_count": 128,
+  "raw_rgb_motion_edge_count": 380,
+  "raw_rgb_motion_pair_count": 128,
+  "render_pair_count": 84,
+  "render_source_count": 85,
+  "render_state": "base_generated",
+  "schema": "gemini305-video-s13-output-first-report/v1",
+  "source_u_statistics": {
+    "configured_cap_px": 169,
+    "maximum": 847.2669067382812,
+    "maximum_internal_owner_width_px": 24,
+    "minimum": 0.0,
+    "span": 847.2669067382812
+  },
+  "subpixel_motion_edge_count": 0,
+  "trajectory": {
+    "direct_pose_count": 0,
+    "pose_supported": false,
+    "source": "ignore_pose"
+  },
+  "zero_duplicate_edge_count": 29
+}

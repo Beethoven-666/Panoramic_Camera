@@ -1,0 +1,27 @@
+{
+  "acceptance": {
+    "pass": false,
+    "structural_fatal": true
+  },
+  "algorithm_id": "S012_standalone_auto_anchor_dense_central_slit_v1",
+  "commit_sha": "b7a9385c648f6d64936beb4737e89a950e0590c5",
+  "config": {
+    "path": "D:\\central_strip_Panoramic_Camera\\configs\\video_candidates\\S012_standalone_auto_anchor_dense_central_slit_v1.yaml",
+    "sha256": "fe6570c9d0dab5dd4c50d98029856f6c4f509af0b28c4bf52a59df82239bee6d"
+  },
+  "error_type": "S12MotionGraphError",
+  "failed_stage": "anchors_horizontal_schedule",
+  "input": "D:\\central_strip_Panoramic_Camera\\data\\captures\\video\\run_20260806_153033",
+  "lock_eligible": false,
+  "message": "direct anchor edge differs from independent local path by 103.939px, exceeding 2px after node 18",
+  "production_eligible": false,
+  "schema": "gemini305-video-s12-failure/v1",
+  "stage": "a",
+  "structural_fatal": true,
+  "structural_valid": false,
+  "trajectory": {
+    "path": "D:\\central_strip_Panoramic_Camera\\data\\captures\\video\\run_20260806_153033\\orbslam3_trajectory.json",
+    "sha256": "1f0f0bd795e1030fbf1c5c2d916537fc095ab0c4d2ac6447810ac48fd386cb57"
+  },
+  "wall_seconds_before_failure": 10.921121200022753
+}

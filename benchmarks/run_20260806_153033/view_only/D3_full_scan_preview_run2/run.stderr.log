@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "D:\central_strip_Panoramic_Camera\scripts\_temporary_d3_full_scan_preview.py", line 9, in <module>
+    report = run_video_algorithm(
+             ^^^^^^^^^^^^^^^^^^^^
+  File "D:\central_strip_Panoramic_Camera\src\panorama_demo\video_pipeline.py", line 567, in run_video_algorithm
+    published = run_legacy(legacy_args)
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\central_strip_Panoramic_Camera\src\panorama_demo\video_panorama.py", line 967, in run_legacy
+    push = render_calibrated_rgb_pushbroom(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\central_strip_Panoramic_Camera\src\panorama_demo\calibrated_rgb_pushbroom.py", line 11962, in render_calibrated_rgb_pushbroom
+    return _render_calibrated_rgb_pushbroom_fast_hard_owner(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\central_strip_Panoramic_Camera\src\panorama_demo\calibrated_rgb_pushbroom.py", line 11876, in _render_calibrated_rgb_pushbroom_fast_hard_owner
+    raise RuntimeError("full-support measurement lacks an annotated real render source")
+RuntimeError: full-support measurement lacks an annotated real render source

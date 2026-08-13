@@ -1,0 +1,24 @@
+{
+  "candidates": {
+    "S013_output_first_progressive_dense_central_slit_v3": {
+      "config_sha256": "14aff58bd23584a784ccadcb537630833d85df814cddb4c089f450b3f317054c",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry"],
+      "required_output_components": ["s013_p0_owner_only"]
+    },
+    "S013_output_first_progressive_dense_central_slit_m61_v2": {
+      "config_sha256": "237e8b5b71b6fb6b5ef4aa303a67a62070b603288051db50ca74890ca1d53c36",
+      "replaces_output_components": [],
+      "required_evidence_components": ["s013_p2_v4", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v4": {
+      "config_sha256": "1ec20a3d1c3442f7e73f678809f6c3508435588a2ef1a01bebc1c0b1cb091b7d",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    }
+  },
+  "manifest_sha256": "3802ddd198848d3c51f7e17d9b023e516b83d49e03b08fd2bacce17b2cb71724",
+  "schema": "gemini305-video-candidate-manifest/v1"
+}

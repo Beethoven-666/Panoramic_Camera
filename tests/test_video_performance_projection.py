@@ -49,7 +49,7 @@ def _write_measurement_report(output: Path, *, seconds: float, performance_grade
                     "source_commit": "b" * 40,
                     "model_sha256": {"raft": "c" * 64},
                 },
-                "performance": {"post_capture_seconds": seconds},
+                "performance": {"primary_post_capture_seconds": seconds},
                 "grades": {"performance": performance_grade},
             }
         ),

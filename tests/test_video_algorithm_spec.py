@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 import pytest
 import yaml
@@ -23,8 +24,16 @@ def test_candidate_spec_exposes_immutable_identity():
 
     assert spec.role == "candidate"
     assert spec.algorithm_id == "C4_raft_rgbd_layered_mesh"
-    assert spec.config_sha256 == "dfee5aa996a2aab9c05eebdb48e8baf745654c824a9cf0ed51e0f0e7b3dba502"
+    assert spec.config_sha256 == "7cd2c090032270284c41167991c44846f6d44bb44ae93869f4d5df6d76968e3d"
     assert spec.allow_baseline_fallback is False
+    actual_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    actual_dirty = bool(subprocess.run(
+        ["git", "status", "--porcelain=v1"], cwd=ROOT, check=True, capture_output=True, text=True
+    ).stdout.strip())
+    assert spec.source_commit == actual_head
+    assert spec.working_tree_dirty is actual_dirty
 
 
 def test_candidate_self_hash_excludes_only_its_self_referential_field(tmp_path):
@@ -39,6 +48,12 @@ def test_candidate_self_hash_excludes_only_its_self_referential_field(tmp_path):
 
     config["config_sha256"] = canonical_config_sha256(config)
     path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    manifest = yaml.safe_load(
+        (ROOT / "configs" / "video_candidates" / "candidate_manifest.json").read_text(encoding="utf-8")
+    )
+    (tmp_path / "candidate_manifest.json").write_text(
+        __import__("json").dumps(manifest), encoding="utf-8"
+    )
     assert build_algorithm_spec(path).config_sha256 == config["config_sha256"]
     assert config["config_schema"] == VIDEO_CANDIDATE_CONFIG_SCHEMA
 

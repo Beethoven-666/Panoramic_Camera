@@ -1,0 +1,11 @@
+{
+  "algorithm_id": "S012_standalone_auto_anchor_dense_central_slit_v1",
+  "error_type": "RuntimeError",
+  "failure_bundle": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260807_140140\\S012_standalone_auto_anchor_dense_central_slit_v1_stage_a.failure_bundle",
+  "input": "D:\\central_strip_Panoramic_Camera\\data\\captures\\video\\run_20260807_140140",
+  "message": "S1.2 structural fatal: longest valid scan segment is insufficient",
+  "schema": "gemini305-video-s12-failure/v1",
+  "stage": "a",
+  "structural_fatal": true,
+  "trajectory": "D:\\central_strip_Panoramic_Camera\\data\\captures\\video\\run_20260807_140140\\orbslam3_trajectory.json"
+}

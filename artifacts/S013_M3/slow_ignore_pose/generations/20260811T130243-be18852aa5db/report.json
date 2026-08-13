@@ -1,0 +1,35 @@
+{
+  "diagnostic_only": true,
+  "direct_local_delta_is_fatal": false,
+  "fallback_progress_edge_count": 0,
+  "generation_id": "20260811T130243-be18852aa5db",
+  "manual_review_required": true,
+  "motion_graph_connected_telemetry": false,
+  "motion_graph_disconnection_is_fatal": false,
+  "observed_pause_expansion_count": 0,
+  "observed_pause_expansion_px": 0.0,
+  "optimizer_state": "m3_complete_m4_not_started",
+  "p0_parent": "P0/P0_completion.json",
+  "pair_count": 848,
+  "panorama_claim": "visual_nonmetric",
+  "performance": {
+    "stage_seconds": {
+      "input_and_preflight": 4.607411899999988,
+      "motion_measurement": 19.11306450000029,
+      "p0_render_and_export": 4.12399860000005,
+      "progress_and_layout": 0.04186630000003788,
+      "trajectory": 1.1999999969702912e-05
+    }
+  },
+  "production_eligible": false,
+  "production_lock_eligible": false,
+  "render_state": "base_generated",
+  "schema": "gemini305-video-s13-output-first-report/v1",
+  "subpixel_motion_edge_count": 0,
+  "trajectory": {
+    "direct_pose_count": 0,
+    "pose_supported": false,
+    "source": "ignore_pose"
+  },
+  "zero_duplicate_edge_count": 0
+}

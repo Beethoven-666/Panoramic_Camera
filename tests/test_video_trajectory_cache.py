@@ -7,7 +7,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from panorama_demo.video_panorama import _cached_trajectory
+from panorama_demo.video_panorama import (
+    _cached_trajectory,
+    _contained_online_tracking_indices,
+)
 from panorama_demo.video_trajectory_cache import (
     TRAJECTORY_CACHE_SCHEMA,
     freeze_verified_trajectory,
@@ -126,3 +129,74 @@ def test_cached_experiment_trajectory_rejects_changed_frames_csv(tmp_path: Path)
             input_sha256=session_input_sha256(session),
             require_capture_provenance=False,
         )
+
+
+def test_progress_slice_reuses_contained_online_anchors_without_rephasing(tmp_path: Path) -> None:
+    """A slice beginning between 8 FPS anchors must retain cache-identical IDs."""
+
+    session = tmp_path / "session"
+    session.mkdir()
+    for name, value in {
+        "manifest.json": "manifest\n",
+        "calibration.json": "calibration\n",
+        "frames.csv": "frames\n",
+    }.items():
+        (session / name).write_text(value, encoding="utf-8")
+
+    frames = []
+    for frame_id in range(101, 109):
+        color = session / f"color_{frame_id}.png"
+        depth = session / f"depth_{frame_id}.png"
+        color.write_bytes(f"color-{frame_id}".encode())
+        depth.write_bytes(f"depth-{frame_id}".encode())
+        frames.append(
+            SimpleNamespace(
+                frame_id=frame_id, color_path=color, aligned_depth_path=depth
+            )
+        )
+
+    # The full capture's certified chain was [100, 103, 106, 109].  The
+    # restricted real-source interval starts at 101 (not an anchor), so a
+    # fresh target-FPS selection would phase differently.  It must instead
+    # select only the contained real cached anchors [103, 106].
+    indices = _contained_online_tracking_indices(tuple(frames), (100, 103, 106, 109))
+    assert indices == (2, 5)
+    selected = tuple(frames[index] for index in indices)
+
+    def digest(path: Path) -> str:
+        import hashlib
+
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    cache = tmp_path / "online_orbslam3_trajectory.json"
+    cache.write_text(
+        json.dumps(
+            {
+                "schema": "gemini305-online-orbslam3-trajectory/v1",
+                "capture_origin": "writer_committed_files",
+                "input_sha256": session_input_sha256(session),
+                "source_file_sha256": [
+                    {
+                        "frame_id": frame.frame_id,
+                        "color_sha256": digest(frame.color_path),
+                        "aligned_depth_sha256": digest(frame.aligned_depth_path),
+                    }
+                    for frame in selected
+                ],
+                "orbslam3": {
+                    "tracked_frame_ids": [103, 106],
+                    "camera_to_world": [np.eye(4).tolist(), np.eye(4).tolist()],
+                    "attempts": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    poses, ids, _ = _cached_trajectory(
+        cache,
+        frames=selected,
+        input_sha256=session_input_sha256(session),
+        require_capture_provenance=True,
+    )
+    assert ids == (103, 106)
+    assert set(poses) == {103, 106}

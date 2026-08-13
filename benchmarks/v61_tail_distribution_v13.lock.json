@@ -1,0 +1,20 @@
+{
+  "schema": "video-v61-tail-distribution-lock/v1",
+  "purpose": "Phase 1.3 tail-distribution candidate evidence; never modifies Phase 1.2 locks or production.",
+  "candidate": {
+    "algorithm_id": "V61_tail_guarded_full_panorama",
+    "config_path": "configs/video_candidates/V61_tail_guarded_full_panorama.yaml",
+    "config_sha256": "97ff82bbecd3056d2a6c1a555cc666de26cbca2a214455250d8263b4a87efad5",
+    "candidate_manifest_sha256": "14f1e3a99a32a3e76d6f8f9f1fe296b7e0b2b272431214af42bbb517adf7c0f4"
+  },
+  "geometry_gate": {
+    "minimum_reliable_pixels": 128,
+    "fb_p95_max_px": 1.25,
+    "edge_p95_max_px": 0.75,
+    "minimum_matched_edge_fraction": 0.85,
+    "tail_threshold_px": 1.25,
+    "absolute_maximum_is_pair_veto": false
+  },
+  "frozen_sessions": ["run_20260807_140140", "run_20260804_162340", "run_20260806_153033"],
+  "status": "implementation_lock_only; full three-session candidate run pending"
+}

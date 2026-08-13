@@ -1,0 +1,15 @@
+{
+  "edge_count": 371,
+  "overlapping_reason_counts": {
+    "excessive_parallax_clusters+insufficient_effective_inlier_ratio_detected": 67,
+    "excessive_parallax_clusters+insufficient_model_inlier_ratio_retained": 143,
+    "insufficient_effective_inlier_ratio_detected+insufficient_model_inlier_ratio_retained": 99
+  },
+  "reason_counts": {
+    "excessive_parallax_clusters": 159,
+    "insufficient_effective_inlier_ratio_detected": 99,
+    "insufficient_model_inlier_ratio_retained": 210,
+    "pose_direction_disagreement": 3
+  },
+  "rejected_edge_count": 229
+}

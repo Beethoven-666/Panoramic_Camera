@@ -353,10 +353,64 @@ def fit_cuda_local_mesh(
     return CudaMeshResult(mesh if passed else zero, accepted if passed else no_mesh.accepted_mask, audit)
 
 
+def fit_cuda_coarse_to_fine_local_mesh(
+    torch: Any,
+    *,
+    flow_xy: Any,
+    training_mask: Any,
+    held_out_mask: Any,
+    safe_mask: Any,
+    protected_mask: Any,
+    **kwargs: Any,
+) -> CudaMeshResult:
+    """Fit a C9 two-scale, still bounded positive-Jacobian local mesh.
+
+    The coarse 9x9 train-only field is a prior, while the existing 5x5 fitter
+    performs the final update and all final-grid Jacobian/scale audits.  No
+    held-out sample enters either estimate; the existing fitter is still the
+    sole authority that accepts a final inverse-sampling mesh.
+    """
+
+    if getattr(flow_xy, "ndim", None) != 3 or int(flow_xy.shape[-1]) != 2:
+        raise CudaMeshError("coarse-to-fine mesh needs HxWx2 flow")
+    train = training_mask.bool() & safe_mask.bool() & ~protected_mask.bool()
+    weights = train.to(dtype=torch.float32)
+    numerator = torch.nn.functional.avg_pool2d(
+        (flow_xy.to(dtype=torch.float32) * weights[..., None]).permute(2, 0, 1)[None],
+        9, stride=1, padding=4,
+    )[0].permute(1, 2, 0)
+    denominator = torch.nn.functional.avg_pool2d(weights[None, None], 9, stride=1, padding=4)[0, 0]
+    coarse = numerator / denominator.clamp_min(1.0e-6)[..., None]
+    # At locations with no training neighbourhood the unmodified observation
+    # allows the final fitter's support checks to fail closed normally.
+    coarse = torch.where((denominator > 0.0)[..., None], coarse, flow_xy.to(dtype=torch.float32))
+    # Coarse plus local residual update, represented as a single final flow
+    # field so the downstream maximum displacement/Jacobian/scale checks are
+    # applied to exactly the grid that samples final output pixels.
+    final_flow = 0.5 * coarse + 0.5 * flow_xy.to(dtype=torch.float32)
+    result = fit_cuda_local_mesh(
+        torch, flow_xy=final_flow, training_mask=training_mask,
+        held_out_mask=held_out_mask, safe_mask=safe_mask,
+        protected_mask=protected_mask, **kwargs,
+    )
+    return CudaMeshResult(
+        result.offset_xy,
+        result.accepted_mask,
+        {
+            **result.audit,
+            "schema": "gemini305-video-cuda-coarse-to-fine-local-mesh/v1",
+            "coarse_to_fine_levels": [9, 5],
+            "coarse_prior_training_pixel_count": int(train.sum().item()),
+            "final_grid_constraints_audited": True,
+        },
+    )
+
+
 __all__ = [
     "CudaDisCorrespondence",
     "CudaMeshError",
     "CudaMeshResult",
     "estimate_cuda_dis_rgb_correspondence",
     "fit_cuda_local_mesh",
+    "fit_cuda_coarse_to_fine_local_mesh",
 ]

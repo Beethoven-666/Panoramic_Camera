@@ -11,10 +11,16 @@ from typing import Any
 import numpy as np
 
 from .config import load_config
-from .video_dataset_lock import APPROVED_RUN_NAME, verify_dataset_lock, write_dataset_lock
+from .video_dataset_lock import (
+    require_candidate_role_for_diagnostic_session,
+    write_or_verify_v6_tracking_gate_dataset_lock,
+    write_or_verify_experiment_dataset_lock,
+)
 from .video_observability import ObservabilitySpec
+from .video_algorithm import build_algorithm_spec, load_algorithm_config
 from .video_pipeline import run_video_algorithm
-from .video_split import SPLIT_DEFINITION
+from .video_panorama import run_direct_orb_tracking_gate
+from .video_split import SPLIT_DEFINITION, write_or_verify_split
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -28,11 +34,52 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--maximum-post-seconds", type=float)
     parser.add_argument("--defer-3d", action="store_true")
     parser.add_argument(
+        "--reuse-online-trajectory",
+        action="store_true",
+        help=(
+            "Candidate-only: reuse the capture-bound, strictly verified online ORB "
+            "trajectory instead of rerunning it."
+        ),
+    )
+    parser.add_argument(
         "--trajectory-cache",
         type=Path,
         help="Verified real ORB trajectory cache produced by g305-video-freeze-trajectory.",
     )
+    parser.add_argument(
+        "--run-offline-orb",
+        action="store_true",
+        help="S1.3 candidate only: explicitly run a new complete offline ORB trajectory.",
+    )
+    parser.add_argument(
+        "--ignore-pose",
+        action="store_true",
+        help="S1.3 candidate only: do not read any trajectory and use RGB evidence alone.",
+    )
+    parser.add_argument(
+        "--resume-generation",
+        type=Path,
+        help="S1.3 M6 only: append P3 to an existing hash-sealed P2 generation.",
+    )
+    parser.add_argument(
+        "--simulate-optimizer-all-fail",
+        action="store_true",
+        help="S1.3 test hook: fail all post-P0 optimizers after the immutable base seal.",
+    )
     parser.add_argument("--config", type=Path)
+    parser.add_argument(
+        "--tracking-gate-only",
+        action="store_true",
+        help="Run v6 T0/T1/T2 direct-ORB tracking only; do not render a panorama.",
+    )
+    parser.add_argument(
+        "--tracking-fps-candidates",
+        type=float,
+        nargs="+",
+        default=(8.0, 12.0, 16.0),
+        metavar="FPS",
+        help="Increasing direct-ORB tracking rates for --tracking-gate-only (default: 8 12 16).",
+    )
     parser.add_argument(
         "--progress-range",
         metavar=("START", "END"),
@@ -74,19 +121,66 @@ def _seed() -> dict[str, object]:
 
 
 def _benchmark_root(session: Path) -> Path:
-    return Path("benchmarks") / APPROVED_RUN_NAME
+    """Keep experiment evidence isolated under its immutable source session."""
+
+    return Path("benchmarks") / session.name
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    tracking_gate_only = bool(getattr(args, "tracking_gate_only", False))
     if args.algorithm == "candidate" and args.candidate_config is None:
         raise ValueError("candidate requires --candidate-config")
     if args.algorithm == "baseline" and args.candidate_config is not None:
         raise ValueError("baseline does not accept --candidate-config")
+    run_offline_orb = bool(getattr(args, "run_offline_orb", False))
+    ignore_pose = bool(getattr(args, "ignore_pose", False))
+    simulate_optimizer_all_fail = bool(getattr(args, "simulate_optimizer_all_fail", False))
+    s13_spec = None
+    if args.algorithm == "candidate" and args.candidate_config is not None:
+        from .video_s13_contract import (
+            S13_ALGORITHM_ID,
+            S13_FORMAL_M6_ALGORITHM_ID,
+            claims_s13_document,
+            is_s13_identity,
+            load_s13_config,
+        )
+
+        candidate_path = Path(args.candidate_config).expanduser().resolve()
+        try:
+            candidate_text = candidate_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            candidate_text = ""
+        try:
+            candidate_document = load_algorithm_config(candidate_path)
+        except (OSError, UnicodeError, ValueError):
+            candidate_document = {}
+        claims_s13 = claims_s13_document(candidate_document) or any(
+            marker in candidate_text
+            for marker in (
+                S13_ALGORITHM_ID,
+                S13_FORMAL_M6_ALGORITHM_ID,
+                "s013_output_first_progressive_dense_central_slit:",
+            )
+        )
+        if claims_s13:
+            # The sibling manifest, self hashes, and exact identity are all
+            # verified before any shared lock, facade, renderer, or publisher.
+            s13_spec = build_algorithm_spec(args.candidate_config, expected_role="candidate")
+            load_s13_config(args.candidate_config)
+            if not is_s13_identity(
+                algorithm_id=s13_spec.algorithm_id,
+                implementation_id=s13_spec.implementation_id,
+                role=s13_spec.role,
+            ):
+                raise ValueError("S1.3 claimed identity is incomplete")
+    reuse_online_trajectory = bool(getattr(args, "reuse_online_trajectory", False))
+    if reuse_online_trajectory and args.algorithm != "candidate":
+        raise ValueError("--reuse-online-trajectory is candidate-only")
     progress_range = getattr(args, "progress_range", None)
     split = getattr(args, "split", None)
     if (progress_range is None) != (split is None):
         raise ValueError("--progress-range and --split must be provided together")
-    if args.algorithm == "candidate" and progress_range is None:
+    if args.algorithm == "candidate" and progress_range is None and s13_spec is None:
         raise ValueError(
             "candidate experiments require an immutable non-holdout --split and --progress-range"
         )
@@ -97,20 +191,71 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError(
                 "--progress-range must exactly equal one immutable interval of the named split"
             )
+    if tracking_gate_only:
+        if args.algorithm != "baseline" or args.candidate_config is not None:
+            raise ValueError("--tracking-gate-only requires --algorithm baseline without --candidate-config")
+        if reuse_online_trajectory or getattr(args, "trajectory_cache", None) is not None:
+            raise ValueError("--tracking-gate-only always reruns direct ORB and cannot reuse a trajectory")
+        if progress_range is not None:
+            raise ValueError("--tracking-gate-only requires the complete real scan")
+    if s13_spec is not None:
+        from .video_s13_experiment import run_s13_experiment
+
+        report = run_s13_experiment(
+            input_path=args.input,
+            output=args.output,
+            candidate_config=args.candidate_config,
+            algorithm_spec=s13_spec,
+            trajectory_cache=getattr(args, "trajectory_cache", None),
+            reuse_online_trajectory=reuse_online_trajectory,
+            run_offline_orb=run_offline_orb,
+            ignore_pose=ignore_pose,
+            config_path=getattr(args, "config", None),
+            simulate_optimizer_all_fail=simulate_optimizer_all_fail,
+            resume_generation=getattr(args, "resume_generation", None),
+        )
+        args.output.mkdir(parents=True, exist_ok=True)
+        (args.output / "experiment_environment.json").write_text(
+            json.dumps(_seed(), indent=2, sort_keys=True), encoding="utf-8"
+        )
+        return report
+    if run_offline_orb or ignore_pose or simulate_optimizer_all_fail:
+        raise ValueError("S1.3-only flags cannot be used by legacy baseline/candidates")
     observe = ObservabilitySpec.from_values(
         report_level=args.report_level, artifact_level=args.artifact_level
     )
     root = args.input.expanduser().resolve()
     root = root if root.is_dir() else root.parent
     benchmark_root = _benchmark_root(root)
+    if tracking_gate_only:
+        write_or_verify_v6_tracking_gate_dataset_lock(root, benchmark_root)
+        baseline_document = load_algorithm_config(
+            Path(__file__).resolve().parents[2]
+            / "configs"
+            / "video_algorithms"
+            / "baseline_legacy_fast_b07b561.yaml"
+        )
+        baseline_settings = baseline_document.get("legacy_video_panorama")
+        if not isinstance(baseline_settings, dict):
+            raise ValueError("Frozen baseline lacks legacy_video_panorama settings")
+        fast_orb = baseline_settings.get("fast_orbslam3_rgbd")
+        if not isinstance(fast_orb, dict):
+            raise ValueError("Frozen baseline lacks fast_orbslam3_rgbd settings")
+        return run_direct_orb_tracking_gate(
+            input_path=args.input,
+            output=args.output,
+            fps_candidates=tuple(float(value) for value in args.tracking_fps_candidates),
+            config_path=args.config,
+            fast_orbslam3_config=fast_orb,
+        )
+    require_candidate_role_for_diagnostic_session(root, args.algorithm)
+    # The split is frozen independently for every capture.  In particular,
+    # the diagnostic capture cannot inherit or mutate the old run's ledger.
+    write_or_verify_split(benchmark_root / "split_definition.json")
     config = load_config(args.config)
     settings = dict(dict(config.get("stitch", {})).get("video_panorama", {}))
     if bool(settings.get("dataset_lock_required_for_experiments", True)):
-        lock_path = benchmark_root / "dataset_lock.json"
-        if lock_path.is_file():
-            verify_dataset_lock(root, lock_path)
-        else:
-            write_dataset_lock(root, benchmark_root)
+        write_or_verify_experiment_dataset_lock(root, benchmark_root, role=args.algorithm)
     seed_state = _seed()
     report = run_video_algorithm(
         input_path=args.input,
@@ -121,6 +266,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         observability=observe,
         maximum_post_seconds=args.maximum_post_seconds,
         defer_3d=args.defer_3d,
+        reuse_online_trajectory=reuse_online_trajectory,
         trajectory_cache=getattr(args, "trajectory_cache", None),
         scan_progress_interval=(
             (float(progress_range[0]), float(progress_range[1]))
@@ -143,4 +289,14 @@ def main() -> None:
         report = run(args)
     except Exception as exc:
         raise SystemExit(f"ERROR: {exc}") from exc
-    print(f"Video experiment: {report['panorama']}")
+    panorama = report.get("panorama")
+    if isinstance(panorama, str):
+        print(f"Video experiment: {panorama}")
+        return
+    if report.get("schema") == "gemini305-video-direct-orb-tracking-gate/v1":
+        print(
+            "Direct ORB tracking gate: "
+            f"{report.get('selected_tracking_candidate_id') or 'no_survivor'}"
+        )
+        return
+    raise SystemExit("ERROR: experiment returned neither a panorama nor a tracking-gate report")

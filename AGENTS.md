@@ -46,6 +46,14 @@
 视频路径始终使用真实源帧和真实 ORB-SLAM3 `camera_to_world` pose，所有渲染源相邻边仍须
 经 Open3D 审计；不得插值、伪造或以二维运动替代缺失 pose。
 
+唯一的研发期例外是候选实验的 audited dense real-frame pose prior：它只能为一个已落盘的
+真实 RGB-D 中间帧提供由两端直接 ORB 锚点严格 bracketed 的 SE(3) prior；两端锚点各不得
+超过 150 ms，且必须同时通过 dense image forward/backward P95 和 RGB-D residual P95
+审计（均不大于 1.5 px）。该 prior 必须标记
+`direct_orb_anchor`、`interpolated_se3_prior` 或 `refined_dense_prior`，禁止外推；
+refinement 只能在固定界限内且不得反写 ORB 轨迹。它不属于 `g305-video-panorama`、
+production lock、像素 owner 或正式交付，未通过审计即不可用于候选。
+
 - 只接受 `continuous_rgbd_video_auto` 与
   `continuous_rgbd_video_fixed_exposure`，并接受旧的 v1 auto 会话用于 C 级兼容。
   v2 会话还必须有 `product_eligibility.photo_panorama=false` 和

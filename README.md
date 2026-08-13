@@ -249,6 +249,44 @@ silently labelled as an SLA success.
 `video_tsdf_mesh_viewer.html` 及 `video_3d_delivery.json`；3-D 失败只写
 `video_3d_failure.json`，不会撤销已经发布的 2-D 交付。
 
+### 2.4 隔离的 S01 纵向对齐实验
+
+`g305-video-s1-experiment` 是开发专用的 output-first 实验入口，不修改
+`g305-video-panorama`、production lock 或正式交付。它只使用低分辨率 RGB 运动选择真实
+source，生成动态中央 owner 的 S0，并在相邻接缝局部估计一维 `Δy(y)` 生成 S1；任一窗口或
+pair 不可观测时仅把相应修正降为零。该路线不使用 v6/v6.1 renderer、GraphCut、MultiBand、
+二维 mesh、DIS/RAFT 形变、RGB-D 补纹理或 TSDF。
+
+```powershell
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-s1-experiment.exe' SESSION `
+  --config '.\configs\video_candidates\S01_output_first_vertical_alignment_v1.yaml' `
+  --output BENCHMARK_OUTPUT
+```
+
+未重新安装 editable 包时，也可从仓库运行
+`D:\Panoramic_Camera\.conda\python.exe -m panorama_demo.video_s1_experiment ...`。
+输出同时包含 S0/S1 owner-only 与 1 px 过渡图、owner/valid map、逐 pair 候选/曲线/gain、
+source/overlap CSV 和分阶段性能报告。画质指标仅用于比较，不会阻止主图生成。
+
+### 2.5 隔离的 S1.1 对象安全直线交接实验
+
+S1.1 继续使用同一开发入口，但采用 v2 配置并强制提供经过哈希锁定的 S01 基线。它逐项继承
+S01 的真实 source、初始布局、首尾 full-FOV 和画布尺寸；只有可观测且 midpoint 穿过对象
+保护区、允许范围内又没有安全直线的 pair 才能局部补选被两端包围的真实中间帧。最终 owner
+始终是无过渡、无 foreign fill 的单调直线分区，纵向修正仅在窄且不重叠的 support 内以 pair
+原子事务提交。该实验仍为 `diagnostic_only`，不会修改生产入口或 production lock。
+
+```powershell
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-s1-experiment.exe' SESSION `
+  --config '.\configs\video_candidates\S011_object_safe_straight_handoff_v1.yaml' `
+  --baseline FROZEN_S01_OUTPUT `
+  --output BENCHMARK_OUTPUT
+```
+
+v2 固定输出 nominal midpoint、handoff-only 和 final 三阶段主图，并为每一阶段保存几何 owner、
+声明 owner 有效性、最终真实帧 owner 和最终 valid 四个 provenance 数组。`minimal` 模式保留主图、
+provenance、报告、性能和最差 crop；`audit` 模式另外保存完整 pair 证据。
+
 ### 3. 验证 CUDA Open3D 与 ORB-SLAM3
 
 正式并行位姿前端要求 Open3D 相邻边实际使用 `open3d_tensor_cuda_rgbd`。先执行：
@@ -440,7 +478,7 @@ ORB-SLAM3 未安装、进程失败或未跟踪全部正式帧时，程序失败�
   --output 'D:\central_strip_Panoramic_Camera\outputs\orbslam3_trajectory.json'
 ```
 
-输出 schema 为 `gemini305-orbslam3-trajectory/v1`；该命令不读取历史 pose sidecar，也不以 Open3D 替代缺失 ORB-SLAM3 pose。
+输出 schema 为 `gemini305-orbslam3-trajectory/v2`，每条记录显式包含时间戳、`pose_status`、`pose_kind=direct_orbslam3`、统一 `pose_origin`、tracking state 和 `camera_to_world`。命令同时保存 stdout、stderr 与 trajectory audit（输入/跟踪数量、未跟踪帧、trajectory/config/log SHA-256）；它不读取历史 pose sidecar，也不以 Open3D 替代缺失 ORB-SLAM3 pose。
 
 ## Unified calibrated central-strip renderer
 
@@ -793,3 +831,103 @@ manual_review_required=true
 ## 开发说明
 
 开发代理约束见 [AGENTS.md](AGENTS.md)，SDK/API 说明见 [docs/SDK.md](docs/SDK.md)，版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+## S1.2 standalone Stage A experiment
+
+`g305-video-s12-experiment` is an isolated, diagnostic-only Stage A path. It
+requires an explicit `gemini305-orbslam3-trajectory/v2` file, never reads S1
+artifacts, never interpolates poses, and rejects Stage B until a separately
+reviewed Stage A bundle exists. The frozen candidate configuration is
+`configs/video_candidates/S012_standalone_auto_anchor_dense_central_slit_v1.yaml`.
+
+Stage A records local and direct-long image-motion evidence separately. A
+successful audit bundle is committed only by the final hash-bound
+`S012_stage_a_completion.json`; a structural failure is preserved in a sibling
+`.failure_bundle` with candidate, endpoint, motion-graph, configuration, and
+trajectory provenance. Neither outcome creates a production lock.
+
+Motion-edge reliability uses the frozen `split_v1` gate for every adjacent,
+skip, and direct-long edge: at least 16 model inliers, forward/backward
+retention at least 0.45, model purity among retained tracks at least 0.45, and
+effective model support among all detected features at least 0.25. The split
+keeps the original 0.45 evidence requirement on both tracking retention and
+model purity while exposing feature loss separately; it does not bypass the
+0.45 secondary-motion/parallax rejection. The legacy
+`minimum_inlier_count=16` and `minimum_inlier_ratio=0.45` keys are retained only
+as fixed compatibility/audit aliases and are not additional reliability gates.
+
+## S1.3 output-first M0–M6 diagnostic candidate
+
+`S013_output_first_progressive_dense_central_slit_v4` is the canonical S013
+M0–M6 route selected through `g305-video-experiment --algorithm candidate`; its
+implementation identity is `s013_output_first_progressive_dense_central_slit_m61_v2`.
+Here, canonical/formal means the single supported S013 diagnostic chain with
+hash-bound parent, seal, provenance, and pointer contracts. It remains
+`diagnostic_only=true`, `production_eligible=false`, and
+`production_lock_eligible=false`: it neither modifies the public video renderer
+nor reads or writes a production lock or delivery. Its config and hash-bound
+sibling manifest live under `configs/video_candidates/s013/`. The v3 route is
+retained only for compatibility and historical regression evidence and cannot
+authorize a new M7 run.
+
+Exactly one trajectory policy must be explicit: `--trajectory-cache`,
+`--reuse-online-trajectory`, `--run-offline-orb`, or `--ignore-pose`. Missing
+or partial direct pose never blocks an RGB-motion P0 and never becomes an
+invented pose. P0 is a fixed-midpoint hard-owner panorama sampled once from
+each contributing real RGB source; it is hash-sealed before `current_base.json`
+is atomically replaced. M3 adds coherent motion lineage and dense scheduling.
+M4 appends a sealed vertical P1 candidate without publishing it as the best
+stage. M5 first compares P0 and rendered gain/local-residual variants, then
+estimates C0–C4 pair-local geometry and S0–S2 ordered monotone seams. A moved
+seam forces geometry re-estimation from the immutable P0 grid in its final
+corridor; geometry and seam are accepted or rolled back as one transaction.
+The vertical parent requires a measurable sequence-mean improvement, permits
+at most 10% non-catastrophic protected-component outliers and 2% non-catastrophic
+pair-total outliers, and retains hard catastrophic guards for both. M5 compares
+before/after geometry on the same selected seam owner topology, then separately
+compares each moved owner seam against its simpler straight predecessor on both
+the base and candidate paths. Both comparisons include held-out long
+horizontal-edge continuity. Estimated C2–C4 models above the absolute held-out
+P95 bound are rejected. A curved DP seam requires an evaluable shifted-straight
+comparator, at least a 2% cost margin, and independent symmetric/long-structure
+evidence at preliminary geometry, final geometry, and the full rendered output;
+otherwise it falls back to shifted-straight or the immutable midpoint.
+P2 is remapped once per real contributor from raw RGB and sealed with replay
+maps for the selected geometry and seam. The canonical chain creates native
+`gemini305-video-s13-p2-completion/v4`, including the frozen M6 evidence and
+threshold lineage, then runs the former M6.1 implementation as M6 to produce
+`gemini305-video-s13-p3-visual-completion/v2`. M6 never re-estimates M4/M5,
+trajectory, geometry, or seam state. It jointly solves bounded linear-light
+Q0–Q3 source photometric candidates; Q4/low-frequency-field solving is disabled.
+Only B0 owner-only or protected B1 adjacent-source feather with a total width of
+2 px is legal; B2–B4, 1 px feather, and MultiBand are forbidden in this path.
+An independent P3 hard audit controls sealing and `current_latest=P3`;
+diagnostic visual quality has no pointer authority. `current_reviewed` remains
+explicit and `current_preview` remains deprecated.
+
+The existing four-branch M6.1 evidence is structurally hard-audit clean but
+visually blocked: the original `blocked_report.json` remains unchanged with
+`stage_exit=blocked`, `m7_handoff_eligible=false`, fast ghost regressions, slow
+unresolved results, and the frozen proxy/full-tail calibration mismatch. The
+user has separately accepted the sealed P3 parents for a restricted manual
+forward. That decision is recorded as a SHA-bound
+`completed_manual_forward` authorization; it does not relabel the automatic
+result as `completed_target`.
+
+M7 consumes only the v2 handoff bound to that authorization and to every P2/P3
+completion, result, provenance, hard-audit, quality, Q, threshold, and source-set
+hash. Components may be only isolated, non-adjacent geometry/seam/owner/protected
+residuals. Systemic photometric, brightness/chroma/white-balance, adjacent
+multi-seam, Q4/low-frequency-field, threshold/metric-calibration, source-set,
+and frame-insertion requests remain out of scope. Core evaluation is fixed to
+R0 keep-P3, R1 B1-2px-to-B0, R2 seam downgrade with P0 geometry re-estimation,
+and R3 geometry downgrade with seam re-evaluation. GraphCut, depth-risk, mesh,
+1 px or expanded feather, MultiBand, cross-pair repair, and every Optional are
+disabled. Only a strict pixel-changing winner may seal P4 and advance
+`current_latest`; all-R0/no-winner runs retain P3 and proceed to M8.
+
+An adjacent RGB motion below `0.25 px` contributes zero layout progress
+(`zero_duplicate`) only when supported grid LK and phase correlation agree on
+the pause. Coherent step-2/4 evidence preserves a genuinely subpixel scan, and
+only a missing or low-confidence observation may borrow a fallback progress
+estimate. This prevents a stationary lead-in or tail from widening one
+physical object into repeated central slits.

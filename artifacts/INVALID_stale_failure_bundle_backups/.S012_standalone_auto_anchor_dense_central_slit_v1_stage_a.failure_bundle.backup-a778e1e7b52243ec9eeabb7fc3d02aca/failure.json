@@ -1,0 +1,27 @@
+{
+  "acceptance": {
+    "pass": false,
+    "structural_fatal": true
+  },
+  "algorithm_id": "S012_standalone_auto_anchor_dense_central_slit_v1",
+  "commit_sha": "b7a9385c648f6d64936beb4737e89a950e0590c5",
+  "config": {
+    "path": "D:\\central_strip_Panoramic_Camera\\configs\\video_candidates\\S012_standalone_auto_anchor_dense_central_slit_v1.yaml",
+    "sha256": "857473aacf1a857df3612dfe3c97606db448d99437d4882c164fb0920cc72794"
+  },
+  "error_type": "S12MotionGraphError",
+  "failed_stage": "scan_and_motion_graph",
+  "input": "D:\\central_strip_Panoramic_Camera\\data\\captures\\video\\run_20260807_140140",
+  "lock_eligible": false,
+  "message": "reliable direct motion graph is disconnected: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97]",
+  "production_eligible": false,
+  "schema": "gemini305-video-s12-failure/v1",
+  "stage": "a",
+  "structural_fatal": true,
+  "structural_valid": false,
+  "trajectory": {
+    "path": "D:\\central_strip_Panoramic_Camera\\data\\captures\\video\\run_20260807_140140\\orbslam3_trajectory.json",
+    "sha256": "19566989ab091fd1b710f0237f4b0d1689bbf374e3dcb24da60811a2af7b4961"
+  },
+  "wall_seconds_before_failure": 2.6902738999924622
+}

@@ -1,0 +1,231 @@
+{
+  "all_hard_audits_passed": true,
+  "all_reproducible": true,
+  "branches": [
+    {
+      "audit_remap": 0,
+      "blend_model_counts": {
+        "B0_owner_only": 25,
+        "B1_narrow_feather_2px": 59
+      },
+      "branch": "fast_direct",
+      "effective_config_sha256": "02cd8323e34160d40f8faa33a10908e1941cc83340773093fac71dd558351b94",
+      "effective_manual_review_status": null,
+      "forbidden_invocations": {
+        "b2_b3_b4": 0,
+        "post_render_reselection": 0,
+        "q4_nonzero_solver": 0,
+        "synthetic_source": 0
+      },
+      "formal_remap": 85,
+      "hard_audit_passed": true,
+      "p2_canonical_regression": {
+        "p2_canonical_image_sha256": "628bdd367e4a74aa1f0ffad4257f6a9464b4067b467fe325dd98e65c080fd936",
+        "p2_completion_sha256": "a6a50e324bf97ee676b6f78ff54e52637ad822e6430e85fdd4bb8271d06997e8",
+        "passed": true
+      },
+      "protected_blend_count": 0,
+      "q_component_count": 3,
+      "q_model_counts": {
+        "Q0_identity": 86
+      },
+      "quality_metrics": {
+        "block_p95": null,
+        "owner_plateau": null,
+        "slow_ignore_pair_21": null,
+        "visible_seam_count": null,
+        "wide_safe_delta_e00_median": null,
+        "wide_safe_delta_e00_p95": null
+      },
+      "quality_state": null,
+      "reproducible": true,
+      "resources": {
+        "audit_peak_process_rss_bytes": null,
+        "elapsed_seconds": 1.7676839000050677,
+        "maximum_post_seconds_soft_sla": null,
+        "maximum_resident_source_rois": 1,
+        "peak_live_array_bytes": 635040,
+        "pre_audit_peak_process_rss_bytes": null,
+        "total_seconds": null,
+        "whole_invocation_peak_process_rss_bytes": null
+      }
+    },
+    {
+      "audit_remap": 0,
+      "blend_model_counts": {
+        "B0_owner_only": 23,
+        "B1_narrow_feather_2px": 61
+      },
+      "branch": "fast_ignore_pose",
+      "effective_config_sha256": "02cd8323e34160d40f8faa33a10908e1941cc83340773093fac71dd558351b94",
+      "effective_manual_review_status": null,
+      "forbidden_invocations": {
+        "b2_b3_b4": 0,
+        "post_render_reselection": 0,
+        "q4_nonzero_solver": 0,
+        "synthetic_source": 0
+      },
+      "formal_remap": 85,
+      "hard_audit_passed": true,
+      "p2_canonical_regression": {
+        "p2_canonical_image_sha256": "16f5bec214209418d80f7f413cc4d691fd0dc2dae45923ee64f4f6fca8fba3ed",
+        "p2_completion_sha256": "2021848b44bd68471d126b730c2b4676c088008b8a17dd3b07ca9c55f9132fea",
+        "passed": true
+      },
+      "protected_blend_count": 0,
+      "q_component_count": 1,
+      "q_model_counts": {
+        "Q0_identity": 86
+      },
+      "quality_metrics": {
+        "block_p95": null,
+        "owner_plateau": null,
+        "slow_ignore_pair_21": null,
+        "visible_seam_count": null,
+        "wide_safe_delta_e00_median": null,
+        "wide_safe_delta_e00_p95": null
+      },
+      "quality_state": null,
+      "reproducible": true,
+      "resources": {
+        "audit_peak_process_rss_bytes": null,
+        "elapsed_seconds": 1.5533697999999276,
+        "maximum_post_seconds_soft_sla": null,
+        "maximum_resident_source_rois": 1,
+        "peak_live_array_bytes": 636480,
+        "pre_audit_peak_process_rss_bytes": null,
+        "total_seconds": null,
+        "whole_invocation_peak_process_rss_bytes": null
+      }
+    },
+    {
+      "audit_remap": 0,
+      "blend_model_counts": {
+        "B0_owner_only": 47,
+        "B1_narrow_feather_2px": 61
+      },
+      "branch": "slow_direct",
+      "effective_config_sha256": "02cd8323e34160d40f8faa33a10908e1941cc83340773093fac71dd558351b94",
+      "effective_manual_review_status": null,
+      "forbidden_invocations": {
+        "b2_b3_b4": 0,
+        "post_render_reselection": 0,
+        "q4_nonzero_solver": 0,
+        "synthetic_source": 0
+      },
+      "formal_remap": 109,
+      "hard_audit_passed": true,
+      "p2_canonical_regression": {
+        "p2_canonical_image_sha256": "7ee4c8b8978377252b562a8a5a75dce29e5354fcd65646cf110dc96b5444d27c",
+        "p2_completion_sha256": "bcc3f1175641baf6da8c4d4e5278896bb1950e8e7ced45470634191f1ab6d656",
+        "passed": true
+      },
+      "protected_blend_count": 0,
+      "q_component_count": 1,
+      "q_model_counts": {
+        "Q0_identity": 110
+      },
+      "quality_metrics": {
+        "block_p95": null,
+        "owner_plateau": null,
+        "slow_ignore_pair_21": null,
+        "visible_seam_count": null,
+        "wide_safe_delta_e00_median": null,
+        "wide_safe_delta_e00_p95": null
+      },
+      "quality_state": null,
+      "reproducible": true,
+      "resources": {
+        "audit_peak_process_rss_bytes": null,
+        "elapsed_seconds": 0.9556223999970825,
+        "maximum_post_seconds_soft_sla": null,
+        "maximum_resident_source_rois": 1,
+        "peak_live_array_bytes": 632160,
+        "pre_audit_peak_process_rss_bytes": null,
+        "total_seconds": null,
+        "whole_invocation_peak_process_rss_bytes": null
+      }
+    },
+    {
+      "audit_remap": 0,
+      "blend_model_counts": {
+        "B0_owner_only": 41,
+        "B1_narrow_feather_2px": 68
+      },
+      "branch": "slow_ignore_pose",
+      "effective_config_sha256": "02cd8323e34160d40f8faa33a10908e1941cc83340773093fac71dd558351b94",
+      "effective_manual_review_status": null,
+      "forbidden_invocations": {
+        "b2_b3_b4": 0,
+        "post_render_reselection": 0,
+        "q4_nonzero_solver": 0,
+        "synthetic_source": 0
+      },
+      "formal_remap": 110,
+      "hard_audit_passed": true,
+      "p2_canonical_regression": {
+        "p2_canonical_image_sha256": "08c5e904f5fcd845a679b937583093ad1e0bdd859e9ca8369d0edc5c700acdea",
+        "p2_completion_sha256": "1445f284fbb4f6806f70a33f5ffac38e11692587b34f20d38d6987658c7c4544",
+        "passed": true
+      },
+      "protected_blend_count": 0,
+      "q_component_count": 1,
+      "q_model_counts": {
+        "Q0_identity": 111
+      },
+      "quality_metrics": {
+        "block_p95": null,
+        "owner_plateau": null,
+        "slow_ignore_pair_21": null,
+        "visible_seam_count": null,
+        "wide_safe_delta_e00_median": null,
+        "wide_safe_delta_e00_p95": null
+      },
+      "quality_state": null,
+      "reproducible": true,
+      "resources": {
+        "audit_peak_process_rss_bytes": null,
+        "elapsed_seconds": 0.9830299000022933,
+        "maximum_post_seconds_soft_sla": null,
+        "maximum_resident_source_rois": 1,
+        "peak_live_array_bytes": 632160,
+        "pre_audit_peak_process_rss_bytes": null,
+        "total_seconds": null,
+        "whole_invocation_peak_process_rss_bytes": null
+      }
+    }
+  ],
+  "candidate_id": "S013_output_first_progressive_dense_central_slit_m61_v2",
+  "readonly_semantic_baseline_commit": "c3aaa7ddbaf8aac5e00cded71ba9e4f1689b822a",
+  "schema": "gemini305-video-s13-m61-acceptance-summary/v1",
+  "section_27_report_skeleton": {
+    "b0_b1_counts": null,
+    "block_p95_visible_seam_owner_plateau": null,
+    "blocked_reason": null,
+    "candidate_and_schema": null,
+    "compileall": null,
+    "diff_check": null,
+    "effective_config_sha256": null,
+    "evidence_config_sha256": null,
+    "final_commit": null,
+    "forbidden_invocations": null,
+    "formal_and_audit_remap": null,
+    "hard_audit": null,
+    "m7_handoff_eligible": null,
+    "manual_near_target_decision_witness": null,
+    "mde_sha256": null,
+    "p2_canonical_regression": null,
+    "protected_blend_count": null,
+    "q_models_and_components": null,
+    "quality_and_manual_state": null,
+    "reproducibility": null,
+    "rss_live_bytes_resident_roi_timing": null,
+    "ruff": null,
+    "slow_ignore_pair_21": null,
+    "source_document_sha256": [],
+    "stage_exit": null,
+    "tests": null,
+    "threshold_sha256": null,
+    "wide_safe_delta_e": null
+  }
+}

@@ -7,10 +7,12 @@ candidate_id: C0_cuda_strict_strip_owner
 parent_candidate_id: C0_baseline_reference
 algorithm_id: C0_cuda_strict_strip_owner
 implementation_id: torch_cuda_strip_owner_v2
-source_commit: 1d58159a429a37b1de9efbd9a053fcaad51813d1
 model_sha256: {}
 allow_baseline_fallback: false
 changed_components: [cuda_calibration_and_strict_owner_data_plane]
+required_evidence_components: [orb_anchor_trajectory]
+required_output_components: [c1_constrained_owner]
+replaces_output_components: [legacy_visual_seam]
 components:
   seam: {mode: hard_owner}
   flow: {backend: none}
@@ -18,4 +20,4 @@ components:
   object_lock: {enabled: false}
   multiband: {enabled: false}
   photometric: {enabled: false}
-config_sha256: 638d361515582172256b71c5ed18ccdae58a4885ed30b2e3a5bf1944f3ef7e96
+config_sha256: fbde6e1f34661068c043c387466438974310d218b3300abbb7d41595d3d479de

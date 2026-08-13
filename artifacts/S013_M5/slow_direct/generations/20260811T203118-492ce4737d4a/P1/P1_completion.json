@@ -1,0 +1,35 @@
+{
+  "assets_sha256": {
+    "pair_report.json": "4b0f0d22b8d4be45009ce81cac4b9d524a31877b91c38e99a995d613ecf9269b",
+    "vertical_owner_boundary_overlay.png": "f897c8d52833fc65fe2088840092a8dc2208b305784d0d77731c71de6f4dc7e6",
+    "vertical_panorama_owner_only.jpg": "0d6c68dc6ee6c6c3c14b14c05c43c1b3a3cc0f8a6e0be018f4628826d9dc8ab0",
+    "vertical_panorama_owner_only.png": "b7b3b1da71fdcdf66ff553673b5ba20620282bf02e2bf721e0dc1a4918f70845",
+    "vertical_pixel_provenance.npz": "98a9857e40b9d20c8c60eb7c5a6e7ced173c96f87cbc4ab6f877ee2bed90cdae",
+    "vertical_solution.npz": "6f175a2c6158bed887d8ab86f24d4f6b0a85952ca2203f59ba8d2a7e3f5f6f1a",
+    "vertical_valid_mask.png": "ee4fe0773b51b9a097336ff18019fcc10ac74e478e17f5d19e86272515885af2"
+  },
+  "excluded_models": [
+    "translation",
+    "rotation",
+    "affine",
+    "seam",
+    "graphcut",
+    "photometric",
+    "blend",
+    "depth",
+    "mesh"
+  ],
+  "formal_raw_rgb_remap_invocations": 109,
+  "formal_raw_rgb_unique_sources": 109,
+  "generation_id": "20260811T203118-492ce4737d4a",
+  "models": [
+    "global_scalar_dy",
+    "pair_local_row_residual"
+  ],
+  "p0_parent": "../P0/P0_completion.json",
+  "p0_parent_sha256": "49c860907b4588a2d6e6ff45f5a5d1054285f05e20d6b1e576ae19bb40d680d4",
+  "schema": "gemini305-video-s13-p1-vertical-completion/v1",
+  "sealed": true,
+  "selected_global_gain": 1.0,
+  "stage": "P1"
+}

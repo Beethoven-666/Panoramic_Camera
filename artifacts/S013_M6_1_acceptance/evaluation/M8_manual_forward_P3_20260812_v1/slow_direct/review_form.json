@@ -1,0 +1,54 @@
+{
+  "automatic_quality_remains_blocked": true,
+  "branch": "slow_direct",
+  "generation_id": "20260812T140111-5a520ae4f223",
+  "manual_selection_required": true,
+  "review_protocol": {
+    "fixed_structures": [
+      "beams",
+      "fan",
+      "cables",
+      "doorframe",
+      "hoses",
+      "box_edge",
+      "white_wall",
+      "blades",
+      "thin_rods"
+    ],
+    "full_image": [
+      "layout",
+      "holes",
+      "slope",
+      "color"
+    ],
+    "worst_sets": {
+      "blur": 10,
+      "brightness": 10,
+      "geometry": 10,
+      "repair": 10
+    }
+  },
+  "schema": "gemini305-video-s13-review-form/v1",
+  "stage_conclusions": {
+    "P0": {
+      "decision": "not_preferred",
+      "reason": "superseded by sealed vertical solution"
+    },
+    "P1": {
+      "decision": "not_preferred",
+      "reason": "superseded by sealed P2"
+    },
+    "P2": {
+      "decision": "not_preferred",
+      "reason": "P3 is the user-accepted manual-forward stage"
+    },
+    "P3": {
+      "decision": "accepted",
+      "reason": "sealed P3 explicitly accepted for manual forward; original automatic blocked evidence remains visible"
+    },
+    "P4": {
+      "decision": "not_run",
+      "reason": "M7 produced no real winner"
+    }
+  }
+}

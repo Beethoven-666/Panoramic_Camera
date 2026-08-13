@@ -1,0 +1,31 @@
+# D3 is a candidate-only object-first compositor.  It can consume only D2's
+# audited dense real-frame output; annotations remain post-publication only.
+config_schema: gemini305-video-candidate/v1
+role: candidate
+candidate_id: D3_object_first_dense_source_compositor
+parent_candidate_id: D2_monotonic_depth_layer_warp
+algorithm_id: D3_object_first_dense_source_compositor
+implementation_id: candidate_d3_object_first_dense_source_compositor
+model_sha256:
+  torchvision_raft_small_C_T_V2: 01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27
+allow_baseline_fallback: false
+changed_components: [depth_connected_object_component, raft_real_source_track, single_real_source_object_compositor]
+required_evidence_components: [orb_anchor_trajectory, dense_real_frame_pose_audit, depth_visibility_evidence, raft_correspondence_evidence]
+required_output_components: [d2_monotonic_depth_layer_warp, d3_object_first_dense_source_compositor]
+replaces_output_components: [c5_object_owner_lock, c11_object_first_foreground_compositor]
+components:
+  object_first_dense_source_compositor:
+    enabled: true
+    depth_source: aligned_depth_only
+    component_method: depth_connected_component
+    propagation: raft_small_forward_real_source_flow
+    owner_selection: [image_center, sharpness, valid_depth, occlusion]
+    protection_margin_pixels: 10
+    maximum_object_handoffs: 1
+    object_flow_or_warp: false
+    object_multiband: false
+    source_support_gate: 0.98
+    raft_small_model_sha256: 01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27
+    background_source: d2_monotonic_depth_layer_warp
+  annotations: {renderer_input: false, post_publication_evaluation_only: true}
+config_sha256: 7000558e87bb6abb85b7146b95ad3adb9866c6d0e71ff30e3c34f3e9c88fb809

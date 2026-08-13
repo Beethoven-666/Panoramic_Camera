@@ -1,0 +1,31 @@
+{
+  "baseline_ratio": 0.6081437162223158,
+  "baseline_v1_total_seconds": 27.231152699998347,
+  "cpu_workers": 4,
+  "each_final_source_remapped_once": true,
+  "full_resolution_remap_invocations": 37,
+  "mode": "audit",
+  "pair_count": 36,
+  "raw_frame_count": 98,
+  "source_count": 37,
+  "stage_seconds": {
+    "acceptance_metrics": 0.004348599992226809,
+    "baseline_inheritance": 0.0009405000018887222,
+    "baseline_verification": 0.018713600002229214,
+    "candidate_generation": 9.23091270000441,
+    "handoff_and_rescue": 1.1421864000003552,
+    "handoff_candidate_generation": 0.7674154000123963,
+    "heldout_metrics": 0.002953999995952472,
+    "joint_full_resolution_remap": 0.3021227999997791,
+    "scan_analysis": 0.9904289999976754,
+    "session_load": 0.2229555999947479,
+    "stage_composition": 3.7528189000004204,
+    "straight_boundary_dp": 0.023094600008334965,
+    "total": 16.56045439999434,
+    "vertical_features": 0.3018607999983942,
+    "vertical_pair_transactions": 8.463497299992014
+  },
+  "total_seconds": 16.56045439999434,
+  "within_20_seconds": true,
+  "within_v1_1_15": true
+}
