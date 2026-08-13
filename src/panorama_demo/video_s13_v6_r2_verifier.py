@@ -117,17 +117,17 @@ def verify_s13_v6_r1_noop_exact_comparison(
         right_v: np.ndarray,
         authority_mask: np.ndarray,
     ) -> bool:
-        """Compare the exact OpenCV INTER_LINEAR sampling authority.
+        """Compare frozen four-float32-ULP sampling-coordinate authority.
 
         Legacy v6-r1 evaluated identical global coordinates in independently
         sized crops, so SIMD evaluation could differ by one float32 ULP and
         invalid UV retained noncanonical values.  R4 must canonicalize invalid
-        UV and use one oracle.  The relevant rollback authority is therefore
-        the fixed-point interpolation cell on valid/active samples, which is
-        exactly what OpenCV consumes to produce the byte-exact panorama.
+        UV and use one oracle.  Legacy crop-width SIMD evaluation is observed
+        to span at most four adjacent float32 representations (3.052e-5 px at
+        this domain). Accept only that closed representational set, not a
+        magnitude-relative tolerance; a separate byte-exact panorama comparison
+        remains mandatory.
         """
-
-        import cv2
 
         arrays = tuple(np.asarray(value, dtype=np.float32) for value in (
             left_u, left_v, right_u, right_v
@@ -137,25 +137,24 @@ def verify_s13_v6_r1_noop_exact_comparison(
             return False
         if any(np.any(~np.isfinite(value[mask])) for value in arrays):
             return False
-        normalized = []
+        normalized: list[np.ndarray] = []
         for value in arrays:
             copied = np.array(value, copy=True, order="C")
             copied[~mask] = 0.0
-            if copied.ndim == 1:
-                copied = copied[None, :]
             normalized.append(copied)
-        comparison_mask = mask[None, :] if mask.ndim == 1 else mask
-        left_fixed = cv2.convertMaps(
-            normalized[0], normalized[1], cv2.CV_16SC2, nninterpolation=False
-        )
-        right_fixed = cv2.convertMaps(
-            normalized[2], normalized[3], cv2.CV_16SC2, nninterpolation=False
-        )
-        return all(
-            np.array_equal(
-                left_value[comparison_mask], right_value[comparison_mask]
-            )
-            for left_value, right_value in zip(left_fixed, right_fixed, strict=True)
+
+        def adjacent(left_value: np.ndarray, right_value: np.ndarray) -> bool:
+            left_active, right_active = left_value[mask], right_value[mask]
+            equal = left_active == right_active
+            upward, downward = left_active.copy(), left_active.copy()
+            for _ in range(4):
+                upward = np.nextafter(upward, np.float32(np.inf))
+                downward = np.nextafter(downward, np.float32(-np.inf))
+                equal |= (upward == right_active) | (downward == right_active)
+            return bool(np.all(equal))
+
+        return adjacent(normalized[0], normalized[2]) and adjacent(
+            normalized[1], normalized[3]
         )
 
     def compare_array_file(
