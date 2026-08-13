@@ -1841,13 +1841,11 @@ def run_s13_m5(
             ),
             component_field_ids,
         )
-        # OpenCV's inverse-map interpolation can differ by one float32 ULP
-        # when the identical global coordinate is evaluated in crops with a
-        # different x origin.  Freeze a sub-1/10000 px canonical grid so the
-        # render, replay and oracle authorities are crop-invariant.
-        canonical_u = np.round(np.asarray(maps[0], np.float64), 4).astype(np.float32)
-        canonical_v = np.round(np.asarray(maps[1], np.float64), 4).astype(np.float32)
-        frozen = canonical_u, canonical_v, maps[2], maps[3]
+        # Freeze the exact provider result. Crop-origin ULP differences are
+        # canonicalized once below by taking formal-owner values from the
+        # final provenance and replay slices from that oracle; the render hot
+        # path must not promote every full map to float64 merely for hashing.
+        frozen = maps
         frozen_map_cache[cache_key] = frozen
         return frozen
 
@@ -1947,8 +1945,6 @@ def run_s13_m5(
             )
             base_u = np.array(base[0], dtype=np.float32, copy=True)
             base_v = np.array(base[1], dtype=np.float32, copy=True)
-            base_u = np.round(base_u.astype(np.float64), 4).astype(np.float32)
-            base_v = np.round(base_v.astype(np.float64), 4).astype(np.float32)
             formal_owner = (
                 final.pixel_provenance["owner_source_index"][:, x0:x1]
                 == oracle.source_index
