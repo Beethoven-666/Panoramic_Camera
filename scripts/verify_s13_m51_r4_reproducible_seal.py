@@ -440,12 +440,24 @@ def _verify_r4_semantics(
         raise ValueError("accepted correction authority field table does not cover accepted segments")
     correction_labels: set[int] = set()
     for row in correction_rows:
+        correction_relative = Path(str(row.get("asset", row.get("correction_asset"))))
         correction_labels |= _integer_labels(
-            p2 / "source_corrections" / str(row["asset"]), ("field_id",)
+            (
+                p2 / correction_relative
+                if correction_relative.parts[0] == "source_corrections"
+                else p2 / "source_corrections" / correction_relative
+            ),
+            ("field_id",),
         )
     map_labels: set[int] = set()
     for row in map_rows:
-        map_labels |= _integer_labels(p2 / "source_maps" / str(row["asset"]), ("field_id",))
+        map_relative = Path(str(row["asset"]))
+        map_labels |= _integer_labels(
+            p2 / map_relative
+            if map_relative.parts[0] == "source_maps"
+            else p2 / "source_maps" / map_relative,
+            ("field_id",),
+        )
     replay_labels: set[int] = set()
     replay_segments: set[str] = set()
     replay_rows = replay.get("pairs")

@@ -532,6 +532,12 @@ def _run_m5(
                     asset = f"source_{source_index:04d}.npz"
                     correction_arrays: dict[str, np.ndarray] = {
                         "segment_ids": np.asarray([row.segment_id for row in corrections]),
+                        "field_id": np.asarray([
+                            component_audit.get("field_id_table", {}).get(
+                                row.segment_id, -1
+                            )
+                            for row in corrections
+                        ], dtype=np.int32),
                         "domains_xyxy": np.asarray([
                             (row.x0, row.y0, row.x1, row.y1) for row in corrections
                         ], dtype=np.int32),
