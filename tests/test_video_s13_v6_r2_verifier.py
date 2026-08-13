@@ -11,6 +11,7 @@ from panorama_demo.video_s13_m51_r4_component_chain import (
     source_map_oracle_from_arrays,
 )
 from panorama_demo.video_s13_v6_r2_verifier import (
+    _verify_correction_asset_semantics,
     component_decision_stable_sha256,
     canonical_pair_transaction_sha256,
     canonical_source_map_slice_sha256,
@@ -164,8 +165,18 @@ def _build_fixture(tmp_path: Path) -> Path:
     source_rows = []
     for oracle in oracles:
         asset = f"source_maps/source_{oracle.source_index:04d}.npz"
+        base_asset = f"source_maps/base_source_{oracle.source_index:04d}.npz"
         _npz(
             p2 / asset,
+            source_index=np.asarray(oracle.source_index, np.int32),
+            domain_xyxy=np.asarray(oracle.domain_xyxy, np.int32),
+            u=oracle.u,
+            v=oracle.v,
+            valid=oracle.valid,
+            field_id=oracle.field_id,
+        )
+        _npz(
+            p2 / base_asset,
             source_index=np.asarray(oracle.source_index, np.int32),
             domain_xyxy=np.asarray(oracle.domain_xyxy, np.int32),
             u=oracle.u,
@@ -180,6 +191,10 @@ def _build_fixture(tmp_path: Path) -> Path:
                 "asset": asset,
                 "asset_sha256": _sha(p2 / asset),
                 "oracle_sha256": oracle.oracle_sha256,
+                "base_asset": base_asset,
+                "base_asset_sha256": _sha(p2 / base_asset),
+                "base_oracle_sha256": oracle.oracle_sha256,
+                "raw_source_size": [width, height],
             }
         )
 
@@ -206,6 +221,7 @@ def _build_fixture(tmp_path: Path) -> Path:
             {
                 "source_index": row["source_index"],
                 "source_map_oracle_sha256": row["oracle_sha256"],
+                "base_source_map_oracle_sha256": row["base_oracle_sha256"],
             }
             for row in source_rows
         ],
@@ -322,6 +338,7 @@ def _build_fixture(tmp_path: Path) -> Path:
         "component_correction_field_id": labels,
     }
     _npz(p2 / "p2_pixel_provenance.npz", **provenance)
+    _npz(p2 / "p2_seams.npz", seams_x_by_row=np.full((1, height), 2, np.int32))
     _json(p2 / "hard_audit.json", {
         "passed": True,
         "component_chain_c2e": {
@@ -347,6 +364,14 @@ def _build_fixture(tmp_path: Path) -> Path:
                 "repair_complete": False,
             },
             "maximum_component_offset_px": 0.0,
+            "omega_out_exterior_uv_mismatch_count": 0,
+            "valid_support_mismatch_count": 0,
+            "source_out_of_bounds_pixel_count": 0,
+            "maximum_combined_map_displacement_px": 0.0,
+            "minimum_final_inverse_map_jacobian": None,
+            "minimum_final_to_base_jacobian_ratio": None,
+            "changed_map_pixel_count": 0,
+            "labelled_map_pixel_count": 0,
         },
     })
 
@@ -472,6 +497,127 @@ def test_v6_r2_verifier_rejects_unknown_provenance_field_id(tmp_path: Path) -> N
     _refresh_completion_assets(p2)
     with pytest.raises(ValueError, match="field table"):
         verify_s13_v6_r2_p2(p2)
+
+
+def test_v6_r2_verifier_rejects_synchronized_map_replay_provenance_rehash(
+    tmp_path: Path,
+) -> None:
+    """A self-consistent forged final map cannot replace frozen base authority."""
+
+    p2 = _build_fixture(tmp_path)
+    final_path = p2 / "source_maps/source_0000.npz"
+    with np.load(final_path, allow_pickle=False) as stored:
+        arrays = {name: np.array(stored[name], copy=True) for name in stored.files}
+    arrays["u"][:, 1] += 0.25
+    _npz(final_path, **arrays)
+    forged = source_map_oracle_from_arrays(
+        source_index=0,
+        domain_xyxy=(0, 0, 4, 2),
+        u=arrays["u"], v=arrays["v"], valid=arrays["valid"],
+        field_id=arrays["field_id"],
+    )
+    maps_path = p2 / "source_maps/manifest.json"
+    maps = json.loads(maps_path.read_text(encoding="utf-8"))
+    maps["sources"][0]["asset_sha256"] = _sha(final_path)
+    maps["sources"][0]["oracle_sha256"] = forged.oracle_sha256
+    _json(maps_path, maps)
+    corrections_path = p2 / "source_corrections/manifest.json"
+    corrections = json.loads(corrections_path.read_text(encoding="utf-8"))
+    corrections["sources"][0]["source_map_oracle_sha256"] = forged.oracle_sha256
+    _json(corrections_path, corrections)
+    _rebind_component_dag(p2)
+
+    replay_asset = p2 / "pair_replay/pair_0000.npz"
+    with np.load(replay_asset, allow_pickle=False) as stored:
+        replay_arrays = {
+            name: np.array(stored[name], copy=True) for name in stored.files
+        }
+    replay_arrays["left_source_u"][:, 1] += 0.25
+    _npz(replay_asset, **replay_arrays)
+    replay_path = p2 / "p2_replay_manifest.json"
+    replay = json.loads(replay_path.read_text(encoding="utf-8"))
+    replay["pairs"][0]["left_source_map_oracle_sha256"] = forged.oracle_sha256
+    replay["pairs"][0]["left_source_map_slice_sha256"] = (
+        canonical_source_map_slice_sha256(forged, (0, 0, 4, 2))
+    )
+    _json(replay_path, replay)
+    provenance_path = p2 / "p2_pixel_provenance.npz"
+    with np.load(provenance_path, allow_pickle=False) as stored:
+        provenance = {
+            name: np.array(stored[name], copy=True) for name in stored.files
+        }
+    provenance["source_u"][:, 1] += 0.25
+    _npz(provenance_path, **provenance)
+    completion_path = p2 / "P2_completion.json"
+    completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    completion["p2_replay_manifest_sha256"] = _sha(replay_path)
+    _json(completion_path, completion)
+    _refresh_completion_assets(p2)
+
+    with pytest.raises(ValueError, match="omega-out exterior"):
+        verify_s13_v6_r2_p2(p2)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        ("segment", "segment/support authority"),
+        ("field", "segment/support authority"),
+        ("domain", "numeric domain"),
+        ("support", "segment/support authority"),
+    ),
+)
+def test_v6_r2_correction_rows_are_bound_to_field_segment_and_support(
+    tmp_path: Path, tamper: str, message: str,
+) -> None:
+    asset = tmp_path / "source_corrections/source_0001.npz"
+    support_sha = "4" * 64
+    correction_sha = "5" * 64
+    segment_id = "segment-a"
+    field_id = 0
+    domain = [0, 0, 2, 2]
+    values: dict[str, np.ndarray] = {
+        "segment_ids": np.asarray([segment_id]),
+        "field_id": np.asarray([field_id], np.int32),
+        "domains_xyxy": np.asarray([domain], np.int32),
+        "correction_sha256": np.asarray([correction_sha]),
+        "support_authority_sha256": np.asarray([support_sha]),
+        "delta_u_0000": np.full((2, 2), 0.25, np.float32),
+        "delta_v_0000": np.zeros((2, 2), np.float32),
+        "weight_0000": np.ones((2, 2), np.float32),
+    }
+    if tamper == "segment":
+        values["segment_ids"] = np.asarray(["segment-b"])
+    elif tamper == "field":
+        values["field_id"] = np.asarray([1], np.int32)
+    elif tamper == "domain":
+        values["domains_xyxy"] = np.asarray([[0, 0, 3, 2]], np.int32)
+    elif tamper == "support":
+        values["support_authority_sha256"] = np.asarray(["6" * 64])
+    _npz(asset, **values)
+    asset_sha = _sha(asset)
+    corrections = {
+        "sources": [{
+            "source_index": 1,
+            "contributors": [str(values["segment_ids"][0])],
+            "correction_asset": "source_corrections/source_0001.npz",
+            "correction_asset_sha256": asset_sha,
+        }]
+    }
+    field_table = {0: {
+        "segment_id": segment_id,
+        "support_sha256": support_sha,
+        "correction_rows": [{
+            "source_index": 1, "row_index": 0, "domain_xyxy": domain,
+            "correction_sha256": correction_sha,
+            "support_sha256": support_sha,
+            "source_correction_asset_sha256": asset_sha,
+        }],
+    }}
+    with pytest.raises(ValueError, match=message):
+        _verify_correction_asset_semantics(
+            tmp_path, corrections, field_table, {segment_id: support_sha}
+        )
 
 
 def test_v6_r2_verifier_rejects_reverse_dag_binding(tmp_path: Path) -> None:

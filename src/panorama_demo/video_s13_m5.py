@@ -8,6 +8,7 @@ import math
 import os
 import time
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import Callable, Mapping, Sequence
 
 import cv2
@@ -202,9 +203,43 @@ class S13M5Result:
     selection_audit: Mapping[str, object]
     performance: Mapping[str, float]
     source_map_oracles: tuple[SourceMapOracle, ...] = ()
+    base_source_map_oracles: tuple[SourceMapOracle, ...] = ()
     component_chain_audit: Mapping[str, object] | None = None
     component_patch_set: S13ComponentPatchSet | None = None
     source_correction_registry: SourceCorrectionRegistry | None = None
+    estimation_result: S13M5EstimationResult | None = None
+
+
+@dataclass(frozen=True)
+class S13M51R4EvidenceContext:
+    raw_rgb_by_frame: Mapping[int, np.ndarray]
+    component_forward_probes: Mapping[int, tuple[object, ...]]
+    stage_order: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.raw_rgb_by_frame, MappingProxyType):
+            raise TypeError("S1.3 R4 raw cache authority must be immutable")
+        if not isinstance(self.component_forward_probes, MappingProxyType):
+            raise TypeError("S1.3 R4 Sobel/evidence cache authority must be immutable")
+        if any(image.flags.writeable for image in self.raw_rgb_by_frame.values()):
+            raise ValueError("S1.3 R4 raw cache views must be read-only")
+        if self.stage_order != (
+            "pair_estimation", "topology_repair", "component_rescue",
+            "source_map_oracle_freeze", "formal_render",
+        ):
+            raise ValueError("S1.3 R4 estimation/render phase order is invalid")
+
+
+@dataclass(frozen=True)
+class S13M5EstimationResult:
+    pairs: tuple[S13M5Pair, ...]
+    source_correction_registry: SourceCorrectionRegistry
+    component_patch_set: S13ComponentPatchSet
+    component_chain_audit: Mapping[str, object]
+    evidence_context: S13M51R4EvidenceContext
+    base_source_map_oracles: tuple[SourceMapOracle, ...]
+    final_source_map_oracles: tuple[SourceMapOracle, ...]
+    performance_counters: Mapping[str, int | float]
 
 
 @dataclass(frozen=True)
@@ -1608,6 +1643,178 @@ def build_s13_p2_replay(
     return tuple(replay)
 
 
+def plan_s13_m5_oracle_domains(
+    schedule: S012Schedule,
+    pairs: Sequence[S13M5Pair],
+    registry: SourceCorrectionRegistry,
+    *,
+    corridor_half_width_px: int = 8,
+    bilinear_halo_px: int = 1,
+) -> Mapping[int, tuple[int, int]]:
+    """Plan the union of both owner topologies, replay, and correction halos."""
+
+    width, height = schedule.canvas_width, schedule.canvas_height
+    canvas = np.arange(width, dtype=np.int32)[None, :]
+    domains: dict[int, list[tuple[int, int]]] = {
+        index: [] for index in range(len(schedule.assignments))
+    }
+    for final in (False, True):
+        owner = np.zeros((height, width), np.int32)
+        for seam in _seams_array(schedule, pairs, final=final):
+            owner += canvas >= seam[:, None]
+        for source in domains:
+            columns = np.flatnonzero(np.any(owner == source, axis=0))
+            if columns.size:
+                domains[source].append((int(columns[0]), int(columns[-1]) + 1))
+    for pair_index, pair in enumerate(pairs):
+        seam = np.asarray(pair.seam_x_by_row, np.int32)
+        x0 = max(0, int(seam.min()) - corridor_half_width_px)
+        x1 = min(width, int(seam.max()) + corridor_half_width_px + 1)
+        domains[pair_index].append((x0, x1))
+        domains[pair_index + 1].append((x0, x1))
+    for source, corrections in registry.corrections_by_source.items():
+        for correction in corrections:
+            active_columns = np.flatnonzero(np.any(correction.weight > 0.0, axis=0))
+            if active_columns.size:
+                domains[int(source)].append((
+                    max(0, correction.x0 + int(active_columns[0]) - bilinear_halo_px),
+                    min(width, correction.x0 + int(active_columns[-1]) + 1 + bilinear_halo_px),
+                ))
+    return MappingProxyType({
+        source: (min(row[0] for row in rows), max(row[1] for row in rows))
+        for source, rows in domains.items() if rows
+    })
+
+
+def source_map_oracle_provider(
+    oracles: Sequence[SourceMapOracle],
+) -> S13SourceMapProvider:
+    """Return a strict slice-only provider; requests outside authority fail."""
+
+    by_source = {row.source_index: row for row in oracles}
+
+    def provide(source_index: int, x0: int, x1: int):
+        oracle = by_source.get(source_index)
+        if oracle is None:
+            raise ValueError("source-map oracle authority is missing")
+        ox0, oy0, ox1, oy1 = oracle.domain_xyxy
+        if oy0 != 0 or x0 < ox0 or x1 > ox1 or x0 >= x1:
+            raise ValueError("source-map oracle request exceeds frozen domain")
+        local = np.s_[:, x0 - ox0:x1 - ox0]
+        return (
+            oracle.u[local], oracle.v[local], oracle.valid[local] != 0,
+            oracle.field_id[local],
+        )
+
+    return provide
+
+
+def _estimate_s13_m5_pre_render(
+    *,
+    schedule: S012Schedule,
+    calibration: CameraIntrinsics,
+    vertical: S13VerticalSolution,
+    pairs: tuple[S13M5Pair, ...],
+    raw_cache: Mapping[int, np.ndarray],
+    registry: SourceCorrectionRegistry,
+    patch_set: S13ComponentPatchSet,
+    component_audit: Mapping[str, object],
+    final_map_provider: S13SourceMapProvider,
+    performance_counters: Mapping[str, int | float],
+) -> tuple[S13M5EstimationResult, S13SourceMapProvider, S13SourceMapProvider]:
+    """Freeze all R4 authorities before any formal P2 render."""
+
+    domains = plan_s13_m5_oracle_domains(schedule, pairs, registry)
+    base_oracles, final_oracles = [], []
+    for source, (x0, x1) in domains.items():
+        candidate = (
+            pairs[source - 1].alignment.selected
+            if source > 0 and pairs[source - 1].alignment is not None else None
+        )
+        base = _map_crop(
+            schedule, calibration, source, x0, x1,
+            vertical.global_offsets_px[source], candidate,
+        )
+        final = final_map_provider(source, x0, x1)
+        base_oracles.append(source_map_oracle_from_arrays(
+            source_index=source, domain_xyxy=(x0, 0, x1, schedule.canvas_height),
+            u=base[0], v=base[1], valid=base[2],
+            field_id=np.full(base[2].shape, -1, np.int32),
+        ))
+        final_oracles.append(source_map_oracle_from_arrays(
+            source_index=source, domain_xyxy=(x0, 0, x1, schedule.canvas_height),
+            u=final[0], v=final[1], valid=final[2], field_id=final[3],
+        ))
+
+    def expected_support(source: int, x0: int, x1: int):
+        candidate = (
+            pairs[source - 1].alignment.selected
+            if source > 0 and pairs[source - 1].alignment is not None else None
+        )
+        maps = _map_crop(
+            schedule, calibration, source, x0, x1,
+            vertical.global_offsets_px[source], candidate,
+        )
+        return maps[0], maps[1], maps[2], np.full(maps[2].shape, -1, np.int32)
+
+    probes = MappingProxyType({
+        index: pair.component_forward_probe for index, pair in enumerate(pairs)
+        if pair.component_forward_probe is not None
+    })
+    context = S13M51R4EvidenceContext(
+        raw_rgb_by_frame=MappingProxyType(dict(raw_cache)),
+        component_forward_probes=probes,
+        stage_order=(
+            "pair_estimation", "topology_repair", "component_rescue",
+            "source_map_oracle_freeze", "formal_render",
+        ),
+    )
+    result = S13M5EstimationResult(
+        pairs=pairs, source_correction_registry=registry,
+        component_patch_set=patch_set,
+        component_chain_audit=MappingProxyType(dict(component_audit)),
+        evidence_context=context,
+        base_source_map_oracles=tuple(base_oracles),
+        final_source_map_oracles=tuple(final_oracles),
+        performance_counters=MappingProxyType(dict(performance_counters)),
+    )
+    return result, source_map_oracle_provider(final_oracles), expected_support
+
+
+def _finalize_s13_m5_render(
+    *,
+    estimate: S13M5EstimationResult,
+    schedule: S012Schedule,
+    calibration: CameraIntrinsics,
+    vertical: S13VerticalSolution,
+    selected_hypothesis_ids: tuple[int, ...] | None,
+    placement_methods: tuple[str, ...] | None,
+    map_provider: S13SourceMapProvider,
+    expected_support_provider: S13SourceMapProvider,
+) -> tuple[S13P2Result, S13P2Result, tuple[S13P2ReplayPair, ...]]:
+    """Consume only frozen pre-render authority for both formal renders/replay."""
+
+    def raw(frame_id: int) -> np.ndarray:
+        return estimate.evidence_context.raw_rgb_by_frame[frame_id]
+
+    geometry = render_s13_p2_from_raw(
+        schedule, calibration, raw, vertical, estimate.pairs, final_seams=False,
+        selected_hypothesis_ids=selected_hypothesis_ids,
+        placement_methods=placement_methods, map_provider=map_provider,
+        expected_support_provider=expected_support_provider,
+    )
+    final = render_s13_p2_from_raw(
+        schedule, calibration, raw, vertical, estimate.pairs, final_seams=True,
+        selected_hypothesis_ids=selected_hypothesis_ids,
+        placement_methods=placement_methods, map_provider=map_provider,
+        expected_support_provider=expected_support_provider,
+    )
+    replay = build_s13_p2_replay(
+        schedule, calibration, vertical, estimate.pairs, map_provider=map_provider
+    )
+    return geometry, final, replay
+
+
 def render_s13_p2_from_raw(
     schedule: S012Schedule,
     calibration: CameraIntrinsics,
@@ -1619,6 +1826,7 @@ def render_s13_p2_from_raw(
     selected_hypothesis_ids: tuple[int, ...] | None = None,
     placement_methods: tuple[str, ...] | None = None,
     map_provider: S13SourceMapProvider | None = None,
+    expected_support_provider: S13SourceMapProvider | None = None,
 ) -> S13P2Result:
     """Formally remap each real contributor once from raw RGB for this P2 asset."""
 
@@ -1647,13 +1855,14 @@ def render_s13_p2_from_raw(
         candidate = None
         if source_index > 0 and pairs[source_index - 1].alignment is not None:
             candidate = pairs[source_index - 1].alignment.selected
-        if map_provider is None:
+        support_provider = expected_support_provider or map_provider
+        if support_provider is None:
             expected_maps = _map_crop(
                 schedule, calibration, source_index, 0, width,
                 vertical.global_offsets_px[source_index], candidate,
             )
         else:
-            expected_maps = map_provider(source_index, 0, width)[:3]
+            expected_maps = support_provider(source_index, 0, width)[:3]
         expected_support |= expected_maps[2]
         mask = owner_index == source_index
         if not np.any(mask):
@@ -1801,7 +2010,9 @@ def run_s13_m5(
 
     def cached_image_loader(frame_id: int) -> np.ndarray:
         if frame_id not in raw_cache:
-            raw_cache[frame_id] = np.asarray(image_loader(frame_id))
+            owned = np.array(image_loader(frame_id), copy=True, order="C")
+            owned.flags.writeable = False
+            raw_cache[frame_id] = owned
         return raw_cache[frame_id]
 
     pairs = estimate_s13_m5_transactions(
@@ -1824,6 +2035,7 @@ def run_s13_m5(
     component_segment_candidate_count = 0
     component_split_count = 0
     p2_full_resolution_render_count = 0
+    estimation_result: S13M5EstimationResult | None = None
     if isinstance(m51_r2_config, S13M51R4Config):
         component_started = time.perf_counter()
         geometry_seconds = component_started - tick
@@ -2977,142 +3189,109 @@ def run_s13_m5(
     formal_provider = (
         frozen_map_provider if isinstance(m51_r2_config, S13M51R4Config) else None
     )
-    geometry = render_s13_p2_from_raw(
-        schedule, calibration, cached_image_loader, vertical, pairs, final_seams=False,
-        selected_hypothesis_ids=selected_hypothesis_ids, placement_methods=placement_methods,
-        map_provider=formal_provider,
-    )
-    p2_full_resolution_render_count += 1
-    final = render_s13_p2_from_raw(
-        schedule, calibration, cached_image_loader, vertical, pairs, final_seams=True,
-        selected_hypothesis_ids=selected_hypothesis_ids, placement_methods=placement_methods,
-        map_provider=formal_provider,
-    )
-    p2_full_resolution_render_count += 1
-    replay_pairs = build_s13_p2_replay(
-        schedule, calibration, vertical, pairs, map_provider=formal_provider
-    )
-    source_map_oracles: list[SourceMapOracle] = []
-    for source_index in (
-        range(len(schedule.assignments)) if formal_provider is not None else ()
-    ):
-        domains: list[tuple[int, int]] = []
-        owned = final.pixel_provenance["owner_source_index"] == source_index
-        if np.any(owned):
-            columns = np.flatnonzero(np.any(owned, axis=0))
-            domains.append((int(columns[0]), int(columns[-1]) + 1))
-        for replay in replay_pairs:
-            if source_index in (replay.left_source_index, replay.right_source_index):
-                domains.append((replay.corridor_x0, replay.corridor_x1))
-        if not domains:
-            continue
-        x0 = min(row[0] for row in domains)
-        x1 = max(row[1] for row in domains)
-        maps = [
-            np.array(value, copy=True)
-            for value in frozen_map_provider(source_index, x0, x1)
-        ]
-        owner_rows, owner_columns = np.nonzero(owned[:, x0:x1])
-        if owner_rows.size:
-            owner_global_columns = owner_columns + x0
-            maps[0][owner_rows, owner_columns] = final.pixel_provenance["source_u"][
-                owner_rows, owner_global_columns
-            ]
-            maps[1][owner_rows, owner_columns] = final.pixel_provenance["source_v"][
-                owner_rows, owner_global_columns
-            ]
-            maps[2][owner_rows, owner_columns] = True
-            maps[3][owner_rows, owner_columns] = final.pixel_provenance[
-                "component_correction_field_id"
-            ][owner_rows, owner_global_columns]
-        source_map_oracles.append(source_map_oracle_from_arrays(
-            source_index=source_index,
-            domain_xyxy=(x0, 0, x1, schedule.canvas_height),
-            u=maps[0], v=maps[1], valid=maps[2], field_id=maps[3],
-        ))
     if formal_provider is not None:
-        oracle_by_source = {row.source_index: row for row in source_map_oracles}
-        canonical_replay: list[S13P2ReplayPair] = []
-        for replay in replay_pairs:
-            left = oracle_by_source[replay.left_source_index]
-            right = oracle_by_source[replay.right_source_index]
-            left_local = np.s_[
-                :, replay.corridor_x0 - left.domain_xyxy[0]:
-                replay.corridor_x1 - left.domain_xyxy[0]
-            ]
-            right_local = np.s_[
-                :, replay.corridor_x0 - right.domain_xyxy[0]:
-                replay.corridor_x1 - right.domain_xyxy[0]
-            ]
-            canonical_replay.append(replace(
-                replay,
-                left_source_u=left.u[left_local],
-                left_source_v=left.v[left_local],
-                left_valid=left.valid[left_local] != 0,
-                left_component_correction_field_id=left.field_id[left_local],
-                right_source_u=right.u[right_local],
-                right_source_v=right.v[right_local],
-                right_valid=right.valid[right_local] != 0,
-                right_component_correction_field_id=right.field_id[right_local],
-            ))
-        replay_pairs = tuple(canonical_replay)
+        if (
+            source_correction_registry is None
+            or component_patch_set is None
+            or component_chain_audit is None
+        ):
+            raise ValueError("S1.3 R4 pre-render estimation authority is incomplete")
+        estimation_result, formal_provider, expected_support_provider = (
+            _estimate_s13_m5_pre_render(
+                schedule=schedule, calibration=calibration, vertical=vertical,
+                pairs=tuple(pairs), raw_cache=raw_cache,
+                registry=source_correction_registry, patch_set=component_patch_set,
+                component_audit=component_chain_audit,
+                final_map_provider=formal_provider,
+                performance_counters={
+                "component_linear_solve_count": component_linear_solve_count,
+                "component_gain_candidate_count": component_gain_candidate_count,
+                "component_segment_candidate_count": component_segment_candidate_count,
+                "component_split_count": component_split_count,
+                "roi_candidate_pixels": roi_candidate_pixels,
+                "roi_preview_count": roi_preview_count,
+                },
+            )
+        )
+        source_map_oracles = list(estimation_result.final_source_map_oracles)
+        geometry, final, replay_pairs = _finalize_s13_m5_render(
+            estimate=estimation_result, schedule=schedule, calibration=calibration,
+            vertical=vertical, selected_hypothesis_ids=selected_hypothesis_ids,
+            placement_methods=placement_methods, map_provider=formal_provider,
+            expected_support_provider=expected_support_provider,
+        )
+        p2_full_resolution_render_count += 2
+    else:
+        source_map_oracles = []
+        geometry = render_s13_p2_from_raw(
+            schedule, calibration, cached_image_loader, vertical, pairs,
+            final_seams=False, selected_hypothesis_ids=selected_hypothesis_ids,
+            placement_methods=placement_methods,
+        )
+        final = render_s13_p2_from_raw(
+            schedule, calibration, cached_image_loader, vertical, pairs,
+            final_seams=True, selected_hypothesis_ids=selected_hypothesis_ids,
+            placement_methods=placement_methods,
+        )
+        p2_full_resolution_render_count += 2
+        replay_pairs = build_s13_p2_replay(schedule, calibration, vertical, pairs)
     if component_chain_audit is not None:
         exterior_mismatch = 0
         valid_mismatch = 0
         minimum_jacobian = math.inf
+        minimum_jacobian_ratio = math.inf
         maximum_combined_displacement = 0.0
+        source_out_of_bounds = 0
+        changed_map_pixels = 0
+        labelled_map_pixels = 0
         field_authority_valid = True
         correction_domain_valid = True
         correction_arrays_finite = True
         maximum_component_offset = 0.0
         resolved_field_overlap_count = 0
         known_field_ids = set(component_field_ids.values())
+        base_oracle_by_source = {
+            row.source_index: row
+            for row in estimation_result.base_source_map_oracles
+        } if estimation_result is not None else {}
         for oracle in source_map_oracles:
             x0, _y0, x1, _y1 = oracle.domain_xyxy
-            candidate = None
-            if oracle.source_index > 0 and pairs[oracle.source_index - 1].alignment is not None:
-                candidate = pairs[oracle.source_index - 1].alignment.selected
-            base = _map_crop(
-                schedule, calibration, oracle.source_index, x0, x1,
-                vertical.global_offsets_px[oracle.source_index], candidate,
-            )
-            base_u = np.array(base[0], dtype=np.float32, copy=True)
-            base_v = np.array(base[1], dtype=np.float32, copy=True)
-            raw_base_u = base_u.copy()
-            raw_base_v = base_v.copy()
-            formal_owner = (
-                final.pixel_provenance["owner_source_index"][:, x0:x1]
-                == oracle.source_index
-            )
-            base_u[formal_owner] = final.pixel_provenance["source_u"][:, x0:x1][
-                formal_owner
-            ]
-            base_v[formal_owner] = final.pixel_provenance["source_v"][:, x0:x1][
-                formal_owner
-            ]
-            base_u[~base[2]] = 0.0
-            base_v[~base[2]] = 0.0
-            base_u[base_u == 0.0] = 0.0
-            base_v[base_v == 0.0] = 0.0
+            base_oracle = base_oracle_by_source.get(oracle.source_index)
+            if base_oracle is None or base_oracle.domain_xyxy != oracle.domain_xyxy:
+                raise ValueError("S1.3 R4 base/final source-map authority is incomplete")
+            base_u, base_v = base_oracle.u, base_oracle.v
+            base_valid = base_oracle.valid != 0
             exterior = oracle.field_id < 0
+            changed = (
+                (oracle.u.view(np.uint32) != base_u.view(np.uint32))
+                | (oracle.v.view(np.uint32) != base_v.view(np.uint32))
+            )
+            changed_map_pixels += int(np.count_nonzero((oracle.valid != 0) & changed))
+            labelled_map_pixels += int(np.count_nonzero(oracle.field_id >= 0))
             exterior_mismatch += int(np.count_nonzero(
                 exterior & ((oracle.u != base_u) | (oracle.v != base_v))
             ))
-            valid_mismatch += int(np.count_nonzero((oracle.valid != 0) != base[2]))
+            valid_mismatch += int(np.count_nonzero((oracle.valid != 0) != base_valid))
             valid = oracle.valid != 0
+            source_out_of_bounds += int(np.count_nonzero(
+                valid & (
+                    (oracle.u < 0.0) | (oracle.u > float(calibration.width - 1))
+                    | (oracle.v < 0.0) | (oracle.v > float(calibration.height - 1))
+                )
+            ))
             interior_valid = valid.copy()
             interior_valid[1:, :] &= valid[:-1, :]
             interior_valid[:-1, :] &= valid[1:, :]
             interior_valid[:, 1:] &= valid[:, :-1]
             interior_valid[:, :-1] &= valid[:, 1:]
-            correction_domain = interior_valid & formal_owner & (oracle.field_id >= 0)
+            correction_domain = interior_valid & (oracle.field_id >= 0)
             field_authority_valid = field_authority_valid and set(
                 np.unique(oracle.field_id).tolist()
             ).issubset({-1, *known_field_ids})
             if np.any(correction_domain):
                 displacement = np.hypot(
-                    oracle.u.astype(np.float64) - raw_base_u.astype(np.float64),
-                    oracle.v.astype(np.float64) - raw_base_v.astype(np.float64),
+                    oracle.u.astype(np.float64) - base_u.astype(np.float64),
+                    oracle.v.astype(np.float64) - base_v.astype(np.float64),
                 )
                 maximum_combined_displacement = max(
                     maximum_combined_displacement,
@@ -3121,10 +3300,24 @@ def run_s13_m5(
                 du_dy, du_dx = np.gradient(oracle.u.astype(np.float64))
                 dv_dy, dv_dx = np.gradient(oracle.v.astype(np.float64))
                 determinant = du_dx * dv_dy - du_dy * dv_dx
+                base_du_dy, base_du_dx = np.gradient(base_u.astype(np.float64))
+                base_dv_dy, base_dv_dx = np.gradient(base_v.astype(np.float64))
+                base_determinant = (
+                    base_du_dx * base_dv_dy - base_du_dy * base_dv_dx
+                )
                 evaluable = correction_domain & np.isfinite(determinant)
                 if np.any(evaluable):
                     minimum_jacobian = min(
                         minimum_jacobian, float(np.min(determinant[evaluable]))
+                    )
+                ratio_evaluable = evaluable & (base_determinant > 0.0)
+                if np.any(ratio_evaluable):
+                    minimum_jacobian_ratio = min(
+                        minimum_jacobian_ratio,
+                        float(np.min(
+                            determinant[ratio_evaluable]
+                            / base_determinant[ratio_evaluable]
+                        )),
                     )
         if source_correction_registry is not None:
             for corrections in source_correction_registry.corrections_by_source.values():
@@ -3163,6 +3356,8 @@ def run_s13_m5(
             component_failures.append("omega_out_exterior_map_changed")
         if valid_mismatch:
             component_failures.append("formal_owner_valid_support_changed")
+        if source_out_of_bounds:
+            component_failures.append("source_map_out_of_bounds")
         if minimum_jacobian < m51_r2_config.minimum_jacobian:
             component_failures.append("minimum_jacobian_failed")
         if maximum_combined_displacement > (
@@ -3208,10 +3403,17 @@ def run_s13_m5(
         component_chain_audit.update({
             "omega_out_exterior_uv_mismatch_count": exterior_mismatch,
             "valid_support_mismatch_count": valid_mismatch,
+            "source_out_of_bounds_pixel_count": source_out_of_bounds,
             "minimum_final_inverse_map_jacobian": (
                 None if not math.isfinite(minimum_jacobian) else minimum_jacobian
             ),
+            "minimum_final_to_base_jacobian_ratio": (
+                None if not math.isfinite(minimum_jacobian_ratio)
+                else minimum_jacobian_ratio
+            ),
             "maximum_combined_map_displacement_px": maximum_combined_displacement,
+            "changed_map_pixel_count": changed_map_pixels,
+            "labelled_map_pixel_count": labelled_map_pixels,
             "field_authority_valid": field_authority_valid,
             "correction_arrays_finite": correction_arrays_finite,
             "correction_domain_valid": correction_domain_valid,
@@ -3560,14 +3762,20 @@ def run_s13_m5(
             "component_chain_seconds": component_chain_seconds,
         },
         source_map_oracles=tuple(source_map_oracles),
+        base_source_map_oracles=(
+            () if estimation_result is None
+            else estimation_result.base_source_map_oracles
+        ),
         component_chain_audit=component_chain_audit,
         component_patch_set=component_patch_set,
         source_correction_registry=source_correction_registry,
+        estimation_result=estimation_result,
     )
 
 
 __all__ = [
-    "S13M5Pair", "S13M5Result", "S13P2Result", "S13PairCorrespondences",
+    "S13M51R4EvidenceContext", "S13M5EstimationResult", "S13M5Pair",
+    "S13M5Result", "S13P2Result", "S13PairCorrespondences",
     "build_s13_p2_replay",
     "estimate_s13_m5_transactions", "render_s13_p2_from_raw", "run_s13_m5",
 ]

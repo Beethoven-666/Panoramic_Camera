@@ -350,11 +350,13 @@ def _verify_completion(p2: Path) -> tuple[dict[str, object], dict[str, object]]:
 def _load_oracles(
     p2: Path,
     manifest: Mapping[str, object],
-) -> dict[int, SourceMapOracle]:
+) -> tuple[dict[int, SourceMapOracle], dict[int, SourceMapOracle], dict[int, tuple[int, int]]]:
     rows = manifest.get("sources")
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
         raise ValueError("S1.3 v6-r2 source-map manifest has no sources")
     result: dict[int, SourceMapOracle] = {}
+    base_result: dict[int, SourceMapOracle] = {}
+    raw_sizes: dict[int, tuple[int, int]] = {}
     for row in rows:
         if not isinstance(row, Mapping):
             raise ValueError("S1.3 v6-r2 source-map row is invalid")
@@ -386,9 +388,55 @@ def _load_oracles(
         if source_index in result:
             raise ValueError("S1.3 v6-r2 source-map source index is duplicated")
         result[source_index] = oracle
+        base_path = _safe_asset(p2, row.get("base_asset"), "base source-map oracle")
+        if sha256_file(base_path) != _require_sha(
+            row.get("base_asset_sha256"), "base oracle asset SHA"
+        ):
+            raise ValueError("S1.3 v6-r2 base source-map oracle asset SHA mismatch")
+        try:
+            with np.load(base_path, allow_pickle=False) as stored:
+                base_arrays = {
+                    name: np.asarray(stored[name]).copy() for name in stored.files
+                }
+        except (OSError, ValueError, KeyError) as exc:
+            raise ValueError("S1.3 v6-r2 base source-map oracle asset is invalid") from exc
+        if set(base_arrays) != required:
+            raise ValueError("S1.3 v6-r2 base source-map oracle fields disagree")
+        base_source_index = int(np.asarray(base_arrays["source_index"]).item())
+        base_domain = tuple(
+            int(value) for value in np.asarray(base_arrays["domain_xyxy"]).tolist()
+        )
+        if base_source_index != source_index or base_domain != domain:
+            raise ValueError("S1.3 v6-r2 base/final source-map headers disagree")
+        base_oracle = source_map_oracle_from_arrays(
+            source_index=base_source_index,
+            domain_xyxy=base_domain,  # type: ignore[arg-type]
+            u=base_arrays["u"],
+            v=base_arrays["v"],
+            valid=base_arrays["valid"],
+            field_id=base_arrays["field_id"],
+        )
+        if base_oracle.oracle_sha256 != _require_sha(
+            row.get("base_oracle_sha256"), "base oracle SHA"
+        ):
+            raise ValueError("S1.3 v6-r2 base source-map canonical SHA mismatch")
+        if np.any(base_oracle.field_id != -1):
+            raise ValueError("S1.3 v6-r2 pre-C2E base oracle contains correction labels")
+        size = row.get("raw_source_size")
+        if (
+            not isinstance(size, Sequence)
+            or isinstance(size, (str, bytes))
+            or len(size) != 2
+            or any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in size)
+        ):
+            raise ValueError("S1.3 v6-r2 raw source size authority is invalid")
+        base_result[source_index] = base_oracle
+        raw_sizes[source_index] = (int(size[0]), int(size[1]))
     if len(result) != manifest.get("source_count"):
         raise ValueError("S1.3 v6-r2 source-map source count disagrees")
-    return result
+    if set(base_result) != set(result) or set(raw_sizes) != set(result):
+        raise ValueError("S1.3 v6-r2 base/final source-map universe disagrees")
+    return result, base_result, raw_sizes
 
 
 def _field_table(corrections: Mapping[str, object]) -> dict[int, Mapping[str, object]]:
@@ -410,9 +458,36 @@ def _field_table(corrections: Mapping[str, object]) -> dict[int, Mapping[str, ob
             "source_correction_asset_sha256",
         ):
             _require_sha(row.get(name), f"field table {name}")
+        segment_id = row.get("segment_id")
+        if not isinstance(segment_id, str) or not segment_id:
+            raise ValueError("S1.3 v6-r2 source correction segment ID is invalid")
+        correction_rows = row.get("correction_rows")
+        if not isinstance(correction_rows, Sequence) or isinstance(
+            correction_rows, (str, bytes)
+        ) or not correction_rows:
+            raise ValueError("S1.3 v6-r2 field table correction-row authority is invalid")
         result[field_id] = row
     if tuple(sorted(result)) != tuple(range(len(result))):
         raise ValueError("S1.3 v6-r2 source correction field IDs are not canonical")
+    return result
+
+
+def _segment_support_authorities(
+    component: Mapping[str, object],
+) -> dict[str, str]:
+    rows = component.get("segment_assets", [])
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        raise ValueError("S1.3 v6-r2 segment support authority table is invalid")
+    result: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("S1.3 v6-r2 segment support authority row is invalid")
+        segment_id = row.get("segment_id")
+        if not isinstance(segment_id, str) or not segment_id or segment_id in result:
+            raise ValueError("S1.3 v6-r2 segment support identity is invalid")
+        result[segment_id] = _require_sha(
+            row.get("support_authority_sha256"), "segment support authority SHA"
+        )
     return result
 
 
@@ -478,12 +553,16 @@ def _correction_asset_authorities(
 
 
 def _verify_correction_asset_semantics(
-    p2: Path, corrections: Mapping[str, object]
+    p2: Path,
+    corrections: Mapping[str, object],
+    field_table: Mapping[int, Mapping[str, object]],
+    segment_support: Mapping[str, str],
 ) -> dict[str, object]:
     rows = corrections.get("sources", [])
     maximum_offset = 0.0
     overlap_pixels = 0
     asset_count = 0
+    observed_rows: list[dict[str, object]] = []
     for row in rows:
         if not isinstance(row, Mapping) or "correction_asset" not in row:
             continue
@@ -492,8 +571,23 @@ def _verify_correction_asset_semantics(
             domains = np.asarray(stored["domains_xyxy"], dtype=np.int32)
             fields = np.asarray(stored["field_id"], dtype=np.int32)
             segment_ids = np.asarray(stored["segment_ids"])
-            if domains.shape != (len(fields), 4) or len(segment_ids) != len(fields):
+            correction_shas = np.asarray(stored["correction_sha256"])
+            support_shas = np.asarray(stored["support_authority_sha256"])
+            if (
+                domains.shape != (len(fields), 4)
+                or len(segment_ids) != len(fields)
+                or len(correction_shas) != len(fields)
+                or len(support_shas) != len(fields)
+            ):
                 raise ValueError("S1.3 v6-r2 correction asset authority shapes disagree")
+            source_index = row.get("source_index")
+            if not isinstance(source_index, int) or isinstance(source_index, bool):
+                raise ValueError("S1.3 v6-r2 correction source identity is invalid")
+            asset_sha = _require_sha(
+                row.get("correction_asset_sha256"), "source correction asset SHA"
+            )
+            if list(segment_ids.astype(str)) != list(row.get("contributors", [])):
+                raise ValueError("S1.3 v6-r2 correction contributors disagree")
             occupied: set[tuple[int, int]] = set()
             for index, domain in enumerate(domains):
                 names = (
@@ -506,6 +600,22 @@ def _verify_correction_asset_semantics(
                 dv = np.asarray(stored[names[1]], dtype=np.float64)
                 weight = np.asarray(stored[names[2]], dtype=np.float64)
                 x0, y0, x1, y1 = (int(value) for value in domain)
+                segment_id = str(segment_ids[index])
+                field_id = int(fields[index])
+                correction_sha = _require_sha(
+                    str(correction_shas[index]), "correction row SHA"
+                )
+                support_sha = _require_sha(
+                    str(support_shas[index]), "correction row support SHA"
+                )
+                field = field_table.get(field_id)
+                if (
+                    field is None
+                    or field.get("segment_id") != segment_id
+                    or segment_support.get(segment_id) != support_sha
+                    or field.get("support_sha256") != support_sha
+                ):
+                    raise ValueError("S1.3 v6-r2 correction row segment/support authority disagrees")
                 if (
                     du.shape != dv.shape or du.shape != weight.shape
                     or du.shape != (y1 - y0, x1 - x0)
@@ -524,13 +634,52 @@ def _verify_correction_asset_semantics(
                 coordinates = {(y0 + int(y), x0 + int(x)) for y, x in zip(active_y, active_x, strict=True)}
                 overlap_pixels += len(occupied & coordinates)
                 occupied.update(coordinates)
+                observed_rows.append({
+                    "source_index": source_index,
+                    "row_index": index,
+                    "field_id": field_id,
+                    "segment_id": segment_id,
+                    "domain_xyxy": [x0, y0, x1, y1],
+                    "correction_sha256": correction_sha,
+                    "support_sha256": support_sha,
+                    "source_correction_asset_sha256": asset_sha,
+                })
             asset_count += 1
     if maximum_offset > 3.0 + 1e-6:
         raise ValueError("S1.3 v6-r2 maximum component offset is exceeded")
     if overlap_pixels:
         raise ValueError("S1.3 v6-r2 resolved correction fields overlap")
+    declared_rows: list[dict[str, object]] = []
+    for field_id, field in field_table.items():
+        for row in field["correction_rows"]:  # validated by _field_table
+            if not isinstance(row, Mapping):
+                raise ValueError("S1.3 v6-r2 field correction-row entry is invalid")
+            declared = {
+                "source_index": row.get("source_index"),
+                "row_index": row.get("row_index"),
+                "field_id": field_id,
+                "segment_id": field.get("segment_id"),
+                "domain_xyxy": row.get("domain_xyxy"),
+                "correction_sha256": row.get("correction_sha256"),
+                "support_sha256": row.get("support_sha256"),
+                "source_correction_asset_sha256": row.get(
+                    "source_correction_asset_sha256"
+                ),
+            }
+            for name in (
+                "correction_sha256", "support_sha256",
+                "source_correction_asset_sha256",
+            ):
+                _require_sha(declared[name], f"declared correction row {name}")
+            declared_rows.append(declared)
+    def row_key(value: Mapping[str, object]) -> tuple[int, int]:
+        return int(value["field_id"]), int(value["source_index"])
+
+    if sorted(observed_rows, key=row_key) != sorted(declared_rows, key=row_key):
+        raise ValueError("S1.3 v6-r2 field table/correction row authority disagrees")
     return {
         "asset_count": asset_count,
+        "correction_row_count": len(observed_rows),
         "maximum_component_offset_px": maximum_offset,
         "resolved_field_overlap_pixel_count": overlap_pixels,
     }
@@ -605,6 +754,110 @@ def _oracle_region(
     ox0, oy0, _ox1, _oy1 = oracle.domain_xyxy
     region = np.s_[y0 - oy0 : y1 - oy0, x0 - ox0 : x1 - ox0]
     return oracle.u[region], oracle.v[region], oracle.valid[region], oracle.field_id[region]
+
+
+def _verify_base_final_map_semantics(
+    final_oracles: Mapping[int, SourceMapOracle],
+    base_oracles: Mapping[int, SourceMapOracle],
+    raw_sizes: Mapping[int, tuple[int, int]],
+    field_table: Mapping[int, Mapping[str, object]],
+) -> dict[str, object]:
+    """Recompute every post-C2E map gate from independent base/final assets."""
+
+    exterior_mismatch = 0
+    valid_mismatch = 0
+    source_oob = 0
+    maximum_displacement = 0.0
+    minimum_jacobian = math.inf
+    minimum_jacobian_ratio = math.inf
+    changed_pixels = 0
+    labelled_pixels = 0
+    for source_index, final in final_oracles.items():
+        base = base_oracles.get(source_index)
+        if base is None or base.domain_xyxy != final.domain_xyxy:
+            raise ValueError("S1.3 v6-r2 base/final source-map authority disagrees")
+        base_valid = base.valid != 0
+        final_valid = final.valid != 0
+        valid_mismatch += int(np.count_nonzero(base_valid != final_valid))
+        changed = final_valid & (
+            (final.u.view(np.uint32) != base.u.view(np.uint32))
+            | (final.v.view(np.uint32) != base.v.view(np.uint32))
+        )
+        labelled = final.field_id >= 0
+        labelled_pixels += int(np.count_nonzero(labelled))
+        changed_pixels += int(np.count_nonzero(changed))
+        exterior_mismatch += int(np.count_nonzero(changed & ~labelled))
+        if np.any(labelled & ~final_valid):
+            raise ValueError("S1.3 v6-r2 correction field lies outside valid map support")
+        if any(
+            int(value) not in field_table
+            for value in np.unique(final.field_id[labelled])
+        ):
+            raise ValueError("S1.3 v6-r2 final oracle field ID is absent from field table")
+        displacement = np.hypot(
+            final.u.astype(np.float64) - base.u.astype(np.float64),
+            final.v.astype(np.float64) - base.v.astype(np.float64),
+        )
+        if np.any(labelled):
+            maximum_displacement = max(
+                maximum_displacement, float(np.max(displacement[labelled]))
+            )
+        raw_width, raw_height = raw_sizes[source_index]
+        source_oob += int(np.count_nonzero(
+            final_valid
+            & (
+                (final.u < 0.0) | (final.u > float(raw_width - 1))
+                | (final.v < 0.0) | (final.v > float(raw_height - 1))
+            )
+        ))
+        if min(final.u.shape) >= 2:
+            final_du_dy, final_du_dx = np.gradient(final.u.astype(np.float64))
+            final_dv_dy, final_dv_dx = np.gradient(final.v.astype(np.float64))
+            base_du_dy, base_du_dx = np.gradient(base.u.astype(np.float64))
+            base_dv_dy, base_dv_dx = np.gradient(base.v.astype(np.float64))
+            final_det = final_du_dx * final_dv_dy - final_du_dy * final_dv_dx
+            base_det = base_du_dx * base_dv_dy - base_du_dy * base_dv_dx
+            interior = final_valid & base_valid & labelled
+            interior[1:, :] &= final_valid[:-1, :] & base_valid[:-1, :]
+            interior[:-1, :] &= final_valid[1:, :] & base_valid[1:, :]
+            interior[:, 1:] &= final_valid[:, :-1] & base_valid[:, :-1]
+            interior[:, :-1] &= final_valid[:, 1:] & base_valid[:, 1:]
+            evaluable = interior & np.isfinite(final_det) & np.isfinite(base_det)
+            if np.any(evaluable):
+                minimum_jacobian = min(
+                    minimum_jacobian, float(np.min(final_det[evaluable]))
+                )
+                positive_base = evaluable & (base_det > 0.0)
+                if np.any(positive_base):
+                    minimum_jacobian_ratio = min(
+                        minimum_jacobian_ratio,
+                        float(np.min(final_det[positive_base] / base_det[positive_base])),
+                    )
+    if valid_mismatch:
+        raise ValueError("S1.3 v6-r2 base/final valid support changed")
+    if exterior_mismatch:
+        raise ValueError("S1.3 v6-r2 omega-out exterior source map changed")
+    if source_oob:
+        raise ValueError("S1.3 v6-r2 final source map is out of bounds")
+    if math.isfinite(minimum_jacobian) and minimum_jacobian < 0.5 - 1e-9:
+        raise ValueError("S1.3 v6-r2 final inverse-map Jacobian failed")
+    if maximum_displacement > 8.0 + 1e-6:
+        raise ValueError("S1.3 v6-r2 combined source-map displacement exceeded")
+    return {
+        "omega_out_exterior_uv_mismatch_count": exterior_mismatch,
+        "valid_support_mismatch_count": valid_mismatch,
+        "source_out_of_bounds_pixel_count": source_oob,
+        "maximum_combined_map_displacement_px": maximum_displacement,
+        "minimum_final_inverse_map_jacobian": (
+            None if not math.isfinite(minimum_jacobian) else minimum_jacobian
+        ),
+        "minimum_final_to_base_jacobian_ratio": (
+            None if not math.isfinite(minimum_jacobian_ratio)
+            else minimum_jacobian_ratio
+        ),
+        "changed_map_pixel_count": changed_pixels,
+        "labelled_map_pixel_count": labelled_pixels,
+    }
 
 
 def _verify_replay(
@@ -690,7 +943,7 @@ def _verify_provenance(
     p2: Path,
     oracles: Mapping[int, SourceMapOracle],
     field_table: Mapping[int, Mapping[str, object]],
-) -> None:
+) -> dict[str, object]:
     try:
         with np.load(p2 / "p2_pixel_provenance.npz", allow_pickle=False) as stored:
             arrays = {name: np.asarray(stored[name]).copy() for name in stored.files}
@@ -729,6 +982,31 @@ def _verify_provenance(
         )
         if not all(checks):
             raise ValueError("S1.3 v6-r2 provenance map disagrees with its oracle")
+    try:
+        with np.load(p2 / "p2_seams.npz", allow_pickle=False) as stored:
+            seams = np.asarray(stored["seams_x_by_row"], dtype=np.int32)
+    except (OSError, ValueError, KeyError) as exc:
+        raise ValueError("S1.3 v6-r2 seam topology asset is invalid") from exc
+    if seams.ndim != 2 or seams.shape[1] != valid.shape[0]:
+        raise ValueError("S1.3 v6-r2 seam topology shape disagrees")
+    if seams.size and (
+        np.any(seams < 0)
+        or np.any(seams > valid.shape[1])
+        or np.any(np.diff(seams, axis=0) < 0)
+    ):
+        raise ValueError("S1.3 v6-r2 seam family topology is invalid")
+    columns = np.arange(valid.shape[1], dtype=np.int32)[None, :]
+    derived_owner = np.zeros(valid.shape, dtype=np.int32)
+    for seam in seams:
+        derived_owner += columns >= seam[:, None]
+    if np.any(owner[valid] != derived_owner[valid]) or np.any(owner[~valid] != -1):
+        raise ValueError("S1.3 v6-r2 owner provenance disagrees with seam topology")
+    return {
+        "seam_count": int(seams.shape[0]),
+        "valid_owner_pixel_count": int(np.count_nonzero(valid)),
+        "owner_valid_topology_unchanged": True,
+        "seam_topology_valid": True,
+    }
 
 
 def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
@@ -833,14 +1111,20 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
     segment_authorities = _segment_authorities(
         root, component, config_sha256=str(completion["config_sha256"])
     )
+    segment_support = _segment_support_authorities(component)
     correction_asset_authorities = _correction_asset_authorities(root, corrections)
-    correction_semantics = _verify_correction_asset_semantics(root, corrections)
+    correction_semantics = _verify_correction_asset_semantics(
+        root, corrections, field_table, segment_support
+    )
     for row in field_table.values():
         if row["segment_transaction_sha256"] not in segment_authorities:
             raise ValueError("S1.3 v6-r2 field table references an unknown segment transaction")
         if row["source_correction_asset_sha256"] not in correction_asset_authorities:
             raise ValueError("S1.3 v6-r2 field table references an unknown correction asset")
-    oracles = _load_oracles(root, oracle_manifest)
+    oracles, base_oracles, raw_sizes = _load_oracles(root, oracle_manifest)
+    map_semantics = _verify_base_final_map_semantics(
+        oracles, base_oracles, raw_sizes, field_table
+    )
     correction_sources = corrections.get("sources")
     if not isinstance(correction_sources, Sequence) or isinstance(correction_sources, (str, bytes)):
         raise ValueError("S1.3 v6-r2 source correction sources are invalid")
@@ -850,7 +1134,14 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
             raise ValueError("S1.3 v6-r2 source correction source row is invalid")
         source_index = int(row["source_index"])
         oracle = oracles.get(source_index)
-        if oracle is None or row.get("source_map_oracle_sha256") != oracle.oracle_sha256:
+        base_oracle = base_oracles.get(source_index)
+        if (
+            oracle is None
+            or base_oracle is None
+            or row.get("source_map_oracle_sha256") != oracle.oracle_sha256
+            or row.get("base_source_map_oracle_sha256")
+            != base_oracle.oracle_sha256
+        ):
             raise ValueError("S1.3 v6-r2 source correction/oracle binding disagrees")
         bound_sources.add(source_index)
     if bound_sources != set(oracles):
@@ -871,7 +1162,7 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
         field_table,
         segment_authorities,
     )
-    _verify_provenance(root, oracles, field_table)
+    topology_semantics = _verify_provenance(root, oracles, field_table)
     hard_audit = _json(root / "hard_audit.json", "hard audit")
     component_hard = hard_audit.get("component_chain_c2e")
     if not isinstance(component_hard, Mapping):
@@ -902,6 +1193,18 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
         correction_semantics["maximum_component_offset_px"]
     )) > 1e-6:
         raise ValueError("S1.3 v6-r2 component hard audit offset disagrees")
+    for name, measured in map_semantics.items():
+        recorded = component_hard.get(name)
+        if measured is None:
+            if recorded is not None:
+                raise ValueError("S1.3 v6-r2 component hard audit map authority disagrees")
+        elif not isinstance(recorded, (int, float)) or abs(
+            float(recorded) - float(measured)
+        ) > 1e-6:
+            raise ValueError("S1.3 v6-r2 component hard audit map authority disagrees")
+    for name in ("owner_valid_topology_unchanged", "seam_topology_valid"):
+        if component_hard.get(name) is not topology_semantics[name]:
+            raise ValueError("S1.3 v6-r2 component hard audit topology disagrees")
     return {
         "schema": "gemini305-video-s13-v6-r2-semantic-verification/v1",
         "passed": True,
@@ -909,6 +1212,8 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
         "source_count": len(oracles),
         "field_count": len(field_table),
         "obligation_coverage": dict(obligation_coverage),
+        "map_semantics": map_semantics,
+        "topology_semantics": topology_semantics,
         "manifest_sha256": explicit,
     }
 

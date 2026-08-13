@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from panorama_demo.session import CameraIntrinsics
 from panorama_demo.video_s12_schedule import build_s012_schedule
@@ -11,12 +12,16 @@ from panorama_demo.video_s13_alignment import (
     reestimate_s13_final_corridor_alignment,
 )
 from panorama_demo.video_s13_m5 import (
+    S13M5EstimationResult,
     build_s13_p2_replay,
     estimate_s13_m5_transactions,
+    plan_s13_m5_oracle_domains,
     render_s13_component_roi_from_raw,
     render_s13_p2_from_raw,
     run_s13_m5,
+    source_map_oracle_provider,
 )
+from panorama_demo.video_s13_m51_r2 import S13M51R4Config
 from panorama_demo.video_s13_quality import (
     long_horizontal_structure_metrics,
     long_horizontal_structure_nondegrading,
@@ -512,6 +517,93 @@ def test_run_m5_reports_same_seam_sequence_selection_policy() -> None:
     assert result.selection_audit["applied_unevaluable_indices"] == []
     assert "seam_output_sequence_audit" in result.selection_audit
     assert len(result.selection_audit["seam_output_pair_audits"]) == 2
+
+
+def test_r4_pre_render_estimation_freezes_oracle_domain_and_evidence_context(
+    monkeypatch,
+) -> None:
+    import panorama_demo.video_s13_m5 as m5_module
+
+    calibration, schedule, images, vertical = _m5_inputs()
+    parent = render_s13_p1_from_raw(
+        schedule, calibration, images.__getitem__, vertical
+    ).image
+    decode_count: dict[int, int] = {}
+
+    def loader(frame_id: int) -> np.ndarray:
+        decode_count[frame_id] = decode_count.get(frame_id, 0) + 1
+        return images[frame_id]
+
+    original_metrics = m5_module.pair_edge_registration_metrics
+
+    def metrics_with_forward_context(*args, **kwargs):
+        sink = kwargs.get("forward_evidence_sink")
+        if sink is not None:
+            sink.append({"components": (), "test_context": True})
+        kwargs["forward_evidence_sink"] = None
+        return original_metrics(*args, **kwargs)
+
+    monkeypatch.setattr(
+        m5_module, "pair_edge_registration_metrics", metrics_with_forward_context
+    )
+    result = run_s13_m5(
+        schedule, calibration, loader, vertical, parent,
+        parent_stage_sha256="f" * 64,
+        m51_r2_config=S13M51R4Config(),
+    )
+    estimate = result.estimation_result
+    assert isinstance(estimate, S13M5EstimationResult)
+    context = estimate.evidence_context
+    assert context.stage_order == (
+        "pair_estimation", "topology_repair", "component_rescue",
+        "source_map_oracle_freeze", "formal_render",
+    )
+    assert result.performance["p2_full_resolution_render_count"] == 2
+    assert decode_count == {frame_id: 1 for frame_id in images}
+    assert all(not image.flags.writeable for image in context.raw_rgb_by_frame.values())
+    with pytest.raises(TypeError):
+        context.raw_rgb_by_frame[999] = np.zeros((1, 1, 3), np.uint8)
+    assert estimate.source_correction_registry is result.source_correction_registry
+    assert estimate.pairs is result.pairs
+    for pair_index, probe in context.component_forward_probes.items():
+        assert probe is result.pairs[pair_index].component_forward_probe
+    for oracle in estimate.final_source_map_oracles:
+        source = oracle.source_index
+        domains = []
+        owned = result.final_result.pixel_provenance["owner_source_index"] == source
+        columns = np.flatnonzero(np.any(owned, axis=0))
+        if columns.size:
+            domains.append((int(columns[0]), int(columns[-1]) + 1))
+        for replay in result.replay_pairs:
+            if source in (replay.left_source_index, replay.right_source_index):
+                domains.append((replay.corridor_x0, replay.corridor_x1))
+        assert oracle.domain_xyxy == (
+            min(row[0] for row in domains), 0,
+            max(row[1] for row in domains), schedule.canvas_height,
+        )
+        assert oracle.oracle_sha256 == next(
+            row.oracle_sha256 for row in result.source_map_oracles
+            if row.source_index == source
+        )
+    assert [row.domain_xyxy for row in estimate.base_source_map_oracles] == [
+        row.domain_xyxy for row in estimate.final_source_map_oracles
+    ]
+    assert all(np.all(row.field_id == -1) for row in estimate.base_source_map_oracles)
+    strict = source_map_oracle_provider(estimate.final_source_map_oracles)
+    first = estimate.final_source_map_oracles[0]
+    with pytest.raises(ValueError, match="exceeds frozen domain"):
+        strict(first.source_index, first.domain_xyxy[0] - 1, first.domain_xyxy[2])
+
+    active = np.zeros((3, 5), np.float32)
+    active[:, 1:4] = 1.0
+    fake_registry = type("Registry", (), {
+        "corrections_by_source": {
+            1: (type("Correction", (), {"weight": active, "x0": 70})(),)
+        }
+    })()
+    planned = plan_s13_m5_oracle_domains(schedule, result.pairs, fake_registry)
+    assert planned[1][0] <= 70
+    assert planned[1][1] >= 75
 
 
 def test_diagnostic_score_cannot_reject_hard_safe_p2(monkeypatch) -> None:

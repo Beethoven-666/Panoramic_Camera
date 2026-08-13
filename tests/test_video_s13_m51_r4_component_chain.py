@@ -74,6 +74,7 @@ class _Config:
     split_on_solver_outlier: bool = True
     allow_partial_application: bool = True
     maximum_segment_split_depth: int = 4
+    maximum_exact_conflict_group_nodes: int = 12
 
     def __post_init__(self) -> None:
         if self.component_match_weights is None:
@@ -631,6 +632,115 @@ def test_correction_is_local_readonly_and_patch_conflicts_choose_utility() -> No
     assert dict(registry.field_id_by_segment) == {high.segment.segment_id: 0}
     with pytest.raises(TypeError):
         registry.corrections_by_source[99] = ()
+
+
+def _conflict_test_candidate(
+    name: str,
+    *,
+    correction_points: tuple[tuple[int, int], ...],
+    rescued_seams: int,
+    utility_penalty: float = 1.0,
+) -> S13ComponentSegmentCandidate:
+    unique = sum((index + 1) * ord(value) for index, value in enumerate(name))
+    observation = _observation(unique, unique, 2.0)
+    segment = S13ComponentApplicationSegment.create(
+        parent_chain_id=f"conflict-{name}", observations=(observation,)
+    )
+    corrections = tuple(
+        S13SourceComponentCorrection(
+            segment_id=segment.segment_id,
+            source_index=source_index,
+            frame_id=1000 + source_index,
+            x0=x,
+            x1=x + 1,
+            y0=0,
+            y1=1,
+            delta_u=np.zeros((1, 1), np.float32),
+            delta_v=np.zeros((1, 1), np.float32),
+            weight=np.ones((1, 1), np.float32),
+            correction_sha256=f"{unique + source_index + x:064x}"[-64:],
+        )
+        for source_index, x in correction_points
+    )
+    return S13ComponentSegmentCandidate(
+        segment,
+        (1.0,),
+        1.0,
+        corrections,
+        "resolved",
+        (),
+        {
+            "rescued_severe_seam_count": rescued_seams,
+            "worst_seam_absolute_improvement": 0.0,
+            "supported_unique_edge_columns": 0,
+            "post_maximum_step": utility_penalty,
+            "correction_energy": utility_penalty,
+        },
+    )
+
+
+def test_conflicts_are_solved_exactly_per_connected_component() -> None:
+    center = _conflict_test_candidate(
+        "center", correction_points=((0, 10), (0, 30)), rescued_seams=3
+    )
+    left = _conflict_test_candidate(
+        "left", correction_points=((0, 10),), rescued_seams=2
+    )
+    right = _conflict_test_candidate(
+        "right", correction_points=((0, 30),), rescued_seams=2
+    )
+    isolated = tuple(
+        _conflict_test_candidate(
+            f"isolated-{index}",
+            correction_points=((index + 1, index),),
+            rescued_seams=1,
+        )
+        for index in range(10)
+    )
+    candidates = (center, left, right, *isolated)
+
+    forward = select_s13_component_patch_set(candidates, config=_Config())
+    reverse = select_s13_component_patch_set(tuple(reversed(candidates)), config=_Config())
+
+    expected = tuple(sorted((left.segment.segment_id, right.segment.segment_id, *(
+        row.segment.segment_id for row in isolated
+    ))))
+    assert len(candidates) == 13
+    assert forward.accepted_segment_ids == expected
+    assert reverse.accepted_segment_ids == expected
+    assert forward.rejected_segment_ids == (center.segment.segment_id,)
+    assert reverse.rejected_segment_ids == (center.segment.segment_id,)
+    assert forward.audit["conflict_components"] == reverse.audit["conflict_components"]
+    methods = [row["selection_method"] for row in forward.audit["conflict_components"]]
+    assert methods.count("exact") == 1
+    assert methods.count("isolated") == 10
+    assert "lexicographic_greedy" not in methods
+
+
+def test_isolated_candidates_are_all_retained_independent_of_total_count() -> None:
+    candidates = tuple(
+        _conflict_test_candidate(
+            f"weak-isolated-{index}",
+            correction_points=((index, index),),
+            rescued_seams=0,
+            utility_penalty=100.0,
+        )
+        for index in range(13)
+    )
+
+    patch = select_s13_component_patch_set(
+        tuple(reversed(candidates)),
+        config=_Config(maximum_exact_conflict_group_nodes=2),
+    )
+
+    assert patch.accepted_segment_ids == tuple(sorted(
+        candidate.segment.segment_id for candidate in candidates
+    ))
+    assert patch.rejected_segment_ids == ()
+    assert all(
+        row["selection_method"] == "isolated"
+        for row in patch.audit["conflict_components"]
+    )
 
 
 def test_same_source_nonintersecting_segments_are_both_selected() -> None:

@@ -1454,6 +1454,10 @@ def _run_m5(
             )
             correction_sources: list[dict[str, object]] = []
             correction_asset_by_source: dict[int, dict[str, object]] = {}
+            support_sha_by_segment = {
+                str(row["segment_id"]): str(row["support_authority_sha256"])
+                for row in segment_assets
+            }
             patch_set = m5.component_patch_set
             if patch_set is not None:
                 for source_index, corrections in patch_set.corrections_by_source.items():
@@ -1472,6 +1476,10 @@ def _run_m5(
                         "correction_sha256": np.asarray([
                             row.correction_sha256 for row in corrections
                         ]),
+                        "support_authority_sha256": np.asarray([
+                            support_sha_by_segment[row.segment_id]
+                            for row in corrections
+                        ]),
                     }
                     for index, correction in enumerate(corrections):
                         correction_arrays[f"delta_u_{index:04d}"] = correction.delta_u
@@ -1489,13 +1497,21 @@ def _run_m5(
             oracle_by_source = {
                 oracle.source_index: oracle for oracle in m5.source_map_oracles
             }
+            base_oracle_by_source = {
+                oracle.source_index: oracle
+                for oracle in m5.base_source_map_oracles
+            }
             for source_index, oracle in sorted(oracle_by_source.items()):
+                base_oracle = base_oracle_by_source.get(source_index)
+                if base_oracle is None:
+                    raise RuntimeError("S1.3 final oracle lacks pre-C2E base authority")
                 correction_sources.append({
                     "source_index": source_index,
                     "contributors": correction_asset_by_source.get(
                         source_index, {}
                     ).get("contributors", []),
                     "source_map_oracle_sha256": oracle.oracle_sha256,
+                    "base_source_map_oracle_sha256": base_oracle.oracle_sha256,
                     **correction_asset_by_source.get(source_index, {}),
                 })
             segment_asset_by_id = {
@@ -1507,10 +1523,6 @@ def _run_m5(
                 if "correction_asset_sha256" in source
                 for segment_id in source.get("contributors", [])
             }
-            support_sha_by_segment = {
-                str(row["segment_id"]): str(row["support_authority_sha256"])
-                for row in segment_assets
-            }
             field_table = [
                 {
                     "field_id": int(field_id),
@@ -1521,6 +1533,31 @@ def _run_m5(
                     "support_sha256": support_sha_by_segment[str(segment_id)],
                     "source_correction_asset_sha256": correction_sha_by_segment[
                         str(segment_id)
+                    ],
+                    "correction_rows": [
+                        {
+                            "source_index": int(source_index),
+                            "row_index": int(row_index),
+                            "domain_xyxy": [
+                                int(correction.x0), int(correction.y0),
+                                int(correction.x1), int(correction.y1),
+                            ],
+                            "correction_sha256": correction.correction_sha256,
+                            "support_sha256": support_sha_by_segment[
+                                str(segment_id)
+                            ],
+                            "source_correction_asset_sha256": (
+                                correction_asset_by_source[source_index][
+                                    "correction_asset_sha256"
+                                ]
+                            ),
+                        }
+                        for source_index, corrections in sorted(
+                            patch_set.corrections_by_source.items()
+                            if patch_set is not None else ()
+                        )
+                        for row_index, correction in enumerate(corrections)
+                        if correction.segment_id == str(segment_id)
                     ],
                 }
                 for segment_id, field_id in sorted(
@@ -1544,8 +1581,16 @@ def _run_m5(
                 pending / "source_corrections/manifest.json"
             )
             source_rows: list[dict[str, object]] = []
+            base_oracle_by_source = {
+                oracle.source_index: oracle
+                for oracle in m5.base_source_map_oracles
+            }
             for oracle in m5.source_map_oracles:
+                base_oracle = base_oracle_by_source.get(oracle.source_index)
+                if base_oracle is None:
+                    raise RuntimeError("S1.3 source-map oracle has no pre-C2E base authority")
                 asset = f"source_{oracle.source_index:04d}.npz"
+                base_asset = f"base_source_{oracle.source_index:04d}.npz"
                 write_npz(pending / "source_maps" / asset, {
                     "source_index": np.asarray(oracle.source_index, dtype=np.int32),
                     "domain_xyxy": np.asarray(oracle.domain_xyxy, dtype=np.int32),
@@ -1554,12 +1599,28 @@ def _run_m5(
                     "valid": oracle.valid,
                     "field_id": oracle.field_id,
                 })
+                write_npz(pending / "source_maps" / base_asset, {
+                    "source_index": np.asarray(base_oracle.source_index, dtype=np.int32),
+                    "domain_xyxy": np.asarray(base_oracle.domain_xyxy, dtype=np.int32),
+                    "u": base_oracle.u,
+                    "v": base_oracle.v,
+                    "valid": base_oracle.valid,
+                    "field_id": base_oracle.field_id,
+                })
                 source_rows.append({
                     "source_index": oracle.source_index,
                     "domain_xyxy": list(oracle.domain_xyxy),
                     "asset": f"source_maps/{asset}",
                     "asset_sha256": sha256_file(pending / "source_maps" / asset),
                     "oracle_sha256": oracle.oracle_sha256,
+                    "base_asset": f"source_maps/{base_asset}",
+                    "base_asset_sha256": sha256_file(
+                        pending / "source_maps" / base_asset
+                    ),
+                    "base_oracle_sha256": base_oracle.oracle_sha256,
+                    "raw_source_size": [
+                        int(calibration.width), int(calibration.height)
+                    ],
                 })
             atomic_write_json(pending / "source_maps/manifest.json", {
                 "schema": "gemini305-video-s13-source-map-oracles/v1",

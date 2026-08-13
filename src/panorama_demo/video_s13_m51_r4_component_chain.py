@@ -2611,6 +2611,93 @@ def _candidate_utility(candidate: S13ComponentSegmentCandidate) -> tuple[float, 
     )
 
 
+def _candidate_subset_utility(
+    candidates: Sequence[S13ComponentSegmentCandidate], indices: Sequence[int]
+) -> tuple[float, ...]:
+    rows = [_candidate_utility(candidates[index]) for index in indices]
+    return (
+        sum(row[0] for row in rows),
+        sum(row[1] for row in rows),
+        sum(row[2] for row in rows),
+        min((row[3] for row in rows), default=0.0),
+        sum(row[4] for row in rows),
+    )
+
+
+def _s13_conflict_connected_components(
+    candidates: Sequence[S13ComponentSegmentCandidate],
+    conflicts: set[tuple[int, int]],
+) -> tuple[tuple[int, ...], ...]:
+    adjacency = {index: set() for index in range(len(candidates))}
+    for left, right in conflicts:
+        adjacency[left].add(right)
+        adjacency[right].add(left)
+
+    def node_key(index: int) -> str:
+        return candidates[index].segment.segment_id
+
+    unseen = set(adjacency)
+    components: list[tuple[int, ...]] = []
+    while unseen:
+        pending = [min(unseen, key=node_key)]
+        component: set[int] = set()
+        while pending:
+            index = pending.pop()
+            if index not in unseen:
+                continue
+            unseen.remove(index)
+            component.add(index)
+            pending.extend(sorted(adjacency[index] & unseen, key=node_key, reverse=True))
+        components.append(tuple(sorted(component, key=node_key)))
+    return tuple(sorted(components, key=lambda row: tuple(node_key(index) for index in row)))
+
+
+def _select_s13_conflict_component(
+    candidates: Sequence[S13ComponentSegmentCandidate],
+    component: Sequence[int],
+    *,
+    adjacency: Mapping[int, set[int]],
+    maximum_exact: int,
+) -> tuple[tuple[int, ...], str]:
+    if len(component) == 1:
+        # An accepted isolated candidate has no trade-off to optimize and must
+        # never be discarded merely because its scalar utility is non-positive.
+        return (component[0],), "isolated"
+    if len(component) <= maximum_exact:
+        compatible: list[tuple[tuple[float, ...], tuple[str, ...], tuple[int, ...]]] = []
+        for mask in range(1 << len(component)):
+            indices = tuple(
+                component[local_index]
+                for local_index in range(len(component))
+                if mask & (1 << local_index)
+            )
+            selected = set(indices)
+            if any(adjacency[index] & selected for index in indices):
+                continue
+            ids = tuple(sorted(candidates[index].segment.segment_id for index in indices))
+            compatible.append((_candidate_subset_utility(candidates, indices), ids, indices))
+        best_utility = max(row[0] for row in compatible)
+        chosen = min(
+            (row for row in compatible if row[0] == best_utility),
+            key=lambda row: row[1],
+        )[2]
+        return tuple(sorted(chosen)), "exact"
+    order = sorted(
+        component,
+        key=lambda index: (
+            tuple(-value for value in _candidate_utility(candidates[index])),
+            candidates[index].segment.segment_id,
+        ),
+    )
+    chosen: list[int] = []
+    selected: set[int] = set()
+    for index in order:
+        if not (adjacency[index] & selected):
+            chosen.append(index)
+            selected.add(index)
+    return tuple(sorted(chosen)), "lexicographic_greedy"
+
+
 def select_s13_component_patch_set(
     candidates: Sequence[S13ComponentSegmentCandidate],
     *,
@@ -2634,38 +2721,33 @@ def select_s13_component_patch_set(
             ):
                 conflicts.add((left, right))
     maximum_exact = int(getattr(config, "maximum_exact_conflict_group_nodes", 12))
-    chosen_indices: tuple[int, ...]
-    if len(accepted_candidates) <= maximum_exact:
-        compatible: list[tuple[tuple[float, ...], tuple[str, ...], tuple[int, ...]]] = []
-        for mask in range(1 << len(accepted_candidates)):
-            indices = tuple(index for index in range(len(accepted_candidates)) if mask & (1 << index))
-            if any(left in indices and right in indices for left, right in conflicts):
-                continue
-            utility_rows = [_candidate_utility(accepted_candidates[index]) for index in indices]
-            utility = (
-                sum(row[0] for row in utility_rows),
-                sum(row[1] for row in utility_rows),
-                sum(row[2] for row in utility_rows),
-                min((row[3] for row in utility_rows), default=0.0),
-                sum(row[4] for row in utility_rows),
-            )
-            ids = tuple(sorted(accepted_candidates[index].segment.segment_id for index in indices))
-            compatible.append((utility, ids, indices))
-        best_utility = max(row[0] for row in compatible)
-        chosen_indices = min(
-            (row for row in compatible if row[0] == best_utility), key=lambda row: row[1]
-        )[2]
-    else:
-        order = sorted(
-            range(len(accepted_candidates)),
-            key=lambda index: (tuple(-value for value in _candidate_utility(accepted_candidates[index])),
-                               accepted_candidates[index].segment.segment_id),
+    if maximum_exact < 1:
+        raise ValueError("C2E exact conflict-component limit must be positive")
+    adjacency = {index: set() for index in range(len(accepted_candidates))}
+    for left, right in conflicts:
+        adjacency[left].add(right)
+        adjacency[right].add(left)
+    conflict_components = _s13_conflict_connected_components(
+        accepted_candidates, conflicts
+    )
+    chosen_rows: list[int] = []
+    component_audit: list[dict[str, object]] = []
+    for component in conflict_components:
+        component_chosen, selection_method = _select_s13_conflict_component(
+            accepted_candidates,
+            component,
+            adjacency=adjacency,
+            maximum_exact=maximum_exact,
         )
-        chosen: list[int] = []
-        for index in order:
-            if not any((min(index, other), max(index, other)) in conflicts for other in chosen):
-                chosen.append(index)
-        chosen_indices = tuple(sorted(chosen))
+        chosen_rows.extend(component_chosen)
+        component_audit.append({
+            "segment_ids": tuple(sorted(
+                accepted_candidates[index].segment.segment_id for index in component
+            )),
+            "node_count": len(component),
+            "selection_method": selection_method,
+        })
+    chosen_indices = tuple(sorted(chosen_rows))
     chosen_set = set(chosen_indices)
     conflict_losers = [
         row.segment.segment_id for index, row in enumerate(accepted_candidates)
@@ -2722,6 +2804,7 @@ def select_s13_component_patch_set(
         unresolved_regions=unresolved,
         audit={
             "candidate_count": len(candidates), "conflict_edges": sorted(conflicts),
+            "conflict_components": tuple(component_audit),
             "repair_complete": complete,
         },
     )
