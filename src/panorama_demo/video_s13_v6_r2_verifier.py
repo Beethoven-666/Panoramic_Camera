@@ -420,7 +420,6 @@ def _verify_completion(p2: Path) -> tuple[dict[str, object], dict[str, object]]:
         "stage": "P2",
         "sealed": True,
         "hard_audit_passed": True,
-        "m6_eligible": False,
         "working_tree_dirty": False,
     }
     if any(completion.get(key) != expected for key, expected in required_identity.items()):
@@ -440,6 +439,15 @@ def _verify_completion(p2: Path) -> tuple[dict[str, object], dict[str, object]]:
     if not isinstance(source_commit, str) or len(source_commit) != 40:
         raise ValueError("S1.3 v6-r2 completion source commit is invalid")
     generation_manifest = _json(p2.parent / "generation_manifest.json", "generation manifest")
+    manual_forward = completion.get("manual_c2e_forward_m7_authorized") is True
+    if completion.get("m6_eligible") != manual_forward:
+        raise ValueError("S1.3 v6-r2 M6 eligibility lacks manual C2E authority")
+    milestones = generation_manifest.get("implemented_milestones")
+    if manual_forward and (
+        not isinstance(milestones, list)
+        or milestones[-2:] != ["M6", "M7"]
+    ):
+        raise ValueError("S1.3 v6-r2 manual C2E authority lacks M6/M7 lineage")
     if sha256_file(p2.parent / "generation_manifest.json") != completion["generation_manifest_sha256"]:
         raise ValueError("S1.3 v6-r2 generation manifest SHA mismatch")
     algorithm = generation_manifest.get("algorithm")

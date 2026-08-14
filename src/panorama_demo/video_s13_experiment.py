@@ -3214,6 +3214,9 @@ def run_s13_experiment(
                         ),
                         "source_commit": algorithm_spec.source_commit,
                         "working_tree_dirty": algorithm_spec.working_tree_dirty,
+                        "manual_c2e_forward_m7_authorized": (
+                            manual_c2e_authorized
+                        ),
                     },
                 )
             except Exception as exc:
