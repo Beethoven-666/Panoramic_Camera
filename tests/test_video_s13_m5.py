@@ -6,6 +6,7 @@ import pytest
 from panorama_demo.session import CameraIntrinsics
 from panorama_demo.video_s12_schedule import build_s012_schedule
 from panorama_demo.video_s13_alignment import (
+    S13AlignmentCandidate,
     S13AlignmentConfig,
     S13ApplicationBand,
     estimate_s13_pair_alignment,
@@ -697,7 +698,6 @@ def test_r4_pre_render_estimation_freezes_oracle_domain_and_evidence_context(
     first = estimate.final_source_map_oracles[0]
     with pytest.raises(ValueError, match="exceeds frozen domain"):
         strict(first.source_index, first.domain_xyxy[0] - 1, first.domain_xyxy[2])
-
     active = np.zeros((3, 5), np.float32)
     active[:, 1:4] = 1.0
     fake_registry = type("Registry", (), {
@@ -708,6 +708,100 @@ def test_r4_pre_render_estimation_freezes_oracle_domain_and_evidence_context(
     planned = plan_s13_m5_oracle_domains(schedule, result.pairs, fake_registry)
     assert planned[1][0] <= 70
     assert planned[1][1] >= 75
+
+
+def test_r4_continues_to_zero_lag_seam_for_supported_horizontal_structure(
+    monkeypatch,
+) -> None:
+    import panorama_demo.video_s13_m5 as m5_module
+
+    calibration, schedule, images, vertical = _m5_inputs()
+    calls = 0
+
+    def controlled_horizontal_metrics(_features, _seam):
+        nonlocal calls
+        lag = 1 if calls % 4 < 2 else 0
+        calls += 1
+        return {
+            "observed": True,
+            "absolute_best_vertical_lag_px": lag,
+            "zero_lag_correlation": 0.9,
+            "support_row_count": 80,
+        }
+
+    monkeypatch.setattr(
+        m5_module, "long_horizontal_structure_metrics", controlled_horizontal_metrics
+    )
+    monkeypatch.setattr(
+        m5_module, "_edge_visual_suspect_for_pair", lambda *_a, **_k: False
+    )
+    original_edge_metrics = m5_module.pair_edge_registration_metrics
+
+    def edge_metrics_with_forward_context(*args, **kwargs):
+        sink = kwargs.get("forward_evidence_sink")
+        if sink is not None:
+            sink.append({"components": (), "test_context": True})
+        kwargs["forward_evidence_sink"] = None
+        return original_edge_metrics(*args, **kwargs)
+
+    monkeypatch.setattr(
+        m5_module, "pair_edge_registration_metrics", edge_metrics_with_forward_context
+    )
+    pairs = estimate_s13_m5_transactions(
+        schedule, calibration, images.__getitem__, vertical,
+        parent_stage_sha256="0" * 64,
+        m51_r2_config=S13M51R4Config(),
+    )
+
+    for pair in pairs:
+        evaluations = pair.transaction["candidate_evaluations"]
+        assert pair.transaction["selection_continued_for_structure"] is True
+        assert pair.transaction["selected_seam_rank"] == 1
+        assert evaluations[0]["evaluation_status"] == (
+            "horizontal_zero_lag_search_continued"
+        )
+        assert evaluations[1]["evaluation_status"] == "selected"
+        assert evaluations[2]["evaluation_status"] == (
+            "skipped_after_higher_rank_safe_candidate"
+        )
+
+
+def test_r4_c0_map_preserves_exact_p1_vertical_parent() -> None:
+    import panorama_demo.video_s13_m5 as m5_module
+
+    calibration, schedule, images, vertical = _m5_inputs()
+    parent = render_s13_p1_from_raw(
+        schedule, calibration, images.__getitem__, vertical
+    )
+    source_index = 1
+    assignment = schedule.assignments[source_index]
+    x0, x1 = int(assignment.left_x), int(assignment.right_x)
+    shape = (schedule.canvas_height, x1 - x0)
+    c0 = S13AlignmentCandidate(
+        model="C0_identity", x0=x0, x1=x1,
+        target_delta_u=np.zeros(shape, np.float32),
+        target_delta_v=np.zeros(shape, np.float32),
+        source_u=np.zeros(shape, np.float32),
+        source_v=np.zeros(shape, np.float32),
+        valid=np.ones(shape, bool), accepted=True, failure_reason=None,
+        metrics={}, audit={},
+    )
+    maps = m5_module._map_crop(
+        schedule, calibration, source_index, x0, x1,
+        vertical.global_offsets_px[source_index], c0,
+        vertical_parent=vertical,
+    )
+    owner = parent.pixel_provenance["owner_source_index"][:, x0:x1] == source_index
+
+    assert np.array_equal(
+        maps[0][owner], parent.pixel_provenance["source_u"][:, x0:x1][owner]
+    )
+    assert np.array_equal(
+        maps[1][owner], parent.pixel_provenance["source_v"][:, x0:x1][owner]
+    )
+    assert np.array_equal(
+        maps[2][owner], parent.pixel_provenance["valid"][:, x0:x1][owner]
+    )
 
 
 def test_diagnostic_score_cannot_reject_hard_safe_p2(monkeypatch) -> None:

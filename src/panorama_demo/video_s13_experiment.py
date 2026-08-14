@@ -803,7 +803,10 @@ def _run_m4_vertical(
 
     if not isinstance(schedule, S012Schedule):
         raise TypeError("S1.3 M4 requires one immutable P0 schedule")
-    pending = generation / f".P1.{uuid.uuid4().hex}.pending"
+    # Keep atomic staging names short enough for deeply nested Windows audit
+    # assets.  Twelve UUID hex characters still provide ample per-run
+    # collision resistance and avoid crossing legacy MAX_PATH at P2.
+    pending = generation / f".P1.{uuid.uuid4().hex[:12]}.pending"
     final = generation / "P1"
     if final.exists():
         raise FileExistsError(f"S1.3 M4 P1 already exists: {final}")
@@ -915,7 +918,7 @@ def _run_m5(
 
     if not isinstance(schedule, S012Schedule) or not isinstance(calibration, CameraIntrinsics):
         raise TypeError("S1.3 M5 requires one immutable P0 schedule and calibration")
-    pending = generation / f".P2.{uuid.uuid4().hex}.pending"
+    pending = generation / f".P2.{uuid.uuid4().hex[:12]}.pending"
     final = generation / "P2"
     if final.exists():
         raise FileExistsError(f"S1.3 M5 P2 already exists: {final}")
@@ -1044,11 +1047,13 @@ def _run_m5(
             current_roi, current_valid = render_s13_component_roi_from_raw(
                 schedule, calibration, validation_image_loader, vertical, m5.pairs,
                 (x0, y0, x1, y1), registry=None,
+                preserve_vertical_parent=True,
             )
             candidate_roi, candidate_valid = render_s13_component_roi_from_raw(
                 schedule, calibration, validation_image_loader, vertical, m5.pairs,
                 (x0, y0, x1, y1), registry=m5.source_correction_registry,
                 field_ids=field_ids,
+                preserve_vertical_parent=True,
             )
             current_metrics, current_overlay = _seeded_edge_trace_metrics(
                 current_roi, current_valid, box_tracks, roi_origin_xy=(x0, y0)
@@ -1173,8 +1178,8 @@ def _run_m5(
             for pair in m5.pairs:
                 for observation, evidence in pair.component_evidence:
                     asset = (
-                        f"observation_pair_{observation.pair_index:04d}_"
-                        f"component_{observation.component_id:04d}.npz"
+                        f"o_{observation.pair_index:04d}_"
+                        f"{observation.component_id:04d}.npz"
                     )
                     write_npz(pending / "component_chain_transactions" / asset, {
                         "support_xy": evidence.support_xy,

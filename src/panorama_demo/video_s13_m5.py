@@ -500,6 +500,7 @@ def _map_crop(
     candidate: S13AlignmentCandidate | None,
     component_corrections: tuple[object, ...] = (),
     component_field_ids: Mapping[str, int] | None = None,
+    vertical_parent: S13VerticalSolution | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     assignment = schedule.assignments[source_index]
     height = schedule.canvas_height
@@ -507,7 +508,31 @@ def _map_crop(
     canvas_y = np.broadcast_to(np.arange(height, dtype=np.float32)[:, None], canvas_x.shape)
     delta_u = np.zeros(canvas_x.shape, dtype=np.float32)
     delta_v = np.zeros(canvas_x.shape, dtype=np.float32)
-    if candidate is not None:
+    if vertical_parent is not None and source_index > 0:
+        if len(vertical_parent.local_row_residuals) != len(schedule.assignments) - 1:
+            raise ValueError("S1.3 P1 parent residuals do not cover every source handoff")
+        parent_pair = vertical_parent.pairs[source_index - 1]
+        parent_width = min(
+            int(parent_pair.application_right_x - parent_pair.application_left_x),
+            int(assignment.width),
+        )
+        parent_x0 = int(assignment.left_x)
+        parent_x1 = parent_x0 + max(0, parent_width)
+        overlap0, overlap1 = max(x0, parent_x0), min(x1, parent_x1)
+        if overlap1 > overlap0:
+            taper = np.linspace(
+                1.0, 0.0, parent_width, endpoint=True, dtype=np.float32
+            )
+            rows = np.asarray(
+                vertical_parent.local_row_residuals[source_index - 1],
+                dtype=np.float32,
+            )
+            if rows.shape != (height,) or not np.isfinite(rows).all():
+                raise ValueError("S1.3 P1 parent residual is not a finite H-vector")
+            target = np.s_[:, overlap0 - x0:overlap1 - x0]
+            parent_columns = np.s_[overlap0 - parent_x0:overlap1 - parent_x0]
+            delta_v[target] = -rows[:, None] * taper[parent_columns][None, :]
+    if candidate is not None and candidate.model != "C0_identity":
         overlap0, overlap1 = max(x0, candidate.x0), min(x1, candidate.x1)
         if overlap1 > overlap0:
             target = np.s_[:, overlap0 - x0:overlap1 - x0]
@@ -998,6 +1023,7 @@ def estimate_s13_m5_transactions(
     pairs: list[S13M5Pair] = []
     raw_cache: dict[int, np.ndarray] = {}
     successor = m51_r2_config or S13M51R2Config()
+    vertical_parent = vertical if isinstance(successor, S13M51R4Config) else None
     instrumentation_requested = m51_r2_config is not None
     audit_all = os.environ.get("G305_S13_M5_AUDIT_ALL_CANDIDATES", "0") == "1"
 
@@ -1020,9 +1046,11 @@ def estimate_s13_m5_transactions(
             if x1 - x0 < 12:
                 raise ValueError("final_corridor_too_narrow")
             left_maps = _map_crop(schedule, calibration, pair_index, x0, x1,
-                                  vertical.global_offsets_px[pair_index], None)
+                                  vertical.global_offsets_px[pair_index], None,
+                                  vertical_parent=vertical_parent)
             right_maps = _map_crop(schedule, calibration, pair_index + 1, x0, x1,
-                                   vertical.global_offsets_px[pair_index + 1], None)
+                                   vertical.global_offsets_px[pair_index + 1], None,
+                                   vertical_parent=vertical_parent)
             left_image, left_valid = _sample_crop(raw(frame_ids[0]), left_maps)
             right_image, right_valid = _sample_crop(raw(frame_ids[1]), right_maps)
             correspondence_result = _pair_correspondences(
@@ -1051,6 +1079,7 @@ def estimate_s13_m5_transactions(
             preliminary_maps = _map_crop(
                 schedule, calibration, pair_index + 1, x0, x1,
                 vertical.global_offsets_px[pair_index + 1], preliminary.selected,
+                vertical_parent=vertical_parent,
             )
             preliminary_right, preliminary_valid = _sample_crop(
                 raw(frame_ids[1]), preliminary_maps
@@ -1090,6 +1119,7 @@ def estimate_s13_m5_transactions(
             selection_continued_for_structure = False
             unresolved_oblique_structure = False
             hard_safe_baseline: tuple[object, ...] | None = None
+            horizontal_lag_baseline: tuple[float, tuple[object, ...]] | None = None
             for seam_rank, candidate in enumerate(ordered):
                 if selected_candidate is not None and not audit_all and not complete_reassessment:
                     evaluations.append({
@@ -1170,6 +1200,7 @@ def estimate_s13_m5_transactions(
                     final_maps = _map_crop(
                         schedule, calibration, pair_index + 1, x0, x1,
                         vertical.global_offsets_px[pair_index + 1], selected_map,
+                        vertical_parent=vertical_parent,
                     )
                     final_right, final_valid = _sample_crop(raw(frame_ids[1]), final_maps)
                     before_preview = _compose_pair_preview(left_image, right_image, seam_local)
@@ -1279,6 +1310,7 @@ def estimate_s13_m5_transactions(
                                 alternate_maps = _map_crop(
                                     schedule, calibration, pair_index + 1, x0, x1,
                                     vertical.global_offsets_px[pair_index + 1], alternate,
+                                    vertical_parent=vertical_parent,
                                 )
                                 alternate_right, alternate_valid = _sample_crop(
                                     raw(frame_ids[1]), alternate_maps
@@ -1375,13 +1407,34 @@ def estimate_s13_m5_transactions(
                 passed = hard_safe
                 if successor.enabled and hard_safe and visual_suspect:
                     passed = False
+                horizontal_lag_value = after_horizontal.get(
+                    "absolute_best_vertical_lag_px"
+                )
+                horizontal_lag = (
+                    float(horizontal_lag_value)
+                    if (
+                        after_horizontal.get("observed") is True
+                        and isinstance(horizontal_lag_value, (int, float))
+                        and np.isfinite(float(horizontal_lag_value))
+                    )
+                    else None
+                )
+                continue_for_horizontal_zero_lag = bool(
+                    passed
+                    and selected_candidate is None
+                    and isinstance(successor, S13M51R4Config)
+                    and horizontal_lag is not None
+                    and horizontal_lag > 0.0
+                )
                 evaluation = {
                     "candidate_id": candidate.candidate_id,
                     "model_code": candidate.model_code,
                     "model_name": candidate.model_name,
                     "generation_status": "generated",
                     "evaluation_status": (
-                        "selected" if passed and selected_candidate is None
+                        "horizontal_zero_lag_search_continued"
+                        if continue_for_horizontal_zero_lag
+                        else "selected" if passed and selected_candidate is None
                         else "hard_safe_not_selected" if passed
                         else "visual_suspect_continued" if hard_safe and visual_suspect
                         else "rejected_hard_gate"
@@ -1402,7 +1455,20 @@ def estimate_s13_m5_transactions(
                     "generation_audit": dict(candidate.generation_audit),
                 }
                 evaluations.append(evaluation)
-                if passed and selected_candidate is None:
+                if continue_for_horizontal_zero_lag:
+                    selection_continued_for_structure = True
+                    candidate_state: tuple[object, ...] = (
+                        candidate, alignment, before_metrics, after_metrics,
+                        before_horizontal, after_horizontal, edge_registration,
+                        seam_rank, geometry_rank, tuple(candidate_component_evidence),
+                        candidate_component_forward_probe,
+                    )
+                    if (
+                        horizontal_lag_baseline is None
+                        or horizontal_lag < horizontal_lag_baseline[0]
+                    ):
+                        horizontal_lag_baseline = (horizontal_lag, candidate_state)
+                elif passed and selected_candidate is None:
                     selected_candidate = candidate
                     selected_alignment = alignment
                     selected_before, selected_after = before_metrics, after_metrics
@@ -1412,6 +1478,19 @@ def estimate_s13_m5_transactions(
                     selected_geometry_rank = geometry_rank
                     selected_component_evidence = tuple(candidate_component_evidence)
                     selected_component_forward_probe = candidate_component_forward_probe
+            if selected_candidate is None and horizontal_lag_baseline is not None:
+                (
+                    selected_candidate, selected_alignment, selected_before, selected_after,
+                    selected_before_horizontal, selected_after_horizontal,
+                    selected_edge_registration, selected_seam_rank, selected_geometry_rank,
+                    selected_component_evidence, selected_component_forward_probe,
+                ) = horizontal_lag_baseline[1]
+                for row in evaluations:
+                    if row.get("candidate_id") == selected_candidate.candidate_id:
+                        row["evaluation_status"] = (
+                            "selected_best_available_horizontal_lag"
+                        )
+                        break
             if selected_candidate is None and hard_safe_baseline is not None:
                 (
                     selected_candidate, selected_alignment, selected_before, selected_after,
@@ -1826,6 +1905,7 @@ def _estimate_s13_m5_pre_render(
         base = _map_crop(
             schedule, calibration, source, x0, x1,
             vertical.global_offsets_px[source], candidate,
+            vertical_parent=vertical,
         )
         final = final_map_provider(source, x0, x1)
         base_oracles.append(source_map_oracle_from_arrays(
@@ -1846,6 +1926,7 @@ def _estimate_s13_m5_pre_render(
         maps = _map_crop(
             schedule, calibration, source, x0, x1,
             vertical.global_offsets_px[source], candidate,
+            vertical_parent=vertical,
         )
         return maps[0], maps[1], maps[2], np.full(maps[2].shape, -1, np.int32)
 
@@ -2043,6 +2124,7 @@ def render_s13_component_roi_from_raw(
     *,
     registry: SourceCorrectionRegistry | None,
     field_ids: Mapping[str, int] | None = None,
+    preserve_vertical_parent: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Render one owner-only validation ROI without a full-canvas render."""
 
@@ -2071,6 +2153,7 @@ def render_s13_component_roi_from_raw(
             schedule, calibration, source, x0, x1,
             vertical.global_offsets_px[source], alignment, corrections,
             field_ids,
+            vertical_parent=vertical if preserve_vertical_parent else None,
         )
         sampled, valid = _sample_crop(
             np.asarray(image_loader(int(schedule.assignments[source].frame_id))),
@@ -2221,11 +2304,12 @@ def run_s13_m5(
                     base_maps = _map_crop(
                         schedule, calibration, source_index, x0, x1,
                         vertical.global_offsets_px[source_index], alignment,
+                        vertical_parent=vertical,
                     )
                     maps = _map_crop(
                         schedule, calibration, source_index, x0, x1,
                         vertical.global_offsets_px[source_index], alignment,
-                        source_corrections, field_ids,
+                        source_corrections, field_ids, vertical_parent=vertical,
                     )
                     sliced_base_maps = tuple(row[y0:y1] for row in base_maps)
                     sliced_maps = tuple(row[y0:y1] for row in maps)
@@ -3268,6 +3352,7 @@ def run_s13_m5(
                 else source_correction_registry.corrections_by_source.get(source_index, ())
             ),
             component_field_ids,
+            vertical_parent=vertical,
         )
         # Freeze the exact provider result. Crop-origin ULP differences are
         # canonicalized once below by taking formal-owner values from the
