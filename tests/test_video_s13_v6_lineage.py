@@ -67,6 +67,7 @@ def _run_v6(
     *,
     run_m6: bool | None = None,
     resume_generation: Path | None = None,
+    manual_c2e_forward_m7: bool = False,
 ) -> dict[str, object]:
     return run_s13_experiment(
         input_path=session,
@@ -80,7 +81,37 @@ def _run_v6(
         config_path=None,
         run_m6=run_m6,
         resume_generation=resume_generation,
+        manual_c2e_forward_m7=manual_c2e_forward_m7,
     )
+
+
+def test_v6_explicit_manual_c2e_forward_seals_m1_through_m7(tmp_path) -> None:
+    session = _video_session(tmp_path)
+    report = _run_v6(
+        session,
+        tmp_path / "manual_m7",
+        manual_c2e_forward_m7=True,
+    )
+    generation = Path(str(report["generation"]))
+
+    assert report["final_stage"] == "P4"
+    assert report["optimizer_state"] == "m7_sealed"
+    assert report["m5"]["state"] == "P2_sealed"
+    assert report["m6"]["state"] == "P3_sealed"
+    assert report["m7"]["state"] == "P4_sealed"
+    manifest = json.loads(
+        (generation / "generation_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["implemented_milestones"] == [
+        "M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7",
+    ]
+    completion = verify_stage(
+        generation / "P4",
+        completion_name="P4_completion.json",
+        schema="gemini305-video-s13-p4-manual-c2e-completion/v1",
+    )
+    assert completion["selected_candidate"] == "R0_keep_p3"
+    assert completion["new_pixel_generation"] is False
 
 
 def test_v6_identity_is_an_isolated_p2_only_successor() -> None:

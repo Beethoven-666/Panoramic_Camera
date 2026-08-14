@@ -695,6 +695,9 @@ GENERATION_SCHEMA = "gemini305-video-s13-generation/v1"
 P1_COMPLETION_SCHEMA = "gemini305-video-s13-p1-vertical-completion/v2"
 P2_COMPLETION_SCHEMA = "gemini305-video-s13-p2-completion/v3"
 P3_COMPLETION_SCHEMA = "gemini305-video-s13-p3-visual-completion/v1"
+P4_MANUAL_C2E_COMPLETION_SCHEMA = (
+    "gemini305-video-s13-p4-manual-c2e-completion/v1"
+)
 
 
 def _generation_id(session: S13Session, config_sha: str) -> str:
@@ -2062,6 +2065,8 @@ def _run_m6(
     root: Path,
     generation_id: str,
     image_loader: object,
+    *,
+    p2_completion_schema: str = P2_COMPLETION_SCHEMA,
 ) -> dict[str, object]:
     """Append P3 by replaying only sealed P2 state and original RGB."""
 
@@ -2082,7 +2087,7 @@ def _run_m6(
         p2 = load_verified_s13_p2_for_m6(
             generation,
             p1_completion_schema=P1_COMPLETION_SCHEMA,
-            p2_completion_schema=P2_COMPLETION_SCHEMA,
+            p2_completion_schema=p2_completion_schema,
         )
     except Exception as exc:
         atomic_write_json(generation / "P3_preflight_failure.json", {
@@ -2378,6 +2383,140 @@ def _run_m6(
     raise AssertionError("S1.3 M6 fallback loop did not terminate")
 
 
+def _run_manual_c2e_m7(
+    generation: Path,
+    root: Path,
+    generation_id: str,
+) -> dict[str, object]:
+    """Seal the explicitly authorized M7 R0 winner without new pixels."""
+
+    p3_root = generation / "P3"
+    p3_completion_path = p3_root / "P3_completion.json"
+    p3 = verify_stage(
+        p3_root,
+        completion_name="P3_completion.json",
+        schema=P3_COMPLETION_SCHEMA,
+    )
+    if p3.get("hard_audit_passed") is not True:
+        raise ValueError("S1.3 manual C2E M7 requires a hard-audited P3")
+    result_name = str(p3.get("result_asset", "visual_panorama.png"))
+    p3_image_path = p3_root / result_name
+    p3_provenance_path = p3_root / "p3_pixel_provenance.npz"
+    p3_image = cv2.imread(str(p3_image_path), cv2.IMREAD_COLOR)
+    if p3_image is None:
+        raise ValueError("S1.3 manual C2E M7 parent panorama is unreadable")
+    try:
+        with np.load(p3_provenance_path, allow_pickle=False) as stored:
+            provenance = {
+                name: np.asarray(stored[name]).copy() for name in stored.files
+            }
+    except (OSError, ValueError, KeyError) as exc:
+        raise ValueError("S1.3 manual C2E M7 parent provenance is invalid") from exc
+
+    final = generation / "P4"
+    if final.exists():
+        raise FileExistsError(f"S1.3 manual C2E M7 P4 already exists: {final}")
+    pending = generation / f".P4.{uuid.uuid4().hex}.pending"
+    pending.mkdir()
+    started = time.perf_counter()
+    try:
+        write_image(pending / "final_panorama.png", p3_image)
+        write_image(pending / "final_panorama.jpg", p3_image)
+        write_npz(pending / "final_pixel_provenance.npz", provenance)
+        atomic_write_json(pending / "manual_authorization.json", {
+            "schema": "gemini305-video-s13-m7-manual-c2e-authorization/v1",
+            "authorization": "apply_all_structurally_safe_c2e_corrections",
+            "authorized_selection": "R0_keep_p3",
+            "explicit_user_authorization_required": True,
+            "new_pixel_generation": False,
+            "quality_gates_runtime_authority": False,
+            "structural_map_safety_runtime_authority": True,
+        })
+        final_png_sha = sha256_file(pending / "final_panorama.png")
+        parent_png_sha = sha256_file(p3_image_path)
+        pixels_equal = bool(np.array_equal(
+            p3_image,
+            cv2.imread(str(pending / "final_panorama.png"), cv2.IMREAD_COLOR),
+        ))
+        hard_audit = {
+            "schema": "gemini305-video-s13-p4-manual-c2e-hard-audit/v1",
+            "passed": pixels_equal,
+            "selection": "R0_keep_p3",
+            "parent_stage": "P3",
+            "parent_completion_sha256": sha256_file(p3_completion_path),
+            "parent_result_sha256": parent_png_sha,
+            "final_result_sha256": final_png_sha,
+            "pixel_exact_to_p3": pixels_equal,
+            "new_pixel_generation": False,
+            "p2_reestimated_in_m7": 0,
+            "p3_reestimated_in_m7": 0,
+        }
+        atomic_write_json(pending / "hard_audit.json", hard_audit)
+        if not pixels_equal:
+            raise ValueError("S1.3 manual C2E M7 changed P3 pixels")
+        completion = seal_stage(
+            pending,
+            completion_name="P4_completion.json",
+            schema=P4_MANUAL_C2E_COMPLETION_SCHEMA,
+            metadata={
+                "generation_id": generation_id,
+                "stage": "P4",
+                "milestone": "M7",
+                "parent_stage": "P3",
+                "parent_completion_sha256": sha256_file(p3_completion_path),
+                "parent_result_sha256": parent_png_sha,
+                "result_asset": "final_panorama.png",
+                "result_asset_sha256": final_png_sha,
+                "pixel_provenance_sha256": sha256_file(
+                    pending / "final_pixel_provenance.npz"
+                ),
+                "hard_audit_passed": True,
+                "hard_audit_sha256": sha256_file(pending / "hard_audit.json"),
+                "manual_authorization_sha256": sha256_file(
+                    pending / "manual_authorization.json"
+                ),
+                "selected_candidate": "R0_keep_p3",
+                "application_policy": "all_structurally_safe",
+                "quality_gates_runtime_authority": False,
+                "structural_map_safety_runtime_authority": True,
+                "new_pixel_generation": False,
+                "total_m7_seconds": time.perf_counter() - started,
+                "diagnostic_only": True,
+                "production_eligible": False,
+                "production_lock_eligible": False,
+            },
+        )
+        os.replace(pending, final)
+        verify_stage(
+            final,
+            completion_name="P4_completion.json",
+            schema=P4_MANUAL_C2E_COMPLETION_SCHEMA,
+        )
+        pointer = update_current_latest(
+            root,
+            generation,
+            stage="P4",
+            completion_name="P4_completion.json",
+            completion_schema=P4_MANUAL_C2E_COMPLETION_SCHEMA,
+            result_asset="final_panorama.png",
+        )
+        return {
+            "state": "P4_sealed",
+            "milestone": "M7",
+            "panorama": str(final / "final_panorama.png"),
+            "pixel_provenance": str(final / "final_pixel_provenance.npz"),
+            "completion": str(final / "P4_completion.json"),
+            "hard_audit": str(final / "hard_audit.json"),
+            "latest_stage": pointer["stage"],
+            "selected_candidate": "R0_keep_p3",
+            "total_m7_seconds": float(completion["total_m7_seconds"]),
+        }
+    except BaseException:
+        if pending.exists():
+            discard_staging(pending)
+        raise
+
+
 def _run_formal_m6(
     generation: Path,
     root: Path,
@@ -2503,6 +2642,7 @@ def run_s13_experiment(
     run_m5: bool = True,
     run_m6: bool | None = None,
     resume_generation: Path | None = None,
+    manual_c2e_forward_m7: bool = False,
 ) -> dict[str, Any]:
     run_started = time.perf_counter()
     config = load_s13_config(candidate_config)
@@ -2514,13 +2654,29 @@ def run_s13_experiment(
         or algorithm_spec.config_sha256 != candidate_config_sha(config.document)
     ):
         raise ValueError("S1.3 dispatch identity/config binding changed after validation")
-    if config.p2_only and run_m6 is True:
+    m51_r4_document_for_policy = config.component.get("m51_r4")
+    manual_c2e_authorized = bool(
+        manual_c2e_forward_m7
+        and config.m51_r4_enabled
+        and isinstance(m51_r4_document_for_policy, Mapping)
+        and m51_r4_document_for_policy.get("application_policy")
+        == "all_structurally_safe"
+    )
+    if manual_c2e_forward_m7 and not manual_c2e_authorized:
+        raise ValueError(
+            "S1.3 manual C2E M7 requires the v6-r2 all-structurally-safe policy"
+        )
+    if manual_c2e_forward_m7 and resume_generation is not None:
+        raise ValueError("S1.3 manual C2E M7 requires a new complete M1-M7 run")
+    if manual_c2e_authorized:
+        run_m6 = True
+    if config.p2_only and run_m6 is True and not manual_c2e_authorized:
         raise ValueError("S1.3 successor is P2-only and cannot run M6/P3")
     if config.p2_only and resume_generation is not None:
         raise ValueError("S1.3 successor is P2-only and cannot resume into M6/P3")
     if run_m6 is None:
         run_m6 = config.identity.default_stop_after != "P2"
-    if run_m6 and not config.m6_eligible:
+    if run_m6 and not config.m6_eligible and not manual_c2e_authorized:
         raise ValueError("S1.3 identity is not M6 eligible")
     formal_m6 = configured_algorithm_id == S13_FORMAL_M6_ALGORITHM_ID
     from .video_s13_m51_r2 import S13M51R2Config, S13M51R3Config, S13M51R4Config
@@ -2723,9 +2879,11 @@ def run_s13_experiment(
                 "M0", "M1", "M2", "M3", *(("M4",) if run_m4 else ()),
                 *(("M5",) if run_m4 and run_m5 else ()),
                 *(("M6",) if run_m4 and run_m5 and run_m6 else ()),
+                *(("M7",) if run_m4 and run_m5 and run_m6 and manual_c2e_authorized else ()),
             ],
             "excluded_milestones": (
-                ["M7", "M8", "M9"] if run_m4 and run_m5 and run_m6
+                ["M8", "M9"] if run_m4 and run_m5 and run_m6 and manual_c2e_authorized
+                else ["M7", "M8", "M9"] if run_m4 and run_m5 and run_m6
                 else ["M6", "M7", "M8", "M9"] if run_m4 and run_m5
                 else ["M5", "M6", "M7", "M8", "M9"] if run_m4
                 else ["M4", "M5", "M6", "M7", "M8", "M9"]
@@ -3025,10 +3183,10 @@ def run_s13_experiment(
                     p2_completion_schema=(
                         config.p2_completion_schema
                     ),
-                    m6_eligible=config.m6_eligible,
+                    m6_eligible=(config.m6_eligible or manual_c2e_authorized),
                     m6_blocked_reason=(
                         "successor_p2_requires_fresh_four_branch_threshold_lineage"
-                        if config.p2_only else None
+                        if config.p2_only and not manual_c2e_authorized else None
                     ),
                     m61_evidence_config=m61_evidence_config,
                     m61_evidence_branch="formal",
@@ -3091,6 +3249,7 @@ def run_s13_experiment(
                     m6 = _run_m6(
                         generation, root, generation_id,
                         lambda frame_id: read_s13_rgb(by_id[frame_id]),
+                        p2_completion_schema=config.p2_completion_schema,
                     )
             except Exception as exc:
                 m6 = {
@@ -3103,6 +3262,29 @@ def run_s13_experiment(
                     "generation_id": generation_id,
                     "p2_parent_preserved": True,
                     **m6,
+                })
+        m7: dict[str, object] = {
+            "state": "not_run",
+            "reason": (
+                "manual_c2e_forward_not_authorized"
+                if not manual_c2e_authorized
+                else "m6_failed"
+            ),
+        }
+        if manual_c2e_authorized and m6.get("state") == "P3_sealed":
+            try:
+                m7 = _run_manual_c2e_m7(generation, root, generation_id)
+            except Exception as exc:
+                m7 = {
+                    "state": "failed_p3_preserved",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+                atomic_write_json(generation / "M7_failure.json", {
+                    "schema": "gemini305-video-s13-m7-failure/v1",
+                    "generation_id": generation_id,
+                    "p3_parent_preserved": True,
+                    **m7,
                 })
         optimizer["p0_hash_unchanged_after_m5"] = (
             p0_hashes_before == verify_p0_completion(generation / "P0")["assets_sha256"]
@@ -3120,7 +3302,9 @@ def run_s13_experiment(
             p0_hashes_before == verify_p0_completion(generation / "P0")["assets_sha256"]
         )
         optimizer_state = (
-            "m6_sealed" if m6.get("state") == "P3_sealed"
+            "m7_sealed" if m7.get("state") == "P4_sealed"
+            else "m7_failed" if str(m7.get("state", "")).startswith("failed")
+            else "m6_sealed" if m6.get("state") == "P3_sealed"
             else "m6_failed" if str(m6.get("state", "")).startswith("failed")
             else "m5_sealed" if m5.get("state") == "P2_sealed"
             else "m5_failed" if str(m5.get("state", "")).startswith("failed")
@@ -3134,12 +3318,14 @@ def run_s13_experiment(
             "m4": m4,
             "m5": m5,
             "m6": m6,
+            "m7": m7,
             "optimizer": optimizer,
             "performance": {"stage_seconds": stage_seconds},
         })
         atomic_write_json(generation_report_path, generation_report)
         final_stage = (
-            m6 if m6.get("state") == "P3_sealed"
+            m7 if m7.get("state") == "P4_sealed"
+            else m6 if m6.get("state") == "P3_sealed"
             else m5 if m5.get("state") == "P2_sealed"
             else m4 if m4.get("state") == "P1_sealed"
             else {}
@@ -3147,7 +3333,9 @@ def run_s13_experiment(
         # The historical v3 report keeps its P0 compatibility fields.  The
         # new v4 identity is the first contract whose primary result is the
         # latest sealed forward stage.
-        primary_stage = final_stage if (formal_m6 or config.p2_only) else {}
+        primary_stage = final_stage if (
+            formal_m6 or config.p2_only or manual_c2e_authorized
+        ) else {}
         report = {
             "schema": REPORT_SCHEMA, "algorithm_id": configured_algorithm_id,
             "implementation_id": configured_implementation_id,
@@ -3170,7 +3358,8 @@ def run_s13_experiment(
             "column_provenance": None if is_panel_set else str(generation / "P0" / "base_column_provenance.npz"),
             "completion": str(primary_stage.get("completion", generation / "P0" / "P0_completion.json")),
             "final_stage": (
-                "P3" if m6.get("state") == "P3_sealed"
+                "P4" if m7.get("state") == "P4_sealed"
+                else "P3" if m6.get("state") == "P3_sealed"
                 else "P2" if m5.get("state") == "P2_sealed"
                 else "P1" if m4.get("state") == "P1_sealed"
                 else "P0"
@@ -3184,6 +3373,7 @@ def run_s13_experiment(
             "m4": m4,
             "m5": m5,
             "m6": m6,
+            "m7": m7,
             "stage_acceptance": (
                 m6.get("stage_acceptance") if formal_m6 else None
             ),

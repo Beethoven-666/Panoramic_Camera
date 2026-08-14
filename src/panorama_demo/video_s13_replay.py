@@ -235,8 +235,18 @@ def load_verified_s13_p2_for_m6(
     if len(transactions) != len(transactions_value):
         raise ValueError("S1.3 P2 pair transaction entry is invalid")
     replay_doc = _load_json(p2 / "p2_replay_manifest.json", "P2 replay manifest")
-    if replay_doc.get("schema") != P2_REPLAY_SCHEMA:
+    replay_schema = replay_doc.get("schema")
+    if replay_schema not in (P2_REPLAY_SCHEMA, P2_REPLAY_V2_SCHEMA):
         raise ValueError("S1.3 P2 replay schema is invalid")
+    if (
+        replay_schema == P2_REPLAY_V2_SCHEMA
+        and completion.get("working_tree_dirty") is False
+    ):
+        # The v2 loader first proves the complete component/correction/oracle
+        # DAG.  M6 then consumes only the verified replay slices below.
+        from .video_s13_v6_r2_verifier import verify_s13_v6_r2_p2
+
+        verify_s13_v6_r2_p2(p2)
     replay_entries = replay_doc.get("pairs")
     if not isinstance(replay_entries, Sequence) or isinstance(replay_entries, (str, bytes)):
         raise ValueError("S1.3 P2 replay manifest has no pairs")
@@ -252,12 +262,27 @@ def load_verified_s13_p2_for_m6(
         path = p2 / relative
         if assets.get(relative.as_posix()) != sha256_file(path):
             raise ValueError("S1.3 P2 replay asset is not completion-bound")
-        transaction_path = p2 / "pair_transactions" / f"pair_{pair_index:04d}.json"
+        transaction_path = (
+            p2 / Path(str(entry.get("parent_pair_transaction", "")))
+            if replay_schema == P2_REPLAY_V2_SCHEMA
+            else p2 / "pair_transactions" / f"pair_{pair_index:04d}.json"
+        )
+        try:
+            transaction_path.relative_to(p2)
+        except ValueError as exc:
+            raise ValueError("S1.3 P2 pair transaction path is unsafe") from exc
         transaction_sha = sha256_file(transaction_path)
         if assets.get(transaction_path.relative_to(p2).as_posix()) != transaction_sha:
             raise ValueError("S1.3 P2 pair transaction is not completion-bound")
         pair = load_replay_pair(path)
-        if pair.pair_index != pair_index or pair.parent_pair_transaction_sha256 != transaction_sha:
+        if (
+            pair.pair_index != pair_index
+            or pair.parent_pair_transaction_sha256 != transaction_sha
+            or (
+                replay_schema == P2_REPLAY_V2_SCHEMA
+                and entry.get("parent_pair_transaction_sha256") != transaction_sha
+            )
+        ):
             raise ValueError("S1.3 P2 replay transaction binding disagrees")
         if str(transaction.get("transaction_id")) != f"m5-pair-{pair_index:04d}":
             raise ValueError("S1.3 P2 transaction ordering changed")

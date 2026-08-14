@@ -913,6 +913,18 @@ This audit does not construct or apply C2E: the proposed thirteen C2E gates are
 reported as pass/fail/unevaluable, and missing candidate-improvement evidence
 is fail-closed. V6 remains P2-only, M6-ineligible, production-ineligible, and
 cannot resume into M6/P3 or reuse the v4 threshold/approval lineage.
+
+The v6-r2 component-chain successor additionally supports an explicit manual
+visual-acceptance policy.  With
+`m51_r4.application_policy=all_structurally_safe`, C2E correlation,
+uniqueness, trace-coverage and measured-improvement checks remain recorded but
+do not veto an otherwise structurally safe correction.  Finite/bounds,
+positive-Jacobian, owner/valid retention, evidence retention, provenance and
+replay consistency remain mandatory.  A normal invocation still stops at P2.
+Only the explicit `g305-video-experiment --manual-c2e-forward-m7` authorization
+runs the sealed replay-v2 parent through M6/P3 and seals the M7
+`R0_keep_p3` result as P4 without generating new pixels.  This manual route is
+still diagnostic-only and does not write a production lock or delivery.
 P2 is remapped once per real contributor from raw RGB and sealed with replay
 maps for the selected geometry and seam. The canonical chain creates native
 `gemini305-video-s13-p2-completion/v4`, including the frozen M6 evidence and

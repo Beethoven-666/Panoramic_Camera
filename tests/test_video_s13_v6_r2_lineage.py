@@ -25,9 +25,9 @@ from panorama_demo.video_s13_m51_r2 import S13M51R4Config
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_ROOT = ROOT / "configs/video_candidates/s013"
 V6_CONFIG = CONFIG_ROOT / "S013_output_first_progressive_dense_central_slit_v6.yaml"
-V6_R2_CONFIG_SHA256 = "126853cecb0d898d9dc158e69076ca1f7b875face5430775f319549b67eb05c5"
+V6_R2_CONFIG_SHA256 = "5ccaf952fe94d4c42626f3ec9e9555666c023a5ad654885ac4d9def2c96b3dde"
 V6_R2_LOCAL_MANIFEST_SHA256 = (
-    "e1e62ece0c76be8dad666228e96e54719bb882cba9854afd7d9447e52ece7972"
+    "20343cd90a93cf1a69fd74b87da9a3009985dec3704771752e4611feb1b61a6f"
 )
 
 
@@ -45,6 +45,9 @@ def test_v6_r2_identity_and_local_manifest_are_canonically_bound() -> None:
     assert config.m51_r3_enabled is True
     assert config.m51_r4_enabled is True
     assert config.m6_eligible is False
+    assert config.component["m51_r4"]["application_policy"] == (
+        "all_structurally_safe"
+    )
     assert config.document["required_output_components"] == ["s013_p2_v6"]
     assert config.component["p2_replay"]["completion_schema"] == (
         S13_M51_R4_P2_COMPLETION_SCHEMA
@@ -138,6 +141,7 @@ def test_m51_r4_defaults_freeze_thirteen_states_and_weights() -> None:
         {"normal_search_minimum_px": -2.5},
         {"minimum_formal_owner_support_retention": 0.999999},
         {"correction_gain_candidates": (1.0, 0.5, 0.75)},
+        {"application_policy": "apply_even_invalid_maps"},
         {"minimum_application_segment_pair_count": 3, "minimum_chain_pair_count": 2},
         {"maximum_combined_map_displacement_px": 2.0},
         {"minimum_jacobian": float("nan")},

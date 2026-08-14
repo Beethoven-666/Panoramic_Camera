@@ -14,6 +14,7 @@ from panorama_demo.video_s13_alignment import (
 from panorama_demo.video_s13_m5 import (
     S13M5EstimationResult,
     _canonicalize_v5_transaction_value,
+    _evaluate_s13_runtime_component_candidate,
     build_s13_p2_replay,
     estimate_s13_m5_transactions,
     plan_s13_m5_oracle_domains,
@@ -43,6 +44,72 @@ def test_component_audit_serialization_uses_null_for_unevaluable_metrics():
     ) == {"segments": [{"audit": {"maximum_step_px": None}}]}
     with pytest.raises(ValueError, match=r"\$\.segments\[0\]\.audit\.maximum_step_px"):
         _canonicalize_v5_transaction_value(value)
+
+
+def test_all_structurally_safe_policy_accepts_failed_visual_quality_gates():
+    baseline = {
+        "edge_p95_px": 0.4,
+        "maximum_step_px": 0.4,
+        "break_length_px": 0.0,
+        "double_edge_length_px": 0.0,
+        "non_target_p95_px": 0.0,
+    }
+    candidate = {
+        "edge_p95_px": 2.2,
+        "maximum_step_px": 2.2,
+        "break_length_px": 10.0,
+        "double_edge_length_px": 2.0,
+        "non_target_p95_px": 1.0,
+    }
+    gates = {
+        "forward_reverse": False,
+        "candidate_correlation": False,
+        "candidate_uniqueness": False,
+        "runtime_trace_columns": False,
+        "offset_bounds": True,
+        "owner_support": True,
+        "formal_owner_retention": True,
+        "evidence_retention": True,
+        "final_inverse_map": True,
+    }
+
+    result = _evaluate_s13_runtime_component_candidate(
+        baseline=baseline,
+        candidate=candidate,
+        hard_gates=gates,
+        config=S13M51R4Config(application_policy="all_structurally_safe"),
+    )
+
+    assert result.decision == "resolved"
+    assert result.audit["automatic_quality_decision"] == "rejected"
+    assert result.audit["quality_gates_runtime_authority"] is False
+
+
+def test_all_structurally_safe_policy_keeps_map_safety_vetoes():
+    metrics = {
+        "edge_p95_px": 0.5,
+        "maximum_step_px": 0.5,
+        "break_length_px": 0.0,
+        "double_edge_length_px": 0.0,
+        "non_target_p95_px": 0.0,
+    }
+    gates = {
+        "offset_bounds": True,
+        "owner_support": True,
+        "formal_owner_retention": True,
+        "evidence_retention": True,
+        "final_inverse_map": False,
+    }
+
+    result = _evaluate_s13_runtime_component_candidate(
+        baseline=metrics,
+        candidate=metrics,
+        hard_gates=gates,
+        config=S13M51R4Config(application_policy="all_structurally_safe"),
+    )
+
+    assert result.decision == "rejected"
+    assert result.rejection_reasons == ("hard_gate_failed:final_inverse_map",)
 
 
 def _identity_grid() -> tuple[np.ndarray, np.ndarray, np.ndarray]:

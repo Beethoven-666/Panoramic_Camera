@@ -10,7 +10,7 @@ required_evidence_components: [real_rgb_sources, rgb_motion_telemetry]
 required_output_components: [s013_p2_v6]
 replaces_output_components: []
 model_sha256: {}
-config_sha256: 126853cecb0d898d9dc158e69076ca1f7b875face5430775f319549b67eb05c5
+config_sha256: 5ccaf952fe94d4c42626f3ec9e9555666c023a5ad654885ac4d9def2c96b3dde
 
 components:
   s013_output_first_progressive_dense_central_slit:
@@ -122,6 +122,7 @@ components:
     m51_r4:
       enabled: true
       component_chain_c2e_enabled: true
+      application_policy: all_structurally_safe
       minimum_chain_pair_count: 2
       minimum_application_segment_pair_count: 1
       maximum_pair_gap: 1

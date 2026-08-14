@@ -120,6 +120,7 @@ class S13M51R4Config(S13M51R3Config):
     lk_error_mad_floor: float | None = 1.0
     lk_error_absolute_maximum: float | None = 64.0
     component_chain_c2e_enabled: bool = True
+    application_policy: str = "quality_gated"
 
     minimum_chain_pair_count: int = 2
     minimum_application_segment_pair_count: int = 1
@@ -184,6 +185,11 @@ class S13M51R4Config(S13M51R3Config):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        if self.application_policy not in {
+            "quality_gated",
+            "all_structurally_safe",
+        }:
+            raise ValueError("S1.3 M5.1-r4 application policy is invalid")
         object.__setattr__(
             self,
             "evidence_half_widths_px",

@@ -64,6 +64,7 @@ from .video_s13_m51_r4_component_chain import (
     propagate_s13_edge_component_evidence,
     s13_component_segment_budget_priority,
     S13ComponentSegmentCandidate,
+    S13ComponentQualityEvaluation,
     S13ComponentPatchSet,
     S13ComponentSolverError,
     select_s13_component_patch_set,
@@ -79,6 +80,61 @@ from .video_s13_hard_audit import long_horizontal_structure_catastrophe_guard
 S13SourceMapProvider = Callable[
     [int, int, int], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
 ]
+
+
+_C2E_STRUCTURAL_APPLICATION_GATES = frozenset({
+    "offset_bounds",
+    "owner_support",
+    "formal_owner_retention",
+    "evidence_retention",
+    "final_inverse_map",
+})
+
+
+def _evaluate_s13_runtime_component_candidate(
+    *,
+    baseline: Mapping[str, object],
+    candidate: Mapping[str, object],
+    hard_gates: Mapping[str, bool],
+    config: S13M51R4Config,
+) -> S13ComponentQualityEvaluation:
+    """Apply the configured C2E policy without weakening map safety.
+
+    ``all_structurally_safe`` is an explicit manual visual-acceptance policy.
+    It records the normal automatic quality decision, but only finite/bounds,
+    owner-retention, evidence-retention and final inverse-map gates retain veto
+    authority.  Correlation, uniqueness, trace coverage and measured visual
+    improvement remain audit evidence rather than application gates.
+    """
+
+    automatic = evaluate_s13_component_candidate_quality(
+        baseline=baseline,
+        candidate=candidate,
+        hard_gates=hard_gates,
+        config=config,
+    )
+    if config.application_policy != "all_structurally_safe":
+        return automatic
+    failed_structural = tuple(sorted(
+        name
+        for name in _C2E_STRUCTURAL_APPLICATION_GATES
+        if hard_gates.get(name) is not True
+    ))
+    audit = {
+        **dict(automatic.audit),
+        "application_policy": "all_structurally_safe",
+        "automatic_quality_decision": automatic.decision,
+        "automatic_quality_rejection_reasons": list(automatic.rejection_reasons),
+        "quality_gates_runtime_authority": False,
+        "structural_gate_failures": list(failed_structural),
+    }
+    if failed_structural:
+        return S13ComponentQualityEvaluation(
+            "rejected",
+            tuple(f"hard_gate_failed:{name}" for name in failed_structural),
+            audit,
+        )
+    return S13ComponentQualityEvaluation("resolved", (), audit)
 
 
 def _component_trace_metrics(
@@ -2623,7 +2679,7 @@ def run_s13_m5(
                         candidate_metrics.pop("baseline_runtime_trace")
                     )
                     baseline_metrics = runtime_baseline
-                    quality = evaluate_s13_component_candidate_quality(
+                    quality = _evaluate_s13_runtime_component_candidate(
                         baseline=baseline_metrics,
                         candidate=candidate_metrics,
                         hard_gates={
@@ -2894,7 +2950,7 @@ def run_s13_m5(
                     group_observations, group_corrections
                 )
                 baseline = dict(candidate.pop("baseline_runtime_trace"))
-                quality = evaluate_s13_component_candidate_quality(
+                quality = _evaluate_s13_runtime_component_candidate(
                     baseline=baseline,
                     candidate=candidate,
                     hard_gates={
@@ -2991,7 +3047,7 @@ def run_s13_m5(
                     subset_observations, subset_corrections
                 )
                 baseline = dict(candidate.pop("baseline_runtime_trace"))
-                evaluation = evaluate_s13_component_candidate_quality(
+                evaluation = _evaluate_s13_runtime_component_candidate(
                     baseline=baseline,
                     candidate=candidate,
                     hard_gates={
