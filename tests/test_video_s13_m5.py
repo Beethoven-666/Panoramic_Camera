@@ -112,6 +112,32 @@ def test_all_structurally_safe_policy_keeps_map_safety_vetoes():
     assert result.rejection_reasons == ("hard_gate_failed:final_inverse_map",)
 
 
+def test_all_structurally_safe_policy_accepts_unevaluable_visual_metrics():
+    metrics = {
+        "edge_p95_px": float("nan"),
+        "maximum_step_px": float("nan"),
+        "break_length_px": 0.0,
+        "double_edge_length_px": 0.0,
+        "non_target_p95_px": 0.0,
+    }
+    result = _evaluate_s13_runtime_component_candidate(
+        baseline=metrics,
+        candidate=metrics,
+        hard_gates={
+            "offset_bounds": True,
+            "owner_support": True,
+            "formal_owner_retention": True,
+            "evidence_retention": True,
+            "final_inverse_map": True,
+        },
+        config=S13M51R4Config(application_policy="all_structurally_safe"),
+    )
+
+    assert result.decision == "resolved"
+    assert result.audit["automatic_quality_decision"] == "rejected"
+    assert "nonfinite" in result.audit["automatic_quality_error"]
+
+
 def _identity_grid() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     u, v = np.meshgrid(
         np.arange(96, dtype=np.float32), np.arange(64, dtype=np.float32)

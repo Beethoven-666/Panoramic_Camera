@@ -107,12 +107,25 @@ def _evaluate_s13_runtime_component_candidate(
     improvement remain audit evidence rather than application gates.
     """
 
-    automatic = evaluate_s13_component_candidate_quality(
-        baseline=baseline,
-        candidate=candidate,
-        hard_gates=hard_gates,
-        config=config,
-    )
+    try:
+        automatic = evaluate_s13_component_candidate_quality(
+            baseline=baseline,
+            candidate=candidate,
+            hard_gates=hard_gates,
+            config=config,
+        )
+    except ValueError as exc:
+        if config.application_policy != "all_structurally_safe":
+            raise
+        automatic = S13ComponentQualityEvaluation(
+            "rejected",
+            ("automatic_quality_unevaluable",),
+            {
+                "hard_gate_failures": (),
+                "automatic_quality_error_type": type(exc).__name__,
+                "automatic_quality_error": str(exc),
+            },
+        )
     if config.application_policy != "all_structurally_safe":
         return automatic
     failed_structural = tuple(sorted(
