@@ -88,6 +88,9 @@ _C2E_STRUCTURAL_APPLICATION_GATES = frozenset({
     "formal_owner_retention",
     "evidence_retention",
     "final_inverse_map",
+    "individual_segment_gates",
+    "exclusive_correction_fields",
+    "composite_map_safety",
 })
 
 
@@ -131,7 +134,7 @@ def _evaluate_s13_runtime_component_candidate(
     failed_structural = tuple(sorted(
         name
         for name in _C2E_STRUCTURAL_APPLICATION_GATES
-        if hard_gates.get(name) is not True
+        if name in hard_gates and hard_gates.get(name) is not True
     ))
     audit = {
         **dict(automatic.audit),
