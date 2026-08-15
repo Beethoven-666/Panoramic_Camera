@@ -132,13 +132,26 @@ def run_s13_fast_pipeline(
         selected_replay, c2e, owner_only_pairs = select_s13_fast_c2e(
             m5.pairs, m5.replay_pairs, image_loader
         )
+        # C3 can replace a right-source map in a compact pair corridor.  M6's
+        # source-map assembler starts from P2 owner provenance, so mirror that
+        # same in-memory map only for pixels owned by the changed source.
+        provenance = {name: np.asarray(value).copy() for name, value in m5.final_result.pixel_provenance.items()}
+        owner_source = np.asarray(provenance["owner_source_index"], dtype=np.int32)
+        for original, chosen in zip(m5.replay_pairs, selected_replay, strict=True):
+            if np.array_equal(original.right_source_u, chosen.right_source_u) and np.array_equal(original.right_source_v, chosen.right_source_v):
+                continue
+            roi = np.s_[:, chosen.corridor_x0:chosen.corridor_x1]
+            owned = owner_source[roi] == chosen.right_source_index
+            for name, values in (("source_u", chosen.right_source_u), ("source_v", chosen.right_source_v)):
+                provenance[name][roi][owned] = values[owned]
+            provenance["valid"][roi][owned] = chosen.right_valid[owned]
         p2_runtime = S13VerifiedP2(
             root=output,
             completion={"source_count": len(schedule.assignments)},
             completion_sha256="",
             result_image=p2.image,
             valid_mask=p2.valid,
-            provenance=m5.final_result.pixel_provenance,
+            provenance=provenance,
             transactions=tuple(pair.transaction for pair in m5.pairs),
             replay_pairs=selected_replay,
             immutable_sha256={},

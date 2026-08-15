@@ -41,16 +41,32 @@ def _with_seam(pair: S13P2ReplayPair, seam: np.ndarray) -> S13P2ReplayPair:
     return replace(pair, seam_x_by_row=seam.copy(), primary_owner_right_mask=columns >= seam[:, None])
 
 
+def _with_geometry(pair: S13P2ReplayPair, m5: S13M5Pair, candidate_index: int) -> S13P2ReplayPair:
+    """Apply one already-audited M5 right-side map over its compact overlap."""
+    if m5.alignment is None or candidate_index == m5.alignment.selected_candidate_index:
+        return pair
+    candidate = m5.alignment.candidates[candidate_index]
+    if not candidate.accepted:
+        return pair
+    x0, x1 = max(pair.corridor_x0, candidate.x0), min(pair.corridor_x1, candidate.x1)
+    if x1 <= x0:
+        return pair
+    target = np.s_[:, x0 - pair.corridor_x0:x1 - pair.corridor_x0]
+    source = np.s_[:, x0 - candidate.x0:x1 - candidate.x0]
+    u, v, valid = pair.right_source_u.copy(), pair.right_source_v.copy(), pair.right_valid.copy()
+    u[target], v[target], valid[target] = candidate.source_u[source], candidate.source_v[source], candidate.valid[source]
+    return replace(pair, right_source_u=u, right_source_v=v, right_valid=valid)
+
+
 def select_s13_fast_c2e(
     pairs: Sequence[S13M5Pair], replay_pairs: Sequence[S13P2ReplayPair],
     image_loader: Callable[[int], np.ndarray],
 ) -> tuple[tuple[S13P2ReplayPair, ...], tuple[str, ...], frozenset[int]]:
-    """Choose C0/C1/C2 locally; C3's audited geometry remains available in M5.
+    """Choose C0/C1/C2/C3 only from M5's in-memory corridor candidates.
 
     C1 is selected for an explicit unresolved structural warning and disables
-    blending only for that pair.  C2 compares M5's already generated seam
-    paths.  Geometry candidates are intentionally not recomputed here: their
-    selected M5 source maps are the only maps admitted to the formal render.
+    blending only for that pair. C2 compares generated seam paths. C3 compares
+    accepted M5 geometry maps, all without calling M5 again.
     """
     if len(pairs) != len(replay_pairs):
         raise ValueError("S1.3 C2E pair count disagrees with M5 replay")
@@ -78,6 +94,14 @@ def select_s13_fast_c2e(
                 # Strict improvement avoids an arbitrary candidate churn.
                 if score + 1e-6 < best_score:
                     best, best_score, label = candidate, score, "C2_cached_seam"
+            if m5.alignment is not None:
+                for geometry_index, geometry in enumerate(m5.alignment.candidates):
+                    if not geometry.accepted or geometry_index == m5.alignment.selected_candidate_index:
+                        continue
+                    candidate = _with_geometry(base, m5, geometry_index)
+                    score = _local_residual(candidate, image_loader)
+                    if score + 1e-6 < best_score:
+                        best, best_score, label = candidate, score, "C3_cached_geometry"
         selected.append(best)
         labels.append(label)
     return tuple(selected), tuple(labels), frozenset(owner_only)
