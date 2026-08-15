@@ -170,6 +170,7 @@ def run_s13_m6(
     photometric_config: S13PhotometricConfig = S13PhotometricConfig(),
     blend_config: S13BlendConfig = S13BlendConfig(),
     force_identity_owner_only: bool = False,
+    force_owner_only_pair_indices: frozenset[int] = frozenset(),
     retain_runtime_details: bool = True,
 ) -> S13P3Result:
     """Replay P2 once from raw RGB; M4/M5/trajectory/depth are never called."""
@@ -198,6 +199,7 @@ def run_s13_m6(
     plans, blend_masks = select_s13_blend_plans(
         p2.replay_pairs, samples, corrected, canvas_shape=p2.valid_mask.shape,
         config=blend_config, force_owner_only=force_identity_owner_only,
+        force_owner_only_pair_indices=force_owner_only_pair_indices,
     )
     blend_analysis_seconds = time.perf_counter() - tick
     final_linear = owner_linear.copy()

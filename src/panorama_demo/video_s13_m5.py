@@ -247,6 +247,9 @@ class S13M5Pair:
     component_evidence: tuple[tuple[object, object], ...] = ()
     component_forward_probe: tuple[object, ...] | None = None
     component_propagation_audit: Mapping[str, object] | None = None
+    # Kept in memory for the immediate M6 C2E decision only.  These are the
+    # already generated compact corridor seam paths, never a disk replay.
+    c2e_seam_candidates: tuple[np.ndarray, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -833,7 +836,7 @@ def _fallback_pair(
         core = _finalize_v5_transaction(core)
     else:
         core["result_stage_sha256"] = _sha_json(core)
-    return S13M5Pair(core, seam, None)
+    return S13M5Pair(core, seam, None, c2e_seam_candidates=(seam.copy(),))
 
 
 def _compose_pair_preview(left: np.ndarray, right: np.ndarray, seam_local: np.ndarray) -> np.ndarray:
@@ -1519,7 +1522,10 @@ def estimate_s13_m5_transactions(
                     "candidate_evaluations": evaluations,
                 }
                 transaction = _finalize_v5_transaction(transaction)
-                pairs.append(S13M5Pair(transaction, fallback.seam_x_by_row, None))
+                pairs.append(S13M5Pair(
+                    transaction, fallback.seam_x_by_row, None,
+                    c2e_seam_candidates=(fallback.seam_x_by_row.copy(),),
+                ))
                 continue
             selected_seam = np.asarray(selected_candidate.seam_x_by_row, dtype=np.int32) + x0
             selected_map = selected_alignment.selected
@@ -1625,6 +1631,10 @@ def estimate_s13_m5_transactions(
             pairs.append(S13M5Pair(
                 core, selected_seam, selected_alignment, selected_component_evidence,
                 selected_component_forward_probe,
+                c2e_seam_candidates=tuple(
+                    np.asarray(candidate.seam_x_by_row, dtype=np.int32).copy() + x0
+                    for candidate in ordered
+                ),
             ))
         except Exception as exc:
             if successor.enabled:
@@ -1677,7 +1687,10 @@ def estimate_s13_m5_transactions(
                 transaction = _finalize_v5_transaction(transaction)
             else:
                 transaction["result_stage_sha256"] = _sha_json(transaction)
-            pairs[pair_index] = S13M5Pair(transaction, fallback.seam_x_by_row, None)
+            pairs[pair_index] = S13M5Pair(
+                transaction, fallback.seam_x_by_row, None,
+                c2e_seam_candidates=(fallback.seam_x_by_row.copy(),),
+            )
     if isinstance(successor, S13M51R4Config):
         seed_by_pair = {
             pair_index: pair.component_evidence

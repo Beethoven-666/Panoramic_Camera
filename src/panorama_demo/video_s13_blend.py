@@ -93,6 +93,7 @@ def select_s13_blend_plans(
     canvas_shape: tuple[int, int],
     config: S13BlendConfig = S13BlendConfig(),
     force_owner_only: bool = False,
+    force_owner_only_pair_indices: frozenset[int] = frozenset(),
 ) -> tuple[tuple[S13BlendPlan, ...], dict[str, np.ndarray]]:
     """Try B0, B1, then B2 per pair with global corridor non-overlap."""
 
@@ -116,7 +117,7 @@ def select_s13_blend_plans(
         }]
         model, width, levels, fallback = "B0_owner_only", 0, 0, None
         weight = np.zeros(sample.safe_mask.shape, dtype=np.float32)
-        if not force_owner_only:
+        if not force_owner_only and pair.pair_index not in force_owner_only_pair_indices:
             feather_width = 2 if safe_fraction >= 0.35 else 1
             feather = _candidate_weight(
                 pair, sample.safe_mask, sample.protected_mask,
