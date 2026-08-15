@@ -40,3 +40,16 @@ def test_fast_c2e_uses_pair_local_c1_for_unresolved_structure() -> None:
     assert selected == (pair,)
     assert labels == ("C1_owner_only",)
     assert owner_only == frozenset({0})
+
+
+def test_fast_c2e_rejects_nonmonotone_cached_seam() -> None:
+    pair = _pair()
+    images = {10: np.full((4, 10, 3), 20, np.uint8), 11: np.full((4, 10, 3), 20, np.uint8)}
+    invalid = np.asarray([3, 6, 3, 6], dtype=np.int32)
+    m5 = S13M5Pair(
+        {"selection_continued_for_structure": True}, pair.seam_x_by_row, None,
+        c2e_seam_candidates=(invalid,),
+    )
+    selected, labels, _ = select_s13_fast_c2e((m5,), (pair,), images.__getitem__)
+    assert selected == (pair,)
+    assert labels == ("C0_keep_standard",)

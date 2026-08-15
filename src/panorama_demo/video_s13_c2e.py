@@ -35,6 +35,10 @@ def _with_seam(pair: S13P2ReplayPair, seam: np.ndarray) -> S13P2ReplayPair:
     seam = np.asarray(seam, dtype=np.int32)
     if seam.shape != pair.seam_x_by_row.shape:
         return pair
+    if np.any(np.abs(np.diff(seam.astype(np.int64))) > 1):
+        return pair
+    if np.any(np.abs(seam.astype(np.int64) - pair.seam_x_by_row.astype(np.int64)) > 8):
+        return pair
     if np.any(seam < pair.corridor_x0) or np.any(seam >= pair.corridor_x1):
         return pair
     columns = np.arange(pair.corridor_x0, pair.corridor_x1)[None, :]
