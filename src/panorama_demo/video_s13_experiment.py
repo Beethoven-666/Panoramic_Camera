@@ -53,7 +53,6 @@ from .video_s13_m61_evidence import (
     S13PhotometricEvidenceConfig,
     build_native_s13_m61_evidence,
 )
-from .video_s13_m61_config import load_s13_m61_effective_config
 from .video_s13_m6 import run_s13_m6
 from .video_s13_blend import BLEND_SCHEMA, blend_transaction_document
 from .video_s13_p3_hard_audit import audit_s13_p3_stage, verify_sealed_s13_p3
@@ -2727,16 +2726,10 @@ def run_s13_experiment(
         m51_r2_config = S13M51R2Config(enabled=False)
     else:
         m51_r2_config = None
-    m61_evidence_config = S13PhotometricEvidenceConfig() if formal_m6 else None
-    if m61_evidence_config is not None:
-        # Validate every immutable M6 threshold/approval binding before the
-        # generation can publish even P0.  Runtime evidence is generated later
-        # from this exact frozen definition inside the native P2/v4 stage.
-        load_s13_m61_effective_config(
-            config.path,
-            photometric_evidence_config=asdict(m61_evidence_config),
-            config_root=config.path.parents[3],
-        )
+    # The fast formal pipeline has no sealed P2/M6.1 hand-off.  Its decisions
+    # are carried by the in-memory P2 object, so loading the historical
+    # threshold/hash bootstrap here would be pure audit overhead.
+    m61_evidence_config = None
     root = output.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     stage_seconds: dict[str, float] = {}
