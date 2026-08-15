@@ -18,6 +18,7 @@ third_party/
 
 # Generated panorama/TSDF runs are local evidence, not source artifacts.
 # They can contain large GLB meshes that GitHub rejects.
+artifacts/
 work/
 new_work/
 new_outputs/
