@@ -466,9 +466,10 @@ def test_formal_m6_v4_writes_only_the_four_in_memory_stage_snapshots(
         "jpg_write_count": 0,
         "json_write_count": 0,
         "npz_write_count": 0,
-        "sha_call_count": 0,
-        "m7_call_count": 0,
-    }
+            "sha_call_count": 0,
+            "m7_call_count": 0,
+            "c2e_call_count": 6,
+        }
     assert {path.name for path in output.iterdir()} == {
         "P0_base_panorama.png",
         "P1_vertical_panorama.png",

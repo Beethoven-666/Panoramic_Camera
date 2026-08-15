@@ -182,6 +182,7 @@ def run_s13_fast_pipeline(
         "p3": p3,
         "c2e": c2e,
         "m7_call_count": 0,
+        "c2e_call_count": len(c2e),
         "sha_call_count": 0,
         "png_write_count": 4,
         "jpg_write_count": 0,

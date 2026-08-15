@@ -2894,6 +2894,7 @@ def run_s13_experiment(
                 for key in (
                     "png_write_count", "jpg_write_count", "json_write_count",
                     "npz_write_count", "sha_call_count", "m7_call_count",
+                    "c2e_call_count",
                 )
             },
         }

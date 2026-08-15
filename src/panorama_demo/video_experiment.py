@@ -280,6 +280,16 @@ def main() -> None:
     except Exception as exc:
         raise SystemExit(f"ERROR: {exc}") from exc
     panorama = report.get("panorama")
+    if report.get("final_stage") == "P3" and isinstance(panorama, str):
+        for path in report.get("stage_images", ()):  # stdout, not an artifact
+            print(f"S1.3 stage: {path}")
+        selected = report.get("c2e", {}).get("selected", ())
+        changed = sum(str(value) != "C0_keep_standard" for value in selected)
+        print(f"C2E automatic: enabled ({len(selected)} pairs, {changed} changed)")
+        timings = report.get("timings", {})
+        print(f"S1.3 timings: {timings}")
+        print("Final stage: P3")
+        return
     if isinstance(panorama, str):
         print(f"Video experiment: {panorama}")
         return
