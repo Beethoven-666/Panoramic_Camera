@@ -352,7 +352,7 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
         if any(repair.get(key) is not True for key in required_true) or any(
             repair.get(key) is not False for key in required_false
         ):
-            raise ValueError("S1.3 M6 automatic C2E safety contract is invalid")
+            raise ValueError("S1.3 M7 optional repair must remain frozen/disabled")
     return S13Config(
         path=path, document=document, component=component, identity=identity_contract
     )
