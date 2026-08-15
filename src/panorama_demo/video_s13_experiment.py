@@ -2872,6 +2872,38 @@ def run_s13_experiment(
             },
         )
     stage_seconds["trajectory"] = time.perf_counter() - tick
+    if formal_m6:
+        if resume_generation is not None:
+            raise ValueError("S1.3 fast pipeline does not support disk resume")
+        if manual_c2e_forward_m7:
+            raise ValueError("S1.3 fast pipeline has automatic C2E; M7 is unavailable")
+        from .video_s13_fast_pipeline import run_s13_fast_pipeline
+
+        fast = run_s13_fast_pipeline(
+            session=session,
+            trajectory=trajectory,
+            output=root,
+            analysis_width_px=config.analysis_width_px,
+            normal_target_advance_px=config.normal_target_advance_px,
+            risky_target_advance_px=config.risky_target_advance_px,
+            m51_r2_config=m51_r2_config,
+        )
+        return {
+            "schema": REPORT_SCHEMA,
+            "run_id": fast["run_id"],
+            "final_stage": "P3",
+            "panorama": str(Path(str(fast["paths"][-1]))),
+            "stage_images": fast["paths"],
+            "timings": {**stage_seconds, **fast["timings"]},
+            "c2e": {"automatic": True, "selected": fast["c2e"]},
+            "counts": {
+                key: fast[key]
+                for key in (
+                    "png_write_count", "jpg_write_count", "json_write_count",
+                    "npz_write_count", "sha_call_count", "m7_call_count",
+                )
+            },
+        }
     generation_id = _generation_id(session, algorithm_spec.config_sha256)
     staging = new_generation_staging(root, generation_id)
     generation = root / "generations" / generation_id

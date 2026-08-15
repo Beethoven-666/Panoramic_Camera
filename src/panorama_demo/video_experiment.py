@@ -225,10 +225,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 getattr(args, "manual_c2e_forward_m7", False)
             ),
         )
-        args.output.mkdir(parents=True, exist_ok=True)
-        (args.output / "experiment_environment.json").write_text(
-            json.dumps(_seed(), indent=2, sort_keys=True), encoding="utf-8"
-        )
         return report
     if run_offline_orb or ignore_pose or simulate_optimizer_all_fail:
         raise ValueError("S1.3-only flags cannot be used by legacy baseline/candidates")
