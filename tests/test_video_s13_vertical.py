@@ -10,8 +10,10 @@ from panorama_demo.video_s13_bundle import seal_stage, sha256_file
 from panorama_demo.video_s13_vertical import (
     estimate_s13_vertical,
     load_s13_vertical_solution,
+    render_s13_p1_local_patch_image,
     render_s13_p1_from_raw,
     save_s13_vertical_solution,
+    vertical_candidate_solution,
 )
 
 
@@ -60,6 +62,27 @@ def test_p1_formally_samples_each_raw_contributor_once() -> None:
     assert np.array_equal(result.valid_mask, result.pixel_provenance["owner_frame_id"] >= 0)
     assert np.all(result.pixel_provenance["secondary_frame_id"] == -1)
     assert np.all(result.pixel_provenance["secondary_weight"] == 0.0)
+
+
+def test_local_patch_image_matches_full_local_render() -> None:
+    calibration = _calibration()
+    schedule = build_s012_schedule(
+        (0, 1, 2), (47.5, 55.5, 63.5), calibration, hard_internal_width_px=None
+    )
+    base = _textured_image(31)
+    images = {0: base, 1: _textured_image(31, 1), 2: _textured_image(31, 2)}
+    solution = estimate_s13_vertical(schedule, calibration, images.__getitem__)
+    global_solution = vertical_candidate_solution(
+        solution, solution.selected_gain, accepted_local_pairs=(False, False)
+    )
+    global_result = render_s13_p1_from_raw(
+        schedule, calibration, images.__getitem__, global_solution
+    )
+    patched = render_s13_p1_local_patch_image(
+        schedule, calibration, images.__getitem__, global_result, solution
+    )
+    full = render_s13_p1_from_raw(schedule, calibration, images.__getitem__, solution)
+    assert np.array_equal(patched, full.image)
 
 
 def test_pair_application_bands_are_nonoverlapping_and_bounded() -> None:

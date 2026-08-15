@@ -19,6 +19,7 @@ from .video_s13_quality import (
 from .video_s13_vertical import (
     S13P1Result,
     S13VerticalSolution,
+    render_s13_p1_local_patch_image,
     render_s13_p1_from_raw,
     vertical_candidate_solution,
 )
@@ -97,8 +98,10 @@ def select_s13_vertical_parent(
         full_local_solution = vertical_candidate_solution(
             base_solution, gain, accepted_local_pairs=tuple(True for _ in base_solution.pairs)
         )
-        full_local_result = render_s13_p1_from_raw(schedule, calibration, image_loader, full_local_solution)
-        full_local_metrics = _pair_metrics(full_local_result.image, schedule)
+        full_local_image = render_s13_p1_local_patch_image(
+            schedule, calibration, image_loader, global_result, full_local_solution
+        )
+        full_local_metrics = _pair_metrics(full_local_image, schedule)
         accepted: list[bool] = []
         pair_rows: list[dict[str, object]] = []
         for pair, before, after in zip(base_solution.pairs, global_metrics, full_local_metrics, strict=True):
@@ -114,9 +117,11 @@ def select_s13_vertical_parent(
                 "reason": None if applied else (reason or "zero_local_candidate"),
             })
         selected_solution = vertical_candidate_solution(base_solution, gain, accepted_local_pairs=tuple(accepted))
-        selected_result = render_s13_p1_from_raw(schedule, calibration, image_loader, selected_solution)
-        selected_metrics = _pair_metrics(selected_result.image, schedule)
-        rendered[gain] = (selected_solution, selected_result, selected_metrics)
+        selected_image = render_s13_p1_local_patch_image(
+            schedule, calibration, image_loader, global_result, selected_solution
+        )
+        selected_metrics = _pair_metrics(selected_image, schedule)
+        rendered[gain] = (selected_solution, global_result, selected_metrics)
         rows.append({
             "gain": gain,
             "global_only_score": _mean_score(global_metrics),
@@ -155,13 +160,11 @@ def select_s13_vertical_parent(
         best_score = _mean_score(rendered[best_gain][2])
         if best_score is not None and best_score < p0_score * 0.995:
             selected_gain, stage = best_gain, "vertical_parent"
-    solution, result, selected_metrics = rendered[selected_gain]
+    solution, global_result, selected_metrics = rendered[selected_gain]
     if stage == "P0_identity":
-        solution = vertical_candidate_solution(
-            base_solution, 0.0, accepted_local_pairs=tuple(False for _ in base_solution.pairs)
-        )
+        solution, result, selected_metrics = rendered[0.0]
+    else:
         result = render_s13_p1_from_raw(schedule, calibration, image_loader, solution)
-        selected_metrics = _pair_metrics(result.image, schedule)
     return S13VerticalSelection(
         stage=stage,
         selected_gain=float(selected_gain),

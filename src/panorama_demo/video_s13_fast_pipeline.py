@@ -142,7 +142,9 @@ def run_s13_fast_pipeline(
         # The old M7 contributes no image candidate: its only selected R0 path
         # copied P3 to P4.  Every pair therefore enters automatic C2E and keeps
         # C0 until a future local candidate has a demonstrated improvement.
-        p3_render = run_s13_m6(p2_runtime, image_loader)
+        p3_render = run_s13_m6(
+            p2_runtime, image_loader, retain_runtime_details=False
+        )
         c2e = tuple("C0_keep_standard" for _ in m5.pairs)
         p3 = runtime.commit(expected_parent=S13Stage.P2, candidate=S13StageResult(
             runtime.run_id, S13Stage.P3, 3, p2.revision, p3_render.visual_panorama,

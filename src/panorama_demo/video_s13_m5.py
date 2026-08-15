@@ -2185,9 +2185,13 @@ def run_s13_m5(
 
     def cached_image_loader(frame_id: int) -> np.ndarray:
         if frame_id not in raw_cache:
-            owned = np.array(image_loader(frame_id), copy=True, order="C")
-            owned.flags.writeable = False
-            raw_cache[frame_id] = owned
+            # The caller's frame store owns the contiguous BGR source for the
+            # whole run.  M5 never mutates it, so a read-only view preserves
+            # the component-chain immutability contract without a second
+            # full-resolution BGR allocation/copy per contributor.
+            shared = np.ascontiguousarray(image_loader(frame_id)).view()
+            shared.flags.writeable = False
+            raw_cache[frame_id] = shared
         return raw_cache[frame_id]
 
     pairs = estimate_s13_m5_transactions(

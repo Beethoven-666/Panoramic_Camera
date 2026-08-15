@@ -407,23 +407,39 @@ def _solve_offsets(observations: np.ndarray, weights: np.ndarray, gain: float) -
     return solution - float(np.median(solution))
 
 
-def _local_rows(
-    left: np.ndarray, right: np.ndarray, valid: np.ndarray, global_relative: float
-) -> tuple[np.ndarray, int]:
-    height = left.shape[0]
-    residual = np.zeros(height, dtype=np.float32)
+def _local_row_evidence(
+    left: np.ndarray, right: np.ndarray, valid: np.ndarray
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Return the gain-independent Farneback and texture evidence for one pair."""
+
     if int(valid.sum()) < 256:
-        return residual, 0
+        return None
     flow = cv2.calcOpticalFlowFarneback(
         left, right, None, 0.5, 3, 19, 3, 5, 1.1, cv2.OPTFLOW_FARNEBACK_GAUSSIAN
     )
-    texture = np.abs(cv2.Sobel(left, cv2.CV_32F, 1, 0, ksize=3))
+    return flow[:, :, 1], np.abs(cv2.Sobel(left, cv2.CV_32F, 1, 0, ksize=3))
+
+
+def _local_rows(
+    left: np.ndarray,
+    right: np.ndarray,
+    valid: np.ndarray,
+    global_relative: float,
+    *,
+    evidence: tuple[np.ndarray, np.ndarray] | None = None,
+) -> tuple[np.ndarray, int]:
+    height = left.shape[0]
+    residual = np.zeros(height, dtype=np.float32)
+    evidence = _local_row_evidence(left, right, valid) if evidence is None else evidence
+    if evidence is None:
+        return residual, 0
+    flow_y, texture = evidence
     supported = np.zeros(height, dtype=bool)
     for row in range(height):
-        mask = valid[row] & np.isfinite(flow[row, :, 1]) & (texture[row] > 3.0)
+        mask = valid[row] & np.isfinite(flow_y[row]) & (texture[row] > 3.0)
         if int(mask.sum()) < 12:
             continue
-        row_correction = -float(np.median(flow[row, mask, 1])) - global_relative
+        row_correction = -float(np.median(flow_y[row, mask])) - global_relative
         residual[row] = float(np.clip(row_correction, -2.0, 2.0))
         supported[row] = True
     if np.any(supported):
@@ -478,6 +494,10 @@ def estimate_s13_vertical(
         sampled_pairs.append((left_gray, right_gray, common, left_x, right_x))
     observation = np.asarray(measurements, dtype=np.float64)
     weight = np.clip(np.asarray(responses, dtype=np.float64), 0.0, 1.0)
+    local_evidence = tuple(
+        _local_row_evidence(left, right, common)
+        for left, right, common, _left_x, _right_x in sampled_pairs
+    )
     gain_scores: dict[str, float] = {}
     candidates: dict[float, np.ndarray] = {}
     for gain in gain_candidates:
@@ -495,13 +515,15 @@ def estimate_s13_vertical(
         gain_offsets = candidates[gain]
         local_rows: list[np.ndarray] = []
         reports: list[S13VerticalPair] = []
-        for pair_index, ((left_gray, right_gray, common, left_x, right_x), response) in enumerate(
-            zip(sampled_pairs, responses, strict=True)
+        for pair_index, ((left_gray, right_gray, common, left_x, right_x), response, evidence) in enumerate(
+            zip(sampled_pairs, responses, local_evidence, strict=True)
         ):
             left_assignment = schedule.assignments[pair_index]
             right_assignment = schedule.assignments[pair_index + 1]
             relative = float(gain_offsets[pair_index + 1] - gain_offsets[pair_index])
-            rows, supported = _local_rows(left_gray, right_gray, common, relative) if response >= 0.05 else (
+            rows, supported = _local_rows(
+                left_gray, right_gray, common, relative, evidence=evidence
+            ) if response >= 0.05 else (
                 np.zeros(schedule.canvas_height, dtype=np.float32), 0
             )
             boundary = schedule.boundaries[pair_index + 1]
@@ -660,9 +682,53 @@ def render_s13_p1_from_raw(
     return S13P1Result(output, valid_full, pixel, len(decoded), tuple(decoded))
 
 
+def render_s13_p1_local_patch_image(
+    schedule: S012Schedule,
+    calibration: CameraIntrinsics,
+    image_loader: Callable[[int], np.ndarray],
+    global_result: S13P1Result,
+    solution: S13VerticalSolution,
+) -> np.ndarray:
+    """Apply M4 local-row candidates over a rendered global-gain parent.
+
+    The local bands are non-overlapping by contract.  This is used only while
+    comparing the four gain candidates: it avoids re-remapping every source
+    merely to evaluate a few narrow right-owner bands.
+    """
+
+    validate_s012_schedule(schedule)
+    output = np.asarray(global_result.image).copy()
+    inverse_maps = undistortion_maps(calibration)
+    height = schedule.canvas_height
+    for source_index, assignment in enumerate(schedule.assignments[1:], start=1):
+        pair = solution.pairs[source_index - 1]
+        band_width = pair.application_right_x - pair.application_left_x
+        local_width = min(max(0, band_width), assignment.width)
+        if local_width == 0 or not np.any(solution.local_row_residuals[source_index - 1]):
+            continue
+        displacement = np.full(
+            (height, local_width), solution.global_offsets_px[source_index], np.float32
+        )
+        taper = np.linspace(1.0, 0.0, local_width, endpoint=True, dtype=np.float32)
+        displacement += solution.local_row_residuals[source_index - 1][:, None] * taper
+        left, right = assignment.left_x, assignment.left_x + local_width
+        u, v, valid = _target_map(
+            calibration, assignment.center_x, left, right, displacement, inverse_maps
+        )
+        sampled = accelerated_remap(
+            np.asarray(image_loader(assignment.frame_id)), u, v, cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        )
+        roi = output[:, left:right]
+        roi[...] = 0
+        roi[valid] = sampled[valid]
+    return output
+
+
 __all__ = [
     "S13P1Result", "S13VerticalPair", "S13VerticalSolution", "S13_P1_COMPLETION_SCHEMA",
     "S13_VERTICAL_SOLUTION_SCHEMA",
     "estimate_s13_vertical", "load_s13_vertical_solution", "render_s13_p1_from_raw",
     "save_s13_vertical_solution", "vertical_candidate_solution",
+    "render_s13_p1_local_patch_image",
 ]

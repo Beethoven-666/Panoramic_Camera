@@ -124,9 +124,14 @@ def _grid_points(gray: np.ndarray, *, cell_px: int = 28, per_cell: int = 4) -> n
 
 
 def _lk(
-    left: np.ndarray, right: np.ndarray, output_scale: float
+    left: np.ndarray,
+    right: np.ndarray,
+    output_scale: float,
+    *,
+    points: np.ndarray | None = None,
+    gradient: np.ndarray | None = None,
 ) -> tuple[float | None, float | None, float, int, tuple[S13MotionObservation, ...]]:
-    points = _grid_points(left)
+    points = _grid_points(left) if points is None else points
     if len(points) == 0:
         return None, None, 0.0, 0, ()
     forward, status_f, error_f = cv2.calcOpticalFlowPyrLK(left, right, points, None, winSize=(21, 21), maxLevel=3)
@@ -153,7 +158,10 @@ def _lk(
     if not np.any(finite):
         return None, None, 0.0, 0, ()
     original, matched, fb, lk_error = original[finite], matched[finite], fb[finite], lk_error[finite]
-    gradient = cv2.Sobel(left, cv2.CV_32F, 1, 1, ksize=3)
+    gradient = (
+        cv2.Sobel(left, cv2.CV_32F, 1, 1, ksize=3)
+        if gradient is None else gradient
+    )
     sample_x = np.clip(np.rint(original[:, 0]).astype(int), 0, left.shape[1] - 1)
     sample_y = np.clip(np.rint(original[:, 1]).astype(int), 0, left.shape[0] - 1)
     texture = np.abs(gradient[sample_y, sample_x]).astype(np.float64)
@@ -187,13 +195,21 @@ def _lk(
     )
 
 
-def _phase(left: np.ndarray, right: np.ndarray, output_scale: float) -> tuple[float | None, float | None, float]:
+def _phase(
+    left: np.ndarray,
+    right: np.ndarray,
+    output_scale: float,
+    *,
+    hanning: np.ndarray | None = None,
+) -> tuple[float | None, float | None, float]:
     width = left.shape[1]
     lo, hi = int(round(width * 0.15)), int(round(width * 0.85))
     a, b = left[:, lo:hi].astype(np.float32), right[:, lo:hi].astype(np.float32)
     if a.shape != b.shape or min(a.shape) < 8 or float(a.std()) < 1e-6 or float(b.std()) < 1e-6:
         return None, None, 0.0
-    shift, response = cv2.phaseCorrelate(a, b, cv2.createHanningWindow((a.shape[1], a.shape[0]), cv2.CV_32F))
+    if hanning is None:
+        hanning = cv2.createHanningWindow((a.shape[1], a.shape[0]), cv2.CV_32F)
+    shift, response = cv2.phaseCorrelate(a, b, hanning)
     if not np.isfinite(shift).all() or not math.isfinite(response):
         return None, None, 0.0
     return -float(shift[0]) * output_scale, float(shift[1]) * output_scale, float(response)
@@ -314,6 +330,14 @@ def measure_s13_motion(
     frames: Sequence[S13RenderFrame], *, analysis_width_px: int = 424, steps: Sequence[int] = (1, 2, 4)
 ) -> tuple[S13MotionEdge, ...]:
     analysis = [_analysis_gray(frame, analysis_width_px) for frame in frames]
+    # Every source frame participates in up to three step hypotheses.  Feature
+    # detection and Sobel are source properties, not pair properties; caching
+    # them leaves each LK and phase invocation unchanged.
+    points_by_index = [_grid_points(gray) for gray, _scale in analysis]
+    gradients_by_index = [
+        cv2.Sobel(gray, cv2.CV_32F, 1, 1, ksize=3) for gray, _scale in analysis
+    ]
+    hanning_by_shape: dict[tuple[int, int], np.ndarray] = {}
     edges: list[S13MotionEdge] = []
     for step in steps:
         for index in range(len(frames) - step):
@@ -321,8 +345,19 @@ def measure_s13_motion(
             right, right_scale = analysis[index + step]
             if left.shape != right.shape or not np.isclose(scale, right_scale):
                 continue
-            lk_x, lk_y, total_weight, count, observations = _lk(left, right, scale)
-            phase_x, phase_y, response = _phase(left, right, scale)
+            lk_x, lk_y, total_weight, count, observations = _lk(
+                left, right, scale, points=points_by_index[index],
+                gradient=gradients_by_index[index],
+            )
+            lo, hi = int(round(left.shape[1] * 0.15)), int(round(left.shape[1] * 0.85))
+            phase_shape = (left.shape[0], hi - lo)
+            hanning = hanning_by_shape.get(phase_shape)
+            if hanning is None:
+                hanning = cv2.createHanningWindow(
+                    (phase_shape[1], phase_shape[0]), cv2.CV_32F
+                )
+                hanning_by_shape[phase_shape] = hanning
+            phase_x, phase_y, response = _phase(left, right, scale, hanning=hanning)
             use_lk = lk_x is not None and count >= 8 and total_weight >= 2.0
             selected = lk_x if use_lk else phase_x
             method = "grid_lk" if use_lk else "phase_correlation" if selected is not None else "unavailable"

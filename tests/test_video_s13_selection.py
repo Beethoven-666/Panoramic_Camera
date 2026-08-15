@@ -66,8 +66,10 @@ def test_selection_records_full_resolution_render_for_all_gains_and_identity(
     candidates = selected.audit["gain_candidates"]
     assert [row["gain"] for row in candidates] == [0.0, 0.25, 0.5, 1.0]
     assert all(row["actual_full_resolution_render_compared"] is True for row in candidates)
-    # Each gain renders global-only, global+local, and its pair-selected result.
-    assert len(rendered_shapes) >= 12
+    # Each gain renders its global base once; local candidates use only the
+    # non-overlapping application bands and the selected result is rendered
+    # once after parent selection.
+    assert 4 <= len(rendered_shapes) <= 5
     assert set(rendered_shapes) == {(schedule.canvas_height, schedule.canvas_width, 3)}
     assert selected.audit["identity_always_candidate"] is True
     assert selected.audit["p0_metrics"]

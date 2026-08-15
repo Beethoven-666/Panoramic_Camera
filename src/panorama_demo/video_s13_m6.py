@@ -170,6 +170,7 @@ def run_s13_m6(
     photometric_config: S13PhotometricConfig = S13PhotometricConfig(),
     blend_config: S13BlendConfig = S13BlendConfig(),
     force_identity_owner_only: bool = False,
+    retain_runtime_details: bool = True,
 ) -> S13P3Result:
     """Replay P2 once from raw RGB; M4/M5/trajectory/depth are never called."""
 
@@ -212,13 +213,16 @@ def run_s13_m6(
         )
         active = plan.secondary_weight > 0.0
         final_linear[roi][active] = pair_result[active]
-    provenance = _p3_provenance(p2, plans)
+    provenance = _p3_provenance(p2, plans) if retain_runtime_details else {}
     owner_u8 = linear_to_srgb_bgr(owner_linear)
     final_u8 = linear_to_srgb_bgr(final_linear)
     owner_u8[~p2.valid_mask] = 0
     final_u8[~p2.valid_mask] = 0
-    diagnostic = build_s13_p3_diagnostic_quality(
-        p2.result_image, owner_u8, final_u8, p2.replay_pairs, plans, solution
+    diagnostic = (
+        build_s13_p3_diagnostic_quality(
+            p2.result_image, owner_u8, final_u8, p2.replay_pairs, plans, solution
+        )
+        if retain_runtime_details else {}
     )
     performance: dict[str, object] = {
         "p2_verify_and_load": 0.0,
