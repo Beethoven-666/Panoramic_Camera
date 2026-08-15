@@ -57,19 +57,6 @@ def _parser() -> argparse.ArgumentParser:
         help="S1.3 candidate only: do not read any trajectory and use RGB evidence alone.",
     )
     parser.add_argument(
-        "--resume-generation",
-        type=Path,
-        help="S1.3 M6 only: append P3 to an existing hash-sealed P2 generation.",
-    )
-    parser.add_argument(
-        "--manual-c2e-forward-m7",
-        action="store_true",
-        help=(
-            "S1.3 v6-r2 only: apply every structurally safe C2E correction, "
-            "run M6, then seal the explicit M7 R0 keep-P3 winner."
-        ),
-    )
-    parser.add_argument(
         "--simulate-optimizer-all-fail",
         action="store_true",
         help="S1.3 test hook: fail all post-P0 optimizers after the immutable base seal.",
@@ -220,10 +207,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ignore_pose=ignore_pose,
             config_path=getattr(args, "config", None),
             simulate_optimizer_all_fail=simulate_optimizer_all_fail,
-            resume_generation=getattr(args, "resume_generation", None),
-            manual_c2e_forward_m7=bool(
-                getattr(args, "manual_c2e_forward_m7", False)
-            ),
         )
         return report
     if run_offline_orb or ignore_pose or simulate_optimizer_all_fail:

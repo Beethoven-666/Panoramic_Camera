@@ -64,7 +64,7 @@ _S13_IDENTITY_CONTRACTS = {
     ),
     (S13_FORMAL_M6_ALGORITHM_ID, S13_FORMAL_M6_IMPLEMENTATION_ID): S13IdentityDescriptor(
         M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
-        True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3", "P4"),
+        True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3"),
     ),
     (S13_M51_R2_ALGORITHM_ID, S13_M51_R2_IMPLEMENTATION_ID): S13IdentityDescriptor(
         S13_M51_R2_CONTRACT_SCHEMA, S13_M51_R2_P2_COMPLETION_SCHEMA, True,
@@ -164,6 +164,10 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
     contract_schema = identity_contract.contract_schema
     p2_completion_schema = identity_contract.p2_completion_schema
     requires_m61_bootstrap = identity_contract.requires_m61_bootstrap
+    fast_formal = (
+        algorithm_id == S13_FORMAL_M6_ALGORITHM_ID
+        and document.get("implementation_id") == S13_FORMAL_M6_IMPLEMENTATION_ID
+    )
     if document.get("allow_baseline_fallback") is not False:
         raise ValueError("S1.3 forbids baseline fallback")
     components = _mapping(document.get("components"), "components")
@@ -223,13 +227,17 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
         or forward.get("current_preview_runtime_authority") is not False
     ):
         raise ValueError("S1.3 forward pointer contract is invalid")
-    if requires_m61_bootstrap and (
-        forward.get("allow_resume_from_sealed_stage") is not True
-        or forward.get("p4_requires_certified_handoff_and_actual_winner") is not True
-    ):
-        raise ValueError("S1.3 M7 must require a sealed handoff and an actual winner")
+    if fast_formal and forward.get("allow_resume_from_sealed_stage") is not False:
+        raise ValueError("S1.3 fast formal pipeline forbids disk resume")
     replay = _mapping(component.get("p2_replay"), "p2_replay")
-    if (
+    if fast_formal:
+        if (
+            replay.get("enabled") is not False
+            or replay.get("completion_schema") is not None
+            or replay.get("require_transaction_hash_match") is not False
+        ):
+            raise ValueError("S1.3 fast formal pipeline forbids P2 disk replay")
+    elif (
         replay.get("enabled") is not True
         or replay.get("completion_schema") != p2_completion_schema
         or int(replay.get("maximum_secondary_corridor_width_px", -1)) != 8
@@ -313,28 +321,25 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
         ):
             raise ValueError("S1.3 formal M6 permits only B0 or total-width-2 B1")
         repair = _mapping(component.get("repair"), "repair")
+        m6 = _mapping(component.get("m6"), "M6 config")
+        auto_c2e = _mapping(m6.get("auto_c2e"), "M6 automatic C2E")
         if (
             repair.get("enabled") is not True
-            or repair.get("authorization_schema") != "gemini305-video-s13-m7-handoff/v2"
-            or list(repair.get("allowed_stage_exits", ()))
-            != ["completed_target", "completed_manual_forward"]
-            or repair.get("manual_forward_authorization_schema")
-            != "gemini305-video-s13-m7-manual-forward-authorization/v1"
-            or repair.get("manual_forward_requires_explicit_user_authorization") is not True
-            or repair.get("manual_forward_preserve_automatic_quality_records") is not True
-            or repair.get("manual_forward_core_only") is not True
+            or repair.get("automatic") is not True
             or list(repair.get("allowed_component_classes", ()))
             != ["protected", "geometry", "seam", "owner"]
             or list(repair.get("core_candidates", ())) != [
-                "R0_keep_p3", "R1_b1_2px_to_b0_owner_only",
-                "R2_downgrade_seam_reestimate_geometry",
-                "R3_downgrade_geometry_reselect_seam",
+                "C0_keep_standard", "C1_force_owner_only",
+                "C2_downgrade_seam", "C3_downgrade_geometry",
             ]
-            or repair.get("no_handoff_or_no_winner_policy") != "no_p4_keep_p3"
+            or repair.get("no_handoff_or_no_winner_policy") != "keep_p3"
+            or auto_c2e.get("enabled") is not True
+            or auto_c2e.get("authorization_required") is not False
+            or auto_c2e.get("policy") != "all_structurally_safe"
+            or int(auto_c2e.get("full_resolution_render_count", -1)) != 1
         ):
-            raise ValueError("S1.3 M7 authorization/Core contract is invalid")
+            raise ValueError("S1.3 M6 automatic C2E contract is invalid")
         required_true = (
-            "completed_target_requires_m7_handoff_eligible",
             "systemic_photometric_component_forbidden",
             "adjacent_or_merged_seam_component_forbidden",
             "q_parameters_frozen", "thresholds_frozen", "source_set_frozen",
@@ -347,7 +352,7 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
         if any(repair.get(key) is not True for key in required_true) or any(
             repair.get(key) is not False for key in required_false
         ):
-            raise ValueError("S1.3 M7 frozen/disabled safety contract is invalid")
+            raise ValueError("S1.3 M6 automatic C2E safety contract is invalid")
     return S13Config(
         path=path, document=document, component=component, identity=identity_contract
     )
