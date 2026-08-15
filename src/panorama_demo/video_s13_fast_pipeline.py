@@ -16,7 +16,9 @@ import numpy as np
 
 from .video_s13_base_renderer import render_s13_p0
 from .video_s13_c2e import select_s13_fast_c2e
-from .video_s13_m5 import run_s13_m5
+from .video_s13_m5 import (
+    reset_s13_m5_runtime_unsealed, run_s13_m5, set_s13_m5_runtime_unsealed,
+)
 from .video_s13_m6 import run_s13_m6
 from .video_s13_motion import measure_s13_motion
 from .video_s13_progress import build_s13_m3_layout
@@ -110,16 +112,20 @@ def run_s13_fast_pipeline(
         timings["m4"] = time.perf_counter() - tick
 
         tick = time.perf_counter()
-        m5 = run_s13_m5(
-            schedule, session.calibration, image_loader, vertical_selection.solution, p1.image,
-            parent_stage_sha256="in-memory-p1", parent_result_sha256="in-memory-p1",
-            p0_ancestor_completion_sha256="in-memory-p0",
-            selected_hypothesis_ids=tuple(
-                hypothesis_by_frame.get(frame_id, -1) for frame_id in selection.frame_ids
-            ),
-            placement_methods=selection.placement_methods,
-            m51_r2_config=m51_r2_config,
-        )
+        unsealed_token = set_s13_m5_runtime_unsealed(True)
+        try:
+            m5 = run_s13_m5(
+                schedule, session.calibration, image_loader, vertical_selection.solution, p1.image,
+                parent_stage_sha256="in-memory-p1", parent_result_sha256="in-memory-p1",
+                p0_ancestor_completion_sha256="in-memory-p0",
+                selected_hypothesis_ids=tuple(
+                    hypothesis_by_frame.get(frame_id, -1) for frame_id in selection.frame_ids
+                ),
+                placement_methods=selection.placement_methods,
+                m51_r2_config=m51_r2_config,
+            )
+        finally:
+            reset_s13_m5_runtime_unsealed(unsealed_token)
         p2 = runtime.commit(expected_parent=S13Stage.P1, candidate=S13StageResult(
             runtime.run_id, S13Stage.P2, 2, p1.revision, m5.final_result.image,
             m5.final_result.valid_mask,

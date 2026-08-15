@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+from contextvars import ContextVar
 import time
 from dataclasses import dataclass, replace
 from types import MappingProxyType
@@ -330,7 +331,21 @@ class S13PairCorrespondences:
         yield self.moving_xy
 
 
+_RUNTIME_UNSEALED = ContextVar("s13_m5_runtime_unsealed", default=False)
+
+
+def set_s13_m5_runtime_unsealed(enabled: bool):
+    """Disable legacy transaction digests for the no-artifact fast path."""
+    return _RUNTIME_UNSEALED.set(bool(enabled))
+
+
+def reset_s13_m5_runtime_unsealed(token: object) -> None:
+    _RUNTIME_UNSEALED.reset(token)
+
+
 def _sha_array(*arrays: np.ndarray) -> str:
+    if _RUNTIME_UNSEALED.get():
+        return "runtime-unsealed"
     digest = hashlib.sha256()
     for array in arrays:
         value = np.ascontiguousarray(array)
@@ -341,6 +356,8 @@ def _sha_array(*arrays: np.ndarray) -> str:
 
 
 def _sha_json(value: Mapping[str, object]) -> str:
+    if _RUNTIME_UNSEALED.get():
+        return "runtime-unsealed"
     return hashlib.sha256(
         json.dumps(
             value,
@@ -3973,4 +3990,5 @@ __all__ = [
     "S13M5Result", "S13P2Result", "S13PairCorrespondences",
     "build_s13_p2_replay",
     "estimate_s13_m5_transactions", "render_s13_p2_from_raw", "run_s13_m5",
+    "reset_s13_m5_runtime_unsealed", "set_s13_m5_runtime_unsealed",
 ]
