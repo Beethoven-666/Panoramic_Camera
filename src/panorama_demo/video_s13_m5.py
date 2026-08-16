@@ -332,6 +332,7 @@ class S13PairCorrespondences:
 
 
 _RUNTIME_UNSEALED = ContextVar("s13_m5_runtime_unsealed", default=False)
+_RUNTIME_RESIDENT_REMAP = ContextVar("s13_m5_resident_remap", default=None)
 
 
 def set_s13_m5_runtime_unsealed(enabled: bool):
@@ -341,6 +342,15 @@ def set_s13_m5_runtime_unsealed(enabled: bool):
 
 def reset_s13_m5_runtime_unsealed(token: object) -> None:
     _RUNTIME_UNSEALED.reset(token)
+
+
+def set_s13_m5_resident_remap(remap: Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray] | None):
+    """Bind the CUDA-resident compact-corridor sampler for one in-memory run."""
+    return _RUNTIME_RESIDENT_REMAP.set(remap)
+
+
+def reset_s13_m5_resident_remap(token: object) -> None:
+    _RUNTIME_RESIDENT_REMAP.reset(token)
 
 
 def _sha_array(*arrays: np.ndarray) -> str:
@@ -593,7 +603,13 @@ def _sample_crop(
     maps: tuple[np.ndarray, ...],
 ) -> tuple[np.ndarray, np.ndarray]:
     u, v, valid = maps[:3]
-    sampled = accelerated_remap(raw, u, v, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    resident_remap = _RUNTIME_RESIDENT_REMAP.get()
+    sampled = (
+        resident_remap(raw, u, v)
+        if resident_remap is not None else accelerated_remap(
+            raw, u, v, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        )
+    )
     return sampled, valid
 
 
@@ -4004,5 +4020,6 @@ __all__ = [
     "S13M5Result", "S13P2Result", "S13PairCorrespondences",
     "build_s13_p2_replay",
     "estimate_s13_m5_transactions", "render_s13_p2_from_raw", "run_s13_m5",
-    "reset_s13_m5_runtime_unsealed", "set_s13_m5_runtime_unsealed",
+    "reset_s13_m5_resident_remap", "reset_s13_m5_runtime_unsealed",
+    "set_s13_m5_resident_remap", "set_s13_m5_runtime_unsealed",
 ]

@@ -17,7 +17,8 @@ import numpy as np
 from .video_s13_base_renderer import render_s13_p0
 from .video_s13_c2e import select_s13_fast_c2e
 from .video_s13_m5 import (
-    reset_s13_m5_runtime_unsealed, run_s13_m5, set_s13_m5_runtime_unsealed,
+    reset_s13_m5_resident_remap, reset_s13_m5_runtime_unsealed, run_s13_m5,
+    set_s13_m5_resident_remap, set_s13_m5_runtime_unsealed,
 )
 from .video_s13_m6 import run_s13_m6
 from .video_s13_motion import measure_s13_motion
@@ -161,6 +162,9 @@ def run_s13_fast_pipeline(
 
         tick = time.perf_counter()
         unsealed_token = set_s13_m5_runtime_unsealed(True)
+        resident_m5_token = set_s13_m5_resident_remap(
+            resident_runtime.remap_host_source if p0_resident_device_remap is not None else None
+        )
         try:
             final_image_composer = None
             if p0_resident_device_remap is not None:
@@ -182,6 +186,7 @@ def run_s13_fast_pipeline(
                 final_image_composer=final_image_composer,
             )
         finally:
+            reset_s13_m5_resident_remap(resident_m5_token)
             reset_s13_m5_runtime_unsealed(unsealed_token)
         p2 = runtime.commit(expected_parent=S13Stage.P1, candidate=S13StageResult(
             runtime.run_id, S13Stage.P2, 2, p1.revision,
