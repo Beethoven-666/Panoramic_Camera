@@ -6,7 +6,7 @@ import math
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
 import cv2
 import numpy as np
@@ -617,12 +617,18 @@ def render_s13_p1_from_raw(
     calibration: CameraIntrinsics,
     image_loader: Callable[[int], np.ndarray],
     solution: S13VerticalSolution,
+    *,
+    resident_stage: Any | None = None,
+    resident_device_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], Any] | None = None,
 ) -> S13P1Result:
     validate_s012_schedule(schedule)
     if len(solution.global_offsets_px) != len(schedule.assignments):
         raise ValueError("S1.3 M4 global offsets do not align with P0 sources")
     height, width = schedule.canvas_height, schedule.canvas_width
     output = np.zeros((height, width, 3), dtype=np.uint8)
+    if (resident_stage is None) != (resident_device_remap is None):
+        raise ValueError("S1.3 P1 resident stage and remap must be supplied together")
+    output_device = resident_stage.new_stage_canvas(height, width) if resident_stage is not None else None
     valid_full = np.zeros((height, width), dtype=bool)
     owner = np.full((height, width), -1, dtype=np.int32)
     assignment_full = np.full((height, width), -1, dtype=np.int32)
@@ -652,10 +658,18 @@ def render_s13_p1_from_raw(
             calibration, assignment.center_x, assignment.left_x, assignment.right_x,
             displacement, inverse_maps,
         )
-        sampled = accelerated_remap(image, u, v, cv2.INTER_LINEAR,
-                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        sampled = None if output_device is not None else accelerated_remap(
+            image, u, v, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        )
         roi = np.s_[:, assignment.left_x:assignment.right_x]
-        output[roi][valid] = sampled[valid]
+        if output_device is not None:
+            resident_stage.compose_owner_roi(
+                output_device, assignment.left_x, assignment.right_x,
+                resident_device_remap(assignment.frame_id, image, u, v), valid,
+            )
+        else:
+            assert sampled is not None
+            output[roi][valid] = sampled[valid]
         valid_full[roi] = valid
         owner_roi = owner[roi]
         assignment_roi = assignment_full[roi]
@@ -664,6 +678,8 @@ def render_s13_p1_from_raw(
         owner_roi[valid] = assignment.frame_id
         assignment_roi[valid] = assignment.assignment_index
         source_u_roi[valid], source_v_roi[valid] = u[valid], v[valid]
+    if output_device is not None:
+        output = resident_stage.download_stage_canvas("P1", output_device)
     if len(decoded) != len(set(decoded)):
         raise ValueError("S1.3 M4 decoded one contributor more than once")
     pixel = {

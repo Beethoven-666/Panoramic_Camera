@@ -29,7 +29,37 @@ from .video_s13_selection import select_s13_vertical_parent
 from .video_s13_session import S13Session, read_s13_rgb
 from .video_s13_stage_writer import S13StageImageWriter
 from .video_s13_trajectory import S13Trajectory
-from .video_s13_vertical import estimate_s13_vertical
+from .video_s13_vertical import estimate_s13_vertical, render_s13_p1_from_raw
+
+
+def _render_resident_owner_stage(
+    *,
+    stage_name: str,
+    runtime: Any,
+    image_loader: Callable[[int], np.ndarray],
+    frame_ids_by_source_index: tuple[int, ...],
+    valid_mask: np.ndarray,
+    provenance: dict[str, np.ndarray],
+) -> np.ndarray:
+    """Recompose one decided hard-owner stage without changing provenance."""
+
+    owner = np.asarray(provenance["owner_source_index"], dtype=np.int32)
+    source_u = np.asarray(provenance["source_u"], dtype=np.float32)
+    source_v = np.asarray(provenance["source_v"], dtype=np.float32)
+    height, width = valid_mask.shape
+    canvas = runtime.new_stage_canvas(height, width)
+    for source_index, frame_id in enumerate(frame_ids_by_source_index):
+        owned = valid_mask & (owner == source_index)
+        if not np.any(owned):
+            continue
+        columns = np.flatnonzero(np.any(owned, axis=0))
+        x0, x1 = int(columns[0]), int(columns[-1]) + 1
+        roi_owned = owned[:, x0:x1]
+        sampled = runtime.remap_resident_frame_device(
+            frame_id, image_loader(frame_id), source_u[:, x0:x1], source_v[:, x0:x1],
+        )
+        runtime.compose_owner_roi(canvas, x0, x1, sampled, roi_owned)
+    return runtime.download_stage_canvas(stage_name, canvas)
 
 
 def run_s13_fast_pipeline(
@@ -113,9 +143,16 @@ def run_s13_fast_pipeline(
         vertical_selection = select_s13_vertical_parent(
             schedule, session.calibration, image_loader, vertical, p0.image
         )
+        p1_render = (
+            render_s13_p1_from_raw(
+                schedule, session.calibration, image_loader, vertical_selection.solution,
+                resident_stage=resident_runtime,
+                resident_device_remap=p0_resident_device_remap,
+            ) if p0_resident_device_remap is not None else vertical_selection.result
+        )
         p1 = runtime.commit(expected_parent=S13Stage.P0, candidate=S13StageResult(
-            runtime.run_id, S13Stage.P1, 1, p0.revision, vertical_selection.result.image,
-            vertical_selection.result.valid_mask,
+            runtime.run_id, S13Stage.P1, 1, p0.revision, p1_render.image,
+            p1_render.valid_mask,
             {"vertical": vertical_selection.solution, "schedule": schedule,
              "selection": selection, "p0": p0_render},
         ))
@@ -138,7 +175,15 @@ def run_s13_fast_pipeline(
         finally:
             reset_s13_m5_runtime_unsealed(unsealed_token)
         p2 = runtime.commit(expected_parent=S13Stage.P1, candidate=S13StageResult(
-            runtime.run_id, S13Stage.P2, 2, p1.revision, m5.final_result.image,
+            runtime.run_id, S13Stage.P2, 2, p1.revision,
+            (
+                _render_resident_owner_stage(
+                    stage_name="P2", runtime=resident_runtime, image_loader=image_loader,
+                    frame_ids_by_source_index=tuple(a.frame_id for a in schedule.assignments),
+                    valid_mask=m5.final_result.valid_mask,
+                    provenance=m5.final_result.pixel_provenance,
+                ) if p0_resident_device_remap is not None else m5.final_result.image
+            ),
             m5.final_result.valid_mask,
             {"m5": m5, "schedule": schedule, "selection": selection},
         ))

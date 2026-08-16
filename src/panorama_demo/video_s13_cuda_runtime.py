@@ -279,7 +279,7 @@ class S13CudaRuntime:
                 for (int c = 0; c < 3; ++c) {
                     double value = 0.0;
                     if (isfinite(x) && isfinite(y)) {
-                        int x0 = (int)floor(x), y0 = (int)floor(y);
+                        int x0 = (int)floorf((float)x), y0 = (int)floorf((float)y);
                         double ax = x - (double)x0, ay = y - (double)y0;
                         for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) {
                             int sx = x0 + dx, sy = y0 + dy;
