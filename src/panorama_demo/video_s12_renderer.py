@@ -32,6 +32,7 @@ class S012StageAResult:
 
 
 ImageLoader = Callable[[int], np.ndarray]
+ResidentRemap = Callable[[int, np.ndarray, np.ndarray, np.ndarray], np.ndarray]
 
 
 def _as_loader(images: Mapping[int, np.ndarray] | ImageLoader) -> ImageLoader:
@@ -103,6 +104,8 @@ def render_s012_stage_a(
     schedule: S012Schedule,
     calibration: CalibratedIntrinsics,
     images: Mapping[int, np.ndarray] | ImageLoader,
+    *,
+    resident_remap: ResidentRemap | None = None,
 ) -> S012StageAResult:
     """Render fixed owners without vertical warp, gain, blend, fill, or depth.
 
@@ -149,13 +152,13 @@ def render_s012_stage_a(
             assignment.right_x,
             inverse_maps,
         )
-        sampled = accelerated_remap(
-            image,
-            map_u,
-            map_v,
-            cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
+        sampled = (
+            resident_remap(assignment.frame_id, image, map_u, map_v)
+            if resident_remap is not None
+            else accelerated_remap(
+                image, map_u, map_v, cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+            )
         )
         remap_invocations += 1
         if output is None:

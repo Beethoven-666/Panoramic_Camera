@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -41,6 +41,8 @@ def run_s13_fast_pipeline(
     normal_target_advance_px: float,
     risky_target_advance_px: float,
     m51_r2_config: object | None,
+    resident_runtime: Any | None = None,
+    p0_resident_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], np.ndarray] | None = None,
 ) -> dict[str, Any]:
     """Render P0--P3 once, keeping every parent and decision in memory."""
 
@@ -77,6 +79,11 @@ def run_s13_fast_pipeline(
         if len(schedule_plan.schedules) != 1:
             raise ValueError("S1.3 fast pipeline does not publish panel sets")
         selection, schedule = schedule_plan.selections[0], schedule_plan.schedules[0]
+        if resident_runtime is not None:
+            resident_runtime.preload_sources({
+                assignment.frame_id: image_loader(assignment.frame_id)
+                for assignment in schedule.assignments if not assignment.zero_width
+            })
         hypothesis_by_frame = {
             step.target_frame_id: step.selected_hypothesis_id for step in layout.lineage
         }
@@ -88,6 +95,7 @@ def run_s13_fast_pipeline(
             selected_hypothesis_ids=tuple(
                 hypothesis_by_frame.get(frame_id, -1) for frame_id in selection.frame_ids
             ),
+            resident_remap=p0_resident_remap,
         )
         p0 = runtime.initialize_p0(S13StageResult(
             runtime.run_id, S13Stage.P0, 0, None, p0_render.image,

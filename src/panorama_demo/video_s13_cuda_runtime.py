@@ -41,6 +41,7 @@ class S13CudaRuntime:
         self.compute_stream = cp.cuda.Stream(non_blocking=True)
         self.download_stream = cp.cuda.Stream(non_blocking=True)
         self._upload_ready = cp.cuda.Event()
+        self._compute_ready = cp.cuda.Event()
         self._sources: dict[int, Any] = {}
         self._source_ids: dict[tuple[int, tuple[int, ...], tuple[int, ...], str], int] = {}
         self._maps: dict[object, Any] = {}
@@ -129,6 +130,7 @@ class S13CudaRuntime:
                 (source, np.int32(source.shape[0]), np.int32(source.shape[1]), fixed_gpu,
                  fraction_gpu, np.int32(fractions.shape[0]), np.int32(fractions.shape[1]), output),
             )
+            self._compute_ready.record(self.compute_stream)
         self._kernels += 1
         return output
 
@@ -159,6 +161,7 @@ class S13CudaRuntime:
                 (source_gpu, np.int32(source_gpu.shape[0]), np.int32(source_gpu.shape[1]),
                  map_u_gpu, map_v_gpu, np.int32(map_u.shape[0]), np.int32(map_u.shape[1]), output),
             )
+            self._compute_ready.record(self.compute_stream)
         self._kernels += 1
         return output
 
@@ -169,7 +172,10 @@ class S13CudaRuntime:
     ) -> np.ndarray:
         if interpolation != cv2.INTER_LINEAR or borderMode != cv2.BORDER_CONSTANT or borderValue != 0:
             raise ValueError("S1.3 resident remap only supports linear constant-zero RGB sampling")
-        result = self.cp.asnumpy(self.remap_linear_float(source, map_u, map_v))
+        device = self.remap_linear_float(source, map_u, map_v)
+        with self.download_stream:
+            self.download_stream.wait_event(self._compute_ready)
+            result = self.cp.asnumpy(device)
         self._d2h += int(result.nbytes)
         return result
 
@@ -182,7 +188,10 @@ class S13CudaRuntime:
             raise ValueError("S1.3 resident frame id/source identity mismatch")
         if int(self.cp.asnumpy(self.source(frame_id).sum())) != int(np.asarray(source, dtype=np.uint64).sum()):
             raise ValueError("S1.3 resident device source content mismatch")
-        result = self.cp.asnumpy(self.remap_linear_float(source, map_u, map_v))
+        device = self.remap_linear_float(source, map_u, map_v)
+        with self.download_stream:
+            self.download_stream.wait_event(self._compute_ready)
+            result = self.cp.asnumpy(device)
         self._d2h += int(result.nbytes)
         return result
 
