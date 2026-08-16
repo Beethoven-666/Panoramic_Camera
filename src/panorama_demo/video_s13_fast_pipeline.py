@@ -43,6 +43,7 @@ def run_s13_fast_pipeline(
     m51_r2_config: object | None,
     resident_runtime: Any | None = None,
     p0_resident_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], np.ndarray] | None = None,
+    p0_resident_device_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], Any] | None = None,
 ) -> dict[str, Any]:
     """Render P0--P3 once, keeping every parent and decision in memory."""
 
@@ -96,6 +97,8 @@ def run_s13_fast_pipeline(
                 hypothesis_by_frame.get(frame_id, -1) for frame_id in selection.frame_ids
             ),
             resident_remap=p0_resident_remap,
+            resident_device_remap=p0_resident_device_remap,
+            resident_stage=resident_runtime if p0_resident_device_remap is not None else None,
         )
         p0 = runtime.initialize_p0(S13StageResult(
             runtime.run_id, S13Stage.P0, 0, None, p0_render.image,

@@ -195,6 +195,31 @@ class S13CudaRuntime:
         self._d2h += int(result.nbytes)
         return result
 
+    def remap_resident_frame_device(
+        self, frame_id: int, source: np.ndarray, map_u: np.ndarray, map_v: np.ndarray,
+    ) -> Any:
+        if self._source_ids.get(self._host_source_key(source)) != int(frame_id):
+            raise ValueError("S1.3 resident frame id/source identity mismatch")
+        return self.remap_linear_float(source, map_u, map_v)
+
+    def new_stage_canvas(self, height: int, width: int) -> Any:
+        with self.compute_stream:
+            self.compute_stream.wait_event(self._upload_ready)
+            canvas = self.cp.zeros((int(height), int(width), 3), dtype=self.cp.uint8)
+            self._compute_ready.record(self.compute_stream)
+        return canvas
+
+    def compose_owner_roi(self, canvas: Any, x0: int, x1: int, sampled: Any, valid: np.ndarray) -> None:
+        valid_gpu = self.device_copy(np.asarray(valid, dtype=bool))
+        with self.compute_stream:
+            self.compute_stream.wait_event(self._upload_ready)
+            roi = canvas[:, int(x0):int(x1)]
+            roi[valid_gpu] = sampled[valid_gpu]
+            self._compute_ready.record(self.compute_stream)
+
+    def download_stage_canvas(self, stage_name: str, canvas: Any) -> np.ndarray:
+        return self.download_stage_once(DeviceStageImage(stage_name, canvas))
+
     def _exact_linear_kernel(self) -> Any:
         if self._linear_kernel is not None:
             return self._linear_kernel
@@ -276,6 +301,7 @@ class S13CudaRuntime:
         if stage.stage_name not in self._full_downloads:
             raise ValueError(f"Unknown S1.3 stage {stage.stage_name}")
         with self.download_stream:
+            self.download_stream.wait_event(self._compute_ready)
             result = self.cp.asnumpy(stage.image)
         self._d2h += int(result.nbytes)
         self._full_downloads[stage.stage_name] += 1

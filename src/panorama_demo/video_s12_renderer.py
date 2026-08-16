@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
 import cv2
 import numpy as np
@@ -33,6 +33,7 @@ class S012StageAResult:
 
 ImageLoader = Callable[[int], np.ndarray]
 ResidentRemap = Callable[[int, np.ndarray, np.ndarray, np.ndarray], np.ndarray]
+ResidentDeviceRemap = Callable[[int, np.ndarray, np.ndarray, np.ndarray], Any]
 
 
 def _as_loader(images: Mapping[int, np.ndarray] | ImageLoader) -> ImageLoader:
@@ -106,6 +107,8 @@ def render_s012_stage_a(
     images: Mapping[int, np.ndarray] | ImageLoader,
     *,
     resident_remap: ResidentRemap | None = None,
+    resident_device_remap: ResidentDeviceRemap | None = None,
+    resident_stage: Any | None = None,
 ) -> S012StageAResult:
     """Render fixed owners without vertical warp, gain, blend, fill, or depth.
 
@@ -122,6 +125,12 @@ def render_s012_stage_a(
     inverse_maps = undistortion_maps(calibration)
     height, width = schedule.canvas_height, schedule.canvas_width
     output: np.ndarray | None = None
+    output_device = (
+        resident_stage.new_stage_canvas(height, width)
+        if resident_stage is not None else None
+    )
+    if (resident_device_remap is None) != (resident_stage is None):
+        raise ValueError("S012 resident device remap and stage must be supplied together")
     owner_frame_id = np.full((height, width), -1, dtype=np.int32)
     valid_mask = np.zeros((height, width), dtype=bool)
     source_u_full = np.full((height, width), np.nan, dtype=np.float32)
@@ -152,18 +161,27 @@ def render_s012_stage_a(
             assignment.right_x,
             inverse_maps,
         )
-        sampled = (
-            resident_remap(assignment.frame_id, image, map_u, map_v)
-            if resident_remap is not None
-            else accelerated_remap(
-                image, map_u, map_v, cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        sampled: np.ndarray | None = None
+        if output_device is None:
+            sampled = (
+                resident_remap(assignment.frame_id, image, map_u, map_v)
+                if resident_remap is not None
+                else accelerated_remap(
+                    image, map_u, map_v, cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+                )
             )
-        )
         remap_invocations += 1
+        if output_device is not None:
+            resident_stage.compose_owner_roi(
+                output_device, assignment.left_x, assignment.right_x,
+                resident_device_remap(assignment.frame_id, image, map_u, map_v), sample_valid,
+            )
         if output is None:
             output = np.zeros((height, width, 3), dtype=np.uint8)
-        output[roi][sample_valid] = sampled[sample_valid]
+        if output_device is None:
+            assert sampled is not None
+            output[roi][sample_valid] = sampled[sample_valid]
         owner_roi = owner_frame_id[roi]
         owner_roi[sample_valid] = assignment.frame_id
         valid_mask[roi] = sample_valid
@@ -174,6 +192,8 @@ def render_s012_stage_a(
         source_v_roi[sample_valid] = map_v[sample_valid]
         assignment_roi[sample_valid] = assignment.assignment_index
 
+    if output_device is not None:
+        output = resident_stage.download_stage_canvas("P0", output_device)
     if output is None:
         output = np.zeros((height, width, 3), dtype=np.uint8)
     if not np.all(geometric_written):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 
@@ -30,9 +30,12 @@ def render_s13_p0(
     placement_methods: tuple[str, ...],
     selected_hypothesis_ids: tuple[int, ...] | None = None,
     resident_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], np.ndarray] | None = None,
+    resident_device_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], Any] | None = None,
+    resident_stage: Any | None = None,
 ) -> S13P0Result:
     result = render_s012_stage_a(
         schedule, calibration, image_loader, resident_remap=resident_remap,
+        resident_device_remap=resident_device_remap, resident_stage=resident_stage,
     )
     contributors = {assignment.frame_id for assignment in schedule.assignments if not assignment.zero_width}
     if result.remap_invocations != len(contributors) or len(result.decoded_frame_ids) != len(contributors):

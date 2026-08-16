@@ -32,7 +32,7 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
             risky_target_advance_px=risky_target_advance_px,
             m51_r2_config=m51_r2_config,
             resident_runtime=runtime,
-            p0_resident_remap=runtime.remap_resident_frame,
+            p0_resident_device_remap=runtime.remap_resident_frame_device,
         )
         for key, value in result["timings"].items():
             runtime.note_stage(str(key), float(value))
