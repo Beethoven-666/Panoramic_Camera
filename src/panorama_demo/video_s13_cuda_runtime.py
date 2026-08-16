@@ -186,8 +186,10 @@ class S13CudaRuntime:
             raise ValueError("S1.3 resident frame source identity changed")
         if self._source_ids[self._host_source_key(source)] != int(frame_id):
             raise ValueError("S1.3 resident frame id/source identity mismatch")
-        if int(self.cp.asnumpy(self.source(frame_id).sum())) != int(np.asarray(source, dtype=np.uint64).sum()):
-            raise ValueError("S1.3 resident device source content mismatch")
+        # ``preload_sources`` owns the immutable contributor and records this
+        # exact host allocation.  Re-summing a full device image here forced a
+        # stream synchronization for every compact remap, defeating residency
+        # without increasing the supported-use safety of the cache.
         device = self.remap_linear_float(source, map_u, map_v)
         with self.download_stream:
             self.download_stream.wait_event(self._compute_ready)
