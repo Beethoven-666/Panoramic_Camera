@@ -86,9 +86,7 @@ def test_cuda_remap_parity_on_real_device(monkeypatch: pytest.MonkeyPatch) -> No
 
     actual = cuda_backend.remap(source, map_x, map_y, cv2.INTER_LINEAR)
 
-    delta = np.abs(actual.astype(np.int16) - expected.astype(np.int16))
-    assert int(delta.max(initial=0)) <= 1
-    assert float(np.percentile(delta, 99.0)) == 0.0
+    np.testing.assert_array_equal(actual, expected)
     metadata = cuda_backend.cuda_metadata()
     assert metadata["available"] is True
     assert metadata["counters"]["cupy_calls"] + metadata["counters"][

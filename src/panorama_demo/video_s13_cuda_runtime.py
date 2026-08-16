@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import time
 from typing import Any, Mapping
 
+import cv2
 import numpy as np
 
 from .cuda_backend import cuda_status
@@ -39,7 +40,9 @@ class S13CudaRuntime:
         self.upload_stream = cp.cuda.Stream(non_blocking=True)
         self.compute_stream = cp.cuda.Stream(non_blocking=True)
         self.download_stream = cp.cuda.Stream(non_blocking=True)
+        self._upload_ready = cp.cuda.Event()
         self._sources: dict[int, Any] = {}
+        self._source_ids: dict[tuple[int, tuple[int, ...], tuple[int, ...], str], int] = {}
         self._maps: dict[object, Any] = {}
         self._uploads: dict[int, int] = {}
         self._h2d = self._d2h = self._kernels = 0
@@ -48,6 +51,8 @@ class S13CudaRuntime:
         self._map_hits = self._map_misses = 0
         self._started = time.perf_counter()
         self._stage_wall_ms: dict[str, float] = {}
+        self._linear_kernel: Any | None = None
+        self._float_linear_kernel: Any | None = None
 
     def preload_sources(self, selected_frames: Mapping[int, np.ndarray]) -> None:
         free, _ = self.cp.cuda.runtime.memGetInfo()
@@ -60,8 +65,10 @@ class S13CudaRuntime:
                     continue
                 host = np.ascontiguousarray(image)
                 self._sources[int(frame_id)] = self.cp.asarray(host)
+                self._source_ids[self._host_source_key(image)] = int(frame_id)
                 self._uploads[int(frame_id)] = self._uploads.get(int(frame_id), 0) + 1
                 self._h2d += int(host.nbytes)
+            self._upload_ready.record(self.upload_stream)
 
     def source(self, frame_id: int) -> Any:
         try:
@@ -77,6 +84,7 @@ class S13CudaRuntime:
         host = np.ascontiguousarray(map_host)
         with self.upload_stream:
             cached = self.cp.asarray(host)
+            self._upload_ready.record(self.upload_stream)
         self._maps[key] = cached
         self._map_misses += 1
         self._h2d += int(host.nbytes)
@@ -89,8 +97,171 @@ class S13CudaRuntime:
         host = np.ascontiguousarray(array)
         with self.upload_stream:
             result = self.cp.asarray(host)
+            self._upload_ready.record(self.upload_stream)
         self._h2d += int(host.nbytes)
         return result
+
+    def remap_linear_exact(self, source_frame_id: int, map_u: np.ndarray, map_v: np.ndarray) -> Any:
+        """Return a device BGR remap using OpenCV's 1/32 fixed-point map form.
+
+        ``cv2.convertMaps`` is intentionally kept on the CPU: it establishes
+        OpenCV's fixed-point remap representation. The device kernel then
+        applies the same four integer bilinear weights without creating a
+        NumPy image boundary. Callers must opt into this fixed-map semantic;
+        the legacy float-map renderer remains the reference authority.
+        """
+        source = self.source(source_frame_id)
+        if source.dtype != self.cp.uint8 or source.ndim != 3 or source.shape[2] != 3:
+            raise TypeError("S1.3 exact device remap requires HxWx3 uint8 source")
+        fixed, fractions = cv2.convertMaps(
+            np.ascontiguousarray(map_u, dtype=np.float32),
+            np.ascontiguousarray(map_v, dtype=np.float32), cv2.CV_16SC2,
+        )
+        fixed_gpu = self.upload_map_once(("linear-fixed", source_frame_id, fixed.shape, fixed.tobytes()), fixed)
+        fraction_gpu = self.upload_map_once(("linear-frac", source_frame_id, fractions.shape, fractions.tobytes()), fractions)
+        output = self.cp.empty((*fractions.shape, 3), dtype=self.cp.uint8)
+        kernel = self._exact_linear_kernel()
+        count = int(fractions.size)
+        with self.compute_stream:
+            self.compute_stream.wait_event(self._upload_ready)
+            kernel(
+                ((count + 255) // 256,), (256,),
+                (source, np.int32(source.shape[0]), np.int32(source.shape[1]), fixed_gpu,
+                 fraction_gpu, np.int32(fractions.shape[0]), np.int32(fractions.shape[1]), output),
+            )
+        self._kernels += 1
+        return output
+
+    def remap_linear_float(self, source: np.ndarray, map_u: np.ndarray, map_v: np.ndarray) -> Any:
+        """Float-map OpenCV-compatible remap from an already-resident source.
+
+        The map upload is cached and the source is resolved by object identity,
+        so a contributor is not uploaded again at each S1.3 stage boundary.
+        """
+        try:
+            source_frame_id = self._source_ids[self._host_source_key(source)]
+        except KeyError as exc:
+            raise ValueError("S1.3 CUDA remap received a non-resident source image") from exc
+        source_gpu = self.source(source_frame_id)
+        map_u = np.ascontiguousarray(map_u, dtype=np.float32)
+        map_v = np.ascontiguousarray(map_v, dtype=np.float32)
+        if map_u.shape != map_v.shape or map_u.ndim != 2:
+            raise ValueError("S1.3 CUDA remap maps must be equally-shaped 2-D arrays")
+        map_u_gpu = self.upload_map_once(("float-u", map_u.shape, map_u.tobytes()), map_u)
+        map_v_gpu = self.upload_map_once(("float-v", map_v.shape, map_v.tobytes()), map_v)
+        output = self.cp.empty((*map_u.shape, 3), dtype=self.cp.uint8)
+        kernel = self._float_exact_linear_kernel()
+        count = int(map_u.size)
+        with self.compute_stream:
+            self.compute_stream.wait_event(self._upload_ready)
+            kernel(
+                ((count + 255) // 256,), (256,),
+                (source_gpu, np.int32(source_gpu.shape[0]), np.int32(source_gpu.shape[1]),
+                 map_u_gpu, map_v_gpu, np.int32(map_u.shape[0]), np.int32(map_u.shape[1]), output),
+            )
+        self._kernels += 1
+        return output
+
+    def remap_host_source(
+        self, source: np.ndarray, map_u: np.ndarray, map_v: np.ndarray,
+        interpolation: int = cv2.INTER_LINEAR, *, borderMode: int = cv2.BORDER_CONSTANT,
+        borderValue: object = 0,
+    ) -> np.ndarray:
+        if interpolation != cv2.INTER_LINEAR or borderMode != cv2.BORDER_CONSTANT or borderValue != 0:
+            raise ValueError("S1.3 resident remap only supports linear constant-zero RGB sampling")
+        result = self.cp.asnumpy(self.remap_linear_float(source, map_u, map_v))
+        self._d2h += int(result.nbytes)
+        return result
+
+    def remap_resident_frame(
+        self, frame_id: int, source: np.ndarray, map_u: np.ndarray, map_v: np.ndarray,
+    ) -> np.ndarray:
+        if self._host_source_key(source) not in self._source_ids:
+            raise ValueError("S1.3 resident frame source identity changed")
+        if self._source_ids[self._host_source_key(source)] != int(frame_id):
+            raise ValueError("S1.3 resident frame id/source identity mismatch")
+        if int(self.cp.asnumpy(self.source(frame_id).sum())) != int(np.asarray(source, dtype=np.uint64).sum()):
+            raise ValueError("S1.3 resident device source content mismatch")
+        result = self.cp.asnumpy(self.remap_linear_float(source, map_u, map_v))
+        self._d2h += int(result.nbytes)
+        return result
+
+    def _exact_linear_kernel(self) -> Any:
+        if self._linear_kernel is not None:
+            return self._linear_kernel
+        self._linear_kernel = self.cp.RawKernel(
+            r'''extern "C" __global__
+            void s13_linear(const unsigned char* src, int src_h, int src_w,
+                            const short* xy, const unsigned short* frac,
+                            int out_h, int out_w, unsigned char* out) {
+                int p = blockDim.x * blockIdx.x + threadIdx.x;
+                int count = out_h * out_w;
+                if (p >= count) return;
+                int x0 = (int)xy[2 * p];
+                int y0 = (int)xy[2 * p + 1];
+                int f = (int)frac[p];
+                int fx = f & 31;
+                int fy = f >> 5;
+                int w00 = (32 - fx) * (32 - fy);
+                int w01 = fx * (32 - fy);
+                int w10 = (32 - fx) * fy;
+                int w11 = fx * fy;
+                for (int c = 0; c < 3; ++c) {
+                    int sum = 0;
+                    int sx[4] = {x0, x0 + 1, x0, x0 + 1};
+                    int sy[4] = {y0, y0, y0 + 1, y0 + 1};
+                    int ww[4] = {w00, w01, w10, w11};
+                    for (int i = 0; i < 4; ++i) {
+                        if (sx[i] >= 0 && sx[i] < src_w && sy[i] >= 0 && sy[i] < src_h)
+                            sum += ww[i] * (int)src[(sy[i] * src_w + sx[i]) * 3 + c];
+                    }
+                    out[p * 3 + c] = (unsigned char)((sum + 512) >> 10);
+                }
+            }''',
+            "s13_linear",
+        )
+        return self._linear_kernel
+
+    @staticmethod
+    def _host_source_key(source: np.ndarray) -> tuple[int, tuple[int, ...], tuple[int, ...], str]:
+        array = np.asarray(source)
+        return (
+            int(array.__array_interface__["data"][0]), tuple(array.shape),
+            tuple(array.strides), array.dtype.str,
+        )
+
+    def _float_exact_linear_kernel(self) -> Any:
+        if self._float_linear_kernel is not None:
+            return self._float_linear_kernel
+        self._float_linear_kernel = self.cp.RawKernel(
+            r'''extern "C" __global__
+            void s13_float_linear(const unsigned char* src, int src_h, int src_w,
+                                  const float* mx, const float* my,
+                                  int out_h, int out_w, unsigned char* out) {
+                int p = blockDim.x * blockIdx.x + threadIdx.x;
+                int count = out_h * out_w;
+                if (p >= count) return;
+                double x = (double)mx[p], y = (double)my[p];
+                for (int c = 0; c < 3; ++c) {
+                    double value = 0.0;
+                    if (isfinite(x) && isfinite(y)) {
+                        int x0 = (int)floor(x), y0 = (int)floor(y);
+                        double ax = x - (double)x0, ay = y - (double)y0;
+                        for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) {
+                            int sx = x0 + dx, sy = y0 + dy;
+                            if (sx >= 0 && sx < src_w && sy >= 0 && sy < src_h) {
+                                double wx = dx ? ax : 1.0 - ax;
+                                double wy = dy ? ay : 1.0 - ay;
+                                value += (double)src[(sy * src_w + sx) * 3 + c] * wx * wy;
+                            }
+                        }
+                    }
+                    int rounded = (int)nearbyintf((float)value);
+                    out[p * 3 + c] = (unsigned char)min(255, max(0, rounded));
+                }
+            }''', "s13_float_linear",
+        )
+        return self._float_linear_kernel
 
     def download_stage_once(self, stage: DeviceStageImage) -> np.ndarray:
         if stage.stage_name not in self._full_downloads:
@@ -149,6 +320,7 @@ class S13CudaRuntime:
 
     def close(self) -> None:
         self._sources.clear()
+        self._source_ids.clear()
         self._maps.clear()
 
 

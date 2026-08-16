@@ -337,11 +337,11 @@ def _cupy_remap_kernel(dtype: np.dtype[Any]) -> Any:
         int pixel = blockDim.x * blockIdx.x + threadIdx.x;
         int count = out_h * out_w;
         if (pixel >= count) return;
-        float x = mx[pixel];
-        float y = my[pixel];
+        double x = (double)mx[pixel];
+        double y = (double)my[pixel];
         for (int c = 0; c < channels; ++c) {{
             int out_i = pixel * channels + c;
-            float value = border;
+            double value = (double)border;
             if (isfinite(x) && isfinite(y)) {{
                 if (!linear) {{
                     int ix = (int)nearbyintf(x);
@@ -355,16 +355,16 @@ def _cupy_remap_kernel(dtype: np.dtype[Any]) -> Any:
                 }} else {{
                     int x0 = (int)floorf(x);
                     int y0 = (int)floorf(y);
-                    float ax = x - (float)x0;
-                    float ay = y - (float)y0;
+                    double ax = x - (double)x0;
+                    double ay = y - (double)y0;
                     value = 0.0f;
                     for (int dy = 0; dy < 2; ++dy) {{
                         int sy = y0 + dy;
-                        float wy = dy ? ay : 1.0f - ay;
+                        double wy = dy ? ay : 1.0 - ay;
                         for (int dx = 0; dx < 2; ++dx) {{
                             int sx = x0 + dx;
-                            float wx = dx ? ax : 1.0f - ax;
-                            float sample = border;
+                            double wx = dx ? ax : 1.0 - ax;
+                            double sample = (double)border;
                             if (replicate) {{
                                 sx = min(src_w - 1, max(0, sx));
                                 sy = min(src_h - 1, max(0, sy));
