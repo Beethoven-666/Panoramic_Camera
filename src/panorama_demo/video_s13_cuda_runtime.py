@@ -209,6 +209,31 @@ class S13CudaRuntime:
             raise ValueError("S1.3 resident frame id/source identity mismatch")
         return self.remap_linear_float(source, map_u, map_v)
 
+    def remap_resident_frame_linear(
+        self, frame_id: int, source: np.ndarray, map_u: np.ndarray, map_v: np.ndarray,
+    ) -> np.ndarray:
+        """Remap an already-resident source and decode sRGB before one D2H."""
+        if self._source_ids.get(self._host_source_key(source)) != int(frame_id):
+            raise ValueError("S1.3 resident frame id/source identity mismatch")
+        sampled = self.remap_linear_float(source, map_u, map_v)
+        with self.compute_stream:
+            encoded = sampled.astype(self.cp.float32) / self.cp.float32(255.0)
+            linear = self.cp.where(
+                encoded <= self.cp.float32(0.04045),
+                encoded / self.cp.float32(12.92),
+                self.cp.power(
+                    (encoded + self.cp.float32(0.055)) / self.cp.float32(1.055),
+                    self.cp.float32(2.4),
+                ),
+            ).astype(self.cp.float32)
+            self._compute_ready.record(self.compute_stream)
+        with self.download_stream:
+            self.download_stream.wait_event(self._compute_ready)
+            result = self.cp.asnumpy(linear)
+        self._kernels += 1
+        self._d2h += int(result.nbytes)
+        return result
+
     def new_stage_canvas(self, height: int, width: int) -> Any:
         with self.compute_stream:
             self.compute_stream.wait_event(self._upload_ready)
