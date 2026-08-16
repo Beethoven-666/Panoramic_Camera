@@ -46,6 +46,21 @@ class S13StageImageWriter:
         snapshot.setflags(write=False)
         self._pending.append(self._executor.submit(self._write_png, stage, snapshot))
 
+    def submit_owned_host_image(self, stage: str, image: np.ndarray) -> None:
+        """Queue an immutable, contiguous buffer whose ownership is transferred.
+
+        CUDA stage downloads use this to avoid a second full-resolution copy.
+        The caller must not mutate the buffer after submission.
+        """
+        self._validate(stage, image)
+        if not image.flags.c_contiguous:
+            raise ValueError("Owned S1.3 stage image must be contiguous")
+        if image.flags.writeable:
+            raise ValueError("Owned S1.3 stage image must be immutable")
+        if self._pending:
+            self._written.append(self._pending.pop(0).result())
+        self._pending.append(self._executor.submit(self._write_png, stage, image))
+
     def _write_png(self, stage: str, image: np.ndarray) -> Path:
         self.output_root.mkdir(parents=True, exist_ok=True)
         final = self.output_root / STAGE_FILENAMES[stage]

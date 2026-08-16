@@ -38,6 +38,8 @@ S13_M51_R4_IMPLEMENTATION_ID = (
 )
 S13_M51_R4_CONTRACT_SCHEMA = "gemini305-video-s13-output-first/v6-r2"
 S13_M51_R4_P2_COMPLETION_SCHEMA = "gemini305-video-s13-p2-completion/v6-r2"
+S13_CUDA_RESIDENT_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v1"
+S13_CUDA_RESIDENT_IMPLEMENTATION_ID = "s013_output_first_progressive_dense_central_slit_m61_cuda_resident_v1"
 
 _S13_COMPONENT_NAME = "s013_output_first_progressive_dense_central_slit"
 
@@ -55,6 +57,7 @@ class S13IdentityDescriptor:
     required_output_component: str
     default_stop_after: str
     stage_order: tuple[str, ...]
+    runtime_backend: str = "numpy_reference"
 
 
 _S13_IDENTITY_CONTRACTS = {
@@ -65,6 +68,11 @@ _S13_IDENTITY_CONTRACTS = {
     (S13_FORMAL_M6_ALGORITHM_ID, S13_FORMAL_M6_IMPLEMENTATION_ID): S13IdentityDescriptor(
         M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
         True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3"),
+    ),
+    (S13_CUDA_RESIDENT_ALGORITHM_ID, S13_CUDA_RESIDENT_IMPLEMENTATION_ID): S13IdentityDescriptor(
+        M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
+        True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3"),
+        "cupy_cuda_resident",
     ),
     (S13_M51_R2_ALGORITHM_ID, S13_M51_R2_IMPLEMENTATION_ID): S13IdentityDescriptor(
         S13_M51_R2_CONTRACT_SCHEMA, S13_M51_R2_P2_COMPLETION_SCHEMA, True,
@@ -117,6 +125,10 @@ class S13Config:
         return self.identity.m6_eligible
 
     @property
+    def runtime_backend(self) -> str:
+        return self.identity.runtime_backend
+
+    @property
     def analysis_width_px(self) -> int:
         return int(self.component["motion"]["analysis_width_px"])
 
@@ -164,10 +176,7 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
     contract_schema = identity_contract.contract_schema
     p2_completion_schema = identity_contract.p2_completion_schema
     requires_m61_bootstrap = identity_contract.requires_m61_bootstrap
-    fast_formal = (
-        algorithm_id == S13_FORMAL_M6_ALGORITHM_ID
-        and document.get("implementation_id") == S13_FORMAL_M6_IMPLEMENTATION_ID
-    )
+    fast_formal = requires_m61_bootstrap
     if document.get("allow_baseline_fallback") is not False:
         raise ValueError("S1.3 forbids baseline fallback")
     components = _mapping(document.get("components"), "components")
@@ -175,6 +184,9 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
         components.get(_S13_COMPONENT_NAME),
         "component",
     )
+    declared_backend = component.get("runtime_backend", "numpy_reference")
+    if declared_backend != identity_contract.runtime_backend:
+        raise ValueError("S1.3 runtime backend does not match registered identity")
     if component.get("contract_schema") != contract_schema:
         raise ValueError("S1.3 contract schema is invalid")
     if requires_m61_bootstrap:
@@ -421,6 +433,8 @@ __all__ = [
     "S13_M51_R4_IMPLEMENTATION_ID",
     "S13_M51_R4_CONTRACT_SCHEMA",
     "S13_M51_R4_P2_COMPLETION_SCHEMA",
+    "S13_CUDA_RESIDENT_ALGORITHM_ID",
+    "S13_CUDA_RESIDENT_IMPLEMENTATION_ID",
     "M61_ALGORITHM_ID",
     "M61_CONTRACT_SCHEMA",
     "M61_IMPLEMENTATION_ID",

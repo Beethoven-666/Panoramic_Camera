@@ -23,6 +23,7 @@ from panorama_demo.video_s13_motion import descriptive_delta_risk
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v3.yaml"
 FORMAL_M6_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4.yaml"
+CUDA_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v1.yaml"
 
 
 def test_s13_config_and_sibling_manifest_are_isolated_and_hash_bound() -> None:
@@ -59,6 +60,12 @@ def test_formal_m6_identity_adds_m61_to_the_full_chain_without_mutating_v3() -> 
         implementation_id=spec.implementation_id,
         role=spec.role,
     )
+
+
+def test_cuda_successor_has_distinct_registered_runtime_backend() -> None:
+    config = load_s13_config(CUDA_CONFIG)
+    assert config.runtime_backend == "cupy_cuda_resident"
+    assert config.document["candidate_id"] != load_s13_config(FORMAL_M6_CONFIG).document["candidate_id"]
 
 
 def test_malformed_formal_m6_claim_is_recognized_and_rejected() -> None:

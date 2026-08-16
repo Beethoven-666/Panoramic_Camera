@@ -35,7 +35,6 @@ from .video_s13_bundle import (
     write_npz,
 )
 from .video_s13_contract import (
-    S13_FORMAL_M6_ALGORITHM_ID,
     S13_M51_R2_P2_COMPLETION_SCHEMA,
     S13_M51_R3_P2_COMPLETION_SCHEMA,
     S13_M51_R4_P2_COMPLETION_SCHEMA,
@@ -2682,7 +2681,7 @@ def run_s13_experiment(
         run_m6 = config.identity.default_stop_after != "P2"
     if run_m6 and not config.m6_eligible and not manual_c2e_authorized:
         raise ValueError("S1.3 identity is not M6 eligible")
-    formal_m6 = configured_algorithm_id == S13_FORMAL_M6_ALGORITHM_ID
+    formal_m6 = config.requires_m61_bootstrap
     from .video_s13_m51_r2 import S13M51R2Config, S13M51R3Config, S13M51R4Config
 
     m51_r2_document = config.component.get("m51_r2")
@@ -2870,9 +2869,15 @@ def run_s13_experiment(
             raise ValueError("S1.3 fast pipeline does not support disk resume")
         if manual_c2e_forward_m7:
             raise ValueError("S1.3 fast pipeline has automatic C2E; M7 is unavailable")
-        from .video_s13_fast_pipeline import run_s13_fast_pipeline
-
-        fast = run_s13_fast_pipeline(
+        if config.runtime_backend == "cupy_cuda_resident":
+            from .video_s13_cuda_fast_pipeline import run_s13_cuda_fast_pipeline
+            runner = run_s13_cuda_fast_pipeline
+        elif config.runtime_backend == "numpy_reference":
+            from .video_s13_fast_pipeline import run_s13_fast_pipeline
+            runner = run_s13_fast_pipeline
+        else:
+            raise ValueError("S1.3 runtime backend is not registered")
+        fast = runner(
             session=session,
             trajectory=trajectory,
             output=root,
@@ -2889,6 +2894,7 @@ def run_s13_experiment(
             "stage_images": fast["paths"],
             "timings": {**stage_seconds, **fast["timings"]},
             "c2e": {"automatic": True, "selected": fast["c2e"]},
+            "cuda_resident": fast.get("cuda_resident"),
             "counts": {
                 key: fast[key]
                 for key in (
