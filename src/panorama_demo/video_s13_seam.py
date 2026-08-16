@@ -361,23 +361,34 @@ def _dp_candidate(
     back_step = np.full((height, band_width, 3), -1, dtype=np.int8)
     state[0, :, 1] = volume.total[0]
     for row in range(1, height):
-        for x in range(band_width):
-            for step_index, step in enumerate(steps):
-                previous_x = x - int(step)
-                if previous_x < 0 or previous_x >= band_width:
-                    continue
-                transition = state[row - 1, previous_x]
-                penalties = (
-                    float(slope_weight) * abs(int(step))
-                    + float(curvature_weight) * np.abs(steps - int(step))
-                )
-                previous_step = int(np.argmin(transition + penalties))
-                best = float(transition[previous_step] + penalties[previous_step])
-                if not math.isfinite(best):
-                    continue
-                state[row, x, step_index] = best + float(volume.total[row, x])
-                back_x[row, x, step_index] = previous_x
-                back_step[row, x, step_index] = previous_step
+        # Keep the exact float64 recurrence and NumPy's first-index tie break,
+        # but evaluate every x position for one step together.  The previous
+        # scalar loop created millions of tiny ``argmin`` arrays over a real
+        # video session; this is the same three-state DP, not a new seam rule.
+        for step_index, step in enumerate(steps):
+            x = np.arange(band_width, dtype=np.int32)
+            previous_x = x - int(step)
+            in_bounds = (previous_x >= 0) & (previous_x < band_width)
+            if not np.any(in_bounds):
+                continue
+            valid_x = x[in_bounds]
+            previous = previous_x[in_bounds]
+            penalties = (
+                float(slope_weight) * abs(int(step))
+                + float(curvature_weight) * np.abs(steps - int(step))
+            )
+            transition = state[row - 1, previous] + penalties[None, :]
+            previous_step = np.argmin(transition, axis=1)
+            best = transition[np.arange(len(valid_x)), previous_step]
+            finite = np.isfinite(best)
+            if not np.any(finite):
+                continue
+            target_x = valid_x[finite]
+            state[row, target_x, step_index] = (
+                best[finite] + volume.total[row, target_x]
+            )
+            back_x[row, target_x, step_index] = previous[finite]
+            back_step[row, target_x, step_index] = previous_step[finite]
     flat_index = int(np.argmin(state[-1]))
     x, step_index = np.unravel_index(flat_index, state[-1].shape)
     total_cost = float(state[-1, x, step_index])
