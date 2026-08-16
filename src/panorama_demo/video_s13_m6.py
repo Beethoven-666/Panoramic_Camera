@@ -96,15 +96,19 @@ def _formal_remap_sources(
     p2: S13VerifiedP2,
     raw_by_frame: Mapping[int, np.ndarray],
     solution: S13PhotometricSolution,
+    resident_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], np.ndarray] | None = None,
 ) -> tuple[dict[int, np.ndarray], int, int, int]:
     corrected: dict[int, np.ndarray] = {}
     peak_bytes = 0
     for parameter in solution.source_parameters:
         raw = np.asarray(raw_by_frame[parameter.frame_id])
         map_u, map_v, mapped = _formal_source_maps(p2, parameter.source_index)
-        sampled = accelerated_remap(
-            raw, map_u, map_v, cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        sampled = (
+            resident_remap(parameter.frame_id, raw, map_u, map_v)
+            if resident_remap is not None else accelerated_remap(
+                raw, map_u, map_v, cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+            )
         )
         linear = srgb_to_linear_bgr(sampled)
         adjusted = apply_s13_photometric_linear(linear, parameter)
@@ -172,6 +176,7 @@ def run_s13_m6(
     force_identity_owner_only: bool = False,
     force_owner_only_pair_indices: frozenset[int] = frozenset(),
     retain_runtime_details: bool = True,
+    resident_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], np.ndarray] | None = None,
 ) -> S13P3Result:
     """Replay P2 once from raw RGB; M4/M5/trajectory/depth are never called."""
 
@@ -191,7 +196,7 @@ def run_s13_m6(
     solve_seconds = time.perf_counter() - tick
     tick = time.perf_counter()
     corrected, decode_count, remap_count, peak_bytes = _formal_remap_sources(
-        p2, raw_cache, solution
+        p2, raw_cache, solution, resident_remap=resident_remap,
     )
     remap_seconds = time.perf_counter() - tick
     owner_linear = _compose_owner_only(p2, corrected)

@@ -225,6 +225,10 @@ def run_s13_fast_pipeline(
         p3_render = run_s13_m6(
             p2_runtime, image_loader, retain_runtime_details=False,
             force_owner_only_pair_indices=owner_only_pairs,
+            resident_remap=(
+                resident_runtime.remap_resident_frame
+                if p0_resident_device_remap is not None else None
+            ),
         )
         p3 = runtime.commit(expected_parent=S13Stage.P2, candidate=S13StageResult(
             runtime.run_id, S13Stage.P3, 3, p2.revision, p3_render.visual_panorama,

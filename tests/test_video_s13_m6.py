@@ -64,6 +64,25 @@ def test_m6_identity_owner_only_preserves_primary_provenance(tmp_path) -> None:
     assert result.performance["formal_raw_rgb_remap_invocations"] == 2
 
 
+def test_m6_can_use_resident_remap_without_changing_output(tmp_path) -> None:
+    p2 = _verified_p2(tmp_path)
+    images = {10: np.full((8, 12, 3), 80, np.uint8), 11: np.full((8, 12, 3), 80, np.uint8)}
+    calls: list[int] = []
+
+    def resident_remap(frame_id, raw, map_u, map_v):
+        calls.append(frame_id)
+        import cv2
+
+        return cv2.remap(raw, map_u, map_v, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+    result = run_s13_m6(
+        p2, images.__getitem__, force_identity_owner_only=True, resident_remap=resident_remap,
+    )
+
+    assert calls == [10, 11]
+    assert np.array_equal(result.visual_panorama, p2.result_image)
+
+
 def test_no_m6_completion_directory_name_is_created() -> None:
     source = Path("src/panorama_demo/video_s13_experiment.py").read_text(encoding="utf-8")
     assert 'generation / "M6"' not in source
