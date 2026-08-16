@@ -360,23 +360,26 @@ def _dp_candidate(
     back_x = np.full((height, band_width, 3), -1, dtype=np.int32)
     back_step = np.full((height, band_width, 3), -1, dtype=np.int8)
     state[0, :, 1] = volume.total[0]
+    # These are invariant for every row; keeping them out of the hot loop is
+    # especially material for the many narrow, 480-row video corridors.
+    transitions = []
+    for step in steps:
+        x = np.arange(band_width, dtype=np.int32)
+        previous_x = x - int(step)
+        in_bounds = (previous_x >= 0) & (previous_x < band_width)
+        valid_x = x[in_bounds]
+        transitions.append((
+            valid_x,
+            previous_x[in_bounds],
+            float(slope_weight) * abs(int(step))
+            + float(curvature_weight) * np.abs(steps - int(step)),
+        ))
     for row in range(1, height):
         # Keep the exact float64 recurrence and NumPy's first-index tie break,
         # but evaluate every x position for one step together.  The previous
         # scalar loop created millions of tiny ``argmin`` arrays over a real
         # video session; this is the same three-state DP, not a new seam rule.
-        for step_index, step in enumerate(steps):
-            x = np.arange(band_width, dtype=np.int32)
-            previous_x = x - int(step)
-            in_bounds = (previous_x >= 0) & (previous_x < band_width)
-            if not np.any(in_bounds):
-                continue
-            valid_x = x[in_bounds]
-            previous = previous_x[in_bounds]
-            penalties = (
-                float(slope_weight) * abs(int(step))
-                + float(curvature_weight) * np.abs(steps - int(step))
-            )
+        for step_index, (valid_x, previous, penalties) in enumerate(transitions):
             transition = state[row - 1, previous] + penalties[None, :]
             previous_step = np.argmin(transition, axis=1)
             best = transition[np.arange(len(valid_x)), previous_step]
