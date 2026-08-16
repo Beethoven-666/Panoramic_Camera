@@ -45,6 +45,7 @@ class S13CudaRuntime:
         self._sources: dict[int, Any] = {}
         self._source_ids: dict[tuple[int, tuple[int, ...], tuple[int, ...], str], int] = {}
         self._maps: dict[object, Any] = {}
+        self._map_host_refs: dict[object, np.ndarray] = {}
         self._uploads: dict[int, int] = {}
         self._h2d = self._d2h = self._kernels = 0
         self._full_downloads = {stage: 0 for stage in ("P0", "P1", "P2", "P3")}
@@ -87,6 +88,10 @@ class S13CudaRuntime:
             cached = self.cp.asarray(host)
             self._upload_ready.record(self.upload_stream)
         self._maps[key] = cached
+        # Address keys are valid only while the host allocation remains alive.
+        # Holding this compact map reference prevents NumPy from reusing its
+        # pointer for another map later in the same deterministic run.
+        self._map_host_refs[key] = host
         self._map_misses += 1
         self._h2d += int(host.nbytes)
         return cached
@@ -118,8 +123,8 @@ class S13CudaRuntime:
             np.ascontiguousarray(map_u, dtype=np.float32),
             np.ascontiguousarray(map_v, dtype=np.float32), cv2.CV_16SC2,
         )
-        fixed_gpu = self.upload_map_once(("linear-fixed", source_frame_id, fixed.shape, fixed.tobytes()), fixed)
-        fraction_gpu = self.upload_map_once(("linear-frac", source_frame_id, fractions.shape, fractions.tobytes()), fractions)
+        fixed_gpu = self.upload_map_once(("linear-fixed", source_frame_id, self._host_array_key(fixed)), fixed)
+        fraction_gpu = self.upload_map_once(("linear-frac", source_frame_id, self._host_array_key(fractions)), fractions)
         output = self.cp.empty((*fractions.shape, 3), dtype=self.cp.uint8)
         kernel = self._exact_linear_kernel()
         count = int(fractions.size)
@@ -149,8 +154,8 @@ class S13CudaRuntime:
         map_v = np.ascontiguousarray(map_v, dtype=np.float32)
         if map_u.shape != map_v.shape or map_u.ndim != 2:
             raise ValueError("S1.3 CUDA remap maps must be equally-shaped 2-D arrays")
-        map_u_gpu = self.upload_map_once(("float-u", map_u.shape, map_u.tobytes()), map_u)
-        map_v_gpu = self.upload_map_once(("float-v", map_v.shape, map_v.tobytes()), map_v)
+        map_u_gpu = self.upload_map_once(("float-u", self._host_array_key(map_u)), map_u)
+        map_v_gpu = self.upload_map_once(("float-v", self._host_array_key(map_v)), map_v)
         output = self.cp.empty((*map_u.shape, 3), dtype=self.cp.uint8)
         kernel = self._float_exact_linear_kernel()
         count = int(map_u.size)
@@ -266,6 +271,15 @@ class S13CudaRuntime:
             tuple(array.strides), array.dtype.str,
         )
 
+    @staticmethod
+    def _host_array_key(array: np.ndarray) -> tuple[int, tuple[int, ...], tuple[int, ...], str]:
+        """Address-based key for immutable per-run maps without copying them."""
+        value = np.asarray(array)
+        return (
+            int(value.__array_interface__["data"][0]), tuple(value.shape),
+            tuple(value.strides), value.dtype.str,
+        )
+
     def _float_exact_linear_kernel(self) -> Any:
         if self._float_linear_kernel is not None:
             return self._float_linear_kernel
@@ -359,6 +373,7 @@ class S13CudaRuntime:
         self._sources.clear()
         self._source_ids.clear()
         self._maps.clear()
+        self._map_host_refs.clear()
 
 
 __all__ = ["DeviceStageImage", "S13CudaRuntime"]
