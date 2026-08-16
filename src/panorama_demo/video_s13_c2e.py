@@ -17,12 +17,26 @@ from .video_s13_m5 import S13M5Pair
 from .video_s13_replay import S13P2ReplayPair
 
 
-def _local_residual(pair: S13P2ReplayPair, image_loader: Callable[[int], np.ndarray]) -> float:
+def _local_residual(
+    pair: S13P2ReplayPair,
+    image_loader: Callable[[int], np.ndarray],
+    resident_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], np.ndarray] | None = None,
+) -> float:
     """Score only a two-pixel seam corridor from cached source maps."""
-    left = cv2.remap(image_loader(pair.left_frame_id), pair.left_source_u, pair.left_source_v,
-                     cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
-    right = cv2.remap(image_loader(pair.right_frame_id), pair.right_source_u, pair.right_source_v,
-                      cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+    left = (
+        resident_remap(pair.left_frame_id, image_loader(pair.left_frame_id), pair.left_source_u, pair.left_source_v)
+        if resident_remap is not None else cv2.remap(
+            image_loader(pair.left_frame_id), pair.left_source_u, pair.left_source_v,
+            cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
+        )
+    )
+    right = (
+        resident_remap(pair.right_frame_id, image_loader(pair.right_frame_id), pair.right_source_u, pair.right_source_v)
+        if resident_remap is not None else cv2.remap(
+            image_loader(pair.right_frame_id), pair.right_source_u, pair.right_source_v,
+            cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
+        )
+    )
     columns = np.arange(pair.corridor_x0, pair.corridor_x1)[None, :]
     near = np.abs(columns - pair.seam_x_by_row[:, None]) <= 1
     valid = near & pair.left_valid & pair.right_valid
@@ -65,6 +79,8 @@ def _with_geometry(pair: S13P2ReplayPair, m5: S13M5Pair, candidate_index: int) -
 def select_s13_fast_c2e(
     pairs: Sequence[S13M5Pair], replay_pairs: Sequence[S13P2ReplayPair],
     image_loader: Callable[[int], np.ndarray],
+    *,
+    resident_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], np.ndarray] | None = None,
 ) -> tuple[tuple[S13P2ReplayPair, ...], tuple[str, ...], frozenset[int]]:
     """Choose C0/C1/C2/C3 only from M5's in-memory corridor candidates.
 
@@ -88,13 +104,13 @@ def select_s13_fast_c2e(
             labels.append("C1_owner_only")
             owner_only.add(index)
             continue
-        best, best_score, label = base, _local_residual(base, image_loader), "C0_keep_standard"
+        best, best_score, label = base, _local_residual(base, image_loader, resident_remap), "C0_keep_standard"
         if risk:
             for seam in m5.c2e_seam_candidates:
                 candidate = _with_seam(base, seam)
                 if candidate is base:
                     continue
-                score = _local_residual(candidate, image_loader)
+                score = _local_residual(candidate, image_loader, resident_remap)
                 # Strict improvement avoids an arbitrary candidate churn.
                 if score + 1e-6 < best_score:
                     best, best_score, label = candidate, score, "C2_cached_seam"
@@ -103,7 +119,7 @@ def select_s13_fast_c2e(
                     if not geometry.accepted or geometry_index == m5.alignment.selected_candidate_index:
                         continue
                     candidate = _with_geometry(base, m5, geometry_index)
-                    score = _local_residual(candidate, image_loader)
+                    score = _local_residual(candidate, image_loader, resident_remap)
                     if score + 1e-6 < best_score:
                         best, best_score, label = candidate, score, "C3_cached_geometry"
         selected.append(best)

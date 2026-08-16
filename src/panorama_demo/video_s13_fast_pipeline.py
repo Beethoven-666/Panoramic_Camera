@@ -192,7 +192,11 @@ def run_s13_fast_pipeline(
 
         tick = time.perf_counter()
         selected_replay, c2e, owner_only_pairs = select_s13_fast_c2e(
-            m5.pairs, m5.replay_pairs, image_loader
+            m5.pairs, m5.replay_pairs, image_loader,
+            resident_remap=(
+                resident_runtime.remap_resident_frame
+                if p0_resident_device_remap is not None else None
+            ),
         )
         # C3 can replace a right-source map in a compact pair corridor.  M6's
         # source-map assembler starts from P2 owner provenance, so mirror that
