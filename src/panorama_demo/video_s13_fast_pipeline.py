@@ -162,6 +162,14 @@ def run_s13_fast_pipeline(
         tick = time.perf_counter()
         unsealed_token = set_s13_m5_runtime_unsealed(True)
         try:
+            final_image_composer = None
+            if p0_resident_device_remap is not None:
+                def final_image_composer(_frame_ids, valid_mask, provenance):
+                    return _render_resident_owner_stage(
+                        stage_name="P2", runtime=resident_runtime, image_loader=image_loader,
+                        frame_ids_by_source_index=tuple(a.frame_id for a in schedule.assignments),
+                        valid_mask=valid_mask, provenance=provenance,
+                    )
             m5 = run_s13_m5(
                 schedule, session.calibration, image_loader, vertical_selection.solution, p1.image,
                 parent_stage_sha256="in-memory-p1", parent_result_sha256="in-memory-p1",
@@ -171,19 +179,13 @@ def run_s13_fast_pipeline(
                 ),
                 placement_methods=selection.placement_methods,
                 m51_r2_config=m51_r2_config,
+                final_image_composer=final_image_composer,
             )
         finally:
             reset_s13_m5_runtime_unsealed(unsealed_token)
         p2 = runtime.commit(expected_parent=S13Stage.P1, candidate=S13StageResult(
             runtime.run_id, S13Stage.P2, 2, p1.revision,
-            (
-                _render_resident_owner_stage(
-                    stage_name="P2", runtime=resident_runtime, image_loader=image_loader,
-                    frame_ids_by_source_index=tuple(a.frame_id for a in schedule.assignments),
-                    valid_mask=m5.final_result.valid_mask,
-                    provenance=m5.final_result.pixel_provenance,
-                ) if p0_resident_device_remap is not None else m5.final_result.image
-            ),
+            m5.final_result.image,
             m5.final_result.valid_mask,
             {"m5": m5, "schedule": schedule, "selection": selection},
         ))

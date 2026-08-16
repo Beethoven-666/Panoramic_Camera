@@ -1994,6 +1994,7 @@ def _finalize_s13_m5_render(
     placement_methods: tuple[str, ...] | None,
     map_provider: S13SourceMapProvider,
     expected_support_provider: S13SourceMapProvider,
+    final_image_composer: Callable[[tuple[int, ...], np.ndarray, dict[str, np.ndarray]], np.ndarray] | None = None,
 ) -> tuple[S13P2Result, S13P2Result, tuple[S13P2ReplayPair, ...]]:
     """Consume only frozen pre-render authority for both formal renders/replay."""
 
@@ -2011,6 +2012,7 @@ def _finalize_s13_m5_render(
         selected_hypothesis_ids=selected_hypothesis_ids,
         placement_methods=placement_methods, map_provider=map_provider,
         expected_support_provider=expected_support_provider,
+        image_composer=final_image_composer,
     )
     replay = build_s13_p2_replay(
         schedule, calibration, vertical, estimate.pairs, map_provider=map_provider
@@ -2030,6 +2032,7 @@ def render_s13_p2_from_raw(
     placement_methods: tuple[str, ...] | None = None,
     map_provider: S13SourceMapProvider | None = None,
     expected_support_provider: S13SourceMapProvider | None = None,
+    image_composer: Callable[[tuple[int, ...], np.ndarray, dict[str, np.ndarray]], np.ndarray] | None = None,
 ) -> S13P2Result:
     """Formally remap each real contributor once from raw RGB for this P2 asset."""
 
@@ -2080,14 +2083,18 @@ def render_s13_p2_from_raw(
             maps = base_maps
         else:
             maps = map_provider(source_index, x0, x1)
-        raw = np.asarray(image_loader(assignment.frame_id))
         decoded.append(assignment.frame_id)
-        if raw.shape != (height, int(calibration.width), 3) or raw.dtype != np.uint8:
-            raise ValueError("S1.3 M5 raw RGB source shape/type changed")
-        sampled, map_valid = _sample_crop(raw, maps[:3])
+        if image_composer is None:
+            raw = np.asarray(image_loader(assignment.frame_id))
+            if raw.shape != (height, int(calibration.width), 3) or raw.dtype != np.uint8:
+                raise ValueError("S1.3 M5 raw RGB source shape/type changed")
+            sampled, map_valid = _sample_crop(raw, maps[:3])
+        else:
+            map_valid = maps[2]
         owned = mask[:, x0:x1] & map_valid
         roi = np.s_[:, x0:x1]
-        output[roi][owned] = sampled[owned]
+        if image_composer is None:
+            output[roi][owned] = sampled[owned]
         valid_full[roi][owned] = True
         owner[roi][owned] = assignment.frame_id
         assignment_full[roi][owned] = source_index
@@ -2129,6 +2136,10 @@ def render_s13_p2_from_raw(
     finite = valid_full & (~np.isfinite(source_u_full) | ~np.isfinite(source_v_full))
     if np.any(finite):
         raise ValueError("S1.3 M5 valid source provenance is nonfinite")
+    if image_composer is not None:
+        output = np.asarray(image_composer(tuple(decoded), valid_full, pixel))
+        if output.shape != (height, width, 3) or output.dtype != np.uint8:
+            raise ValueError("S1.3 M5 resident P2 composer returned an invalid image")
     return S13P2Result(
         output, valid_full, pixel, len(decoded), tuple(decoded), expected_support
     )
@@ -2208,6 +2219,7 @@ def run_s13_m5(
     selected_hypothesis_ids: tuple[int, ...] | None = None,
     placement_methods: tuple[str, ...] | None = None,
     m51_r2_config: S13M51R2Config | None = None,
+    final_image_composer: Callable[[tuple[int, ...], np.ndarray, dict[str, np.ndarray]], np.ndarray] | None = None,
 ) -> S13M5Result:
     started = time.perf_counter()
     tick = time.perf_counter()
@@ -3430,6 +3442,7 @@ def run_s13_m5(
             vertical=vertical, selected_hypothesis_ids=selected_hypothesis_ids,
             placement_methods=placement_methods, map_provider=formal_provider,
             expected_support_provider=expected_support_provider,
+            final_image_composer=final_image_composer,
         )
         p2_full_resolution_render_count += 2
     else:
@@ -3443,6 +3456,7 @@ def run_s13_m5(
             schedule, calibration, cached_image_loader, vertical, pairs,
             final_seams=True, selected_hypothesis_ids=selected_hypothesis_ids,
             placement_methods=placement_methods,
+            image_composer=final_image_composer,
         )
         p2_full_resolution_render_count += 2
         replay_pairs = build_s13_p2_replay(schedule, calibration, vertical, pairs)
