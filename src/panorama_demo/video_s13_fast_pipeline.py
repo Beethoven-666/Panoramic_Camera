@@ -240,6 +240,13 @@ def run_s13_fast_pipeline(
                 resident_runtime.remap_resident_frame_linear
                 if p0_resident_device_remap is not None else None
             ),
+            resident_corrected_linear_remap=(
+                (lambda frame_id, raw, map_u, map_v, parameter, mapped:
+                    resident_runtime.remap_resident_frame_corrected_linear(
+                        frame_id, raw, map_u, map_v,
+                        parameter.gain_bgr, parameter.bias_bgr, mapped,
+                    )) if p0_resident_device_remap is not None else None
+            ),
         )
         p3 = runtime.commit(expected_parent=S13Stage.P2, candidate=S13StageResult(
             runtime.run_id, S13Stage.P3, 3, p2.revision, p3_render.visual_panorama,

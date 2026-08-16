@@ -234,6 +234,38 @@ class S13CudaRuntime:
         self._d2h += int(result.nbytes)
         return result
 
+    def remap_resident_frame_corrected_linear(
+        self, frame_id: int, source: np.ndarray, map_u: np.ndarray, map_v: np.ndarray,
+        gain_bgr: tuple[float, float, float], bias_bgr: tuple[float, float, float],
+        mapped: np.ndarray,
+    ) -> np.ndarray:
+        """Apply a selected M6 affine correction before the sole linear D2H."""
+        if self._source_ids.get(self._host_source_key(source)) != int(frame_id):
+            raise ValueError("S1.3 resident frame id/source identity mismatch")
+        sampled = self.remap_linear_float(source, map_u, map_v)
+        gain = self.device_copy(np.asarray(gain_bgr, dtype=np.float32).reshape(1, 1, 3))
+        bias = self.device_copy(np.asarray(bias_bgr, dtype=np.float32).reshape(1, 1, 3))
+        mapped_gpu = self.device_copy(np.asarray(mapped, dtype=bool))
+        with self.compute_stream:
+            encoded = sampled.astype(self.cp.float32) / self.cp.float32(255.0)
+            linear = self.cp.where(
+                encoded <= self.cp.float32(0.04045),
+                encoded / self.cp.float32(12.92),
+                self.cp.power(
+                    (encoded + self.cp.float32(0.055)) / self.cp.float32(1.055),
+                    self.cp.float32(2.4),
+                ),
+            ).astype(self.cp.float32)
+            corrected = self.cp.clip(linear * gain + bias, 0.0, 1.0)
+            corrected[~mapped_gpu] = self.cp.float32(0.0)
+            self._compute_ready.record(self.compute_stream)
+        with self.download_stream:
+            self.download_stream.wait_event(self._compute_ready)
+            result = self.cp.asnumpy(corrected)
+        self._kernels += 1
+        self._d2h += int(result.nbytes)
+        return result
+
     def new_stage_canvas(self, height: int, width: int) -> Any:
         with self.compute_stream:
             self.compute_stream.wait_event(self._upload_ready)
