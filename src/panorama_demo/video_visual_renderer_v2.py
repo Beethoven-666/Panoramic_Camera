@@ -481,7 +481,13 @@ class TorchCudaStripOwnerAlgorithm(VideoPanoramaAlgorithm):
                         panorama[:, :, strip.output_x0 : strip.output_x0 + strip.width] = local.panorama_bgr
                         owner[:, strip.output_x0 : strip.output_x0 + strip.width] = local.owner_frame_id
                 cache.release(source.frame_id)
-            if bool(torch.any(owner < 0).item()):
+            # ``owner`` is populated on the cache compute stream.  The
+            # scalar completeness audit must therefore join that event before
+            # reading it; the default stream has no implicit dependency on a
+            # non-default compute stream.
+            with cache.output_context():
+                owner_incomplete = bool(torch.any(owner < 0).item())
+            if owner_incomplete:
                 raise TorchCudaVideoRendererError("v2 CUDA strip plan left an unowned output pixel")
             panorama_cpu = cache.copy_final_to_cpu(panorama, artifact="panorama")
             owner_cpu = cache.copy_final_to_cpu(owner, artifact="provenance")
