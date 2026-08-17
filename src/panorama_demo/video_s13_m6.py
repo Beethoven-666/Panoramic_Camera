@@ -218,8 +218,14 @@ def run_s13_m6(
     remap_seconds = time.perf_counter() - tick
     owner_linear = _compose_owner_only(p2, corrected)
     tick = time.perf_counter()
+    def corrected_pair_provider(pair):
+        return (
+            corrected[pair.left_source_index][:, pair.corridor_x0:pair.corridor_x1],
+            corrected[pair.right_source_index][:, pair.corridor_x0:pair.corridor_x1],
+        )
     plans, blend_masks = select_s13_blend_plans(
         p2.replay_pairs, samples, corrected, canvas_shape=p2.valid_mask.shape,
+        corrected_pair_provider=corrected_pair_provider,
         config=blend_config, force_owner_only=force_identity_owner_only,
         force_owner_only_pair_indices=force_owner_only_pair_indices,
     )

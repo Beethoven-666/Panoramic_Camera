@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import cv2
 import numpy as np
@@ -91,6 +91,7 @@ def select_s13_blend_plans(
     corrected_by_source: Mapping[int, np.ndarray],
     *,
     canvas_shape: tuple[int, int],
+    corrected_pair_provider: Callable[[S13P2ReplayPair], tuple[np.ndarray, np.ndarray]] | None = None,
     config: S13BlendConfig = S13BlendConfig(),
     force_owner_only: bool = False,
     force_owner_only_pair_indices: frozenset[int] = frozenset(),
@@ -105,8 +106,14 @@ def select_s13_blend_plans(
     weight_canvas = np.zeros(canvas_shape, dtype=np.float32)
     plans: list[S13BlendPlan] = []
     for pair, sample in zip(replay_pairs, samples, strict=True):
-        left = corrected_by_source[pair.left_source_index][:, pair.corridor_x0:pair.corridor_x1]
-        right = corrected_by_source[pair.right_source_index][:, pair.corridor_x0:pair.corridor_x1]
+        if corrected_pair_provider is None:
+            left = corrected_by_source[pair.left_source_index][:, pair.corridor_x0:pair.corridor_x1]
+            right = corrected_by_source[pair.right_source_index][:, pair.corridor_x0:pair.corridor_x1]
+        else:
+            left, right = corrected_pair_provider(pair)
+            expected_shape = sample.safe_mask.shape + (3,)
+            if left.shape != expected_shape or right.shape != expected_shape:
+                raise ValueError("S1.3 compact corrected pair provider returned the wrong shape")
         residual = _residual(sample, left, right)
         common_count = int(np.count_nonzero(sample.common_mask))
         safe_count = int(np.count_nonzero(sample.safe_mask))

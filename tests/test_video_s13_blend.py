@@ -68,3 +68,22 @@ def test_force_owner_only_selects_b0() -> None:
     )
     assert plans[0].transaction.model == "B0_owner_only"
     assert not np.any(plans[0].secondary_weight)
+
+
+def test_compact_corrected_pair_provider_matches_full_source_input() -> None:
+    pair = _pair()
+    corrected = {
+        0: np.full((8, 12, 3), 0.30, np.float32),
+        1: np.full((8, 12, 3), 0.31, np.float32),
+    }
+    sample = _sample(np.zeros((8, 8), bool))
+    full, _ = select_s13_blend_plans([pair], [sample], corrected, canvas_shape=(8, 12))
+    compact, _ = select_s13_blend_plans(
+        [pair], [sample], corrected, canvas_shape=(8, 12),
+        corrected_pair_provider=lambda item: (
+            corrected[item.left_source_index][:, item.corridor_x0:item.corridor_x1],
+            corrected[item.right_source_index][:, item.corridor_x0:item.corridor_x1],
+        ),
+    )
+    assert np.array_equal(full[0].secondary_weight, compact[0].secondary_weight)
+    assert full[0].transaction == compact[0].transaction
