@@ -57,6 +57,11 @@ def _parser() -> argparse.ArgumentParser:
         help="S1.3 candidate only: do not read any trajectory and use RGB evidence alone.",
     )
     parser.add_argument(
+        "--m62-warmup",
+        action="store_true",
+        help="Mark this S1.3 M6.2 candidate run as benchmark warm-up only.",
+    )
+    parser.add_argument(
         "--simulate-optimizer-all-fail",
         action="store_true",
         help="S1.3 test hook: fail all post-P0 optimizers after the immutable base seal.",
@@ -207,6 +212,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ignore_pose=ignore_pose,
             config_path=getattr(args, "config", None),
             simulate_optimizer_all_fail=simulate_optimizer_all_fail,
+            m62_warmup=bool(getattr(args, "m62_warmup", False)),
         )
         return report
     if run_offline_orb or ignore_pose or simulate_optimizer_all_fail:

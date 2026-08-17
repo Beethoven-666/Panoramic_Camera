@@ -2646,6 +2646,7 @@ def run_s13_experiment(
     run_m6: bool | None = None,
     resume_generation: Path | None = None,
     manual_c2e_forward_m7: bool = False,
+    m62_warmup: bool = False,
 ) -> dict[str, Any]:
     run_started = time.perf_counter()
     config = load_s13_config(candidate_config)
@@ -2922,7 +2923,7 @@ def run_s13_experiment(
                         "session_path": str(session.root), "run_mode": "ignore_pose" if ignore_pose else "with_trajectory",
                         "session_kind": (
                             "unknown" if session.strict_video is None else session.strict_video.capture_mode
-                        ), "warmup": False},
+                        ), "warmup": bool(m62_warmup)},
                 "trajectory": {"mode": "ignore_pose" if ignore_pose else "trajectory_cache",
                                "pose_supported": bool(trajectory.audit.get("pose_supported")),
                                "direct_pose_count": int(trajectory.audit.get("direct_pose_count", 0)),
