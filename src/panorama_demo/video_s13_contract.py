@@ -44,6 +44,8 @@ S13_CUDA_RESIDENT_V2_ALGORITHM_ID = "S013_output_first_progressive_dense_central
 S13_CUDA_RESIDENT_V2_IMPLEMENTATION_ID = "s013_output_first_progressive_dense_central_slit_m61_cuda_resident_v2"
 S13_CUDA_STRUCTURAL_V3_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v4_cuda_structural_equivalent_v3"
 S13_CUDA_STRUCTURAL_V3_IMPLEMENTATION_ID = "s013_m61_cuda_guarded_probe_structural_equivalent_v3"
+S13_M62_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v4_cuda_m62_cpu_equivalent_v5"
+S13_M62_IMPLEMENTATION_ID = "s013_m62_cpu_oracle_gpu_staged_equivalence_v5"
 
 _S13_COMPONENT_NAME = "s013_output_first_progressive_dense_central_slit"
 
@@ -62,6 +64,7 @@ class S13IdentityDescriptor:
     default_stop_after: str
     stage_order: tuple[str, ...]
     runtime_backend: str = "numpy_reference"
+    m62_equivalence: bool = False
 
 
 _S13_IDENTITY_CONTRACTS = {
@@ -87,6 +90,11 @@ _S13_IDENTITY_CONTRACTS = {
         M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
         True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3"),
         "cupy_cuda_structural_equivalent_v3",
+    ),
+    (S13_M62_ALGORITHM_ID, S13_M62_IMPLEMENTATION_ID): S13IdentityDescriptor(
+        M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
+        True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3"),
+        "cupy_cuda_m62_cpu_equivalent_v5", True,
     ),
     (S13_M51_R2_ALGORITHM_ID, S13_M51_R2_IMPLEMENTATION_ID): S13IdentityDescriptor(
         S13_M51_R2_CONTRACT_SCHEMA, S13_M51_R2_P2_COMPLETION_SCHEMA, True,
@@ -141,6 +149,10 @@ class S13Config:
     @property
     def runtime_backend(self) -> str:
         return self.identity.runtime_backend
+
+    @property
+    def m62_equivalence(self) -> bool:
+        return self.identity.m62_equivalence
 
     @property
     def analysis_width_px(self) -> int:
@@ -212,6 +224,13 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
         probes = _mapping(equivalence.get("probes"), "CUDA v3 probes")
         if probes.get("mode") != "guarded_tolerant" or probes.get("ambiguous_action") != "full_reference_fallback":
             raise ValueError("S1.3 CUDA v3 probe fallback contract is invalid")
+    if identity_contract.m62_equivalence:
+        equivalence = _mapping(document.get("m62_equivalence"), "M6.2 equivalence")
+        if equivalence.get("cpu_oracle_enabled") is not True:
+            raise ValueError("S1.3 M6.2 requires a CPU oracle")
+        publish = _mapping(equivalence.get("publish_mode"), "M6.2 publish mode")
+        if publish.get("default") != "cpu_authoritative_hybrid":
+            raise ValueError("S1.3 M6.2 must publish CPU-authoritative P3")
     if (
         component.get("diagnostic_only") is not True
         or component.get("production_eligible") is not False

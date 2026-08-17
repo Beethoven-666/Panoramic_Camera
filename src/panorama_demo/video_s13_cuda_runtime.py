@@ -434,6 +434,51 @@ class S13CudaRuntime:
         self._d2h += int(result.nbytes)
         return result
 
+    def apply_b1_secondary_weight_roi_device(
+        self, *, canvas_device: Any, x0: int, x1: int, left_device: Any,
+        right_device: Any, primary_owner_right_mask: np.ndarray,
+        secondary_weight: np.ndarray, protected_mask: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Apply the M6.2 B1 primary/secondary semantics and return its ROI.
+
+        The input gates are intentionally host-side so malformed decision
+        arrays fail before a kernel can touch a published owner canvas.
+        """
+        left, right = np.asarray(left_device), np.asarray(right_device)
+        owner_right, weight = np.asarray(primary_owner_right_mask, bool), np.asarray(secondary_weight, np.float32)
+        if left.shape != right.shape or left.ndim != 3 or left.shape[2] != 3:
+            raise ValueError("S1.3 M6.2 B1 left/right tiles must be equal HxWx3 arrays")
+        if owner_right.shape != left.shape[:2] or weight.shape != left.shape[:2]:
+            raise ValueError("S1.3 M6.2 B1 mask/weight shape does not match corridor")
+        if int(x1) - int(x0) != left.shape[1]:
+            raise ValueError("S1.3 M6.2 B1 ROI x0/x1 does not match corridor width")
+        if not np.all(np.isfinite(weight)) or np.any(weight < 0.0) or np.any(weight > 0.499):
+            raise ValueError("S1.3 M6.2 B1 secondary weight must be finite within [0, 0.499]")
+        active = weight > 0.0
+        if protected_mask is not None:
+            protected = np.asarray(protected_mask, bool)
+            if protected.shape != weight.shape:
+                raise ValueError("S1.3 M6.2 B1 protected mask shape does not match corridor")
+            if np.any(active & protected):
+                raise ValueError("S1.3 M6.2 B1 protected pixels cannot be active")
+        canvas = self.device_copy(canvas_device)
+        left_gpu, right_gpu = self.device_copy(left.astype(np.float32)), self.device_copy(right.astype(np.float32))
+        owner_gpu, weight_gpu = self.device_copy(owner_right), self.device_copy(weight)
+        with self.compute_stream:
+            self.compute_stream.wait_event(self._upload_ready)
+            primary = self.cp.where(owner_gpu[..., None], right_gpu, left_gpu)
+            secondary = self.cp.where(owner_gpu[..., None], left_gpu, right_gpu)
+            result = primary * (self.cp.float32(1.0) - weight_gpu[..., None]) + secondary * weight_gpu[..., None]
+            target = canvas[:, int(x0):int(x1)]
+            target[weight_gpu > 0.0] = result[weight_gpu > 0.0]
+            self._compute_ready.record(self.compute_stream)
+        with self.download_stream:
+            self.download_stream.wait_event(self._compute_ready)
+            host = self.cp.asnumpy(result)
+        self._kernels += 1
+        self._d2h += int(host.nbytes)
+        return host
+
     def download_compact_tiles(
         self, tiles: Sequence[Any], *, batch_size: int = 16, event_range: str = "M6_SAMPLE",
     ) -> tuple[np.ndarray, ...]:

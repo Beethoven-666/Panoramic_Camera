@@ -64,6 +64,7 @@ def run_s13_fast_pipeline(
     p1_reference_remap: bool = False,
     m6_cuda_v2: bool = False,
     m6_cuda_v3: bool = False,
+    m62_equivalence: bool = False,
 ) -> dict[str, Any]:
     """Render P0--P3 once, keeping every parent and decision in memory."""
 
@@ -268,7 +269,14 @@ def run_s13_fast_pipeline(
             replay_pairs=selected_replay,
             immutable_sha256={},
         )
-        if m6_cuda_v3:
+        m62: dict[str, Any] | None = None
+        if m62_equivalence:
+            from .video_s13_m62_runner import run_s13_m62_cpu_authoritative
+            p3_render, m62 = run_s13_m62_cpu_authoritative(
+                p2_runtime, image_loader, cuda_runtime=resident_runtime,
+                retain_runtime_details=False, force_owner_only_pair_indices=owner_only_pairs,
+            )
+        elif m6_cuda_v3:
             if p0_resident_device_remap is None or resident_runtime is None:
                 raise ValueError("S1.3 M6 CUDA v3 requires the resident device runtime")
             p3_render = run_s13_m6_cuda_v3(
@@ -328,6 +336,7 @@ def run_s13_fast_pipeline(
         },
         "c2e_full_provenance_copy_count": c2e_copy_count,
         "m6_performance": dict(p3_render.performance),
+        "m62": m62,
     }
 
 

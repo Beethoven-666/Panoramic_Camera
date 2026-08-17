@@ -2837,6 +2837,10 @@ def run_s13_experiment(
             config_path=config_path,
         )
     except Exception as exc:
+        if config.m62_equivalence and not ignore_pose:
+            raise ValueError(
+                "S1.3 M6.2 requires a complete requested ORB trajectory before P0"
+            ) from exc
         requested_source = (
             "trajectory_cache" if trajectory_cache is not None
             else "online_trajectory" if reuse_online_trajectory
@@ -2869,7 +2873,7 @@ def run_s13_experiment(
             raise ValueError("S1.3 fast pipeline does not support disk resume")
         if manual_c2e_forward_m7:
             raise ValueError("S1.3 fast pipeline has automatic C2E; M7 is unavailable")
-        if config.runtime_backend in {"cupy_cuda_resident", "cupy_cuda_resident_v2", "cupy_cuda_structural_equivalent_v3"}:
+        if config.runtime_backend in {"cupy_cuda_resident", "cupy_cuda_resident_v2", "cupy_cuda_structural_equivalent_v3", "cupy_cuda_m62_cpu_equivalent_v5"}:
             from .video_s13_cuda_fast_pipeline import run_s13_cuda_fast_pipeline
             runner = run_s13_cuda_fast_pipeline
         elif config.runtime_backend == "numpy_reference":
@@ -2886,15 +2890,16 @@ def run_s13_experiment(
             risky_target_advance_px=config.risky_target_advance_px,
             m51_r2_config=m51_r2_config,
             m6_cuda_v2=config.runtime_backend in {"cupy_cuda_resident_v2", "cupy_cuda_structural_equivalent_v3"},
+            m62_equivalence=config.m62_equivalence,
         )
         if config.runtime_backend == "cupy_cuda_structural_equivalent_v3":
             runner_arguments["structural_equivalent_v3"] = True
-        timing_path = root / "timing.json"
+        timing_path = root / ("processing_time.json" if config.m62_equivalence else "timing.json")
         timing_path.unlink(missing_ok=True)
         fast = runner(**runner_arguments)
         timings = {**stage_seconds, **fast["timings"]}
         panorama_completion_wall_seconds = time.perf_counter() - run_started
-        atomic_write_json(timing_path, {
+        timing_document = {
             "schema": "gemini305-video-s13-panorama-timing/v1",
             "run_id": fast["run_id"],
             "completed": True,
@@ -2904,7 +2909,47 @@ def run_s13_experiment(
             "panorama_completion_wall_seconds": panorama_completion_wall_seconds,
             "stage_seconds": timings,
             "stage_images": [Path(str(path)).name for path in fast["paths"]],
-        })
+        }
+        if config.m62_equivalence:
+            timing_document.update({
+                "schema": "gemini305-video-s13-processing-time/v1",
+                "run": {"candidate_id": configured_algorithm_id, "implementation_id": configured_implementation_id,
+                        "session_path": str(session.root), "run_mode": "ignore_pose" if ignore_pose else "with_trajectory",
+                        "session_kind": "unknown", "warmup": False},
+                "trajectory": {"mode": "ignore_pose" if ignore_pose else "trajectory_cache",
+                               "pose_supported": bool(trajectory.audit.get("pose_supported")),
+                               "direct_pose_count": int(trajectory.audit.get("direct_pose_count", 0)),
+                               "complete_pose_coverage": bool(trajectory.audit.get("complete_pose_coverage")),
+                               "layout_semantics": "visual_nonmetric" if ignore_pose else "pose_supported"},
+                "backend": {"requested": "cuda", "resolved": "cupy", "device_name": "",
+                            "fallback_count": 0 if fast.get("m62", {}).get("gpu_equivalence", {}).get("fallback_reason") is None else 1},
+                "wall_seconds": {"m0_m3": float(timings.get("m0_m3", 0.0)), "m4": float(timings.get("m4", 0.0)),
+                                 "m5": float(timings.get("m5", 0.0)), "c2e": float(timings.get("c2e.total", 0.0)),
+                                 "m6": float(timings.get("m6", 0.0)), "png_writer_close": float(timings.get("writer.close_wait", 0.0)),
+                                 "m62_report_write": 0.0, "total_before_processing_time_json_write": panorama_completion_wall_seconds},
+                "m6_wall_seconds": {},
+                "artifacts": {"png_write_count": 4, "json_write_count": 2, "jpg_write_count": 0,
+                              "npz_write_count": 0, "sha_call_count": 0, "m7_call_count": 0},
+            })
+        atomic_write_json(timing_path, timing_document)
+        m62_report_path = None
+        if config.m62_equivalence:
+            m62_report_path = root / "m62_report.json"
+            m62 = dict(fast.get("m62") or {})
+            plan = m62.pop("plan", None)
+            gpu_equivalence = dict(m62.get("gpu_equivalence") or {})
+            atomic_write_json(m62_report_path, {
+                "schema": "gemini305-video-s13-m62-report/v2",
+                "cpu_oracle": {"enabled": True,
+                    "photometric_model": "" if plan is None else str(plan.photometric_solution.model_family),
+                    "blend_plan_count": 0 if plan is None else len(plan.blend_plans),
+                    "B0_count": 0 if plan is None else sum(item.transaction.model == "B0_owner_only" for item in plan.blend_plans),
+                    "B1_count": 0 if plan is None else sum(item.transaction.model == "B1_narrow_feather" for item in plan.blend_plans),
+                    "B2_count": 0 if plan is None else sum(item.transaction.model == "B2_safe_masked_multiband" for item in plan.blend_plans),
+                    "published_pixel_authority": "cpu"},
+                "gpu_equivalence": gpu_equivalence, "photometric": {}, "blend": {}, "safety": {}, "performance": dict(fast.get("m6_performance", {})),
+                "p3_relation_to_p2": {},
+            })
         return {
             "schema": REPORT_SCHEMA,
             "run_id": fast["run_id"],
@@ -2912,6 +2957,7 @@ def run_s13_experiment(
             "panorama": str(Path(str(fast["paths"][-1]))),
             "stage_images": fast["paths"],
             "timing_json": str(timing_path),
+            "m62_report": None if m62_report_path is None else str(m62_report_path),
             "timings": timings,
             "panorama_completion_wall_seconds": panorama_completion_wall_seconds,
             "c2e": {"automatic": True, "selected": fast["c2e"]},
