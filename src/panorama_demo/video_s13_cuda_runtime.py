@@ -355,6 +355,10 @@ class S13CudaRuntime:
         bias = self.device_copy(np.asarray(bias_bgr, dtype=np.float32).reshape(1, 1, 3))
         mapped_gpu = self.device_copy(np.asarray(mapped, dtype=bool))
         with self.compute_stream:
+            # The compact affine parameters and mask were enqueued after the
+            # remap's earlier upload event.  Join their newest upload point
+            # before consuming them, otherwise a warm GPU can race P3.
+            self.compute_stream.wait_event(self._upload_ready)
             encoded = sampled.astype(self.cp.float32) / self.cp.float32(255.0)
             linear = self.cp.where(
                 encoded <= self.cp.float32(0.04045),
@@ -387,6 +391,7 @@ class S13CudaRuntime:
         bias = self.device_copy(np.asarray(bias_bgr, dtype=np.float32).reshape(1, 1, 3))
         mapped_gpu = self.device_copy(np.asarray(mapped, dtype=bool))
         with self.compute_stream:
+            self.compute_stream.wait_event(self._upload_ready)
             encoded = sampled.astype(self.cp.float32) / self.cp.float32(255.0)
             linear = self.cp.where(
                 encoded <= self.cp.float32(0.04045),
