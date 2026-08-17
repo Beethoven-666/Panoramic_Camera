@@ -2949,13 +2949,13 @@ def run_s13_experiment(
                 "artifacts": {"png_write_count": 4, "json_write_count": 2, "jpg_write_count": 0,
                               "npz_write_count": 0, "sha_call_count": 0, "m7_call_count": 0},
             })
-        atomic_write_json(timing_path, timing_document)
         m62_report_path = None
         if config.m62_equivalence:
             m62_report_path = root / "m62_report.json"
             m62 = dict(fast.get("m62") or {})
             plan = m62.pop("plan", None)
             gpu_equivalence = dict(m62.get("gpu_equivalence") or {})
+            report_write_started = time.perf_counter()
             atomic_write_json(m62_report_path, {
                 "schema": "gemini305-video-s13-m62-report/v2",
                 "cpu_oracle": {"enabled": True,
@@ -2985,6 +2985,8 @@ def run_s13_experiment(
                     "max_abs_dn": int(abs(fast["p3"].image.astype(np.int16) - fast["p2"].image.astype(np.int16)).max(initial=0)),
                 },
             })
+            timing_document["wall_seconds"]["m62_report_write"] = time.perf_counter() - report_write_started
+        atomic_write_json(timing_path, timing_document)
         return {
             "schema": REPORT_SCHEMA,
             "run_id": fast["run_id"],
