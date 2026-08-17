@@ -34,6 +34,20 @@ from .video_s13_trajectory import S13Trajectory
 from .video_s13_vertical import estimate_s13_vertical, render_s13_p1_from_raw
 
 
+def _submit_immutable_stage(
+    writer: S13StageImageWriter,
+    stage: str,
+    image: np.ndarray,
+) -> None:
+    """Transfer an immutable stage buffer to the asynchronous PNG writer."""
+
+    buffer = np.asarray(image)
+    if not buffer.flags.c_contiguous:
+        raise ValueError("S1.3 fast stage image must be contiguous before writer transfer")
+    buffer.setflags(write=False)
+    writer.submit_owned_host_image(stage, buffer)
+
+
 def _render_resident_owner_stage(
     *,
     stage_name: str,
@@ -146,7 +160,7 @@ def run_s13_fast_pipeline(
                                    "motion": motion, "layout": layout},
         ))
         submit_tick = time.perf_counter()
-        writer.submit_host_image("P0", p0.image)
+        _submit_immutable_stage(writer, "P0", p0.image)
         timings["p0.submit"] = time.perf_counter() - submit_tick
         timings["m0_m3"] = time.perf_counter() - tick
 
@@ -179,7 +193,7 @@ def run_s13_fast_pipeline(
              "selection": selection, "p0": p0_render},
         ))
         submit_tick = time.perf_counter()
-        writer.submit_host_image("P1", p1.image)
+        _submit_immutable_stage(writer, "P1", p1.image)
         timings["m4.submit"] = time.perf_counter() - submit_tick
         timings["m4"] = timings["m4.total"] = time.perf_counter() - tick
 
@@ -234,7 +248,7 @@ def run_s13_fast_pipeline(
             {"m5": m5, "schedule": schedule, "selection": selection},
         ))
         submit_tick = time.perf_counter()
-        writer.submit_host_image("P2", p2.image)
+        _submit_immutable_stage(writer, "P2", p2.image)
         timings["m5.submit"] = time.perf_counter() - submit_tick
         timings["m5"] = timings["m5.total"] = time.perf_counter() - tick
 
@@ -304,7 +318,7 @@ def run_s13_fast_pipeline(
             {"selected_c2e_candidates": c2e, "m6_performance": p3_render.performance},
         ))
         submit_tick = time.perf_counter()
-        writer.submit_host_image("P3", p3.image)
+        _submit_immutable_stage(writer, "P3", p3.image)
         timings["m6.submit"] = time.perf_counter() - submit_tick
         timings["m6"] = timings["m6.total"] = time.perf_counter() - tick
         paths = writer.close()
