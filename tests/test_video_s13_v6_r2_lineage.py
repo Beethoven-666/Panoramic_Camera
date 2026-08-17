@@ -27,7 +27,7 @@ CONFIG_ROOT = ROOT / "configs/video_candidates/s013"
 V6_CONFIG = CONFIG_ROOT / "S013_output_first_progressive_dense_central_slit_v6.yaml"
 V6_R2_CONFIG_SHA256 = "5ccaf952fe94d4c42626f3ec9e9555666c023a5ad654885ac4d9def2c96b3dde"
 V6_R2_LOCAL_MANIFEST_SHA256 = (
-    "df3116358f90320a69873d841e65593e0535b18b58adf34da7792e83da0e3d29"
+    "8f82937a0767c1674abd6b7344fab0651266f95a075ba4532d5c5cb862acbfbc"
 )
 
 
