@@ -370,6 +370,7 @@ def _freeze_m5_pair_input(
 
 _RUNTIME_UNSEALED = ContextVar("s13_m5_runtime_unsealed", default=False)
 _RUNTIME_RESIDENT_REMAP = ContextVar("s13_m5_resident_remap", default=None)
+_RUNTIME_RESIDENT_BATCH = ContextVar("s13_m5_resident_batch", default=None)
 
 
 def set_s13_m5_runtime_unsealed(enabled: bool):
@@ -388,6 +389,17 @@ def set_s13_m5_resident_remap(remap: Callable[[np.ndarray, np.ndarray, np.ndarra
 
 def reset_s13_m5_resident_remap(token: object) -> None:
     _RUNTIME_RESIDENT_REMAP.reset(token)
+
+
+def set_s13_m5_resident_batch(
+    sampler: Callable[[Sequence[tuple[int, np.ndarray, np.ndarray, np.ndarray]]], tuple[np.ndarray, ...]] | None,
+):
+    """Bind one bounded CUDA batch sampler for independent base corridors."""
+    return _RUNTIME_RESIDENT_BATCH.set(sampler)
+
+
+def reset_s13_m5_resident_batch(token: object) -> None:
+    _RUNTIME_RESIDENT_BATCH.reset(token)
 
 
 def _sha_array(*arrays: np.ndarray) -> str:
@@ -648,6 +660,24 @@ def _sample_crop(
         )
     )
     return sampled, valid
+
+
+def _sample_m5_base_pair(
+    pair: S13M5PairInput,
+    raw_loader: Callable[[int], np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Sample the independent left/right base corridors in one bounded batch."""
+
+    batch = _RUNTIME_RESIDENT_BATCH.get()
+    if batch is None:
+        left, left_valid = _sample_crop(raw_loader(pair.left_frame_id), pair.left_maps)
+        right, right_valid = _sample_crop(raw_loader(pair.right_frame_id), pair.right_maps)
+        return left, left_valid, right, right_valid
+    left, right = batch((
+        (pair.left_frame_id, raw_loader(pair.left_frame_id), pair.left_maps[0], pair.left_maps[1]),
+        (pair.right_frame_id, raw_loader(pair.right_frame_id), pair.right_maps[0], pair.right_maps[1]),
+    ))
+    return left, pair.left_maps[2], right, pair.right_maps[2]
 
 
 def _pair_correspondences(
@@ -1128,8 +1158,7 @@ def estimate_s13_m5_transactions(
                 pair_index=pair_index, left_frame_id=frame_ids[0], right_frame_id=frame_ids[1],
                 corridor_x0=x0, corridor_x1=x1, left_maps=left_maps, right_maps=right_maps,
             )
-            left_image, left_valid = _sample_crop(raw(pair_input.left_frame_id), pair_input.left_maps)
-            right_image, right_valid = _sample_crop(raw(pair_input.right_frame_id), pair_input.right_maps)
+            left_image, left_valid, right_image, right_valid = _sample_m5_base_pair(pair_input, raw)
             correspondence_result = _pair_correspondences(
                 left_image, right_image, left_valid, right_valid, x_offset=x0,
                 config=successor,
@@ -4061,6 +4090,6 @@ __all__ = [
     "S13M5Result", "S13P2Result", "S13PairCorrespondences",
     "build_s13_p2_replay",
     "estimate_s13_m5_transactions", "render_s13_p2_from_raw", "run_s13_m5",
-    "reset_s13_m5_resident_remap", "reset_s13_m5_runtime_unsealed",
-    "set_s13_m5_resident_remap", "set_s13_m5_runtime_unsealed",
+    "reset_s13_m5_resident_batch", "reset_s13_m5_resident_remap", "reset_s13_m5_runtime_unsealed",
+    "set_s13_m5_resident_batch", "set_s13_m5_resident_remap", "set_s13_m5_runtime_unsealed",
 ]

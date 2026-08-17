@@ -15,6 +15,7 @@ from panorama_demo.video_s13_alignment import (
 from panorama_demo.video_s13_m5 import (
     S13M5EstimationResult,
     _freeze_m5_pair_input,
+    _sample_m5_base_pair,
     _canonicalize_v5_transaction_value,
     _evaluate_s13_runtime_component_candidate,
     build_s13_p2_replay,
@@ -24,6 +25,8 @@ from panorama_demo.video_s13_m5 import (
     render_s13_p2_from_raw,
     run_s13_m5,
     source_map_oracle_provider,
+    reset_s13_m5_resident_batch,
+    set_s13_m5_resident_batch,
 )
 from panorama_demo.video_s13_m51_r2 import S13M51R4Config
 from panorama_demo.video_s13_quality import (
@@ -57,6 +60,30 @@ def test_m5_pair_input_freezes_base_corridor_maps() -> None:
     assert pair.pair_index == 2
     assert not pair.left_maps[0].flags.writeable
     assert pair.left_maps[0].shape == (4, 6)
+
+
+def test_m5_base_pair_sampler_preserves_left_right_request_order() -> None:
+    maps = tuple(np.zeros((4, 6), dtype=dtype) for dtype in (np.float32, np.float32, bool, np.int32))
+    pair = _freeze_m5_pair_input(
+        pair_index=2, left_frame_id=10, right_frame_id=11, corridor_x0=3, corridor_x1=9,
+        left_maps=maps, right_maps=maps,
+    )
+    calls = []
+
+    def batch(entries):
+        calls.extend(entry[0] for entry in entries)
+        return tuple(np.full((4, 6, 3), frame_id, np.uint8) for frame_id, *_rest in entries)
+
+    token = set_s13_m5_resident_batch(batch)
+    try:
+        left, left_valid, right, right_valid = _sample_m5_base_pair(
+            pair, lambda frame_id: np.full((4, 6, 3), frame_id, np.uint8)
+        )
+    finally:
+        reset_s13_m5_resident_batch(token)
+    assert calls == [10, 11]
+    assert int(left[0, 0, 0]) == 10 and int(right[0, 0, 0]) == 11
+    assert left_valid.shape == right_valid.shape == (4, 6)
 
 
 def test_all_structurally_safe_policy_accepts_failed_visual_quality_gates():

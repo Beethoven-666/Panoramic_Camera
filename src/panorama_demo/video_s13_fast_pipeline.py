@@ -17,8 +17,9 @@ import numpy as np
 from .video_s13_base_renderer import render_s13_p0
 from .video_s13_c2e import select_s13_fast_c2e
 from .video_s13_m5 import (
-    reset_s13_m5_resident_remap, reset_s13_m5_runtime_unsealed, run_s13_m5,
-    set_s13_m5_resident_remap, set_s13_m5_runtime_unsealed,
+    reset_s13_m5_resident_batch, reset_s13_m5_resident_remap, reset_s13_m5_runtime_unsealed,
+    run_s13_m5, set_s13_m5_resident_batch, set_s13_m5_resident_remap,
+    set_s13_m5_runtime_unsealed,
 )
 from .video_s13_m6 import run_s13_m6
 from .video_s13_motion import measure_s13_motion
@@ -186,6 +187,20 @@ def run_s13_fast_pipeline(
         resident_m5_token = set_s13_m5_resident_remap(
             resident_runtime.remap_host_source if p0_resident_device_remap is not None else None
         )
+        resident_m5_batch_token = None
+        if p0_resident_device_remap is not None:
+            from .video_s13_cuda_runtime import S13DeviceRemapRequest
+
+            def resident_m5_batch(entries):
+                return resident_runtime.remap_batch_to_host(tuple(
+                    S13DeviceRemapRequest(
+                        request_id=f"m5-base-{index}-{frame_id}", frame_id=frame_id,
+                        map_u=map_u, map_v=map_v,
+                    )
+                    for index, (frame_id, _raw, map_u, map_v) in enumerate(entries)
+                ))
+
+            resident_m5_batch_token = set_s13_m5_resident_batch(resident_m5_batch)
         try:
             final_image_composer = None
             if p0_resident_device_remap is not None:
@@ -207,6 +222,8 @@ def run_s13_fast_pipeline(
                 final_image_composer=final_image_composer,
             )
         finally:
+            if resident_m5_batch_token is not None:
+                reset_s13_m5_resident_batch(resident_m5_batch_token)
             reset_s13_m5_resident_remap(resident_m5_token)
             reset_s13_m5_runtime_unsealed(unsealed_token)
         p2 = runtime.commit(expected_parent=S13Stage.P1, candidate=S13StageResult(
