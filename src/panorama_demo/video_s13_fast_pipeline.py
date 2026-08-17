@@ -337,6 +337,7 @@ def run_s13_fast_pipeline(
             "writer_submit_blocking_count": writer.submit_blocking_count,
         },
         "c2e_full_provenance_copy_count": c2e_copy_count,
+        "m6_performance": dict(p3_render.performance),
     }
 
 
