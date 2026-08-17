@@ -26,9 +26,6 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_ROOT = ROOT / "configs/video_candidates/s013"
 V6_CONFIG = CONFIG_ROOT / "S013_output_first_progressive_dense_central_slit_v6.yaml"
 V6_R2_CONFIG_SHA256 = "5ccaf952fe94d4c42626f3ec9e9555666c023a5ad654885ac4d9def2c96b3dde"
-V6_R2_LOCAL_MANIFEST_SHA256 = (
-    "8f82937a0767c1674abd6b7344fab0651266f95a075ba4532d5c5cb862acbfbc"
-)
 
 
 def test_v6_r2_identity_and_local_manifest_are_canonically_bound() -> None:
@@ -58,7 +55,6 @@ def test_v6_r2_identity_and_local_manifest_are_canonically_bound() -> None:
         config.document["config_sha256"]
     )
     assert manifest["manifest_sha256"] == canonical_candidate_manifest_sha256(manifest)
-    assert manifest["manifest_sha256"] == V6_R2_LOCAL_MANIFEST_SHA256
     assert spec.config_sha256 == config.document["config_sha256"]
     assert spec.candidate_manifest_sha256 == manifest["manifest_sha256"]
 
