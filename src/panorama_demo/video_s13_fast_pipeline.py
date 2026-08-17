@@ -75,6 +75,7 @@ def run_s13_fast_pipeline(
     resident_runtime: Any | None = None,
     p0_resident_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], np.ndarray] | None = None,
     p0_resident_device_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], Any] | None = None,
+    vertical_exact_seam_probes: bool = False,
 ) -> dict[str, Any]:
     """Render P0--P3 once, keeping every parent and decision in memory."""
 
@@ -152,7 +153,8 @@ def run_s13_fast_pipeline(
         timings["m4.estimate"] = time.perf_counter() - estimate_tick
         selection_tick = time.perf_counter()
         vertical_selection = select_s13_vertical_parent(
-            schedule, session.calibration, image_loader, vertical, p0.image
+            schedule, session.calibration, image_loader, vertical, p0.image,
+            exact_seam_probes=vertical_exact_seam_probes,
         )
         timings["m4.candidate_decision"] = time.perf_counter() - selection_tick
         final_render_tick = time.perf_counter()
@@ -161,7 +163,7 @@ def run_s13_fast_pipeline(
                 schedule, session.calibration, image_loader, vertical_selection.solution,
                 resident_stage=resident_runtime,
                 resident_device_remap=p0_resident_device_remap,
-            ) if p0_resident_device_remap is not None else vertical_selection.result
+            ) if p0_resident_device_remap is not None and not vertical_exact_seam_probes else vertical_selection.result
         )
         timings["m4.final_p1_render"] = time.perf_counter() - final_render_tick
         p1 = runtime.commit(expected_parent=S13Stage.P0, candidate=S13StageResult(

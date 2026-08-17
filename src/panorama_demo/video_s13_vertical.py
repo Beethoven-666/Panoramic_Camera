@@ -741,10 +741,55 @@ def render_s13_p1_local_patch_image(
     return output
 
 
+def render_s13_p1_exact_probe(
+    schedule: S012Schedule,
+    calibration: CameraIntrinsics,
+    image_loader: Callable[[int], np.ndarray],
+    solution: S13VerticalSolution,
+    *,
+    global_x0: int,
+    global_x1: int,
+) -> np.ndarray:
+    """Render an exact global-canvas P1 slice without a full candidate canvas."""
+
+    validate_s012_schedule(schedule)
+    if not 0 <= global_x0 < global_x1 <= schedule.canvas_width:
+        raise ValueError("S1.3 exact vertical probe is outside the canvas")
+    height = schedule.canvas_height
+    output = np.zeros((height, global_x1 - global_x0, 3), dtype=np.uint8)
+    inverse_maps = undistortion_maps(calibration)
+    for source_index, assignment in enumerate(schedule.assignments):
+        left, right = max(global_x0, assignment.left_x), min(global_x1, assignment.right_x)
+        if left >= right or assignment.zero_width:
+            continue
+        relative_x = np.arange(left - assignment.left_x, right - assignment.left_x)
+        displacement = np.full((height, right - left), solution.global_offsets_px[source_index], np.float32)
+        if source_index > 0:
+            pair = solution.pairs[source_index - 1]
+            local_width = min(pair.application_right_x - pair.application_left_x, assignment.width)
+            active = relative_x < local_width
+            if np.any(active):
+                taper = np.linspace(1.0, 0.0, local_width, endpoint=True, dtype=np.float32)
+                displacement[:, active] += (
+                    solution.local_row_residuals[source_index - 1][:, None] * taper[relative_x[active]][None, :]
+                )
+        u, v, valid = _target_map(
+            calibration, assignment.center_x, left, right, displacement, inverse_maps,
+        )
+        sampled = accelerated_remap(
+            np.asarray(image_loader(assignment.frame_id)), u, v, cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        )
+        target = output[:, left - global_x0:right - global_x0]
+        target[valid] = sampled[valid]
+    return output
+
+
 __all__ = [
     "S13P1Result", "S13VerticalPair", "S13VerticalSolution", "S13_P1_COMPLETION_SCHEMA",
     "S13_VERTICAL_SOLUTION_SCHEMA",
     "estimate_s13_vertical", "load_s13_vertical_solution", "render_s13_p1_from_raw",
     "save_s13_vertical_solution", "vertical_candidate_solution",
     "render_s13_p1_local_patch_image",
+    "render_s13_p1_exact_probe",
 ]

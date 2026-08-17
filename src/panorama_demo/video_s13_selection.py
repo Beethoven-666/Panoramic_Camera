@@ -21,8 +21,10 @@ from .video_s13_vertical import (
     S13VerticalSolution,
     render_s13_p1_local_patch_image,
     render_s13_p1_from_raw,
+    render_s13_p1_exact_probe,
     vertical_candidate_solution,
 )
+from .video_s13_vertical_probe import seam_structure_metrics_from_exact_probe
 
 
 @dataclass(frozen=True)
@@ -81,27 +83,48 @@ def select_s13_vertical_parent(
     image_loader: Callable[[int], np.ndarray],
     base_solution: S13VerticalSolution,
     p0_image: np.ndarray,
+    *,
+    exact_seam_probes: bool = False,
 ) -> S13VerticalSelection:
     """Compare P0 and every requested gain using actual rendered structure."""
 
     p0_metrics = _pair_metrics(p0_image, schedule)
     p0_score = _mean_score(p0_metrics)
     rows: list[dict[str, object]] = []
-    rendered: dict[float, tuple[S13VerticalSolution, S13P1Result, tuple[dict[str, object], ...]]] = {}
+    rendered: dict[float, tuple[S13VerticalSolution, S13P1Result | None, tuple[dict[str, object], ...]]] = {}
     gains = tuple(float(value) for value in base_solution.audit.get("gain_candidates", (0.0, 0.25, 0.5, 1.0)))
     for gain in gains:
         global_solution = vertical_candidate_solution(
             base_solution, gain, accepted_local_pairs=tuple(False for _ in base_solution.pairs)
         )
-        global_result = render_s13_p1_from_raw(schedule, calibration, image_loader, global_solution)
-        global_metrics = _pair_metrics(global_result.image, schedule)
         full_local_solution = vertical_candidate_solution(
             base_solution, gain, accepted_local_pairs=tuple(True for _ in base_solution.pairs)
         )
-        full_local_image = render_s13_p1_local_patch_image(
-            schedule, calibration, image_loader, global_result, full_local_solution
-        )
-        full_local_metrics = _pair_metrics(full_local_image, schedule)
+        global_result: S13P1Result | None = None
+        if exact_seam_probes:
+            global_metrics = []
+            full_local_metrics = []
+            for pair in base_solution.pairs:
+                x0, x1 = max(0, pair.boundary_x - 4), min(schedule.canvas_width, pair.boundary_x + 5)
+                seam = np.full(schedule.canvas_height, pair.boundary_x - x0, dtype=np.int32)
+                global_metrics.append(dict(seam_structure_metrics_from_exact_probe(
+                    render_s13_p1_exact_probe(
+                        schedule, calibration, image_loader, global_solution, global_x0=x0, global_x1=x1,
+                    ), seam,
+                )))
+                full_local_metrics.append(dict(seam_structure_metrics_from_exact_probe(
+                    render_s13_p1_exact_probe(
+                        schedule, calibration, image_loader, full_local_solution, global_x0=x0, global_x1=x1,
+                    ), seam,
+                )))
+            global_metrics, full_local_metrics = tuple(global_metrics), tuple(full_local_metrics)
+        else:
+            global_result = render_s13_p1_from_raw(schedule, calibration, image_loader, global_solution)
+            global_metrics = _pair_metrics(global_result.image, schedule)
+            full_local_image = render_s13_p1_local_patch_image(
+                schedule, calibration, image_loader, global_result, full_local_solution
+            )
+            full_local_metrics = _pair_metrics(full_local_image, schedule)
         accepted: list[bool] = []
         pair_rows: list[dict[str, object]] = []
         for pair, before, after in zip(base_solution.pairs, global_metrics, full_local_metrics, strict=True):
@@ -117,17 +140,23 @@ def select_s13_vertical_parent(
                 "reason": None if applied else (reason or "zero_local_candidate"),
             })
         selected_solution = vertical_candidate_solution(base_solution, gain, accepted_local_pairs=tuple(accepted))
-        selected_image = render_s13_p1_local_patch_image(
-            schedule, calibration, image_loader, global_result, selected_solution
+        selected_metrics = tuple(
+            after if accepted else before
+            for before, after, accepted in zip(global_metrics, full_local_metrics, accepted, strict=True)
+        ) if exact_seam_probes else _pair_metrics(
+            render_s13_p1_local_patch_image(
+                schedule, calibration, image_loader, global_result, selected_solution
+            ), schedule,
         )
-        selected_metrics = _pair_metrics(selected_image, schedule)
         rendered[gain] = (selected_solution, global_result, selected_metrics)
         rows.append({
             "gain": gain,
             "global_only_score": _mean_score(global_metrics),
             "selected_local_score": _mean_score(selected_metrics),
             "pair_local_decisions": pair_rows,
-            "actual_full_resolution_render_compared": True,
+            "selection_domain": "exact_seam_probe" if exact_seam_probes else "full_panorama",
+            "full_candidate_panorama_render_count": 0 if exact_seam_probes else 3,
+            "probe_render_count": len(base_solution.pairs) * 2 if exact_seam_probes else 0,
         })
 
     normalized_scores = _candidate_set_scores(p0_metrics, rendered)
@@ -160,9 +189,10 @@ def select_s13_vertical_parent(
         best_score = _mean_score(rendered[best_gain][2])
         if best_score is not None and best_score < p0_score * 0.995:
             selected_gain, stage = best_gain, "vertical_parent"
-    solution, global_result, selected_metrics = rendered[selected_gain]
+    solution, _global_result, selected_metrics = rendered[selected_gain]
     if stage == "P0_identity":
-        solution, result, selected_metrics = rendered[0.0]
+        solution, cached_result, selected_metrics = rendered[0.0]
+        result = cached_result or render_s13_p1_from_raw(schedule, calibration, image_loader, solution)
     else:
         result = render_s13_p1_from_raw(schedule, calibration, image_loader, solution)
     return S13VerticalSelection(
@@ -185,6 +215,8 @@ def select_s13_vertical_parent(
             "selected_gain": float(selected_gain),
             "selected_metrics": [dict(item) for item in selected_metrics],
             "selected_pairs": [asdict(pair) for pair in solution.pairs],
+            "selection_domain": "exact_seam_probe" if exact_seam_probes else "full_panorama",
+            "final_p1_full_render_count": 1 if exact_seam_probes else (0 if stage == "P0_identity" else 1),
         },
     )
 
