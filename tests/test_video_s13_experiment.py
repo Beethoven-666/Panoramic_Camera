@@ -454,7 +454,7 @@ def test_m5_never_reestimates_or_reselects_m4(tmp_path: Path, monkeypatch) -> No
     assert performance["p2_full_resolution_render_count"] == 2
 
 
-def test_formal_m6_v4_writes_only_the_four_in_memory_stage_snapshots(
+def test_formal_m6_v4_writes_stage_snapshots_and_completion_timing(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "out"
@@ -464,7 +464,7 @@ def test_formal_m6_v4_writes_only_the_four_in_memory_stage_snapshots(
     assert report["counts"] == {
         "png_write_count": 4,
         "jpg_write_count": 0,
-        "json_write_count": 0,
+        "json_write_count": 1,
         "npz_write_count": 0,
             "sha_call_count": 0,
             "m7_call_count": 0,
@@ -475,7 +475,21 @@ def test_formal_m6_v4_writes_only_the_four_in_memory_stage_snapshots(
         "P1_vertical_panorama.png",
         "P2_geometry_and_seam_panorama.png",
         "P3_visual_panorama.png",
+        "timing.json",
     }
     assert Path(report["panorama"]).name == "P3_visual_panorama.png"
     assert all(Path(path).is_file() for path in report["stage_images"])
+    timing = json.loads(Path(report["timing_json"]).read_text(encoding="utf-8"))
+    assert timing["schema"] == "gemini305-video-s13-panorama-timing/v1"
+    assert timing["run_id"] == report["run_id"]
+    assert timing["completed"] is True
+    assert timing["completion_stage"] == "P3"
+    assert timing["measurement_end"] == "all_stage_png_files_closed"
+    assert timing["panorama_completion_wall_seconds"] == (
+        report["panorama_completion_wall_seconds"]
+    )
+    assert timing["panorama_completion_wall_seconds"] >= (
+        timing["stage_seconds"]["total"]
+    )
+    assert timing["stage_images"] == [Path(path).name for path in report["stage_images"]]
     assert set(report["c2e"]["selected"]) == {"C0_keep_standard"}

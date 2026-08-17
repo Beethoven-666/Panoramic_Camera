@@ -2889,18 +2889,35 @@ def run_s13_experiment(
         )
         if config.runtime_backend == "cupy_cuda_structural_equivalent_v3":
             runner_arguments["structural_equivalent_v3"] = True
+        timing_path = root / "timing.json"
+        timing_path.unlink(missing_ok=True)
         fast = runner(**runner_arguments)
+        timings = {**stage_seconds, **fast["timings"]}
+        panorama_completion_wall_seconds = time.perf_counter() - run_started
+        atomic_write_json(timing_path, {
+            "schema": "gemini305-video-s13-panorama-timing/v1",
+            "run_id": fast["run_id"],
+            "completed": True,
+            "completion_stage": "P3",
+            "measurement_start": "run_s13_experiment_entry",
+            "measurement_end": "all_stage_png_files_closed",
+            "panorama_completion_wall_seconds": panorama_completion_wall_seconds,
+            "stage_seconds": timings,
+            "stage_images": [Path(str(path)).name for path in fast["paths"]],
+        })
         return {
             "schema": REPORT_SCHEMA,
             "run_id": fast["run_id"],
             "final_stage": "P3",
             "panorama": str(Path(str(fast["paths"][-1]))),
             "stage_images": fast["paths"],
-            "timings": {**stage_seconds, **fast["timings"]},
+            "timing_json": str(timing_path),
+            "timings": timings,
+            "panorama_completion_wall_seconds": panorama_completion_wall_seconds,
             "c2e": {"automatic": True, "selected": fast["c2e"]},
             "cuda_resident": fast.get("cuda_resident"),
             "counts": {
-                key: fast[key]
+                key: fast[key] + (1 if key == "json_write_count" else 0)
                 for key in (
                     "png_write_count", "jpg_write_count", "json_write_count",
                     "npz_write_count", "sha_call_count", "m7_call_count",
