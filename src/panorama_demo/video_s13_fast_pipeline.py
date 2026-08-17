@@ -48,36 +48,6 @@ def _submit_immutable_stage(
     writer.submit_owned_host_image(stage, buffer)
 
 
-def _render_resident_owner_stage(
-    *,
-    stage_name: str,
-    runtime: Any,
-    image_loader: Callable[[int], np.ndarray],
-    frame_ids_by_source_index: tuple[int, ...],
-    valid_mask: np.ndarray,
-    provenance: dict[str, np.ndarray],
-) -> np.ndarray:
-    """Recompose one decided hard-owner stage without changing provenance."""
-
-    owner = np.asarray(provenance["owner_source_index"], dtype=np.int32)
-    source_u = np.asarray(provenance["source_u"], dtype=np.float32)
-    source_v = np.asarray(provenance["source_v"], dtype=np.float32)
-    height, width = valid_mask.shape
-    canvas = runtime.new_stage_canvas(height, width)
-    for source_index, frame_id in enumerate(frame_ids_by_source_index):
-        owned = valid_mask & (owner == source_index)
-        if not np.any(owned):
-            continue
-        columns = np.flatnonzero(np.any(owned, axis=0))
-        x0, x1 = int(columns[0]), int(columns[-1]) + 1
-        roi_owned = owned[:, x0:x1]
-        sampled = runtime.remap_resident_frame_device(
-            frame_id, image_loader(frame_id), source_u[:, x0:x1], source_v[:, x0:x1],
-        )
-        runtime.compose_owner_roi(canvas, x0, x1, sampled, roi_owned)
-    return runtime.download_stage_canvas(stage_name, canvas)
-
-
 def run_s13_fast_pipeline(
     *,
     session: S13Session,
@@ -218,14 +188,12 @@ def run_s13_fast_pipeline(
 
             resident_m5_batch_token = set_s13_m5_resident_batch(resident_m5_batch)
         try:
+            # P2 is the source-map authority for C2E and M6.  Keep its final
+            # pixels on the established CPU reference remap path: composing a
+            # sparse owner canvas on CUDA can turn a source-map discontinuity
+            # into an entire visible vertical strip. CUDA remains responsible
+            # for bounded M5 corridor sampling, but never for P2 publication.
             final_image_composer = None
-            if p0_resident_device_remap is not None:
-                def final_image_composer(_frame_ids, valid_mask, provenance):
-                    return _render_resident_owner_stage(
-                        stage_name="P2", runtime=resident_runtime, image_loader=image_loader,
-                        frame_ids_by_source_index=tuple(a.frame_id for a in schedule.assignments),
-                        valid_mask=valid_mask, provenance=provenance,
-                    )
             m5 = run_s13_m5(
                 schedule, session.calibration, image_loader, vertical_selection.solution, p1.image,
                 parent_stage_sha256="in-memory-p1", parent_result_sha256="in-memory-p1",

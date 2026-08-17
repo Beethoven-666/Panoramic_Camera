@@ -35,10 +35,11 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
             m51_r2_config=m51_r2_config,
             resident_runtime=runtime,
             p0_resident_device_remap=runtime.remap_resident_frame_device,
-            # V3 uses the existing original-coordinate probe implementation.
-            # Any uncertain metric must remain on the reference path.
-            vertical_exact_seam_probes=structural_equivalent_v3,
-            p1_reference_remap=not structural_equivalent_v3,
+            # The v3 probe calibration utility is intentionally not a pixel
+            # authority until its guarded intervals are wired into every M4
+            # decision.  Use the proven full reference selection meanwhile.
+            vertical_exact_seam_probes=False,
+            p1_reference_remap=True,
             m6_cuda_v2=m6_cuda_v2,
             m6_cuda_v3=structural_equivalent_v3,
         )
@@ -49,8 +50,8 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
         audit["c2e_full_provenance_copy_count"] = result["c2e_full_provenance_copy_count"]
         if structural_equivalent_v3:
             audit.update({"equivalence_mode": "structural_exact_rgb_tolerant",
-                          "probe_mode": "guarded_tolerant",
-                          "probe_reference_fallback_count": 0,
+                          "probe_mode": "guarded_tolerant_reference_fallback",
+                          "probe_reference_fallback_count": 1,
                           "final_linear_full_d2h_count": result["m6_performance"].get("final_linear_full_d2h_count", 0)})
         for key in (
             "m6_full_source_map_count", "m6_roi_source_map_count",
