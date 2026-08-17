@@ -78,6 +78,7 @@ def run_s13_fast_pipeline(
     p0_resident_device_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], Any] | None = None,
     vertical_exact_seam_probes: bool = False,
     p1_reference_remap: bool = False,
+    m6_cuda_v2: bool = False,
 ) -> dict[str, Any]:
     """Render P0--P3 once, keeping every parent and decision in memory."""
 
@@ -284,7 +285,9 @@ def run_s13_fast_pipeline(
             replay_pairs=selected_replay,
             immutable_sha256={},
         )
-        if p0_resident_device_remap is not None:
+        if m6_cuda_v2:
+            if p0_resident_device_remap is None or resident_runtime is None:
+                raise ValueError("S1.3 M6 CUDA v2 requires the resident device runtime")
             p3_render = run_s13_m6_cuda_v2(
                 p2_runtime, image_loader, cuda_runtime=resident_runtime,
                 retain_runtime_details=False,

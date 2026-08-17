@@ -2885,6 +2885,7 @@ def run_s13_experiment(
             normal_target_advance_px=config.normal_target_advance_px,
             risky_target_advance_px=config.risky_target_advance_px,
             m51_r2_config=m51_r2_config,
+            m6_cuda_v2=config.runtime_backend == "cupy_cuda_resident_v2",
         )
         return {
             "schema": REPORT_SCHEMA,
