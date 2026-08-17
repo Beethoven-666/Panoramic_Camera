@@ -25,6 +25,7 @@ CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_den
 FORMAL_M6_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4.yaml"
 CUDA_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v1.yaml"
 CUDA_V2_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v2.yaml"
+CUDA_V3_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_structural_equivalent_v3.yaml"
 
 
 def test_s13_config_and_sibling_manifest_are_isolated_and_hash_bound() -> None:
@@ -78,6 +79,14 @@ def test_cuda_v2_successor_is_independently_registered_and_keeps_fast_contract()
         "S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v1"
     )
     assert config.component["runtime"]["stage_writer_queue_size"] == 4
+
+
+def test_cuda_v3_isolated_structural_equivalence_identity_is_hash_bound() -> None:
+    config = load_s13_config(CUDA_V3_CONFIG)
+    spec = build_algorithm_spec(CUDA_V3_CONFIG, expected_role="candidate")
+    assert config.runtime_backend == "cupy_cuda_structural_equivalent_v3"
+    assert spec.algorithm_id.endswith("structural_equivalent_v3")
+    assert config.document["cuda_structural_equivalence"]["probes"]["ambiguous_action"] == "full_reference_fallback"
 
 
 def test_malformed_formal_m6_claim_is_recognized_and_rejected() -> None:

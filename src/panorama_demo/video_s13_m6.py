@@ -429,4 +429,74 @@ def run_s13_m6_cuda_v2(
     )
 
 
-__all__ = ["S13P3Result", "run_s13_m6", "run_s13_m6_cuda_v2"]
+def run_s13_m6_cuda_v3(
+    p2: S13VerifiedP2, image_loader: Callable[[int], np.ndarray], *, cuda_runtime: object,
+    photometric_config: S13PhotometricConfig = S13PhotometricConfig(),
+    blend_config: S13BlendConfig = S13BlendConfig(), force_identity_owner_only: bool = False,
+    force_owner_only_pair_indices: frozenset[int] = frozenset(), retain_runtime_details: bool = False,
+) -> S13P3Result:
+    """CUDA v3 keeps final blend and sRGB conversion on device.
+
+    All discrete photometric/blend decisions remain the existing CPU routines;
+    only their selected pixel application moves to the resident CUDA canvas.
+    """
+    started = time.perf_counter()
+    samples, masks, raw_cache = extract_s13_photometric_samples(
+        p2.replay_pairs, image_loader, canvas_shape=p2.valid_mask.shape, config=photometric_config,
+    )
+    frame_ids = _source_frame_ids(p2)
+    solution = solve_s13_photometric(samples, frame_ids=frame_ids, config=photometric_config,
+                                     force_identity=force_identity_owner_only)
+    rois = {roi.source_index: roi for roi in build_s13_m6_source_rois(p2, frame_ids)}
+    device = cuda_runtime.new_linear_canvas(*p2.valid_mask.shape)
+    corrected: dict[int, object] = {}
+    for parameter in solution.source_parameters:
+        roi = rois[parameter.source_index]
+        tile = cuda_runtime.remap_resident_frame_corrected_linear_device(
+            parameter.frame_id, raw_cache[parameter.frame_id], roi.map_u, roi.map_v,
+            parameter.gain_bgr, parameter.bias_bgr, roi.mapped,
+        )
+        corrected[parameter.source_index] = tile
+        cuda_runtime.compose_linear_owner_roi(device, roi.x0, roi.x1, tile, roi.owner_mask)
+    compact_requests, compact_keys = [], []
+    for pair in p2.replay_pairs:
+        for slot, source_index in enumerate((pair.left_source_index, pair.right_source_index)):
+            roi = rois[source_index]
+            compact_requests.append(corrected[source_index][:, pair.corridor_x0-roi.x0:pair.corridor_x1-roi.x0])
+            compact_keys.append((pair.pair_index, slot))
+    compact_parts = dict(zip(compact_keys, cuda_runtime.download_compact_tiles(compact_requests), strict=True))
+
+    def corrected_pair_provider(pair):
+        return compact_parts[(pair.pair_index, 0)], compact_parts[(pair.pair_index, 1)]
+
+    plans, blend_masks = select_s13_blend_plans(
+        p2.replay_pairs, samples, {}, canvas_shape=p2.valid_mask.shape,
+        corrected_pair_provider=corrected_pair_provider, config=blend_config,
+        force_owner_only=force_identity_owner_only, force_owner_only_pair_indices=force_owner_only_pair_indices,
+    )
+    for pair, plan in zip(p2.replay_pairs, plans, strict=True):
+        if not np.any(plan.secondary_weight > 0.0):
+            continue
+        left_roi, right_roi = rois[pair.left_source_index], rois[pair.right_source_index]
+        left = corrected[pair.left_source_index][:, pair.corridor_x0-left_roi.x0:pair.corridor_x1-left_roi.x0]
+        right = corrected[pair.right_source_index][:, pair.corridor_x0-right_roi.x0:pair.corridor_x1-right_roi.x0]
+        cuda_runtime.blend_linear_roi(device, pair.corridor_x0, pair.corridor_x1, left, right, plan.secondary_weight)
+    visual = cuda_runtime.download_stage_canvas("P3", cuda_runtime.linear_canvas_to_srgb_u8(device, p2.valid_mask))
+    performance = {"total_m6": time.perf_counter() - started,
+                   "formal_raw_rgb_unique_sources": len(solution.source_parameters),
+                   "formal_raw_rgb_remap_invocations": len(solution.source_parameters),
+                   "m6_full_source_map_count": 0, "m6_roi_source_map_count": len(rois),
+                   "full_corrected_source_d2h_count": 0,
+                   "corrected_pair_corridor_d2h_count": len(compact_parts),
+                   "final_linear_full_d2h_count": 0, "final_uint8_p3_d2h_count": 1,
+                   "gain_bias_h2d_count": len(solution.source_parameters) * 2,
+                   "m6_gpu_final_blend": True,
+                   "fallback_rebuild_identity_owner_only": force_identity_owner_only}
+    provenance = _p3_provenance(p2, plans) if retain_runtime_details else {}
+    return S13P3Result(np.zeros_like(visual), visual, p2.valid_mask.copy(), provenance, solution,
+        samples, plans, np.asarray(blend_masks["protected"], bool), np.asarray(blend_masks["safe"], bool),
+        np.asarray(blend_masks["secondary_weight"], np.float32), np.asarray(masks["train"], bool),
+        np.asarray(masks["heldout"], bool), {}, performance)
+
+
+__all__ = ["S13P3Result", "run_s13_m6", "run_s13_m6_cuda_v2", "run_s13_m6_cuda_v3"]

@@ -2869,7 +2869,7 @@ def run_s13_experiment(
             raise ValueError("S1.3 fast pipeline does not support disk resume")
         if manual_c2e_forward_m7:
             raise ValueError("S1.3 fast pipeline has automatic C2E; M7 is unavailable")
-        if config.runtime_backend in {"cupy_cuda_resident", "cupy_cuda_resident_v2"}:
+        if config.runtime_backend in {"cupy_cuda_resident", "cupy_cuda_resident_v2", "cupy_cuda_structural_equivalent_v3"}:
             from .video_s13_cuda_fast_pipeline import run_s13_cuda_fast_pipeline
             runner = run_s13_cuda_fast_pipeline
         elif config.runtime_backend == "numpy_reference":
@@ -2877,7 +2877,7 @@ def run_s13_experiment(
             runner = run_s13_fast_pipeline
         else:
             raise ValueError("S1.3 runtime backend is not registered")
-        fast = runner(
+        runner_arguments = dict(
             session=session,
             trajectory=trajectory,
             output=root,
@@ -2885,8 +2885,11 @@ def run_s13_experiment(
             normal_target_advance_px=config.normal_target_advance_px,
             risky_target_advance_px=config.risky_target_advance_px,
             m51_r2_config=m51_r2_config,
-            m6_cuda_v2=config.runtime_backend == "cupy_cuda_resident_v2",
+            m6_cuda_v2=config.runtime_backend in {"cupy_cuda_resident_v2", "cupy_cuda_structural_equivalent_v3"},
         )
+        if config.runtime_backend == "cupy_cuda_structural_equivalent_v3":
+            runner_arguments["structural_equivalent_v3"] = True
+        fast = runner(**runner_arguments)
         return {
             "schema": REPORT_SCHEMA,
             "run_id": fast["run_id"],

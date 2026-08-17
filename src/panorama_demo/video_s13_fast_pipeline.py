@@ -21,7 +21,7 @@ from .video_s13_m5 import (
     run_s13_m5, set_s13_m5_resident_batch, set_s13_m5_resident_remap,
     set_s13_m5_runtime_unsealed,
 )
-from .video_s13_m6 import run_s13_m6, run_s13_m6_cuda_v2
+from .video_s13_m6 import run_s13_m6, run_s13_m6_cuda_v2, run_s13_m6_cuda_v3
 from .video_s13_motion import measure_s13_motion
 from .video_s13_progress import build_s13_m3_layout
 from .video_s13_replay import S13VerifiedP2
@@ -93,6 +93,7 @@ def run_s13_fast_pipeline(
     vertical_exact_seam_probes: bool = False,
     p1_reference_remap: bool = False,
     m6_cuda_v2: bool = False,
+    m6_cuda_v3: bool = False,
 ) -> dict[str, Any]:
     """Render P0--P3 once, keeping every parent and decision in memory."""
 
@@ -299,7 +300,14 @@ def run_s13_fast_pipeline(
             replay_pairs=selected_replay,
             immutable_sha256={},
         )
-        if m6_cuda_v2:
+        if m6_cuda_v3:
+            if p0_resident_device_remap is None or resident_runtime is None:
+                raise ValueError("S1.3 M6 CUDA v3 requires the resident device runtime")
+            p3_render = run_s13_m6_cuda_v3(
+                p2_runtime, image_loader, cuda_runtime=resident_runtime,
+                retain_runtime_details=False, force_owner_only_pair_indices=owner_only_pairs,
+            )
+        elif m6_cuda_v2:
             if p0_resident_device_remap is None or resident_runtime is None:
                 raise ValueError("S1.3 M6 CUDA v2 requires the resident device runtime")
             p3_render = run_s13_m6_cuda_v2(

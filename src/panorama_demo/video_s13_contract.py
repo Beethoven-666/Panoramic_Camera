@@ -42,6 +42,8 @@ S13_CUDA_RESIDENT_ALGORITHM_ID = "S013_output_first_progressive_dense_central_sl
 S13_CUDA_RESIDENT_IMPLEMENTATION_ID = "s013_output_first_progressive_dense_central_slit_m61_cuda_resident_v1"
 S13_CUDA_RESIDENT_V2_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v2"
 S13_CUDA_RESIDENT_V2_IMPLEMENTATION_ID = "s013_output_first_progressive_dense_central_slit_m61_cuda_resident_v2"
+S13_CUDA_STRUCTURAL_V3_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v4_cuda_structural_equivalent_v3"
+S13_CUDA_STRUCTURAL_V3_IMPLEMENTATION_ID = "s013_m61_cuda_guarded_probe_structural_equivalent_v3"
 
 _S13_COMPONENT_NAME = "s013_output_first_progressive_dense_central_slit"
 
@@ -80,6 +82,11 @@ _S13_IDENTITY_CONTRACTS = {
         M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
         True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3"),
         "cupy_cuda_resident_v2",
+    ),
+    (S13_CUDA_STRUCTURAL_V3_ALGORITHM_ID, S13_CUDA_STRUCTURAL_V3_IMPLEMENTATION_ID): S13IdentityDescriptor(
+        M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
+        True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3"),
+        "cupy_cuda_structural_equivalent_v3",
     ),
     (S13_M51_R2_ALGORITHM_ID, S13_M51_R2_IMPLEMENTATION_ID): S13IdentityDescriptor(
         S13_M51_R2_CONTRACT_SCHEMA, S13_M51_R2_P2_COMPLETION_SCHEMA, True,
@@ -198,6 +205,13 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
         raise ValueError("S1.3 contract schema is invalid")
     if requires_m61_bootstrap:
         _mapping(document.get("m61_bootstrap"), "M6.1 bootstrap")
+    if identity_contract.runtime_backend == "cupy_cuda_structural_equivalent_v3":
+        equivalence = _mapping(document.get("cuda_structural_equivalence"), "CUDA v3 equivalence")
+        if equivalence.get("mode") != "structural_exact_rgb_tolerant":
+            raise ValueError("S1.3 CUDA v3 requires structural-exact RGB-tolerant mode")
+        probes = _mapping(equivalence.get("probes"), "CUDA v3 probes")
+        if probes.get("mode") != "guarded_tolerant" or probes.get("ambiguous_action") != "full_reference_fallback":
+            raise ValueError("S1.3 CUDA v3 probe fallback contract is invalid")
     if (
         component.get("diagnostic_only") is not True
         or component.get("production_eligible") is not False

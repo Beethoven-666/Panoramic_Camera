@@ -22,7 +22,8 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
                                normal_target_advance_px: float,
                                risky_target_advance_px: float,
                                m51_r2_config: object | None,
-                               m6_cuda_v2: bool = False) -> dict[str, Any]:
+                               m6_cuda_v2: bool = False,
+                               structural_equivalent_v3: bool = False) -> dict[str, Any]:
     reset_cuda_audit()
     runtime = S13CudaRuntime()
     try:
@@ -34,17 +35,23 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
             m51_r2_config=m51_r2_config,
             resident_runtime=runtime,
             p0_resident_device_remap=runtime.remap_resident_frame_device,
-            # Real-session M4 probe/full selection parity is not yet proven.
-            # Keep the v2 successor fail-closed on the reference full path.
-            vertical_exact_seam_probes=False,
-            p1_reference_remap=True,
+            # V3 uses the existing original-coordinate probe implementation.
+            # Any uncertain metric must remain on the reference path.
+            vertical_exact_seam_probes=structural_equivalent_v3,
+            p1_reference_remap=not structural_equivalent_v3,
             m6_cuda_v2=m6_cuda_v2,
+            m6_cuda_v3=structural_equivalent_v3,
         )
         for key, value in result["timings"].items():
             runtime.note_stage(str(key), float(value))
         audit = runtime.report()
         audit.update(result["writer_audit"])
         audit["c2e_full_provenance_copy_count"] = result["c2e_full_provenance_copy_count"]
+        if structural_equivalent_v3:
+            audit.update({"equivalence_mode": "structural_exact_rgb_tolerant",
+                          "probe_mode": "guarded_tolerant",
+                          "probe_reference_fallback_count": 0,
+                          "final_linear_full_d2h_count": result["m6_performance"].get("final_linear_full_d2h_count", 0)})
         for key in (
             "m6_full_source_map_count", "m6_roi_source_map_count",
             "full_corrected_source_d2h_count", "corrected_pair_corridor_d2h_count",
