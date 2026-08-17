@@ -88,3 +88,36 @@ def test_cuda_runtime_resolves_each_preloaded_source_without_aliasing(monkeypatc
         np.testing.assert_array_equal(runtime.remap_host_source(second, xx, yy), second)
     finally:
         runtime.close()
+
+
+def test_cuda_m6_compact_owner_compose_matches_host_corrected_tiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("G305_CUDA", "required")
+    if not cuda_status(refresh=True).available:
+        pytest.skip("CUDA runtime is unavailable")
+    rng = np.random.default_rng(20260817)
+    source = rng.integers(0, 256, (9, 11, 3), dtype=np.uint8)
+    yy, xx = np.indices((7, 8), dtype=np.float32)
+    mapped = np.ones((7, 8), bool)
+    mapped[:, 0] = False
+    owner = (xx.astype(np.int32) % 2) == 0
+    runtime = S13CudaRuntime()
+    try:
+        runtime.preload_sources({5: source})
+        expected = runtime.remap_resident_frame_corrected_linear(
+            5, source, xx + 1.1, yy + 0.2, (0.9, 1.0, 1.1), (0.01, 0.0, -0.01), mapped,
+        )
+        device = runtime.remap_resident_frame_corrected_linear_device(
+            5, source, xx + 1.1, yy + 0.2, (0.9, 1.0, 1.1), (0.01, 0.0, -0.01), mapped,
+        )
+        canvas = runtime.new_linear_canvas(7, 10)
+        runtime.compose_linear_owner_roi(canvas, 1, 9, device, owner)
+        actual = runtime.download_linear_canvas(canvas)
+        np.testing.assert_array_equal(actual[:, 1:9][owner], expected[owner])
+        assert not np.any(actual[:, :1])
+        compact = runtime.download_compact_tiles((device[:, :4], device[:, 4:]))
+        np.testing.assert_array_equal(compact[0], expected[:, :4])
+        np.testing.assert_array_equal(compact[1], expected[:, 4:])
+    finally:
+        runtime.close()

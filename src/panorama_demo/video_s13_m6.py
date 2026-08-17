@@ -355,22 +355,24 @@ def run_s13_m6_cuda_v2(
     owner_linear = cuda_runtime.download_linear_canvas(owner_device)
     remap_seconds = time.perf_counter() - tick
     tick = time.perf_counter()
-    compact_pairs: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    compact_requests: list[object] = []
+    compact_request_keys: list[tuple[int, int]] = []
+    for pair in p2.replay_pairs:
+        for slot, source_index in enumerate((pair.left_source_index, pair.right_source_index)):
+            source_roi = rois_by_source[source_index]
+            compact_requests.append(corrected_device[source_index][
+                :, pair.corridor_x0 - source_roi.x0:pair.corridor_x1 - source_roi.x0,
+            ])
+            compact_request_keys.append((pair.pair_index, slot))
+    compact_tiles = cuda_runtime.download_compact_tiles(compact_requests)
+    compact_parts = dict(zip(compact_request_keys, compact_tiles, strict=True))
+    compact_pairs = {
+        pair.pair_index: (compact_parts[(pair.pair_index, 0)], compact_parts[(pair.pair_index, 1)])
+        for pair in p2.replay_pairs
+    }
 
     def corrected_pair_provider(pair):
-        cached = compact_pairs.get(pair.pair_index)
-        if cached is not None:
-            return cached
-        values: list[np.ndarray] = []
-        for source_index in (pair.left_source_index, pair.right_source_index):
-            roi = rois_by_source[source_index]
-            values.append(cuda_runtime.download_roi(
-                corrected_device[source_index],
-                (0, height, pair.corridor_x0 - roi.x0, pair.corridor_x1 - roi.x0),
-            ))
-        cached = (values[0], values[1])
-        compact_pairs[pair.pair_index] = cached
-        return cached
+        return compact_pairs[pair.pair_index]
 
     plans, blend_masks = select_s13_blend_plans(
         p2.replay_pairs, samples, {}, canvas_shape=p2.valid_mask.shape,

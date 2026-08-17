@@ -429,6 +429,41 @@ class S13CudaRuntime:
         self._d2h += int(result.nbytes)
         return result
 
+    def download_compact_tiles(
+        self, tiles: Sequence[Any], *, batch_size: int = 16, event_range: str = "M6_SAMPLE",
+    ) -> tuple[np.ndarray, ...]:
+        """Batch equally shaped compact device tiles into bounded D2H atlases."""
+        if not tiles:
+            return ()
+        if batch_size not in (8, 16, 32):
+            raise ValueError("S1.3 compact tile batch size must be one of 8, 16, or 32")
+        indexed = list(enumerate(tiles))
+        results: list[np.ndarray | None] = [None] * len(indexed)
+        buckets: dict[tuple[int, ...], list[tuple[int, Any]]] = {}
+        for index, tile in indexed:
+            buckets.setdefault(tuple(tile.shape), []).append((index, tile))
+        for items in buckets.values():
+            for start in range(0, len(items), batch_size):
+                chunk = items[start:start + batch_size]
+                event_start, event_end = self.cp.cuda.Event(), self.cp.cuda.Event()
+                with self.compute_stream:
+                    self.compute_stream.record(event_start)
+                    atlas = self.cp.stack([tile for _index, tile in chunk], axis=0)
+                    self.compute_stream.record(event_end)
+                    self._compute_ready.record(self.compute_stream)
+                with self.download_stream:
+                    self.download_stream.wait_event(self._compute_ready)
+                    host_atlas = self.cp.asnumpy(atlas)
+                self._d2h += int(host_atlas.nbytes)
+                self._corridor_batches += 1
+                self._corridor_tiles += len(chunk)
+                self._corridor_d2h_count += 1
+                self._corridor_d2h_bytes += int(host_atlas.nbytes)
+                self._event_ranges.setdefault(event_range, []).append((event_start, event_end))
+                for tile_index, (index, _tile) in enumerate(chunk):
+                    results[index] = host_atlas[tile_index]
+        return tuple(result for result in results if result is not None)
+
     def new_stage_canvas(self, height: int, width: int) -> Any:
         with self.compute_stream:
             self.compute_stream.wait_event(self._upload_ready)
