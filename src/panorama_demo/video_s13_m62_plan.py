@@ -27,6 +27,13 @@ def _readonly(array: np.ndarray) -> np.ndarray:
     return value
 
 
+def _readonly_shared(array: np.ndarray) -> np.ndarray:
+    """Freeze an existing raw source without breaking resident-cache identity."""
+    value = np.asarray(array)
+    value.setflags(write=False)
+    return value
+
+
 @dataclass(frozen=True)
 class S13M62ExecutionPlan:
     """All decisions shared by CPU reference and GPU shadow execution.
@@ -73,7 +80,7 @@ def build_s13_m62_execution_plan(
     )
     source_rois = build_s13_m6_source_rois(p2, frame_ids)
     frozen_masks = {name: _readonly(value) for name, value in masks.items()}
-    frozen_raw = {int(frame): _readonly(value) for frame, value in raw_cache.items()}
+    frozen_raw = {int(frame): _readonly_shared(value) for frame, value in raw_cache.items()}
     corrected: dict[int, np.ndarray] = {}
     for parameter, roi in zip(solution.source_parameters, source_rois, strict=True):
         sampled = accelerated_remap(raw_cache[parameter.frame_id], roi.map_u, roi.map_v,
