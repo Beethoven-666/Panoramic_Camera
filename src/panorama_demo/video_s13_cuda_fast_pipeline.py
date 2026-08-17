@@ -34,6 +34,8 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
             m51_r2_config=m51_r2_config,
             resident_runtime=runtime,
             p0_resident_device_remap=runtime.remap_resident_frame_device,
+            # Real-session M4 probe/full selection parity is not yet proven.
+            # Keep the v2 successor fail-closed on the reference full path.
             vertical_exact_seam_probes=False,
             p1_reference_remap=True,
             m6_cuda_v2=m6_cuda_v2,

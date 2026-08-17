@@ -76,6 +76,31 @@ def test_selection_records_full_resolution_render_for_all_gains_and_identity(
     assert selected.audit["p0_mean_score"] is not None
 
 
+def test_exact_probe_selection_matches_reference_full_selection() -> None:
+    calibration = _calibration()
+    schedule = _schedule(calibration)
+    images = _textured_images()
+    solution = estimate_s13_vertical(schedule, calibration, images.__getitem__)
+    p0_image = _p0(schedule, calibration, images)
+
+    full = select_s13_vertical_parent(
+        schedule, calibration, images.__getitem__, solution, p0_image,
+        reference_final_remap=True,
+    )
+    probe = select_s13_vertical_parent(
+        schedule, calibration, images.__getitem__, solution, p0_image,
+        exact_seam_probes=True, reference_final_remap=True,
+    )
+
+    assert probe.audit["selection_domain"] == "exact_seam_probe"
+    assert probe.stage == full.stage
+    assert probe.selected_gain == full.selected_gain
+    assert probe.audit["candidate_set_median_mad_scores"] == full.audit[
+        "candidate_set_median_mad_scores"
+    ]
+    assert np.array_equal(probe.result.image, full.result.image)
+
+
 def test_untextured_insufficient_evidence_selects_p0_identity() -> None:
     calibration = _calibration()
     schedule = _schedule(calibration)
