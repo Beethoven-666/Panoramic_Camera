@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v3.yaml"
 FORMAL_M6_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4.yaml"
 CUDA_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v1.yaml"
+CUDA_V2_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v2.yaml"
 
 
 def test_s13_config_and_sibling_manifest_are_isolated_and_hash_bound() -> None:
@@ -66,6 +67,17 @@ def test_cuda_successor_has_distinct_registered_runtime_backend() -> None:
     config = load_s13_config(CUDA_CONFIG)
     assert config.runtime_backend == "cupy_cuda_resident"
     assert config.document["candidate_id"] != load_s13_config(FORMAL_M6_CONFIG).document["candidate_id"]
+
+
+def test_cuda_v2_successor_is_independently_registered_and_keeps_fast_contract() -> None:
+    config = load_s13_config(CUDA_V2_CONFIG)
+    spec = build_algorithm_spec(CUDA_V2_CONFIG, expected_role="candidate")
+    assert config.runtime_backend == "cupy_cuda_resident_v2"
+    assert spec.algorithm_id == "S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v2"
+    assert config.document["parent_candidate_id"] == (
+        "S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v1"
+    )
+    assert config.component["runtime"]["stage_writer_queue_size"] == 4
 
 
 def test_malformed_formal_m6_claim_is_recognized_and_rejected() -> None:

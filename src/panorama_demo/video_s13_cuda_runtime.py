@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import time
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import cv2
 import numpy as np
@@ -20,6 +20,17 @@ from .cuda_backend import cuda_status
 class DeviceStageImage:
     stage_name: str
     image: Any
+
+
+@dataclass(frozen=True)
+class S13DeviceRemapRequest:
+    """One exact, bounded resident-source remap request."""
+
+    request_id: str
+    frame_id: int
+    map_u: np.ndarray
+    map_v: np.ndarray
+    map_cache_key: object | None = None
 
 
 class S13CudaRuntime:
@@ -51,6 +62,10 @@ class S13CudaRuntime:
         self._full_downloads = {stage: 0 for stage in ("P0", "P1", "P2", "P3")}
         self._roi_downloads = 0
         self._map_hits = self._map_misses = 0
+        self._semantic_map_hits = self._semantic_map_misses = 0
+        self._corridor_batches = self._corridor_tiles = 0
+        self._corridor_d2h_count = self._corridor_d2h_bytes = 0
+        self._event_ranges: dict[str, list[tuple[Any, Any]]] = {}
         self._started = time.perf_counter()
         self._stage_wall_ms: dict[str, float] = {}
         self._linear_kernel: Any | None = None
@@ -95,6 +110,91 @@ class S13CudaRuntime:
         self._map_misses += 1
         self._h2d += int(host.nbytes)
         return cached
+
+    def _request_map_key(self, request: S13DeviceRemapRequest, axis: str) -> object:
+        if request.map_cache_key is None:
+            return ("batch", axis, request.frame_id, self._host_array_key(
+                request.map_u if axis == "u" else request.map_v
+            ))
+        return ("semantic", axis, request.frame_id, request.map_cache_key)
+
+    def remap_batch_to_host(
+        self, requests: Sequence[S13DeviceRemapRequest], *, batch_size: int = 16,
+        event_range: str = "M5_CORRIDOR_BATCH",
+    ) -> tuple[np.ndarray, ...]:
+        """Exact remaps grouped by shape with one host transfer per bounded batch.
+
+        The host-facing result order is always the request order.  No worker is
+        allowed to touch this method; it owns the CUDA stream and its explicit
+        synchronization boundary.
+        """
+        if not requests:
+            return ()
+        if batch_size not in (8, 16, 32):
+            raise ValueError("S1.3 remap batch size must be one of 8, 16, or 32")
+        indexed = list(enumerate(requests))
+        results: list[np.ndarray | None] = [None] * len(indexed)
+        buckets: dict[tuple[int, int], list[tuple[int, S13DeviceRemapRequest]]] = {}
+        for index, request in indexed:
+            u, v = np.asarray(request.map_u), np.asarray(request.map_v)
+            if u.ndim != 2 or u.shape != v.shape:
+                raise ValueError("S1.3 batch remap maps must be equally-shaped 2-D arrays")
+            buckets.setdefault(tuple(u.shape), []).append((index, request))
+        for items in buckets.values():
+            for start in range(0, len(items), batch_size):
+                chunk = items[start:start + batch_size]
+                device_tiles: list[Any] = []
+                event_start, event_end = self.cp.cuda.Event(), self.cp.cuda.Event()
+                with self.compute_stream:
+                    self.compute_stream.record(event_start)
+                    for _index, request in chunk:
+                        u_key = self._request_map_key(request, "u")
+                        v_key = self._request_map_key(request, "v")
+                        if request.map_cache_key is not None:
+                            if u_key in self._maps and v_key in self._maps:
+                                self._semantic_map_hits += 1
+                            else:
+                                self._semantic_map_misses += 1
+                        device_tiles.append(self._remap_frame_linear_float(
+                            request.frame_id, request.map_u, request.map_v, u_key, v_key
+                        ))
+                    atlas = self.cp.stack(device_tiles, axis=0)
+                    self.compute_stream.record(event_end)
+                    self._compute_ready.record(self.compute_stream)
+                with self.download_stream:
+                    self.download_stream.wait_event(self._compute_ready)
+                    host_atlas = self.cp.asnumpy(atlas)
+                self._d2h += int(host_atlas.nbytes)
+                self._corridor_batches += 1
+                self._corridor_tiles += len(chunk)
+                self._corridor_d2h_count += 1
+                self._corridor_d2h_bytes += int(host_atlas.nbytes)
+                self._event_ranges.setdefault(event_range, []).append((event_start, event_end))
+                for tile_index, (index, _request) in enumerate(chunk):
+                    results[index] = host_atlas[tile_index]
+        return tuple(result for result in results if result is not None)
+
+    remap_probe_batch_to_host = remap_batch_to_host
+
+    def _remap_frame_linear_float(
+        self, frame_id: int, map_u: np.ndarray, map_v: np.ndarray, u_key: object, v_key: object,
+    ) -> Any:
+        source_gpu = self.source(frame_id)
+        map_u = np.ascontiguousarray(map_u, dtype=np.float32)
+        map_v = np.ascontiguousarray(map_v, dtype=np.float32)
+        map_u_gpu = self.upload_map_once(u_key, map_u)
+        map_v_gpu = self.upload_map_once(v_key, map_v)
+        output = self.cp.empty((*map_u.shape, 3), dtype=self.cp.uint8)
+        kernel = self._float_exact_linear_kernel()
+        count = int(map_u.size)
+        self.compute_stream.wait_event(self._upload_ready)
+        kernel(
+            ((count + 255) // 256,), (256,),
+            (source_gpu, np.int32(source_gpu.shape[0]), np.int32(source_gpu.shape[1]),
+             map_u_gpu, map_v_gpu, np.int32(map_u.shape[0]), np.int32(map_u.shape[1]), output),
+        )
+        self._kernels += 1
+        return output
 
     def device_copy(self, array: np.ndarray | Any) -> Any:
         """Upload a compact decision mask/ROI; caller controls its lifetime."""
@@ -394,6 +494,9 @@ class S13CudaRuntime:
     def report(self) -> dict[str, object]:
         free, total = self.cp.cuda.runtime.memGetInfo()
         pool = self.cp.get_default_memory_pool()
+        events: dict[str, float] = {}
+        for name, ranges in self._event_ranges.items():
+            events[name] = float(sum(self.cp.cuda.get_elapsed_time(start, end) for start, end in ranges))
         return {
             "schema": "s13-cuda-resident-audit/v1",
             "requested_mode": "required",
@@ -405,6 +508,17 @@ class S13CudaRuntime:
             "h2d_bytes": self._h2d,
             "d2h_bytes": self._d2h,
             "source_upload_count": sum(self._uploads.values()),
+            "source_preload_count": sum(self._uploads.values()),
+            "source_preload_bytes": sum(int(value.nbytes) for value in self._sources.values()),
+            "source_cache_hit_count": 0,
+            "source_cache_miss_count": sum(self._uploads.values()),
+            "map_semantic_cache_hit_count": self._semantic_map_hits,
+            "map_semantic_cache_miss_count": self._semantic_map_misses,
+            "corridor_batch_count": self._corridor_batches,
+            "corridor_tile_count": self._corridor_tiles,
+            "corridor_d2h_count": self._corridor_d2h_count,
+            "corridor_d2h_bytes": self._corridor_d2h_bytes,
+            "cuda_event_ms": events,
             "source_upload_count_by_frame": dict(self._uploads),
             "map_upload_count": self._map_misses,
             "map_cache_hit_count": self._map_hits,
@@ -417,7 +531,7 @@ class S13CudaRuntime:
             "designated_fallback_count": 0,
             "fallback_reasons": [],
             "stage_wall_ms": dict(self._stage_wall_ms),
-            "stage_gpu_event_ms": {},
+            "stage_gpu_event_ms": events,
             "cpu_retained_algorithms": [
                 "M1 GFTT", "M1 forward/backward PyrLK", "M5 GFTT",
                 "M5 forward/backward PyrLK", "M5 geometry decision", "M5 seam DP",
@@ -433,4 +547,4 @@ class S13CudaRuntime:
         self._map_host_refs.clear()
 
 
-__all__ = ["DeviceStageImage", "S13CudaRuntime"]
+__all__ = ["DeviceStageImage", "S13CudaRuntime", "S13DeviceRemapRequest"]

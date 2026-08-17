@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -22,12 +23,30 @@ STAGE_FILENAMES = {
 class S13StageImageWriter:
     """Encode one lossless PNG per stage without competing with compute threads."""
 
-    def __init__(self, output_root: Path, *, png_compression: int = 0) -> None:
+    def __init__(
+        self, output_root: Path, *, png_compression: int = 0, max_pending: int = 4,
+    ) -> None:
         self.output_root = Path(output_root)
         self.png_compression = int(png_compression)
+        self.max_pending = int(max_pending)
+        if self.max_pending < 1:
+            raise ValueError("S1.3 writer max_pending must be positive")
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="s13-png")
         self._pending: list[Future[Path]] = []
         self._written: list[Path] = []
+        self.submit_wait_seconds = 0.0
+        self.close_wait_seconds = 0.0
+        self.submit_blocking_count = 0
+        self.pending_peak = 0
+        self.snapshot_copy_count = 0
+
+    def _drain_if_full(self) -> None:
+        if len(self._pending) < self.max_pending:
+            return
+        started = time.perf_counter()
+        self._written.append(self._pending.pop(0).result())
+        self.submit_wait_seconds += time.perf_counter() - started
+        self.submit_blocking_count += 1
 
     @staticmethod
     def _validate(stage: str, image: np.ndarray) -> None:
@@ -40,11 +59,12 @@ class S13StageImageWriter:
         self._validate(stage, image)
         # A bounded queue preserves the intended compute/encode overlap without
         # retaining unbounded full-resolution host copies.
-        if self._pending:
-            self._written.append(self._pending.pop(0).result())
+        self._drain_if_full()
         snapshot = np.ascontiguousarray(image).copy()
+        self.snapshot_copy_count += 1
         snapshot.setflags(write=False)
         self._pending.append(self._executor.submit(self._write_png, stage, snapshot))
+        self.pending_peak = max(self.pending_peak, len(self._pending))
 
     def submit_owned_host_image(self, stage: str, image: np.ndarray) -> None:
         """Queue an immutable, contiguous buffer whose ownership is transferred.
@@ -57,9 +77,9 @@ class S13StageImageWriter:
             raise ValueError("Owned S1.3 stage image must be contiguous")
         if image.flags.writeable:
             raise ValueError("Owned S1.3 stage image must be immutable")
-        if self._pending:
-            self._written.append(self._pending.pop(0).result())
+        self._drain_if_full()
         self._pending.append(self._executor.submit(self._write_png, stage, image))
+        self.pending_peak = max(self.pending_peak, len(self._pending))
 
     def _write_png(self, stage: str, image: np.ndarray) -> Path:
         self.output_root.mkdir(parents=True, exist_ok=True)
@@ -78,7 +98,9 @@ class S13StageImageWriter:
         return final
 
     def flush(self) -> tuple[Path, ...]:
+        started = time.perf_counter()
         self._written.extend(future.result() for future in self._pending)
+        self.close_wait_seconds += time.perf_counter() - started
         self._pending.clear()
         paths = tuple(self._written)
         self._written.clear()

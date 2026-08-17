@@ -93,7 +93,7 @@ def run_s13_fast_pipeline(
         return image
 
     runtime = S13RuntimeContext(uuid.uuid4().hex)
-    writer = S13StageImageWriter(output)
+    writer = S13StageImageWriter(output, max_pending=4)
     try:
         tick = time.perf_counter()
         motion = measure_s13_motion(session.frames, analysis_width_px=analysis_width_px)
@@ -111,14 +111,18 @@ def run_s13_fast_pipeline(
         if len(schedule_plan.schedules) != 1:
             raise ValueError("S1.3 fast pipeline does not publish panel sets")
         selection, schedule = schedule_plan.selections[0], schedule_plan.schedules[0]
+        timings["m0_m3.motion_and_layout"] = time.perf_counter() - tick
+        preload_tick = time.perf_counter()
         if resident_runtime is not None:
             resident_runtime.preload_sources({
                 assignment.frame_id: image_loader(assignment.frame_id)
                 for assignment in schedule.assignments if not assignment.zero_width
             })
+        timings["m0_m3.preload"] = time.perf_counter() - preload_tick
         hypothesis_by_frame = {
             step.target_frame_id: step.selected_hypothesis_id for step in layout.lineage
         }
+        render_tick = time.perf_counter()
         p0_render = render_s13_p0(
             schedule,
             session.calibration,
@@ -131,19 +135,27 @@ def run_s13_fast_pipeline(
             resident_device_remap=p0_resident_device_remap,
             resident_stage=resident_runtime if p0_resident_device_remap is not None else None,
         )
+        timings["p0.render"] = time.perf_counter() - render_tick
         p0 = runtime.initialize_p0(S13StageResult(
             runtime.run_id, S13Stage.P0, 0, None, p0_render.image,
             p0_render.valid_mask, {"schedule": schedule, "selection": selection,
                                    "motion": motion, "layout": layout},
         ))
+        submit_tick = time.perf_counter()
         writer.submit_host_image("P0", p0.image)
+        timings["p0.submit"] = time.perf_counter() - submit_tick
         timings["m0_m3"] = time.perf_counter() - tick
 
         tick = time.perf_counter()
+        estimate_tick = time.perf_counter()
         vertical = estimate_s13_vertical(schedule, session.calibration, image_loader)
+        timings["m4.estimate"] = time.perf_counter() - estimate_tick
+        selection_tick = time.perf_counter()
         vertical_selection = select_s13_vertical_parent(
             schedule, session.calibration, image_loader, vertical, p0.image
         )
+        timings["m4.candidate_decision"] = time.perf_counter() - selection_tick
+        final_render_tick = time.perf_counter()
         p1_render = (
             render_s13_p1_from_raw(
                 schedule, session.calibration, image_loader, vertical_selection.solution,
@@ -151,14 +163,17 @@ def run_s13_fast_pipeline(
                 resident_device_remap=p0_resident_device_remap,
             ) if p0_resident_device_remap is not None else vertical_selection.result
         )
+        timings["m4.final_p1_render"] = time.perf_counter() - final_render_tick
         p1 = runtime.commit(expected_parent=S13Stage.P0, candidate=S13StageResult(
             runtime.run_id, S13Stage.P1, 1, p0.revision, p1_render.image,
             p1_render.valid_mask,
             {"vertical": vertical_selection.solution, "schedule": schedule,
              "selection": selection, "p0": p0_render},
         ))
+        submit_tick = time.perf_counter()
         writer.submit_host_image("P1", p1.image)
-        timings["m4"] = time.perf_counter() - tick
+        timings["m4.submit"] = time.perf_counter() - submit_tick
+        timings["m4"] = timings["m4.total"] = time.perf_counter() - tick
 
         tick = time.perf_counter()
         unsealed_token = set_s13_m5_runtime_unsealed(True)
@@ -194,10 +209,13 @@ def run_s13_fast_pipeline(
             m5.final_result.valid_mask,
             {"m5": m5, "schedule": schedule, "selection": selection},
         ))
+        submit_tick = time.perf_counter()
         writer.submit_host_image("P2", p2.image)
-        timings["m5"] = time.perf_counter() - tick
+        timings["m5.submit"] = time.perf_counter() - submit_tick
+        timings["m5"] = timings["m5.total"] = time.perf_counter() - tick
 
         tick = time.perf_counter()
+        c2e_tick = time.perf_counter()
         selected_replay, c2e, owner_only_pairs = select_s13_fast_c2e(
             m5.pairs, m5.replay_pairs, image_loader,
             resident_remap=(
@@ -205,10 +223,22 @@ def run_s13_fast_pipeline(
                 if p0_resident_device_remap is not None else None
             ),
         )
+        timings["c2e.decision"] = time.perf_counter() - c2e_tick
         # C3 can replace a right-source map in a compact pair corridor.  M6's
         # source-map assembler starts from P2 owner provenance, so mirror that
         # same in-memory map only for pixels owned by the changed source.
-        provenance = {name: np.asarray(value).copy() for name, value in m5.final_result.pixel_provenance.items()}
+        changed_replay = any(
+            not np.array_equal(original.right_source_u, chosen.right_source_u)
+            or not np.array_equal(original.right_source_v, chosen.right_source_v)
+            for original, chosen in zip(m5.replay_pairs, selected_replay, strict=True)
+        )
+        provenance = m5.final_result.pixel_provenance
+        c2e_copy_count = 0
+        if changed_replay:
+            provenance = dict(provenance)
+            for name in ("source_u", "source_v", "valid"):
+                provenance[name] = np.asarray(provenance[name]).copy()
+            c2e_copy_count = 1
         owner_source = np.asarray(provenance["owner_source_index"], dtype=np.int32)
         for original, chosen in zip(m5.replay_pairs, selected_replay, strict=True):
             if np.array_equal(original.right_source_u, chosen.right_source_u) and np.array_equal(original.right_source_v, chosen.right_source_v):
@@ -218,6 +248,8 @@ def run_s13_fast_pipeline(
             for name, values in (("source_u", chosen.right_source_u), ("source_v", chosen.right_source_v)):
                 provenance[name][roi][owned] = values[owned]
             provenance["valid"][roi][owned] = chosen.right_valid[owned]
+        timings["c2e.provenance_patch"] = time.perf_counter() - c2e_tick - timings["c2e.decision"]
+        timings["c2e.total"] = time.perf_counter() - c2e_tick
         p2_runtime = S13VerifiedP2(
             root=output,
             completion={"source_count": len(schedule.assignments)},
@@ -253,12 +285,15 @@ def run_s13_fast_pipeline(
             p3_render.valid_mask,
             {"selected_c2e_candidates": c2e, "m6_performance": p3_render.performance},
         ))
+        submit_tick = time.perf_counter()
         writer.submit_host_image("P3", p3.image)
-        timings["m6"] = time.perf_counter() - tick
+        timings["m6.submit"] = time.perf_counter() - submit_tick
+        timings["m6"] = timings["m6.total"] = time.perf_counter() - tick
         paths = writer.close()
     except BaseException:
         writer.close()
         raise
+    timings["writer.close_wait"] = writer.close_wait_seconds
     timings["total"] = time.perf_counter() - started
     return {
         "run_id": runtime.run_id,
@@ -276,6 +311,14 @@ def run_s13_fast_pipeline(
         "jpg_write_count": 0,
         "json_write_count": 0,
         "npz_write_count": 0,
+        "writer_audit": {
+            "writer_snapshot_copy_count": writer.snapshot_copy_count,
+            "writer_submit_wait_seconds": writer.submit_wait_seconds,
+            "writer_close_wait_seconds": writer.close_wait_seconds,
+            "writer_pending_peak": writer.pending_peak,
+            "writer_submit_blocking_count": writer.submit_blocking_count,
+        },
+        "c2e_full_provenance_copy_count": c2e_copy_count,
     }
 
 

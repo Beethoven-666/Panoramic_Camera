@@ -40,6 +40,8 @@ S13_M51_R4_CONTRACT_SCHEMA = "gemini305-video-s13-output-first/v6-r2"
 S13_M51_R4_P2_COMPLETION_SCHEMA = "gemini305-video-s13-p2-completion/v6-r2"
 S13_CUDA_RESIDENT_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v1"
 S13_CUDA_RESIDENT_IMPLEMENTATION_ID = "s013_output_first_progressive_dense_central_slit_m61_cuda_resident_v1"
+S13_CUDA_RESIDENT_V2_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v2"
+S13_CUDA_RESIDENT_V2_IMPLEMENTATION_ID = "s013_output_first_progressive_dense_central_slit_m61_cuda_resident_v2"
 
 _S13_COMPONENT_NAME = "s013_output_first_progressive_dense_central_slit"
 
@@ -73,6 +75,11 @@ _S13_IDENTITY_CONTRACTS = {
         M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
         True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3"),
         "cupy_cuda_resident",
+    ),
+    (S13_CUDA_RESIDENT_V2_ALGORITHM_ID, S13_CUDA_RESIDENT_V2_IMPLEMENTATION_ID): S13IdentityDescriptor(
+        M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
+        True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3"),
+        "cupy_cuda_resident_v2",
     ),
     (S13_M51_R2_ALGORITHM_ID, S13_M51_R2_IMPLEMENTATION_ID): S13IdentityDescriptor(
         S13_M51_R2_CONTRACT_SCHEMA, S13_M51_R2_P2_COMPLETION_SCHEMA, True,

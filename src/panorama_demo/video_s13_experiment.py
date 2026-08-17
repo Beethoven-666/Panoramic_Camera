@@ -2869,7 +2869,7 @@ def run_s13_experiment(
             raise ValueError("S1.3 fast pipeline does not support disk resume")
         if manual_c2e_forward_m7:
             raise ValueError("S1.3 fast pipeline has automatic C2E; M7 is unavailable")
-        if config.runtime_backend == "cupy_cuda_resident":
+        if config.runtime_backend in {"cupy_cuda_resident", "cupy_cuda_resident_v2"}:
             from .video_s13_cuda_fast_pipeline import run_s13_cuda_fast_pipeline
             runner = run_s13_cuda_fast_pipeline
         elif config.runtime_backend == "numpy_reference":

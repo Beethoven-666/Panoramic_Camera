@@ -36,7 +36,10 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
         )
         for key, value in result["timings"].items():
             runtime.note_stage(str(key), float(value))
-        result["cuda_resident"] = runtime.report()
+        audit = runtime.report()
+        audit.update(result["writer_audit"])
+        audit["c2e_full_provenance_copy_count"] = result["c2e_full_provenance_copy_count"]
+        result["cuda_resident"] = audit
         return result
     finally:
         runtime.close()
