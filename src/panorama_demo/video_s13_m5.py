@@ -331,6 +331,43 @@ class S13PairCorrespondences:
         yield self.moving_xy
 
 
+@dataclass(frozen=True)
+class S13M5PairInput:
+    """Read-only base-corridor state for one independently evaluable pair."""
+
+    pair_index: int
+    left_frame_id: int
+    right_frame_id: int
+    corridor_x0: int
+    corridor_x1: int
+    left_maps: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    right_maps: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+
+    def __post_init__(self) -> None:
+        if self.corridor_x1 <= self.corridor_x0:
+            raise ValueError("S1.3 M5 pair corridor must be non-empty")
+        expected = (len(self.left_maps), len(self.right_maps))
+        if expected != (4, 4):
+            raise ValueError("S1.3 M5 pair input requires four map arrays per side")
+        shape = (self.left_maps[0].shape, self.right_maps[0].shape)
+        if shape[0] != shape[1] or shape[0][1] != self.corridor_x1 - self.corridor_x0:
+            raise ValueError("S1.3 M5 pair input map shape disagrees with its corridor")
+
+
+def _freeze_m5_pair_input(
+    *, pair_index: int, left_frame_id: int, right_frame_id: int, corridor_x0: int,
+    corridor_x1: int, left_maps: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    right_maps: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+) -> S13M5PairInput:
+    """Make the maps explicit read-only inputs before any CPU pair evaluation."""
+
+    for array in (*left_maps, *right_maps):
+        np.asarray(array).setflags(write=False)
+    return S13M5PairInput(
+        pair_index, left_frame_id, right_frame_id, corridor_x0, corridor_x1, left_maps, right_maps,
+    )
+
+
 _RUNTIME_UNSEALED = ContextVar("s13_m5_runtime_unsealed", default=False)
 _RUNTIME_RESIDENT_REMAP = ContextVar("s13_m5_resident_remap", default=None)
 
@@ -1087,8 +1124,12 @@ def estimate_s13_m5_transactions(
             right_maps = _map_crop(schedule, calibration, pair_index + 1, x0, x1,
                                    vertical.global_offsets_px[pair_index + 1], None,
                                    vertical_parent=vertical_parent)
-            left_image, left_valid = _sample_crop(raw(frame_ids[0]), left_maps)
-            right_image, right_valid = _sample_crop(raw(frame_ids[1]), right_maps)
+            pair_input = _freeze_m5_pair_input(
+                pair_index=pair_index, left_frame_id=frame_ids[0], right_frame_id=frame_ids[1],
+                corridor_x0=x0, corridor_x1=x1, left_maps=left_maps, right_maps=right_maps,
+            )
+            left_image, left_valid = _sample_crop(raw(pair_input.left_frame_id), pair_input.left_maps)
+            right_image, right_valid = _sample_crop(raw(pair_input.right_frame_id), pair_input.right_maps)
             correspondence_result = _pair_correspondences(
                 left_image, right_image, left_valid, right_valid, x_offset=x0,
                 config=successor,

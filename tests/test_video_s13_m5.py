@@ -14,6 +14,7 @@ from panorama_demo.video_s13_alignment import (
 )
 from panorama_demo.video_s13_m5 import (
     S13M5EstimationResult,
+    _freeze_m5_pair_input,
     _canonicalize_v5_transaction_value,
     _evaluate_s13_runtime_component_candidate,
     build_s13_p2_replay,
@@ -45,6 +46,17 @@ def test_component_audit_serialization_uses_null_for_unevaluable_metrics():
     ) == {"segments": [{"audit": {"maximum_step_px": None}}]}
     with pytest.raises(ValueError, match=r"\$\.segments\[0\]\.audit\.maximum_step_px"):
         _canonicalize_v5_transaction_value(value)
+
+
+def test_m5_pair_input_freezes_base_corridor_maps() -> None:
+    maps = tuple(np.zeros((4, 6), dtype=dtype) for dtype in (np.float32, np.float32, bool, np.int32))
+    pair = _freeze_m5_pair_input(
+        pair_index=2, left_frame_id=10, right_frame_id=11, corridor_x0=3, corridor_x1=9,
+        left_maps=maps, right_maps=maps,
+    )
+    assert pair.pair_index == 2
+    assert not pair.left_maps[0].flags.writeable
+    assert pair.left_maps[0].shape == (4, 6)
 
 
 def test_all_structurally_safe_policy_accepts_failed_visual_quality_gates():
