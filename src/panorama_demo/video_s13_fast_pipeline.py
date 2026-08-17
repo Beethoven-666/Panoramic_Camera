@@ -21,7 +21,7 @@ from .video_s13_m5 import (
     run_s13_m5, set_s13_m5_resident_batch, set_s13_m5_resident_remap,
     set_s13_m5_runtime_unsealed,
 )
-from .video_s13_m6 import run_s13_m6
+from .video_s13_m6 import run_s13_m6, run_s13_m6_cuda_v2
 from .video_s13_motion import measure_s13_motion
 from .video_s13_progress import build_s13_m3_layout
 from .video_s13_replay import S13VerifiedP2
@@ -284,25 +284,17 @@ def run_s13_fast_pipeline(
             replay_pairs=selected_replay,
             immutable_sha256={},
         )
-        p3_render = run_s13_m6(
-            p2_runtime, image_loader, retain_runtime_details=False,
-            force_owner_only_pair_indices=owner_only_pairs,
-            resident_remap=(
-                resident_runtime.remap_resident_frame
-                if p0_resident_device_remap is not None else None
-            ),
-            resident_linear_remap=(
-                resident_runtime.remap_resident_frame_linear
-                if p0_resident_device_remap is not None else None
-            ),
-            resident_corrected_linear_remap=(
-                (lambda frame_id, raw, map_u, map_v, parameter, mapped:
-                    resident_runtime.remap_resident_frame_corrected_linear(
-                        frame_id, raw, map_u, map_v,
-                        parameter.gain_bgr, parameter.bias_bgr, mapped,
-                    )) if p0_resident_device_remap is not None else None
-            ),
-        )
+        if p0_resident_device_remap is not None:
+            p3_render = run_s13_m6_cuda_v2(
+                p2_runtime, image_loader, cuda_runtime=resident_runtime,
+                retain_runtime_details=False,
+                force_owner_only_pair_indices=owner_only_pairs,
+            )
+        else:
+            p3_render = run_s13_m6(
+                p2_runtime, image_loader, retain_runtime_details=False,
+                force_owner_only_pair_indices=owner_only_pairs,
+            )
         p3 = runtime.commit(expected_parent=S13Stage.P2, candidate=S13StageResult(
             runtime.run_id, S13Stage.P3, 3, p2.revision, p3_render.visual_panorama,
             p3_render.valid_mask,

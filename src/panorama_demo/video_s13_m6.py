@@ -28,6 +28,7 @@ from .video_s13_photometric import (
 )
 from .video_s13_replay import S13VerifiedP2
 from .video_s13_visual_quality import build_s13_p3_diagnostic_quality
+from .video_s13_m6_cuda import build_s13_m6_source_rois
 
 
 @dataclass(frozen=True)
@@ -303,4 +304,127 @@ def run_s13_m6(
     )
 
 
-__all__ = ["S13P3Result", "run_s13_m6"]
+def run_s13_m6_cuda_v2(
+    p2: S13VerifiedP2,
+    image_loader: Callable[[int], np.ndarray],
+    *,
+    cuda_runtime: object,
+    photometric_config: S13PhotometricConfig = S13PhotometricConfig(),
+    blend_config: S13BlendConfig = S13BlendConfig(),
+    force_identity_owner_only: bool = False,
+    force_owner_only_pair_indices: frozenset[int] = frozenset(),
+    retain_runtime_details: bool = False,
+) -> S13P3Result:
+    """M6 v2: compact device tiles compose the owner canvas before any D2H.
+
+    Blend selection remains intentionally CPU-authoritative.  It receives only
+    corrected replay corridors; no full corrected source image crosses the
+    device boundary.
+    """
+
+    started = time.perf_counter()
+    tick = time.perf_counter()
+    samples, masks, raw_cache = extract_s13_photometric_samples(
+        p2.replay_pairs, image_loader, canvas_shape=p2.valid_mask.shape,
+        config=photometric_config,
+    )
+    sample_seconds = time.perf_counter() - tick
+    frame_ids = _source_frame_ids(p2)
+    tick = time.perf_counter()
+    solution = solve_s13_photometric(
+        samples, frame_ids=frame_ids, config=photometric_config,
+        force_identity=force_identity_owner_only,
+    )
+    solve_seconds = time.perf_counter() - tick
+    tick = time.perf_counter()
+    rois = build_s13_m6_source_rois(p2, frame_ids)
+    rois_by_source = {roi.source_index: roi for roi in rois}
+    height, width = p2.valid_mask.shape
+    owner_device = cuda_runtime.new_linear_canvas(height, width)
+    corrected_device: dict[int, object] = {}
+    for parameter in solution.source_parameters:
+        roi = rois_by_source[parameter.source_index]
+        corrected = cuda_runtime.remap_resident_frame_corrected_linear_device(
+            parameter.frame_id, raw_cache[parameter.frame_id], roi.map_u, roi.map_v,
+            parameter.gain_bgr, parameter.bias_bgr, roi.mapped,
+        )
+        corrected_device[parameter.source_index] = corrected
+        cuda_runtime.compose_linear_owner_roi(
+            owner_device, roi.x0, roi.x1, corrected, roi.owner_mask,
+        )
+    owner_linear = cuda_runtime.download_linear_canvas(owner_device)
+    remap_seconds = time.perf_counter() - tick
+    tick = time.perf_counter()
+    compact_pairs: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+
+    def corrected_pair_provider(pair):
+        cached = compact_pairs.get(pair.pair_index)
+        if cached is not None:
+            return cached
+        values: list[np.ndarray] = []
+        for source_index in (pair.left_source_index, pair.right_source_index):
+            roi = rois_by_source[source_index]
+            values.append(cuda_runtime.download_roi(
+                corrected_device[source_index],
+                (0, height, pair.corridor_x0 - roi.x0, pair.corridor_x1 - roi.x0),
+            ))
+        cached = (values[0], values[1])
+        compact_pairs[pair.pair_index] = cached
+        return cached
+
+    plans, blend_masks = select_s13_blend_plans(
+        p2.replay_pairs, samples, {}, canvas_shape=p2.valid_mask.shape,
+        corrected_pair_provider=corrected_pair_provider,
+        config=blend_config, force_owner_only=force_identity_owner_only,
+        force_owner_only_pair_indices=force_owner_only_pair_indices,
+    )
+    blend_analysis_seconds = time.perf_counter() - tick
+    final_linear = owner_linear.copy()
+    for pair, plan in zip(p2.replay_pairs, plans, strict=True):
+        if not np.any(plan.secondary_weight > 0.0):
+            continue
+        left, right = corrected_pair_provider(pair)
+        roi = np.s_[:, pair.corridor_x0:pair.corridor_x1]
+        pair_result = apply_s13_blend_plan(left, right, pair, plan)
+        active = plan.secondary_weight > 0.0
+        final_linear[roi][active] = pair_result[active]
+    provenance = _p3_provenance(p2, plans) if retain_runtime_details else {}
+    owner_u8 = linear_to_srgb_bgr(owner_linear)
+    final_u8 = linear_to_srgb_bgr(final_linear)
+    owner_u8[~p2.valid_mask] = 0
+    final_u8[~p2.valid_mask] = 0
+    diagnostic = (
+        build_s13_p3_diagnostic_quality(
+            p2.result_image, owner_u8, final_u8, p2.replay_pairs, plans, solution
+        ) if retain_runtime_details else {}
+    )
+    performance: dict[str, object] = {
+        "photometric_sample_extraction": sample_seconds,
+        "photometric_solve": solve_seconds,
+        "blend_candidate_analysis": blend_analysis_seconds,
+        "full_resolution_remap": remap_seconds,
+        "total_m6": time.perf_counter() - started,
+        "formal_raw_rgb_unique_sources": len(solution.source_parameters),
+        "formal_raw_rgb_remap_invocations": len(solution.source_parameters),
+        "m6_full_source_map_count": 0,
+        "m6_roi_source_map_count": len(rois),
+        "full_corrected_source_d2h_count": 0,
+        "corrected_pair_corridor_d2h_count": len(compact_pairs) * 2,
+        "final_linear_full_d2h_count": 1,
+        "gain_bias_h2d_count": len(solution.source_parameters) * 2,
+        "fallback_rebuild_identity_owner_only": force_identity_owner_only,
+    }
+    return S13P3Result(
+        photometric_owner_only=owner_u8, visual_panorama=final_u8,
+        valid_mask=p2.valid_mask.copy(), pixel_provenance=provenance,
+        photometric_solution=solution, photometric_samples=samples, blend_plans=plans,
+        protected_structure_mask=np.asarray(blend_masks["protected"], bool),
+        safe_blend_mask=np.asarray(blend_masks["safe"], bool),
+        blend_weight_map=np.asarray(blend_masks["secondary_weight"], np.float32),
+        photometric_training_mask=np.asarray(masks["train"], bool),
+        photometric_heldout_mask=np.asarray(masks["heldout"], bool),
+        diagnostic_quality=diagnostic, performance=performance,
+    )
+
+
+__all__ = ["S13P3Result", "run_s13_m6", "run_s13_m6_cuda_v2"]

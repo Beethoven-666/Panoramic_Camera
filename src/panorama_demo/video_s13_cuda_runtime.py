@@ -374,6 +374,61 @@ class S13CudaRuntime:
         self._d2h += int(result.nbytes)
         return result
 
+    def remap_resident_frame_corrected_linear_device(
+        self, frame_id: int, source: np.ndarray, map_u: np.ndarray, map_v: np.ndarray,
+        gain_bgr: tuple[float, float, float], bias_bgr: tuple[float, float, float],
+        mapped: np.ndarray,
+    ) -> Any:
+        """Return one compact corrected linear tile without a source D2H."""
+        if self._source_ids.get(self._host_source_key(source)) != int(frame_id):
+            raise ValueError("S1.3 resident frame id/source identity mismatch")
+        sampled = self.remap_linear_float(source, map_u, map_v)
+        gain = self.device_copy(np.asarray(gain_bgr, dtype=np.float32).reshape(1, 1, 3))
+        bias = self.device_copy(np.asarray(bias_bgr, dtype=np.float32).reshape(1, 1, 3))
+        mapped_gpu = self.device_copy(np.asarray(mapped, dtype=bool))
+        with self.compute_stream:
+            encoded = sampled.astype(self.cp.float32) / self.cp.float32(255.0)
+            linear = self.cp.where(
+                encoded <= self.cp.float32(0.04045),
+                encoded / self.cp.float32(12.92),
+                self.cp.power(
+                    (encoded + self.cp.float32(0.055)) / self.cp.float32(1.055),
+                    self.cp.float32(2.4),
+                ),
+            ).astype(self.cp.float32)
+            corrected = self.cp.clip(linear * gain + bias, 0.0, 1.0)
+            corrected[~mapped_gpu] = self.cp.float32(0.0)
+            self._compute_ready.record(self.compute_stream)
+        self._kernels += 1
+        return corrected
+
+    def new_linear_canvas(self, height: int, width: int) -> Any:
+        """Allocate the M6 owner canvas on the resident device stream."""
+        with self.compute_stream:
+            self.compute_stream.wait_event(self._upload_ready)
+            canvas = self.cp.zeros((int(height), int(width), 3), dtype=self.cp.float32)
+            self._compute_ready.record(self.compute_stream)
+        return canvas
+
+    def compose_linear_owner_roi(
+        self, canvas: Any, x0: int, x1: int, corrected: Any, owner_mask: np.ndarray,
+    ) -> None:
+        """Write exact owner pixels from a compact corrected source tile."""
+        owner_gpu = self.device_copy(np.asarray(owner_mask, dtype=bool))
+        with self.compute_stream:
+            self.compute_stream.wait_event(self._upload_ready)
+            target = canvas[:, int(x0):int(x1)]
+            target[owner_gpu] = corrected[owner_gpu]
+            self._compute_ready.record(self.compute_stream)
+
+    def download_linear_canvas(self, canvas: Any) -> np.ndarray:
+        """Download the single composed M6 owner canvas."""
+        with self.download_stream:
+            self.download_stream.wait_event(self._compute_ready)
+            result = self.cp.asnumpy(canvas)
+        self._d2h += int(result.nbytes)
+        return result
+
     def new_stage_canvas(self, height: int, width: int) -> Any:
         with self.compute_stream:
             self.compute_stream.wait_event(self._upload_ready)
@@ -491,6 +546,7 @@ class S13CudaRuntime:
     def download_roi(self, array: Any, roi: tuple[int, int, int, int]) -> np.ndarray:
         y0, y1, x0, x1 = roi
         with self.download_stream:
+            self.download_stream.wait_event(self._compute_ready)
             result = self.cp.asnumpy(array[y0:y1, x0:x1])
         self._d2h += int(result.nbytes)
         self._roi_downloads += 1
