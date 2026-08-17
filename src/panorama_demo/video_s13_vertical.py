@@ -620,6 +620,7 @@ def render_s13_p1_from_raw(
     *,
     resident_stage: Any | None = None,
     resident_device_remap: Callable[[int, np.ndarray, np.ndarray, np.ndarray], Any] | None = None,
+    reference_remap: bool = False,
 ) -> S13P1Result:
     validate_s012_schedule(schedule)
     if len(solution.global_offsets_px) != len(schedule.assignments):
@@ -658,8 +659,11 @@ def render_s13_p1_from_raw(
             calibration, assignment.center_x, assignment.left_x, assignment.right_x,
             displacement, inverse_maps,
         )
-        sampled = None if output_device is not None else accelerated_remap(
-            image, u, v, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        sampled = None if output_device is not None else (
+            cv2.remap(image, u, v, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            if reference_remap else accelerated_remap(
+                image, u, v, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+            )
         )
         roi = np.s_[:, assignment.left_x:assignment.right_x]
         if output_device is not None:
@@ -731,7 +735,7 @@ def render_s13_p1_local_patch_image(
         u, v, valid = _target_map(
             calibration, assignment.center_x, left, right, displacement, inverse_maps
         )
-        sampled = accelerated_remap(
+        sampled = cv2.remap(
             np.asarray(image_loader(assignment.frame_id)), u, v, cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT, borderValue=0,
         )
@@ -776,7 +780,7 @@ def render_s13_p1_exact_probe(
         u, v, valid = _target_map(
             calibration, assignment.center_x, left, right, displacement, inverse_maps,
         )
-        sampled = accelerated_remap(
+        sampled = cv2.remap(
             np.asarray(image_loader(assignment.frame_id)), u, v, cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT, borderValue=0,
         )

@@ -309,6 +309,14 @@ class S13CudaRuntime:
             raise ValueError("S1.3 resident frame id/source identity mismatch")
         return self.remap_linear_float(source, map_u, map_v)
 
+    def remap_resident_frame_exact_device(
+        self, frame_id: int, source: np.ndarray, map_u: np.ndarray, map_v: np.ndarray,
+    ) -> Any:
+        """OpenCV fixed-map-equivalent resident remap for pixel-sealed stages."""
+        if self._source_ids.get(self._host_source_key(source)) != int(frame_id):
+            raise ValueError("S1.3 resident frame id/source identity mismatch")
+        return self.remap_linear_exact(frame_id, map_u, map_v)
+
     def remap_resident_frame_linear(
         self, frame_id: int, source: np.ndarray, map_u: np.ndarray, map_v: np.ndarray,
     ) -> np.ndarray:

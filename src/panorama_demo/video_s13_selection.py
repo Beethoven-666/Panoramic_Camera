@@ -85,6 +85,7 @@ def select_s13_vertical_parent(
     p0_image: np.ndarray,
     *,
     exact_seam_probes: bool = False,
+    reference_final_remap: bool = False,
 ) -> S13VerticalSelection:
     """Compare P0 and every requested gain using actual rendered structure."""
 
@@ -192,9 +193,13 @@ def select_s13_vertical_parent(
     solution, _global_result, selected_metrics = rendered[selected_gain]
     if stage == "P0_identity":
         solution, cached_result, selected_metrics = rendered[0.0]
-        result = cached_result or render_s13_p1_from_raw(schedule, calibration, image_loader, solution)
+        result = cached_result or render_s13_p1_from_raw(
+            schedule, calibration, image_loader, solution, reference_remap=reference_final_remap,
+        )
     else:
-        result = render_s13_p1_from_raw(schedule, calibration, image_loader, solution)
+        result = render_s13_p1_from_raw(
+            schedule, calibration, image_loader, solution, reference_remap=reference_final_remap,
+        )
     return S13VerticalSelection(
         stage=stage,
         selected_gain=float(selected_gain),
