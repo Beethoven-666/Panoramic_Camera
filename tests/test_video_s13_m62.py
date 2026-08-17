@@ -3,12 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from panorama_demo.video_s13_m6 import run_s13_m6
 from panorama_demo.video_s13_m62_equivalence import compare_s13_m62_u8
 from panorama_demo.video_s13_m62_plan import build_s13_m62_execution_plan
 from panorama_demo.video_s13_m62_reference import execute_s13_m62_cpu_reference
 from panorama_demo.video_s13_cuda_runtime import S13CudaRuntime
+from panorama_demo.cuda_backend import cuda_status
 from panorama_demo.video_s13_replay import S13P2ReplayPair, S13VerifiedP2
 
 
@@ -64,3 +66,33 @@ def test_m62_b1_input_gates_do_not_require_cuda_context() -> None:
         assert "x0/x1" in str(exc)
     else:
         raise AssertionError("off-by-one corridor must be rejected before CUDA use")
+
+
+def test_m62_cuda_b1_persistent_canvas_handles_both_primary_directions(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("G305_CUDA", "required")
+    if not cuda_status(refresh=True).available:
+        pytest.skip("CUDA unavailable")
+    runtime = S13CudaRuntime()
+    try:
+        canvas = runtime.new_linear_canvas(2, 4)
+        left = np.full((2, 2, 3), 0.2, np.float32)
+        right = np.full((2, 2, 3), 0.8, np.float32)
+        first_owner_right = np.array([[False, True], [True, False]])
+        weight = np.full((2, 2), 0.1, np.float32)
+        runtime.apply_b1_secondary_weight_roi_device(
+            canvas_device=canvas, x0=0, x1=2, left_device=left, right_device=right,
+            primary_owner_right_mask=first_owner_right, secondary_weight=weight,
+            protected_mask=np.zeros((2, 2), bool),
+        )
+        runtime.apply_b1_secondary_weight_roi_device(
+            canvas_device=canvas, x0=2, x1=4, left_device=left, right_device=right,
+            primary_owner_right_mask=~first_owner_right, secondary_weight=weight,
+            protected_mask=np.zeros((2, 2), bool),
+        )
+        result = runtime.download_linear_canvas(canvas)
+        expected_first = np.repeat(np.where(first_owner_right[..., None], 0.8 * 0.9 + 0.2 * 0.1, 0.2 * 0.9 + 0.8 * 0.1), 3, axis=2)
+        expected_second = np.repeat(np.where((~first_owner_right)[..., None], 0.8 * 0.9 + 0.2 * 0.1, 0.2 * 0.9 + 0.8 * 0.1), 3, axis=2)
+        np.testing.assert_allclose(result[:, :2], expected_first, atol=1e-6)
+        np.testing.assert_allclose(result[:, 2:], expected_second, atol=1e-6)
+    finally:
+        runtime.close()
