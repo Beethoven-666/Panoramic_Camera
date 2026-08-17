@@ -67,7 +67,10 @@ def execute_s13_m62_gpu_shadow(
             expected[active], np.asarray(gpu_pair)[active], label="b1_pair_linear", maximum=1e-6)})
     final_linear_report = compare_s13_m62_arrays(expected_canvas, canvas,
         label="final_linear", maximum=1e-6)
-    final_u8 = linear_to_srgb_bgr(canvas)
+    final_u8 = (
+        cuda_runtime.encode_linear_srgb_shadow(canvas)
+        if hasattr(cuda_runtime, "encode_linear_srgb_shadow") else linear_to_srgb_bgr(canvas)
+    )
     u8_report = compare_s13_m62_u8(cpu_reference.visual_panorama, final_u8)
     return S13M62GpuShadowResult(build_s13_m62_equivalence_report(
         corrected_roi=corrected_reports, owner_linear=owner_report, b1_pairs=b1_reports,

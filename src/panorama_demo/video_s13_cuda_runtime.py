@@ -479,6 +479,26 @@ class S13CudaRuntime:
         self._d2h += int(host.nbytes)
         return host
 
+    def encode_linear_srgb_shadow(self, linear: np.ndarray) -> np.ndarray:
+        """Encode a final linear canvas on CUDA for M6.2 shadow comparison."""
+        host = np.ascontiguousarray(linear, dtype=np.float32)
+        device = self.device_copy(host)
+        with self.compute_stream:
+            self.compute_stream.wait_event(self._upload_ready)
+            encoded = self.cp.where(
+                device <= self.cp.float32(0.0031308),
+                device * self.cp.float32(12.92),
+                self.cp.float32(1.055) * self.cp.power(device, self.cp.float32(1.0 / 2.4)) - self.cp.float32(0.055),
+            )
+            result = self.cp.rint(self.cp.clip(encoded * self.cp.float32(255.0), 0.0, 255.0)).astype(self.cp.uint8)
+            self._compute_ready.record(self.compute_stream)
+        with self.download_stream:
+            self.download_stream.wait_event(self._compute_ready)
+            output = self.cp.asnumpy(result)
+        self._kernels += 1
+        self._d2h += int(output.nbytes)
+        return output
+
     def download_compact_tiles(
         self, tiles: Sequence[Any], *, batch_size: int = 16, event_range: str = "M6_SAMPLE",
     ) -> tuple[np.ndarray, ...]:
