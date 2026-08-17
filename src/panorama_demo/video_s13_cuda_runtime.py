@@ -434,31 +434,6 @@ class S13CudaRuntime:
         self._d2h += int(result.nbytes)
         return result
 
-    def blend_linear_roi(self, canvas: Any, x0: int, x1: int, left: Any, right: Any, secondary_weight: np.ndarray) -> None:
-        """Apply a CPU-authoritative selected blend plan without a full canvas D2H."""
-        weight = self.device_copy(np.asarray(secondary_weight, dtype=np.float32))[..., None]
-        with self.compute_stream:
-            self.compute_stream.wait_event(self._upload_ready)
-            target = canvas[:, int(x0):int(x1)]
-            active = weight[..., 0] > 0.0
-            target[active] = (left * (1.0 - weight) + right * weight)[active]
-            self._compute_ready.record(self.compute_stream)
-
-    def linear_canvas_to_srgb_u8(self, canvas: Any, valid_mask: np.ndarray) -> Any:
-        """Encode the final canvas on device; callers download only final uint8 P3."""
-        valid = self.device_copy(np.asarray(valid_mask, dtype=bool))
-        with self.compute_stream:
-            self.compute_stream.wait_event(self._upload_ready)
-            encoded = self.cp.where(
-                canvas <= self.cp.float32(0.0031308), canvas * self.cp.float32(12.92),
-                self.cp.float32(1.055) * self.cp.power(canvas, self.cp.float32(1.0 / 2.4)) - self.cp.float32(0.055),
-            )
-            result = self.cp.clip(self.cp.rint(encoded * self.cp.float32(255.0)), 0, 255).astype(self.cp.uint8)
-            result[~valid] = self.cp.uint8(0)
-            self._compute_ready.record(self.compute_stream)
-        self._kernels += 1
-        return result
-
     def download_compact_tiles(
         self, tiles: Sequence[Any], *, batch_size: int = 16, event_range: str = "M6_SAMPLE",
     ) -> tuple[np.ndarray, ...]:

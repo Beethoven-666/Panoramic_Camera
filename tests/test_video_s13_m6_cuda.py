@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
+from panorama_demo.cuda_backend import cuda_status
+from panorama_demo.video_s13_cuda_runtime import S13CudaRuntime
+from panorama_demo.video_s13_m6 import run_s13_m6_cuda_v2, run_s13_m6_cuda_v3
 from panorama_demo.video_s13_m6 import _formal_source_maps
 from panorama_demo.video_s13_m6_cuda import build_s13_m6_source_rois
 from panorama_demo.video_s13_replay import S13P2ReplayPair, S13VerifiedP2
@@ -72,3 +76,31 @@ def test_m6_compact_source_rois_reject_conflicting_replay_maps(tmp_path: Path) -
         assert "conflicting source sampling" in str(exc)
     else:
         raise AssertionError("conflicting compact replay maps must fail")
+
+
+def test_cuda_v3_p3_falls_back_to_pixel_identical_v2_compose(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("G305_CUDA", "required")
+    if not cuda_status(refresh=True).available:
+        pytest.skip("CUDA runtime is unavailable")
+    p2 = _p2(tmp_path)
+    images = {
+        10: np.full((4, 12, 3), (30, 80, 150), np.uint8),
+        11: np.full((4, 12, 3), (40, 90, 160), np.uint8),
+    }
+    first = S13CudaRuntime()
+    second = S13CudaRuntime()
+    try:
+        first.preload_sources(images)
+        second.preload_sources(images)
+        v2 = run_s13_m6_cuda_v2(p2, images.__getitem__, cuda_runtime=first)
+        v3 = run_s13_m6_cuda_v3(p2, images.__getitem__, cuda_runtime=second)
+        np.testing.assert_array_equal(v3.visual_panorama, v2.visual_panorama)
+        assert v3.performance["m6_v3_final_compose_mode"] == (
+            "v2_cpu_authoritative_reference_fallback"
+        )
+        assert v3.performance["m6_v3_final_compose_fallback_count"] == 1
+    finally:
+        first.close()
+        second.close()

@@ -63,8 +63,13 @@ def test_disconnected_source_falls_back_to_identity() -> None:
         config=S13PhotometricConfig(minimum_pair_sample_count=32),
     )
     isolated = solution.source_parameters[2]
+    assert solution.model_family == "Q0_identity"
     assert isolated.gain_bgr == (1.0, 1.0, 1.0)
     assert isolated.bias_bgr == (0.0, 0.0, 0.0)
+    assert all(
+        audit["globally_connected"] is False
+        for audit in solution.candidate_audits[1:]
+    )
 
 
 def test_out_of_bounds_candidate_does_not_remove_q0_fallback() -> None:

@@ -440,12 +440,26 @@ def solve_s13_photometric(
             and np.all(gains >= config.minimum_gain) and np.all(gains <= config.maximum_gain)
             and np.all(np.abs(biases) <= config.maximum_absolute_bias_linear)
         )
+        # A component has no photometric evidence tying it to its neighbour.
+        # Correcting disconnected components independently creates a visible
+        # full-height exposure block at that unsupported boundary.  Q0 remains
+        # the only safe whole-canvas model unless every source participates in
+        # one evidence-connected solve without an identity fallback.
+        globally_connected = bool(
+            index == 0
+            or (
+                source_count > 0
+                and len(set(int(value) for value in components)) == 1
+                and all(reason is None for reason in fallback)
+            )
+        )
         score = heldout.get("residual_median_linear") if heldout.get("evaluable") is True else None
         if index == 0 and isinstance(score, (float, int)):
             baseline_score = float(score)
             selected_score = baseline_score
         if (
-            index > 0 and hard_safe and isinstance(score, (float, int))
+            index > 0 and hard_safe and globally_connected
+            and isinstance(score, (float, int))
             and baseline_score is not None and selected_score is not None
             and float(score) <= baseline_score * (1.0 - config.minimum_heldout_improvement_fraction)
             and float(score) < selected_score * (1.0 - config.simpler_model_tie_fraction)
@@ -456,6 +470,7 @@ def solve_s13_photometric(
             "gain_minimum": float(np.min(gains)), "gain_maximum": float(np.max(gains)),
             "maximum_absolute_bias_linear": float(np.max(np.abs(biases))),
             "identity_fallback_source_count": sum(reason is not None for reason in fallback),
+            "globally_connected": globally_connected,
             "selected": False,
         })
     audits[selected_index]["selected"] = True
