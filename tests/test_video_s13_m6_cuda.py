@@ -7,7 +7,7 @@ import pytest
 
 from panorama_demo.cuda_backend import cuda_status
 from panorama_demo.video_s13_cuda_runtime import S13CudaRuntime
-from panorama_demo.video_s13_m6 import run_s13_m6_cuda_v2, run_s13_m6_cuda_v3
+from panorama_demo.video_s13_m6 import run_s13_m6, run_s13_m6_cuda_v2, run_s13_m6_cuda_v3
 from panorama_demo.video_s13_m6 import _formal_source_maps
 from panorama_demo.video_s13_m6_cuda import build_s13_m6_source_rois
 from panorama_demo.video_s13_replay import S13P2ReplayPair, S13VerifiedP2
@@ -94,9 +94,15 @@ def test_cuda_v3_p3_falls_back_to_pixel_identical_v2_compose(
     try:
         first.preload_sources(images)
         second.preload_sources(images)
+        reference = run_s13_m6(p2, images.__getitem__)
         v2 = run_s13_m6_cuda_v2(p2, images.__getitem__, cuda_runtime=first)
         v3 = run_s13_m6_cuda_v3(p2, images.__getitem__, cuda_runtime=second)
+        np.testing.assert_array_equal(v2.visual_panorama, reference.visual_panorama)
         np.testing.assert_array_equal(v3.visual_panorama, v2.visual_panorama)
+        assert v2.performance["full_corrected_source_d2h_count"] == 0
+        assert v2.performance["compact_corrected_source_d2h_count"] == 2
+        assert v2.performance["corrected_pair_corridor_d2h_count"] == 0
+        assert v2.performance["final_linear_full_d2h_count"] == 0
         assert v3.performance["m6_v3_final_compose_mode"] == (
             "v2_cpu_authoritative_reference_fallback"
         )

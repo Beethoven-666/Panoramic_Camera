@@ -55,7 +55,8 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
                           "final_linear_full_d2h_count": result["m6_performance"].get("final_linear_full_d2h_count", 0)})
         for key in (
             "m6_full_source_map_count", "m6_roi_source_map_count",
-            "full_corrected_source_d2h_count", "corrected_pair_corridor_d2h_count",
+            "full_corrected_source_d2h_count", "compact_corrected_source_d2h_count",
+            "corrected_pair_corridor_d2h_count",
             "final_linear_full_d2h_count", "gain_bias_h2d_count",
         ):
             if key in result["m6_performance"]:

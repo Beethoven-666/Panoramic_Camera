@@ -315,11 +315,13 @@ def run_s13_m6_cuda_v2(
     force_owner_only_pair_indices: frozenset[int] = frozenset(),
     retain_runtime_details: bool = False,
 ) -> S13P3Result:
-    """M6 v2: compact device tiles compose the owner canvas before any D2H.
+    """M6 v2: CUDA-remap compact tiles, then compose by the P2 owner mask.
 
     Blend selection remains intentionally CPU-authoritative.  It receives only
     corrected replay corridors; no full corrected source image crosses the
-    device boundary.
+    device boundary.  Compact corrected tiles cross individually before owner
+    composition because the deferred multi-source device compose can corrupt
+    narrow owner intervals on real, long source sequences.
     """
 
     started = time.perf_counter()
@@ -340,34 +342,30 @@ def run_s13_m6_cuda_v2(
     rois = build_s13_m6_source_rois(p2, frame_ids)
     rois_by_source = {roi.source_index: roi for roi in rois}
     height, width = p2.valid_mask.shape
-    owner_device = cuda_runtime.new_linear_canvas(height, width)
-    corrected_device: dict[int, object] = {}
+    owner_linear = np.zeros((height, width, 3), dtype=np.float32)
+    corrected: dict[int, np.ndarray] = {}
     for parameter in solution.source_parameters:
         roi = rois_by_source[parameter.source_index]
-        corrected = cuda_runtime.remap_resident_frame_corrected_linear_device(
+        source = cuda_runtime.remap_resident_frame_corrected_linear(
             parameter.frame_id, raw_cache[parameter.frame_id], roi.map_u, roi.map_v,
             parameter.gain_bgr, parameter.bias_bgr, roi.mapped,
         )
-        corrected_device[parameter.source_index] = corrected
-        cuda_runtime.compose_linear_owner_roi(
-            owner_device, roi.x0, roi.x1, corrected, roi.owner_mask,
-        )
-    owner_linear = cuda_runtime.download_linear_canvas(owner_device)
+        corrected[parameter.source_index] = source
+        target = owner_linear[:, roi.x0:roi.x1]
+        target[roi.owner_mask] = source[roi.owner_mask]
     remap_seconds = time.perf_counter() - tick
     tick = time.perf_counter()
-    compact_requests: list[object] = []
-    compact_request_keys: list[tuple[int, int]] = []
-    for pair in p2.replay_pairs:
-        for slot, source_index in enumerate((pair.left_source_index, pair.right_source_index)):
-            source_roi = rois_by_source[source_index]
-            compact_requests.append(corrected_device[source_index][
-                :, pair.corridor_x0 - source_roi.x0:pair.corridor_x1 - source_roi.x0,
-            ])
-            compact_request_keys.append((pair.pair_index, slot))
-    compact_tiles = cuda_runtime.download_compact_tiles(compact_requests)
-    compact_parts = dict(zip(compact_request_keys, compact_tiles, strict=True))
     compact_pairs = {
-        pair.pair_index: (compact_parts[(pair.pair_index, 0)], compact_parts[(pair.pair_index, 1)])
+        pair.pair_index: (
+            corrected[pair.left_source_index][
+                :, pair.corridor_x0 - rois_by_source[pair.left_source_index].x0:
+                pair.corridor_x1 - rois_by_source[pair.left_source_index].x0,
+            ],
+            corrected[pair.right_source_index][
+                :, pair.corridor_x0 - rois_by_source[pair.right_source_index].x0:
+                pair.corridor_x1 - rois_by_source[pair.right_source_index].x0,
+            ],
+        )
         for pair in p2.replay_pairs
     }
 
@@ -411,8 +409,9 @@ def run_s13_m6_cuda_v2(
         "m6_full_source_map_count": 0,
         "m6_roi_source_map_count": len(rois),
         "full_corrected_source_d2h_count": 0,
-        "corrected_pair_corridor_d2h_count": len(compact_pairs) * 2,
-        "final_linear_full_d2h_count": 1,
+        "compact_corrected_source_d2h_count": len(solution.source_parameters),
+        "corrected_pair_corridor_d2h_count": 0,
+        "final_linear_full_d2h_count": 0,
         "gain_bias_h2d_count": len(solution.source_parameters) * 2,
         "fallback_rebuild_identity_owner_only": force_identity_owner_only,
     }
