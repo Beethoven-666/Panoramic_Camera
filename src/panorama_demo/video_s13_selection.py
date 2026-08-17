@@ -106,7 +106,12 @@ def select_s13_vertical_parent(
             global_metrics = []
             full_local_metrics = []
             for pair in base_solution.pairs:
-                x0, x1 = max(0, pair.boundary_x - 4), min(schedule.canvas_width, pair.boundary_x + 5)
+                # Sobel/Laplacian's nominal 3x3 support is not sufficient at
+                # the edge of a separately converted OpenCV ROI on every
+                # supported build.  Keep an eight-pixel global halo so the
+                # exact probe has the same feature neighbourhood as the full
+                # canvas without changing a metric or threshold.
+                x0, x1 = max(0, pair.boundary_x - 8), min(schedule.canvas_width, pair.boundary_x + 9)
                 seam = np.full(schedule.canvas_height, pair.boundary_x - x0, dtype=np.int32)
                 global_metrics.append(dict(seam_structure_metrics_from_exact_probe(
                     render_s13_p1_exact_probe(
@@ -120,10 +125,14 @@ def select_s13_vertical_parent(
                 )))
             global_metrics, full_local_metrics = tuple(global_metrics), tuple(full_local_metrics)
         else:
-            global_result = render_s13_p1_from_raw(schedule, calibration, image_loader, global_solution)
+            global_result = render_s13_p1_from_raw(
+                schedule, calibration, image_loader, global_solution,
+                reference_remap=reference_final_remap,
+            )
             global_metrics = _pair_metrics(global_result.image, schedule)
             full_local_image = render_s13_p1_local_patch_image(
-                schedule, calibration, image_loader, global_result, full_local_solution
+                schedule, calibration, image_loader, global_result, full_local_solution,
+                reference_remap=reference_final_remap,
             )
             full_local_metrics = _pair_metrics(full_local_image, schedule)
         accepted: list[bool] = []
@@ -146,7 +155,8 @@ def select_s13_vertical_parent(
             for before, after, accepted in zip(global_metrics, full_local_metrics, accepted, strict=True)
         ) if exact_seam_probes else _pair_metrics(
             render_s13_p1_local_patch_image(
-                schedule, calibration, image_loader, global_result, selected_solution
+                schedule, calibration, image_loader, global_result, selected_solution,
+                reference_remap=reference_final_remap,
             ), schedule,
         )
         rendered[gain] = (selected_solution, global_result, selected_metrics)
@@ -158,6 +168,7 @@ def select_s13_vertical_parent(
             "selection_domain": "exact_seam_probe" if exact_seam_probes else "full_panorama",
             "full_candidate_panorama_render_count": 0 if exact_seam_probes else 3,
             "probe_render_count": len(base_solution.pairs) * 2 if exact_seam_probes else 0,
+            **({} if exact_seam_probes else {"actual_full_resolution_render_compared": True}),
         })
 
     normalized_scores = _candidate_set_scores(p0_metrics, rendered)

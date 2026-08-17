@@ -336,7 +336,10 @@ def _sample_shoulder(
     u, v, valid = _target_map(
         calibration, center_x, left_x, right_x, displacement, undistortion_maps(calibration)
     )
-    sampled = accelerated_remap(image, u, v, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    # M4 measurements are a small, CPU-owned decision input.  OpenCV's
+    # fixed-point interpolation is the reference for its downstream rows;
+    # using a float CUDA remap here can change a discrete vertical decision.
+    sampled = cv2.remap(image, u, v, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
     gray = cv2.cvtColor(sampled, cv2.COLOR_BGR2GRAY)
     return gray, valid
 
@@ -708,6 +711,8 @@ def render_s13_p1_local_patch_image(
     image_loader: Callable[[int], np.ndarray],
     global_result: S13P1Result,
     solution: S13VerticalSolution,
+    *,
+    reference_remap: bool = False,
 ) -> np.ndarray:
     """Apply M4 local-row candidates over a rendered global-gain parent.
 
@@ -735,9 +740,14 @@ def render_s13_p1_local_patch_image(
         u, v, valid = _target_map(
             calibration, assignment.center_x, left, right, displacement, inverse_maps
         )
-        sampled = cv2.remap(
-            np.asarray(image_loader(assignment.frame_id)), u, v, cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        sampled = (
+            cv2.remap(
+                np.asarray(image_loader(assignment.frame_id)), u, v, cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+            ) if reference_remap else accelerated_remap(
+                np.asarray(image_loader(assignment.frame_id)), u, v, cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+            )
         )
         roi = output[:, left:right]
         roi[...] = 0
