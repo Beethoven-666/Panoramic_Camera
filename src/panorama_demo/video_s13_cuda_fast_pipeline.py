@@ -24,7 +24,8 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
                                m51_r2_config: object | None,
                                m6_cuda_v2: bool = False,
                                structural_equivalent_v3: bool = False,
-                               m62_equivalence: bool = False) -> dict[str, Any]:
+                               m62_equivalence: bool = False,
+                               m62_options: dict[str, object] | None = None) -> dict[str, Any]:
     reset_cuda_audit()
     runtime = S13CudaRuntime()
     try:
@@ -44,6 +45,7 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
             m6_cuda_v2=m6_cuda_v2,
             m6_cuda_v3=structural_equivalent_v3,
             m62_equivalence=m62_equivalence,
+            m62_options=m62_options,
         )
         for key, value in result["timings"].items():
             runtime.note_stage(str(key), float(value))

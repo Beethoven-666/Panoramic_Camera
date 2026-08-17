@@ -45,7 +45,7 @@ def execute_s13_m62_gpu_shadow(
             plan.corrected_rois[roi.source_index], corrected[roi.source_index], label="corrected_roi", maximum=1e-6)})
     owner = _compose_owner_only_roi(plan, corrected)
     expected_owner = _compose_owner_only_roi(plan, plan.corrected_rois)
-    canvas = owner.copy()
+    canvas_device = cuda_runtime.device_copy(owner)
     expected_canvas = expected_owner.copy()
     owner_report = compare_s13_m62_arrays(expected_owner, owner, label="owner_linear", maximum=1e-6)
     b1_reports: list[dict[str, Any]] = []
@@ -56,7 +56,7 @@ def execute_s13_m62_gpu_shadow(
         left, right = _pair_tiles(plan, corrected, pair)
         expected_left, expected_right = _pair_tiles(plan, plan.corrected_rois, pair)
         gpu_pair = cuda_runtime.apply_b1_secondary_weight_roi_device(
-            canvas_device=canvas, x0=pair.corridor_x0, x1=pair.corridor_x1,
+            canvas_device=canvas_device, x0=pair.corridor_x0, x1=pair.corridor_x1,
             left_device=left, right_device=right, primary_owner_right_mask=pair.primary_owner_right_mask,
             secondary_weight=blend_plan.secondary_weight,
             protected_mask=np.asarray(blend_plan.protected_mask, bool),
@@ -65,6 +65,7 @@ def execute_s13_m62_gpu_shadow(
         expected_canvas[:, pair.corridor_x0:pair.corridor_x1][active] = expected[active]
         b1_reports.append({"pair_index": pair.pair_index, "comparison": compare_s13_m62_arrays(
             expected[active], np.asarray(gpu_pair)[active], label="b1_pair_linear", maximum=1e-6)})
+    canvas = cuda_runtime.download_linear_canvas(canvas_device)
     final_linear_report = compare_s13_m62_arrays(expected_canvas, canvas,
         label="final_linear", maximum=1e-6)
     final_u8 = (
@@ -72,7 +73,9 @@ def execute_s13_m62_gpu_shadow(
         if hasattr(cuda_runtime, "encode_linear_srgb_shadow") else linear_to_srgb_bgr(canvas)
     )
     u8_report = compare_s13_m62_u8(cpu_reference.visual_panorama, final_u8)
-    return S13M62GpuShadowResult(build_s13_m62_equivalence_report(
+    report = build_s13_m62_equivalence_report(
         corrected_roi=corrected_reports, owner_linear=owner_report, b1_pairs=b1_reports,
-        final_linear=final_linear_report, final_u8=u8_report), canvas, final_u8)
+        final_linear=final_linear_report, final_u8=u8_report)
+    report["gpu_evaluated"] = True
+    return S13M62GpuShadowResult(report, canvas, final_u8)
 __all__ = ["S13M62GpuShadowResult", "execute_s13_m62_gpu_shadow"]

@@ -23,7 +23,8 @@ def _p2(tmp_path: Path) -> S13VerifiedP2:
         np.broadcast_to(np.arange(2, 10, dtype=np.float32), pair_shape).copy(),
         np.broadcast_to(np.arange(4, dtype=np.float32)[:, None], pair_shape).copy(), np.ones(pair_shape, bool),
         np.broadcast_to(np.arange(2, 10)[None, :] >= 6, pair_shape), 0, 0, "a" * 64)
-    return S13VerifiedP2(tmp_path, {"source_count": 2}, "b" * 64, np.full((*shape, 3), 80, np.uint8), valid,
+    p2_image = np.repeat(np.where(owner[..., None] == 0, 80, 90), 3, axis=2).astype(np.uint8)
+    return S13VerifiedP2(tmp_path, {"source_count": 2}, "b" * 64, p2_image, valid,
         {"owner_source_index": owner, "source_u": np.broadcast_to(np.arange(12, dtype=np.float32), shape).copy(),
          "source_v": np.broadcast_to(np.arange(4, dtype=np.float32)[:, None], shape).copy()}, ({},), (pair,), {})
 

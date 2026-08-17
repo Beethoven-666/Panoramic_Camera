@@ -24,6 +24,21 @@ def execute_s13_m62_cpu_reference(
 
     started = time.perf_counter()
     corrected = plan.corrected_rois
+    if (
+        plan.photometric_solution.model_family == "Q0_identity"
+        and all(item.transaction.model == "B0_owner_only" for item in plan.blend_plans)
+    ):
+        image = np.asarray(plan.p2_image).copy()
+        return S13P3Result(
+            photometric_owner_only=image.copy(), visual_panorama=image,
+            valid_mask=plan.valid_mask.copy(), pixel_provenance={},
+            photometric_solution=plan.photometric_solution, photometric_samples=plan.photometric_samples,
+            blend_plans=plan.blend_plans, protected_structure_mask=np.zeros(plan.valid_mask.shape, bool),
+            safe_blend_mask=np.zeros(plan.valid_mask.shape, bool), blend_weight_map=np.zeros(plan.valid_mask.shape, np.float32),
+            photometric_training_mask=np.asarray(plan.sample_masks["train"], bool),
+            photometric_heldout_mask=np.asarray(plan.sample_masks["heldout"], bool), diagnostic_quality={},
+            performance={"total_m6": time.perf_counter() - started, "published_pixel_authority": "cpu", "q0_b0_direct_p2": True},
+        )
     owner_linear = _compose_owner_only_roi(plan, corrected)
 
     def pair_provider(pair: object) -> tuple[np.ndarray, np.ndarray]:

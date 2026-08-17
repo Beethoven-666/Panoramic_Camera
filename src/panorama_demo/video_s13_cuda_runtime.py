@@ -461,7 +461,7 @@ class S13CudaRuntime:
                 raise ValueError("S1.3 M6.2 B1 protected mask shape does not match corridor")
             if np.any(active & protected):
                 raise ValueError("S1.3 M6.2 B1 protected pixels cannot be active")
-        canvas = self.device_copy(canvas_device)
+        canvas = canvas_device if isinstance(canvas_device, self.cp.ndarray) else self.device_copy(canvas_device)
         left_gpu, right_gpu = self.device_copy(left.astype(np.float32)), self.device_copy(right.astype(np.float32))
         owner_gpu, weight_gpu = self.device_copy(owner_right), self.device_copy(weight)
         with self.compute_stream:

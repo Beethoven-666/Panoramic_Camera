@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 import numpy as np
 
@@ -65,6 +65,7 @@ def run_s13_fast_pipeline(
     m6_cuda_v2: bool = False,
     m6_cuda_v3: bool = False,
     m62_equivalence: bool = False,
+    m62_options: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """Render P0--P3 once, keeping every parent and decision in memory."""
 
@@ -272,9 +273,22 @@ def run_s13_fast_pipeline(
         m62: dict[str, Any] | None = None
         if m62_equivalence:
             from .video_s13_m62_runner import run_s13_m62_cpu_authoritative
+            from .video_s13_blend import S13BlendConfig
+            from .video_s13_photometric import S13PhotometricConfig
+            options = dict(m62_options or {})
+            photometric_values = dict(options.get("photometric", {}))
+            blend_values = dict(options.get("blend", {}))
+            allowed_photo = set(S13PhotometricConfig.__dataclass_fields__)
+            allowed_blend = set(S13BlendConfig.__dataclass_fields__)
             p3_render, m62 = run_s13_m62_cpu_authoritative(
                 p2_runtime, image_loader, cuda_runtime=resident_runtime,
                 retain_runtime_details=False, force_owner_only_pair_indices=owner_only_pairs,
+                photometric_config=S13PhotometricConfig(**{
+                    key: value for key, value in photometric_values.items() if key in allowed_photo
+                }),
+                blend_config=S13BlendConfig(**{
+                    key: value for key, value in blend_values.items() if key in allowed_blend
+                }),
             )
         elif m6_cuda_v3:
             if p0_resident_device_remap is None or resident_runtime is None:

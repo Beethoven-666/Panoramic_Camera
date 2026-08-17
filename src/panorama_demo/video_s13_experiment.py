@@ -2891,6 +2891,11 @@ def run_s13_experiment(
             m51_r2_config=m51_r2_config,
             m6_cuda_v2=config.runtime_backend in {"cupy_cuda_resident_v2", "cupy_cuda_structural_equivalent_v3"},
             m62_equivalence=config.m62_equivalence,
+            m62_options={
+                "photometric": dict(config.component["photometric"]),
+                "blend": dict(config.component["blend"]),
+                "equivalence": dict(config.document.get("m62_equivalence", {})),
+            } if config.m62_equivalence else None,
         )
         if config.runtime_backend == "cupy_cuda_structural_equivalent_v3":
             runner_arguments["structural_equivalent_v3"] = True
@@ -2915,19 +2920,31 @@ def run_s13_experiment(
                 "schema": "gemini305-video-s13-processing-time/v1",
                 "run": {"candidate_id": configured_algorithm_id, "implementation_id": configured_implementation_id,
                         "session_path": str(session.root), "run_mode": "ignore_pose" if ignore_pose else "with_trajectory",
-                        "session_kind": "unknown", "warmup": False},
+                        "session_kind": (
+                            "unknown" if session.strict_video is None else session.strict_video.capture_mode
+                        ), "warmup": False},
                 "trajectory": {"mode": "ignore_pose" if ignore_pose else "trajectory_cache",
                                "pose_supported": bool(trajectory.audit.get("pose_supported")),
                                "direct_pose_count": int(trajectory.audit.get("direct_pose_count", 0)),
                                "complete_pose_coverage": bool(trajectory.audit.get("complete_pose_coverage")),
                                "layout_semantics": "visual_nonmetric" if ignore_pose else "pose_supported"},
-                "backend": {"requested": "cuda", "resolved": "cupy", "device_name": "",
+                "backend": {"requested": "cuda", "resolved": "cupy", "device_name": str(
+                    (fast.get("cuda_resident") or {}).get("device_name", "")
+                ),
                             "fallback_count": 0 if fast.get("m62", {}).get("gpu_equivalence", {}).get("fallback_reason") is None else 1},
                 "wall_seconds": {"m0_m3": float(timings.get("m0_m3", 0.0)), "m4": float(timings.get("m4", 0.0)),
                                  "m5": float(timings.get("m5", 0.0)), "c2e": float(timings.get("c2e.total", 0.0)),
                                  "m6": float(timings.get("m6", 0.0)), "png_writer_close": float(timings.get("writer.close_wait", 0.0)),
                                  "m62_report_write": 0.0, "total_before_processing_time_json_write": panorama_completion_wall_seconds},
-                "m6_wall_seconds": {},
+                "m6_wall_seconds": {
+                    "evidence_extract": float((fast.get("m6_performance") or {}).get("photometric_sample_extraction", 0.0)),
+                    "photometric_solve": float((fast.get("m6_performance") or {}).get("photometric_solve", 0.0)),
+                    "source_remap_correct": float((fast.get("m6_performance") or {}).get("full_resolution_remap", 0.0)),
+                    "owner_compose": float((fast.get("m6_performance") or {}).get("photometric_owner_compose", 0.0)),
+                    "blend_decision": float((fast.get("m6_performance") or {}).get("blend_candidate_analysis", 0.0)),
+                    "cpu_reference_blend": float((fast.get("m6_performance") or {}).get("total_m6", 0.0)),
+                    "gpu_b1_shadow": 0.0, "cpu_srgb": 0.0, "gpu_srgb_shadow": 0.0, "hard_audit": 0.0,
+                },
                 "artifacts": {"png_write_count": 4, "json_write_count": 2, "jpg_write_count": 0,
                               "npz_write_count": 0, "sha_call_count": 0, "m7_call_count": 0},
             })
@@ -2947,8 +2964,25 @@ def run_s13_experiment(
                     "B1_count": 0 if plan is None else sum(item.transaction.model == "B1_narrow_feather" for item in plan.blend_plans),
                     "B2_count": 0 if plan is None else sum(item.transaction.model == "B2_safe_masked_multiband" for item in plan.blend_plans),
                     "published_pixel_authority": "cpu"},
-                "gpu_equivalence": gpu_equivalence, "photometric": {}, "blend": {}, "safety": {}, "performance": dict(fast.get("m6_performance", {})),
-                "p3_relation_to_p2": {},
+                "gpu_equivalence": gpu_equivalence,
+                "photometric": {
+                    "model_family": "" if plan is None else plan.photometric_solution.model_family,
+                    "source_count": 0 if plan is None else len(plan.photometric_solution.source_parameters),
+                    "candidate_audits": [] if plan is None else list(plan.photometric_solution.candidate_audits),
+                },
+                "blend": {
+                    "models": [] if plan is None else [item.transaction.model for item in plan.blend_plans],
+                    "active_pair_count": 0 if plan is None else sum(bool((item.secondary_weight > 0).any()) for item in plan.blend_plans),
+                },
+                "safety": {
+                    "invalid_nonzero": int((fast["p3"].image[~fast["p3"].valid] != 0).sum()),
+                    "protected_active": 0 if plan is None else sum(int(((item.secondary_weight > 0) & item.protected_mask).sum()) for item in plan.blend_plans),
+                    "gpu_evaluated": bool(gpu_equivalence.get("gpu_evaluated", False)),
+                }, "performance": dict(fast.get("m6_performance", {})),
+                "p3_relation_to_p2": {
+                    "differing_pixel_count": int((fast["p3"].image != fast["p2"].image).any(axis=2).sum()),
+                    "max_abs_dn": int(abs(fast["p3"].image.astype(np.int16) - fast["p2"].image.astype(np.int16)).max(initial=0)),
+                },
             })
         return {
             "schema": REPORT_SCHEMA,
@@ -2963,7 +2997,7 @@ def run_s13_experiment(
             "c2e": {"automatic": True, "selected": fast["c2e"]},
             "cuda_resident": fast.get("cuda_resident"),
             "counts": {
-                key: fast[key] + (1 if key == "json_write_count" else 0)
+                key: fast[key] + (2 if key == "json_write_count" and config.m62_equivalence else 1 if key == "json_write_count" else 0)
                 for key in (
                     "png_write_count", "jpg_write_count", "json_write_count",
                     "npz_write_count", "sha_call_count", "m7_call_count",
