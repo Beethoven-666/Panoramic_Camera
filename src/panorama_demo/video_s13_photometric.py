@@ -536,7 +536,7 @@ def solve_s13_photometric(
     identity_components = list(range(source_count))
     candidate_values.append((
         "Q0_identity", np.ones((source_count, 3)), np.zeros((source_count, 3)),
-        identity_components, [0.0] * source_count, ["identity_candidate"] * source_count,
+        identity_components, [0.0] * source_count, [None] * source_count,
     ))
     if not force_identity:
         for model in ("Q1_scalar_luminance_gain", "Q2_rgb_diagonal_gain"):
@@ -557,19 +557,11 @@ def solve_s13_photometric(
             and np.all(gains >= config.minimum_gain) and np.all(gains <= config.maximum_gain)
             and np.all(np.abs(biases) <= config.maximum_absolute_bias_linear)
         )
-        # A component has no photometric evidence tying it to its neighbour.
-        # Correcting disconnected components independently creates a visible
-        # full-height exposure block at that unsupported boundary.  Q0 remains
-        # the only safe whole-canvas model unless every source participates in
-        # one evidence-connected solve without an identity fallback.
-        globally_connected = bool(
-            index == 0
-            or (
-                source_count > 0
-                and len(set(int(value) for value in components)) == 1
-                and all(reason is None for reason in fallback)
-            )
+        evidence_component_count = len(
+            _components(source_count, samples, config.minimum_pair_sample_count)
         )
+        evidence_graph_connected = bool(source_count > 0 and evidence_component_count == 1)
+        all_sources_parameterized = all(reason is None for reason in fallback)
         score = heldout.get("aggregate_median_linear") if heldout.get("evaluable") is True else None
         if index == 0 and isinstance(score, (float, int)):
             baseline_metrics = heldout
@@ -578,10 +570,15 @@ def solve_s13_photometric(
         if index > 0:
             if not hard_safe:
                 rejection_reasons.append("parameters_not_hard_safe")
-            if not globally_connected:
+            if not evidence_graph_connected:
                 rejection_reasons.append("disconnected_evidence_graph")
             if any(reason is not None for reason in fallback):
-                rejection_reasons.append("source_fallback")
+                rejection_reasons.extend((
+                    "source_parameter_fallback",
+                    "partial_identity_fallback_forbidden",
+                ))
+                if any("out_of_bounds" in str(reason) for reason in fallback):
+                    rejection_reasons.append("gain_out_of_bounds")
             if baseline_metrics is None:
                 rejection_reasons.append("identity_baseline_unevaluable")
             else:
@@ -600,7 +597,18 @@ def solve_s13_photometric(
             "gain_minimum": float(np.min(gains)), "gain_maximum": float(np.max(gains)),
             "maximum_absolute_bias_linear": float(np.max(np.abs(biases))),
             "identity_fallback_source_count": sum(reason is not None for reason in fallback),
-            "globally_connected": globally_connected,
+            "globally_connected": evidence_graph_connected,
+            "evidence_graph_connected": evidence_graph_connected,
+            "evidence_component_count": evidence_component_count,
+            "all_sources_parameterized": all_sources_parameterized,
+            "raw_fallback_source_count": sum(reason is not None for reason in fallback),
+            "out_of_bounds_source_count": sum(
+                "out_of_bounds" in str(reason) for reason in fallback if reason is not None
+            ),
+            "nonfinite_source_count": 0,
+            "partial_identity_fallback_detected": bool(
+                index > 0 and 0 < sum(reason is not None for reason in fallback) < source_count
+            ),
             "component_count": len(set(int(value) for value in components)),
             "fallback_source_count": sum(reason is not None for reason in fallback),
             "train_sample_count": int(train.get("sample_count", 0)),

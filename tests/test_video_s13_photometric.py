@@ -81,3 +81,7 @@ def test_out_of_bounds_candidate_does_not_remove_q0_fallback() -> None:
     )
     assert solution.model_family == "Q0_identity"
     assert solution.candidate_audits[0]["selected"] is True
+    for audit in solution.candidate_audits[1:]:
+        assert audit["evidence_graph_connected"] is True
+        assert "disconnected_evidence_graph" not in audit["rejection_reasons"]
+        assert "partial_identity_fallback_forbidden" in audit["rejection_reasons"]

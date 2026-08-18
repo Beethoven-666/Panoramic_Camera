@@ -23,12 +23,13 @@ from .video_s13_m5 import (
 )
 from .video_s13_m6 import run_s13_m6, run_s13_m6_cuda_v2, run_s13_m6_cuda_v3
 from .video_s13_motion import measure_s13_motion
+from .video_s13_frame_store import S13FrameStore
 from .video_s13_progress import build_s13_m3_layout
 from .video_s13_replay import S13VerifiedP2
 from .video_s13_runtime_state import S13RuntimeContext, S13Stage, S13StageResult
 from .video_s13_schedule import plan_s13_m3_schedule
 from .video_s13_selection import select_s13_vertical_parent
-from .video_s13_session import S13Session, read_s13_rgb
+from .video_s13_session import S13Session
 from .video_s13_stage_writer import S13StageImageWriter
 from .video_s13_trajectory import S13Trajectory
 from .video_s13_vertical import estimate_s13_vertical, render_s13_p1_from_raw
@@ -75,20 +76,30 @@ def run_s13_fast_pipeline(
     started = time.perf_counter()
     timings: dict[str, float] = {}
     frame_by_id = session.frame_by_id
-    decoded: dict[int, np.ndarray] = {}
+    frame_store = S13FrameStore()
 
     def image_loader(frame_id: int) -> np.ndarray:
-        image = decoded.get(frame_id)
-        if image is None:
-            image = read_s13_rgb(frame_by_id[frame_id])
-            decoded[frame_id] = image
-        return image
+        return frame_store.raw_bgr(frame_by_id[frame_id])
 
     runtime = S13RuntimeContext(uuid.uuid4().hex)
     writer = S13StageImageWriter(output, max_pending=4)
     try:
         tick = time.perf_counter()
-        motion = measure_s13_motion(session.frames, analysis_width_px=analysis_width_px)
+        prepared_analysis = frame_store.prefetch_analysis(
+            session.frames, analysis_width_px, workers=2
+        )
+        prepared_gradients = tuple(
+            frame_store.analysis_gradient(frame, analysis_width_px)
+            for frame in session.frames
+        )
+        motion = measure_s13_motion(
+            session.frames,
+            analysis_width_px=analysis_width_px,
+            prepared_analysis=prepared_analysis,
+            prepared_gradients=prepared_gradients,
+        )
+        del prepared_analysis, prepared_gradients
+        frame_store.release_analysis_arrays()
         layout = build_s13_m3_layout(session.frames, motion, trajectory)
         if not layout.progress.spatial:
             raise ValueError("S1.3 fast pipeline has no spatial scan segment")
@@ -140,7 +151,9 @@ def run_s13_fast_pipeline(
 
         tick = time.perf_counter()
         estimate_tick = time.perf_counter()
-        vertical = estimate_s13_vertical(schedule, session.calibration, image_loader)
+        vertical = estimate_s13_vertical(
+            schedule, session.calibration, image_loader, measurement_workers=2
+        )
         timings["m4.estimate"] = time.perf_counter() - estimate_tick
         selection_tick = time.perf_counter()
         vertical_selection = select_s13_vertical_parent(
@@ -285,6 +298,7 @@ def run_s13_fast_pipeline(
             from .video_s13_m62_runner import run_s13_m62_cpu_authoritative
             from .video_s13_blend import S13BlendConfig
             from .video_s13_photometric import S13PhotometricConfig
+            from .video_s13_m63_solver import S13M63Config
             options = dict(m62_options or {})
             photometric_values = dict(options.get("photometric", {}))
             photometric_values.update(dict(options.get("selection", {})))
@@ -303,6 +317,7 @@ def run_s13_fast_pipeline(
                 execution_mode=str(dict(options.get("execution", {})).get(
                     "mode", "parity_test"
                 )),
+                m63_config=S13M63Config.from_document(options.get("m63")),
             )
         elif m6_cuda_v3:
             if p0_resident_device_remap is None or resident_runtime is None:
@@ -364,7 +379,9 @@ def run_s13_fast_pipeline(
         },
         "c2e_full_provenance_copy_count": c2e_copy_count,
         "m6_performance": dict(p3_render.performance),
+        "m5_performance": dict(m5.performance),
         "m62": m62,
+        "frame_store": frame_store.report().__dict__,
     }
 
 

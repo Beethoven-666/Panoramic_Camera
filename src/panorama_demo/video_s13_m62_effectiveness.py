@@ -52,9 +52,21 @@ def _is_nonidentity_parameter(gain: Sequence[float], bias: Sequence[float]) -> b
 def normalize_s13_m62_b0_reason(reason: str | None) -> str:
     """Normalize implementation-specific B0 fallbacks into report categories."""
 
-    value = "" if reason is None else reason.strip().lower()
+    value = "invalid_corridor" if reason is None else reason.strip().lower()
+    canonical = {
+        "no_active_weight",
+        "insufficient_safe_fraction",
+        "no_immediate_benefit",
+        "photometric_residual_too_large",
+        "forced_owner_only",
+        "quality_cut",
+        "protected_structure",
+        "invalid_corridor",
+    }
+    if value in canonical:
+        return value
     if "unsupported" in value and "cut" in value:
-        return "unsupported_cut"
+        return "quality_cut"
     if "forced" in value or "owner_only" in value:
         return "forced_owner_only"
     if "protected" in value:
@@ -65,7 +77,7 @@ def normalize_s13_m62_b0_reason(reason: str | None) -> str:
         return "photometric_residual_too_large"
     if "safe" in value or "evidence" in value or "sample" in value:
         return "insufficient_safe_fraction"
-    return "unknown"
+    return "invalid_corridor"
 
 
 def _image_difference(p2_image: np.ndarray, p3_image: np.ndarray) -> dict[str, int | bool]:

@@ -14,6 +14,7 @@ from .video_s13_m62_gpu import execute_s13_m62_gpu_shadow
 from .video_s13_m62_plan import build_s13_m62_execution_plan
 from .video_s13_m62_reference import execute_s13_m62_cpu_reference
 from .video_s13_photometric import S13PhotometricConfig
+from .video_s13_m63_solver import S13M63Config
 from .video_s13_replay import S13VerifiedP2
 
 
@@ -33,6 +34,7 @@ def run_s13_m62(
     retain_runtime_details: bool = False,
     photometric_config: S13PhotometricConfig = S13PhotometricConfig(),
     blend_config: S13BlendConfig = S13BlendConfig(),
+    m63_config: S13M63Config = S13M63Config(),
 ) -> tuple[object, dict[str, Any]]:
     """Run exactly the work authorized by ``execution_mode``."""
 
@@ -44,6 +46,7 @@ def run_s13_m62(
         blend_config=blend_config,
         force_owner_only_pair_indices=force_owner_only_pair_indices,
         retain_runtime_details=retain_runtime_details,
+        m63_config=m63_config,
     )
     reference = execute_s13_m62_cpu_reference(
         plan, retain_runtime_details=retain_runtime_details
@@ -123,6 +126,7 @@ def run_s13_m62_cpu_authoritative(
     photometric_config: S13PhotometricConfig = S13PhotometricConfig(),
     blend_config: S13BlendConfig = S13BlendConfig(),
     execution_mode: S13M62ExecutionMode = "parity_test",
+    m63_config: S13M63Config = S13M63Config(),
 ) -> tuple[object, dict[str, Any]]:
     """Compatibility wrapper; callers should pass an explicit mode."""
     return run_s13_m62(
@@ -130,6 +134,7 @@ def run_s13_m62_cpu_authoritative(
         force_owner_only_pair_indices=force_owner_only_pair_indices,
         retain_runtime_details=retain_runtime_details,
         photometric_config=photometric_config, blend_config=blend_config,
+        m63_config=m63_config,
     )
 
 

@@ -216,18 +216,33 @@ def select_s13_blend_plans(
             elif feather_ok:
                 model, width, levels, weight = "B1_narrow_feather", feather_width, 0, feather
             else:
-                fallback = "no_safe_blend_candidate"
+                if residual is None:
+                    fallback = "invalid_corridor"
+                elif residual > config.maximum_safe_residual_for_feather:
+                    fallback = "photometric_residual_too_large"
+                elif safe_fraction < config.minimum_safe_fraction_for_feather:
+                    fallback = "insufficient_safe_fraction"
+                elif not np.any(feather > 0.0):
+                    fallback = (
+                        "protected_structure"
+                        if np.any(sample.common_mask & sample.protected_mask)
+                        else "no_active_weight"
+                    )
+                elif feather_benefit is None or feather_benefit < config.minimum_immediate_seam_benefit_linear:
+                    fallback = "no_immediate_benefit"
+                else:
+                    fallback = "no_active_weight"
         else:
             fallback = (
-                "unsupported_cut_forced_owner_only"
+                "quality_cut"
                 if pair.pair_index in unsupported_cut_pair_indices
-                else "forced_owner_only_rebuild"
+                else "forced_owner_only"
             )
         roi = np.s_[:, pair.corridor_x0:pair.corridor_x1]
         if np.any(used[roi] & (weight > 0.0)):
             model, width, levels = "B0_owner_only", 0, 0
             weight.fill(0.0)
-            fallback = "adjacent_blend_corridor_overlap"
+            fallback = "forced_owner_only"
         if np.any(weight[sample.protected_mask] != 0.0):
             raise RuntimeError("S1.3 protected structure reached a blend candidate")
         candidate_audits[0]["selected"] = model == "B0_owner_only"

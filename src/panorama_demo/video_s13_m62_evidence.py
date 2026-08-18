@@ -44,7 +44,7 @@ def _gradient(image: np.ndarray) -> np.ndarray:
 
 
 def _split_mask(safe: np.ndarray, x0: int, config: S13PhotometricConfig) -> np.ndarray:
-    flat = np.arange(safe.size, dtype=np.uint64)
+    flat = np.flatnonzero(safe).astype(np.uint64, copy=False)
     rows = flat // np.uint64(safe.shape[1])
     columns = flat % np.uint64(safe.shape[1]) + np.uint64(x0)
     with np.errstate(over="ignore"):
@@ -54,7 +54,9 @@ def _split_mask(safe: np.ndarray, x0: int, config: S13PhotometricConfig) -> np.n
             ^ np.uint64(config.deterministic_split_seed)
         )
     selected = (mixed % np.uint64(10000)) < int(round(config.train_fraction * 10000.0))
-    return safe & selected.reshape(safe.shape)
+    result = np.zeros(safe.size, dtype=bool)
+    result[flat.astype(np.intp, copy=False)] = selected
+    return result.reshape(safe.shape)
 
 
 def _robust_evidence(left: np.ndarray, right: np.ndarray, mask: np.ndarray) -> tuple[float | None, float | None]:

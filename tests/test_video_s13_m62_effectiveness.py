@@ -220,7 +220,7 @@ def test_b0_reasons_are_normalized_per_pair() -> None:
     }]
     assert normalize_s13_m62_b0_reason("global_protected_structure_overlap") == "protected_structure"
     assert normalize_s13_m62_b0_reason("residual_above_limit") == "photometric_residual_too_large"
-    assert normalize_s13_m62_b0_reason(None) == "unknown"
+    assert normalize_s13_m62_b0_reason(None) == "invalid_corridor"
 
 
 def test_invalid_image_contract_is_rejected() -> None:

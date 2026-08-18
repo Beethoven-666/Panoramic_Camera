@@ -21,6 +21,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--legacy-worktree", type=Path)
     parser.add_argument("--worker", choices=("old", "current"))
     parser.add_argument("--source-root", type=Path)
+    parser.add_argument("--current-config", type=Path)
     return parser
 
 
@@ -98,6 +99,14 @@ def _worker(args: argparse.Namespace) -> int:
         result = run_s13_m6(p2, image_loader)
     else:
         from panorama_demo.video_s13_m62_runner import run_s13_m62
+        from panorama_demo.video_s13_m63_solver import S13M63Config
+
+        m63_config = S13M63Config()
+        if args.current_config is not None:
+            import yaml
+
+            document = yaml.safe_load(args.current_config.read_text(encoding="utf-8"))
+            m63_config = S13M63Config.from_document(document.get("m63_photometric"))
 
         result, _details = run_s13_m62(
             p2,
@@ -106,6 +115,7 @@ def _worker(args: argparse.Namespace) -> int:
             force_owner_only_pair_indices=frozenset(
                 int(value) for value in manifest.get("force_owner_only_pair_indices", ())
             ),
+            m63_config=m63_config,
         )
     p3 = np.asarray(result.visual_panorama)
     difference = np.abs(p3.astype(np.int16) - image.astype(np.int16))
@@ -159,19 +169,22 @@ def _orchestrate(args: argparse.Namespace) -> int:
         environment = os.environ.copy()
         if engine == "old":
             environment["G305_CUDA"] = "off"
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--fixture",
+            str(fixture),
+            "--output",
+            str(output),
+            "--worker",
+            engine,
+            "--source-root",
+            str(source_root),
+        ]
+        if engine == "current" and args.current_config is not None:
+            command.extend(("--current-config", str(args.current_config.expanduser().resolve())))
         subprocess.run(
-            [
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "--fixture",
-                str(fixture),
-                "--output",
-                str(output),
-                "--worker",
-                engine,
-                "--source-root",
-                str(source_root),
-            ],
+            command,
             check=True,
             env=environment,
         )

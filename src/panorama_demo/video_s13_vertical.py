@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -459,27 +459,26 @@ def estimate_s13_vertical(
     *,
     shoulder_width_px: int = 96,
     gain_candidates: tuple[float, ...] = (0.0, 0.25, 0.5, 1.0),
+    measurement_workers: int = 1,
 ) -> S13VerticalSolution:
     camera_matrix(calibration)
     validate_s012_schedule(schedule)
     shoulder = int(np.clip(shoulder_width_px, 64, 128))
-    cache: OrderedDict[int, np.ndarray] = OrderedDict()
+    if measurement_workers not in (1, 2):
+        raise ValueError("S1.3 vertical measurement supports only 1 or 2 workers")
+    source_images = {
+        assignment.frame_id: np.asarray(image_loader(assignment.frame_id))
+        for assignment in schedule.assignments
+    }
 
     def load(frame_id: int) -> np.ndarray:
-        if frame_id not in cache:
-            cache[frame_id] = np.asarray(image_loader(frame_id))
-            while len(cache) > 3:
-                cache.popitem(last=False)
-        cache.move_to_end(frame_id)
-        return cache[frame_id]
+        return source_images[frame_id]
 
-    measurements: list[float] = []
-    responses: list[float] = []
-    sampled_pairs: list[tuple[np.ndarray, np.ndarray, np.ndarray, int, int]] = []
     half = shoulder // 2
-    for pair_index, (left_assignment, right_assignment) in enumerate(
-        zip(schedule.assignments[:-1], schedule.assignments[1:])
-    ):
+
+    def measure_pair(pair_index: int) -> tuple[float, float, np.ndarray, np.ndarray, np.ndarray, int, int]:
+        left_assignment = schedule.assignments[pair_index]
+        right_assignment = schedule.assignments[pair_index + 1]
         boundary = schedule.boundaries[pair_index + 1]
         left_x, right_x = max(0, boundary - half), min(schedule.canvas_width, boundary + half)
         left_gray, left_valid = _sample_shoulder(
@@ -492,9 +491,21 @@ def estimate_s13_vertical(
         correction, response = _phase_vertical(left_gray, right_gray, common)
         if response < 0.05:
             correction = 0.0
-        measurements.append(correction)
-        responses.append(response)
-        sampled_pairs.append((left_gray, right_gray, common, left_x, right_x))
+        return correction, response, left_gray, right_gray, common, left_x, right_x
+
+    pair_indices = tuple(range(len(schedule.assignments) - 1))
+    if measurement_workers == 1:
+        measured = tuple(measure_pair(pair_index) for pair_index in pair_indices)
+    else:
+        # Each measurement owns its remap/flow buffers.  Results are consumed
+        # in pair order so the solver and every discrete decision remain exact.
+        with ThreadPoolExecutor(
+            max_workers=measurement_workers, thread_name_prefix="s13-m4"
+        ) as pool:
+            measured = tuple(pool.map(measure_pair, pair_indices))
+    measurements = [item[0] for item in measured]
+    responses = [item[1] for item in measured]
+    sampled_pairs = [item[2:] for item in measured]
     observation = np.asarray(measurements, dtype=np.float64)
     weight = np.clip(np.asarray(responses, dtype=np.float64), 0.0, 1.0)
     local_evidence = tuple(
@@ -563,6 +574,7 @@ def estimate_s13_vertical(
             "measurement_source": "immutable_P0_target_grids",
             "gain_candidates": list(gain_candidates),
             "selected_gain": float(selected_gain),
+            "measurement_workers": measurement_workers,
             "missing_rows_are_zero": True,
             "maximum_local_residual_px": 2.0,
             "translation_rotation_affine_seam_photometric_blend_depth_mesh_enabled": False,

@@ -327,16 +327,29 @@ def _extract_hypotheses(
 
 
 def measure_s13_motion(
-    frames: Sequence[S13RenderFrame], *, analysis_width_px: int = 424, steps: Sequence[int] = (1, 2, 4)
+    frames: Sequence[S13RenderFrame], *, analysis_width_px: int = 424,
+    steps: Sequence[int] = (1, 2, 4),
+    prepared_analysis: Sequence[tuple[np.ndarray, float]] | None = None,
+    prepared_gradients: Sequence[np.ndarray] | None = None,
 ) -> tuple[S13MotionEdge, ...]:
-    analysis = [_analysis_gray(frame, analysis_width_px) for frame in frames]
+    analysis = (
+        list(prepared_analysis)
+        if prepared_analysis is not None
+        else [_analysis_gray(frame, analysis_width_px) for frame in frames]
+    )
+    if len(analysis) != len(frames):
+        raise ValueError("S1.3 prepared analysis count disagrees with frames")
     # Every source frame participates in up to three step hypotheses.  Feature
     # detection and Sobel are source properties, not pair properties; caching
     # them leaves each LK and phase invocation unchanged.
     points_by_index = [_grid_points(gray) for gray, _scale in analysis]
-    gradients_by_index = [
-        cv2.Sobel(gray, cv2.CV_32F, 1, 1, ksize=3) for gray, _scale in analysis
-    ]
+    gradients_by_index = (
+        list(prepared_gradients)
+        if prepared_gradients is not None
+        else [cv2.Sobel(gray, cv2.CV_32F, 1, 1, ksize=3) for gray, _scale in analysis]
+    )
+    if len(gradients_by_index) != len(frames):
+        raise ValueError("S1.3 prepared gradient count disagrees with frames")
     hanning_by_shape: dict[tuple[int, int], np.ndarray] = {}
     edges: list[S13MotionEdge] = []
     for step in steps:

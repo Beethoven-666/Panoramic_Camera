@@ -1226,6 +1226,7 @@ def estimate_s13_m5_transactions(
             unresolved_oblique_structure = False
             hard_safe_baseline: tuple[object, ...] | None = None
             horizontal_lag_baseline: tuple[float, tuple[object, ...]] | None = None
+            left_edge_features_cached = None
             for seam_rank, candidate in enumerate(ordered):
                 if selected_candidate is not None and not audit_all and not complete_reassessment:
                     evaluations.append({
@@ -1326,7 +1327,9 @@ def estimate_s13_m5_transactions(
                     if not horizontal_safe:
                         failures.append(str(horizontal_reason or "horizontal_structure_catastrophe"))
                     if successor.enabled and not failures:
-                        left_edge_features = prepare_seam_structure(left_image)
+                        if left_edge_features_cached is None:
+                            left_edge_features_cached = prepare_seam_structure(left_image)
+                        left_edge_features = left_edge_features_cached
                         final_edge_features = prepare_seam_structure(final_right)
                         if left_edge_features is None or final_edge_features is None:
                             raise ValueError("pair edge feature construction failed")

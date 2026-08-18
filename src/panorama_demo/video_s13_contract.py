@@ -52,6 +52,10 @@ S13_M62_EFFECTIVE_ALGORITHM_ID = (
 S13_M62_EFFECTIVE_IMPLEMENTATION_ID = (
     "s013_m62_effective_photometric_single_pass_cuda_v6"
 )
+S13_M63_ALGORITHM_ID = (
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_robust_photometric_v7"
+)
+S13_M63_IMPLEMENTATION_ID = "s013_m63_robust_centered_photometric_quality_cut_v7"
 
 _S13_COMPONENT_NAME = "s013_output_first_progressive_dense_central_slit"
 
@@ -72,6 +76,7 @@ class S13IdentityDescriptor:
     runtime_backend: str = "numpy_reference"
     m62_equivalence: bool = False
     m62_effective: bool = False
+    m63_robust: bool = False
 
 
 _S13_IDENTITY_CONTRACTS = {
@@ -107,6 +112,11 @@ _S13_IDENTITY_CONTRACTS = {
         M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
         True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3"),
         "cupy_cuda_m62_effective_v6", True, True,
+    ),
+    (S13_M63_ALGORITHM_ID, S13_M63_IMPLEMENTATION_ID): S13IdentityDescriptor(
+        M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
+        True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3"),
+        "cupy_cuda_m63_robust_v7", True, True, True,
     ),
     (S13_M51_R2_ALGORITHM_ID, S13_M51_R2_IMPLEMENTATION_ID): S13IdentityDescriptor(
         S13_M51_R2_CONTRACT_SCHEMA, S13_M51_R2_P2_COMPLETION_SCHEMA, True,
@@ -271,6 +281,37 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
             )
         ):
             raise ValueError("S1.3 effective M6.2 reporting contract is invalid")
+        if identity_contract.m63_robust:
+            m63 = _mapping(document.get("m63_photometric"), "M6.3 photometric")
+            if list(m63.get("candidates", ())) != [
+                "Q0_identity",
+                "Q1R_robust_centered_scalar_gain",
+                "Q4c_quality_cut_component_scalar_gain",
+                "QL_pair_tapered_scalar_gain",
+                "QT_global_tone_gain",
+            ]:
+                raise ValueError("S1.3 M6.3 candidate order is invalid")
+            if m63.get("q2_rgb_gain_enabled") is not False or m63.get("q3_gain_bias_enabled") is not False:
+                raise ValueError("S1.3 M6.3 forbids Q2/Q3 authority")
+            q1r = _mapping(m63.get("q1r"), "M6.3 Q1R")
+            if (
+                q1r.get("enabled") is not True
+                or q1r.get("huber_irls") is not True
+                or q1r.get("gauge") != "weighted_zero_mean_log_gain"
+                or q1r.get("source_level_fallback_forbidden") is not True
+                or float(q1r.get("minimum_gain", -1)) != 0.92
+                or float(q1r.get("maximum_gain", -1)) != 1.08
+            ):
+                raise ValueError("S1.3 M6.3 Q1R contract is invalid")
+            q4c = _mapping(m63.get("q4c"), "M6.3 Q4c")
+            if (
+                q4c.get("enabled") is not True
+                or q4c.get("component_atomic") is not True
+                or q4c.get("boundary_anchor_identity") is not True
+                or q4c.get("cut_blend_model") != "B0_owner_only"
+                or q4c.get("cut_guard_must_equal_p2") is not True
+            ):
+                raise ValueError("S1.3 M6.3 Q4c contract is invalid")
         m61_selection = _mapping(
             _mapping(document.get("m61_bootstrap"), "M6.1 bootstrap").get("selection"),
             "M6.1 selection",

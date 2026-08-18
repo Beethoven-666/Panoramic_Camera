@@ -2880,7 +2880,7 @@ def run_s13_experiment(
             raise ValueError("S1.3 fast pipeline does not support disk resume")
         if manual_c2e_forward_m7:
             raise ValueError("S1.3 fast pipeline has automatic C2E; M7 is unavailable")
-        if config.runtime_backend in {"cupy_cuda_resident", "cupy_cuda_resident_v2", "cupy_cuda_structural_equivalent_v3", "cupy_cuda_m62_cpu_equivalent_v5", "cupy_cuda_m62_effective_v6"}:
+        if config.runtime_backend in {"cupy_cuda_resident", "cupy_cuda_resident_v2", "cupy_cuda_structural_equivalent_v3", "cupy_cuda_m62_cpu_equivalent_v5", "cupy_cuda_m62_effective_v6", "cupy_cuda_m63_robust_v7"}:
             from .video_s13_cuda_fast_pipeline import run_s13_cuda_fast_pipeline
             runner = run_s13_cuda_fast_pipeline
         elif config.runtime_backend == "numpy_reference":
@@ -2907,6 +2907,7 @@ def run_s13_experiment(
                     **({"mode": m62_execution_mode} if m62_execution_mode is not None else {}),
                 },
                 "selection": dict(config.document.get("m61_bootstrap", {}).get("selection", {})),
+                "m63": dict(config.document.get("m63_photometric", {})),
             } if config.m62_equivalence else None,
             post_p2_fixture=post_p2_fixture,
         )
@@ -2958,6 +2959,8 @@ def run_s13_experiment(
                     "cpu_reference_blend": float((fast.get("m6_performance") or {}).get("total_m6", 0.0)),
                     "gpu_b1_shadow": 0.0, "cpu_srgb": 0.0, "gpu_srgb_shadow": 0.0, "hard_audit": 0.0,
                 },
+                "m5_performance": dict(fast.get("m5_performance") or {}),
+                "frame_store": dict(fast.get("frame_store") or {}),
                 "artifacts": {"png_write_count": 4, "json_write_count": 2, "jpg_write_count": 0,
                               "npz_write_count": 0, "sha_call_count": 0, "m7_call_count": 0},
                 "execution_mode": str((fast.get("m6_performance") or {}).get("execution_mode", "")),
@@ -2977,10 +2980,13 @@ def run_s13_experiment(
             if plan is None:
                 raise RuntimeError("S1.3 M6.2 run did not return a decision plan")
             from .video_s13_m62_report import build_s13_m62_report
+            report_performance = dict(fast.get("m6_performance", {}))
+            report_performance["m5"] = dict(fast.get("m5_performance") or {})
+            report_performance["frame_store"] = dict(fast.get("frame_store") or {})
             atomic_write_json(m62_report_path, build_s13_m62_report(
                 plan, p2_image=fast["p2"].image, p3_image=fast["p3"].image,
                 gpu_equivalence=gpu_equivalence,
-                performance=dict(fast.get("m6_performance", {})),
+                performance=report_performance,
             ))
             timing_document["wall_seconds"]["m62_report_write"] = time.perf_counter() - report_write_started
         atomic_write_json(timing_path, timing_document)
