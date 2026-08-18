@@ -684,6 +684,44 @@ def _sample_m5_base_pair(
     return left, pair.left_maps[2], right, pair.right_maps[2]
 
 
+def _sample_m5_right_candidate(
+    *,
+    schedule: S012Schedule,
+    calibration: CameraIntrinsics,
+    source_index: int,
+    x0: int,
+    x1: int,
+    global_vertical_offset: float,
+    candidate: S13AlignmentCandidate,
+    vertical_parent: S13VerticalSolution | None,
+    raw_image: np.ndarray,
+    base_maps: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    base_image: np.ndarray,
+    base_valid: np.ndarray,
+) -> tuple[
+    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    np.ndarray,
+    np.ndarray,
+    bool,
+]:
+    """Reuse the exact base sample for the explicitly map-neutral C0 model."""
+
+    if candidate.model == "C0_identity":
+        return base_maps, base_image, base_valid, True
+    maps = _map_crop(
+        schedule,
+        calibration,
+        source_index,
+        x0,
+        x1,
+        global_vertical_offset,
+        candidate,
+        vertical_parent=vertical_parent,
+    )
+    sampled, valid = _sample_crop(raw_image, maps)
+    return maps, sampled, valid, False
+
+
 def _pair_correspondences(
     left: np.ndarray,
     right: np.ndarray,
@@ -1197,13 +1235,21 @@ def estimate_s13_m5_transactions(
                 alignment_shoulder=(x0, x1),
                 vertical_accepted=bool(np.any(local_vertical != 0.0)),
             )
-            preliminary_maps = _map_crop(
-                schedule, calibration, pair_index + 1, x0, x1,
-                vertical.global_offsets_px[pair_index + 1], preliminary.selected,
-                vertical_parent=vertical_parent,
-            )
-            preliminary_right, preliminary_valid = _sample_crop(
-                raw(frame_ids[1]), preliminary_maps
+            _preliminary_maps, preliminary_right, preliminary_valid, _ = (
+                _sample_m5_right_candidate(
+                    schedule=schedule,
+                    calibration=calibration,
+                    source_index=pair_index + 1,
+                    x0=x0,
+                    x1=x1,
+                    global_vertical_offset=vertical.global_offsets_px[pair_index + 1],
+                    candidate=preliminary.selected,
+                    vertical_parent=vertical_parent,
+                    raw_image=raw(frame_ids[1]),
+                    base_maps=right_maps,
+                    base_image=right_image,
+                    base_valid=right_valid,
+                )
             )
             base_local = schedule.boundaries[pair_index + 1] - x0
             previous = schedule.boundaries[pair_index] - x0 if pair_index > 0 else None
@@ -1319,22 +1365,44 @@ def estimate_s13_m5_transactions(
                         failures.append("geometry_support_retention_insufficient")
                     if float(selected_map.audit.get("maximum_map_displacement_px", math.inf)) > 8.0:
                         failures.append("geometry_displacement_exceeded")
-                    final_maps = _map_crop(
-                        schedule, calibration, pair_index + 1, x0, x1,
-                        vertical.global_offsets_px[pair_index + 1], selected_map,
-                        vertical_parent=vertical_parent,
+                    _final_maps, final_right, final_valid, final_sample_cache_hit = (
+                        _sample_m5_right_candidate(
+                            schedule=schedule,
+                            calibration=calibration,
+                            source_index=pair_index + 1,
+                            x0=x0,
+                            x1=x1,
+                            global_vertical_offset=(
+                                vertical.global_offsets_px[pair_index + 1]
+                            ),
+                            candidate=selected_map,
+                            vertical_parent=vertical_parent,
+                            raw_image=raw(frame_ids[1]),
+                            base_maps=right_maps,
+                            base_image=right_image,
+                            base_valid=right_valid,
+                        )
                     )
-                    final_right, final_valid = _sample_crop(raw(frame_ids[1]), final_maps)
                     before_preview = _compose_pair_preview(left_image, right_image, seam_local)
-                    after_preview = _compose_pair_preview(left_image, final_right, seam_local)
+                    after_preview = (
+                        before_preview
+                        if final_sample_cache_hit
+                        else _compose_pair_preview(left_image, final_right, seam_local)
+                    )
                     before_features = prepare_seam_structure(before_preview)
-                    after_features = prepare_seam_structure(after_preview)
+                    after_features = (
+                        before_features
+                        if final_sample_cache_hit
+                        else prepare_seam_structure(after_preview)
+                    )
                     if before_features is None or after_features is None:
                         raise ValueError("pair preview feature construction failed")
                     before_metrics = seam_structure_metrics(before_features, seam_local)
                     after_metrics = seam_structure_metrics(after_features, seam_local)
                     before_horizontal = long_horizontal_structure_metrics(before_features, seam_local)
-                    after_horizontal = long_horizontal_structure_metrics(after_features, seam_local)
+                    after_horizontal = long_horizontal_structure_metrics(
+                        after_features, seam_local
+                    )
                     # Only catastrophic horizontal damage is a runtime gate.
                     horizontal_safe, horizontal_reason, horizontal_audit = (
                         long_horizontal_structure_catastrophe_guard(before_horizontal, after_horizontal)
@@ -2182,19 +2250,21 @@ def _ordinary_s13_sampled_source_provider(
     image_loader: Callable[[int], np.ndarray],
     vertical: S13VerticalSolution,
     pairs: Sequence[S13M5Pair],
-) -> S13SampledSourceProvider:
-    """Cache one immutable union-domain sample for both ordinary P2 renders."""
+) -> tuple[S13SourceMapProvider, S13SampledSourceProvider, np.ndarray]:
+    """Cache union maps/samples and the topology-independent support audit."""
 
     domains = plan_s13_m5_render_domains(schedule, pairs)
+    map_cache: dict[
+        int, tuple[int, int, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+    ] = {}
     cache: dict[int, tuple[int, int, np.ndarray, np.ndarray]] = {}
 
-    def provide(source_index: int, x0: int, x1: int):
-        cached = cache.get(source_index)
-        cache_miss = cached is None
+    def provide_maps(source_index: int, x0: int, x1: int):
+        cached = map_cache.get(source_index)
         if cached is None:
             domain = domains.get(source_index)
             if domain is None:
-                raise ValueError("ordinary sampled source cache authority is missing")
+                raise ValueError("ordinary source map cache authority is missing")
             ox0, ox1 = domain
             candidate = (
                 pairs[source_index - 1].alignment.selected
@@ -2206,6 +2276,23 @@ def _ordinary_s13_sampled_source_provider(
                 schedule, calibration, source_index, ox0, ox1,
                 vertical.global_offsets_px[source_index], candidate,
             )
+            cached = (ox0, ox1, maps)
+            map_cache[source_index] = cached
+        ox0, ox1, maps = cached
+        if x0 < ox0 or x1 > ox1 or x0 >= x1:
+            raise ValueError("ordinary source map request exceeds owner union")
+        local = np.s_[:, x0 - ox0:x1 - ox0]
+        return tuple(np.asarray(value)[local] for value in maps)
+
+    def provide(source_index: int, x0: int, x1: int):
+        cached = cache.get(source_index)
+        cache_miss = cached is None
+        if cached is None:
+            domain = domains.get(source_index)
+            if domain is None:
+                raise ValueError("ordinary sampled source cache authority is missing")
+            ox0, ox1 = domain
+            maps = provide_maps(source_index, ox0, ox1)
             assignment = schedule.assignments[source_index]
             source = np.asarray(image_loader(int(assignment.frame_id)))
             if source.shape != (
@@ -2225,7 +2312,48 @@ def _ordinary_s13_sampled_source_provider(
         local = np.s_[:, x0 - ox0:x1 - ox0]
         return sampled[local], valid[local], cache_miss
 
-    return provide
+    expected_support = np.zeros(
+        (schedule.canvas_height, schedule.canvas_width), dtype=bool
+    )
+    for source_index in range(len(schedule.assignments)):
+        assignment = schedule.assignments[source_index]
+        candidate = (
+            pairs[source_index - 1].alignment.selected
+            if source_index > 0 and pairs[source_index - 1].alignment is not None
+            else None
+        )
+        # Outside this calibrated-x interval cv.remap can only read the
+        # constant -1 border, so no source-valid support can exist.  Keep a
+        # ten-pixel halo: the hard gate permits an 8 px candidate displacement
+        # and cv.remap needs its interpolation margin.  This avoids building a
+        # mostly-invalid full-canvas map without excluding shifted support.
+        support_x0 = max(
+            0,
+            int(math.floor(float(assignment.center_x) - float(calibration.cx))) - 10,
+        )
+        support_x1 = min(
+            schedule.canvas_width,
+            int(
+                math.ceil(
+                    float(assignment.center_x)
+                    - float(calibration.cx)
+                    + float(calibration.width)
+                )
+            )
+            + 10,
+        )
+        support = _map_crop(
+            schedule,
+            calibration,
+            source_index,
+            support_x0,
+            support_x1,
+            vertical.global_offsets_px[source_index],
+            candidate,
+        )[2]
+        expected_support[:, support_x0:support_x1] |= support
+    expected_support.flags.writeable = False
+    return provide_maps, provide, expected_support
 
 
 def render_s13_p2_from_raw(
@@ -2239,7 +2367,9 @@ def render_s13_p2_from_raw(
     selected_hypothesis_ids: tuple[int, ...] | None = None,
     placement_methods: tuple[str, ...] | None = None,
     map_provider: S13SourceMapProvider | None = None,
+    base_map_provider: S13SourceMapProvider | None = None,
     expected_support_provider: S13SourceMapProvider | None = None,
+    expected_support_mask: np.ndarray | None = None,
     sampled_source_provider: S13SampledSourceProvider | None = None,
     image_composer: Callable[[tuple[int, ...], np.ndarray, dict[str, np.ndarray]], np.ndarray] | None = None,
 ) -> S13P2Result:
@@ -2266,31 +2396,40 @@ def render_s13_p2_from_raw(
     component_field = np.full((height, width), -1, dtype=np.int32)
     decoded: list[int] = []
     actual_remap_invocations = 0
-    expected_support = np.zeros((height, width), dtype=bool)
+    if expected_support_mask is None:
+        expected_support = np.zeros((height, width), dtype=bool)
+    else:
+        expected_support = np.asarray(expected_support_mask, dtype=bool)
+        if expected_support.shape != (height, width):
+            raise ValueError("S1.3 M5 expected support cache shape changed")
+        expected_support = expected_support.copy()
     for source_index, assignment in enumerate(schedule.assignments):
         candidate = None
         if source_index > 0 and pairs[source_index - 1].alignment is not None:
             candidate = pairs[source_index - 1].alignment.selected
-        support_provider = expected_support_provider or map_provider
-        if support_provider is None:
-            expected_maps = _map_crop(
-                schedule, calibration, source_index, 0, width,
-                vertical.global_offsets_px[source_index], candidate,
-            )
-        else:
-            expected_maps = support_provider(source_index, 0, width)[:3]
-        expected_support |= expected_maps[2]
+        if expected_support_mask is None:
+            support_provider = expected_support_provider or map_provider
+            if support_provider is None:
+                expected_maps = _map_crop(
+                    schedule, calibration, source_index, 0, width,
+                    vertical.global_offsets_px[source_index], candidate,
+                )
+            else:
+                expected_maps = support_provider(source_index, 0, width)[:3]
+            expected_support |= expected_maps[2]
         mask = owner_index == source_index
         if not np.any(mask):
             continue
         columns = np.flatnonzero(np.any(mask, axis=0))
         x0, x1 = int(columns[0]), int(columns[-1]) + 1
-        if map_provider is None:
+        if map_provider is None and base_map_provider is None:
             base_maps = _map_crop(
                 schedule, calibration, source_index, x0, x1,
                 vertical.global_offsets_px[source_index], candidate,
             )
             maps = base_maps
+        elif map_provider is None:
+            maps = base_map_provider(source_index, x0, x1)
         else:
             maps = map_provider(source_index, x0, x1)
         decoded.append(assignment.frame_id)
@@ -3667,19 +3806,27 @@ def run_s13_m5(
         p2_full_resolution_render_count += 2
     else:
         source_map_oracles = []
-        ordinary_sampled_source = _ordinary_s13_sampled_source_provider(
+        (
+            ordinary_map_provider,
+            ordinary_sampled_source,
+            ordinary_expected_support,
+        ) = _ordinary_s13_sampled_source_provider(
             schedule, calibration, cached_image_loader, vertical, pairs
         )
         geometry = render_s13_p2_from_raw(
             schedule, calibration, cached_image_loader, vertical, pairs,
             final_seams=False, selected_hypothesis_ids=selected_hypothesis_ids,
             placement_methods=placement_methods,
+            base_map_provider=ordinary_map_provider,
+            expected_support_mask=ordinary_expected_support,
             sampled_source_provider=ordinary_sampled_source,
         )
         final = render_s13_p2_from_raw(
             schedule, calibration, cached_image_loader, vertical, pairs,
             final_seams=True, selected_hypothesis_ids=selected_hypothesis_ids,
             placement_methods=placement_methods,
+            base_map_provider=ordinary_map_provider,
+            expected_support_mask=ordinary_expected_support,
             sampled_source_provider=ordinary_sampled_source,
             image_composer=final_image_composer,
         )

@@ -586,6 +586,9 @@ def test_ordinary_p2_sample_cache_is_exact_for_both_owner_topologies() -> None:
     ):
         assert np.array_equal(actual.image, expected.image)
         assert np.array_equal(actual.valid_mask, expected.valid_mask)
+        assert np.array_equal(
+            actual.expected_support_mask, expected.expected_support_mask
+        )
         assert set(actual.pixel_provenance) == set(expected.pixel_provenance)
         for name, value in actual.pixel_provenance.items():
             reference = expected.pixel_provenance[name]
@@ -837,6 +840,159 @@ def test_r4_pre_render_estimation_freezes_oracle_domain_and_evidence_context(
     planned = plan_s13_m5_oracle_domains(schedule, result.pairs, fake_registry)
     assert planned[1][0] <= 70
     assert planned[1][1] >= 75
+
+
+def test_c0_pair_geometry_cache_is_byte_and_provenance_exact(monkeypatch) -> None:
+    import panorama_demo.video_s13_m5 as m5_module
+
+    calibration, schedule, images, vertical = _m5_inputs()
+    parent = render_s13_p1_from_raw(
+        schedule, calibration, images.__getitem__, vertical
+    ).image
+    original_reestimate = m5_module.reestimate_s13_final_corridor_alignment
+
+    def select_c0(*args, **kwargs):
+        alignment = original_reestimate(*args, **kwargs)
+        c0_index = next(
+            index
+            for index, candidate in enumerate(alignment.candidates)
+            if candidate.model == "C0_identity"
+        )
+        return m5_module.replace(
+            alignment,
+            selected_model="C0_identity",
+            selected_candidate_index=c0_index,
+        )
+
+    monkeypatch.setattr(
+        m5_module, "reestimate_s13_final_corridor_alignment", select_c0
+    )
+    original_sample_candidate = m5_module._sample_m5_right_candidate
+    cache_hits: list[bool] = []
+
+    def recording_sample_candidate(**kwargs):
+        result = original_sample_candidate(**kwargs)
+        cache_hits.append(result[3])
+        return result
+
+    monkeypatch.setattr(
+        m5_module, "_sample_m5_right_candidate", recording_sample_candidate
+    )
+    cached = run_s13_m5(
+        schedule,
+        calibration,
+        images.__getitem__,
+        vertical,
+        parent,
+        parent_stage_sha256="9" * 64,
+    )
+    assert any(cache_hits)
+
+    def uncached_right_candidate(**kwargs):
+        maps = m5_module._map_crop(
+            kwargs["schedule"],
+            kwargs["calibration"],
+            kwargs["source_index"],
+            kwargs["x0"],
+            kwargs["x1"],
+            kwargs["global_vertical_offset"],
+            kwargs["candidate"],
+            vertical_parent=kwargs["vertical_parent"],
+        )
+        sampled, valid = m5_module._sample_crop(kwargs["raw_image"], maps)
+        return maps, sampled, valid, False
+
+    monkeypatch.setattr(
+        m5_module, "_sample_m5_right_candidate", uncached_right_candidate
+    )
+    uncached = run_s13_m5(
+        schedule,
+        calibration,
+        images.__getitem__,
+        vertical,
+        parent,
+        parent_stage_sha256="9" * 64,
+    )
+
+    assert [pair.transaction for pair in cached.pairs] == [
+        pair.transaction for pair in uncached.pairs
+    ]
+    for actual, expected in (
+        (cached.geometry_result, uncached.geometry_result),
+        (cached.final_result, uncached.final_result),
+    ):
+        assert np.array_equal(actual.image, expected.image)
+        assert np.array_equal(actual.valid_mask, expected.valid_mask)
+        assert set(actual.pixel_provenance) == set(expected.pixel_provenance)
+        for name, value in actual.pixel_provenance.items():
+            reference = expected.pixel_provenance[name]
+            assert np.array_equal(
+                value,
+                reference,
+                equal_nan=np.issubdtype(value.dtype, np.floating),
+            )
+
+
+@pytest.mark.parametrize("delta_u", (-8.0, 8.0))
+def test_expected_support_crop_covers_maximum_candidate_displacement(
+    delta_u: float,
+) -> None:
+    import panorama_demo.video_s13_m5 as m5_module
+
+    calibration, schedule, images, vertical = _m5_inputs()
+    pairs = list(
+        estimate_s13_m5_transactions(
+            schedule,
+            calibration,
+            images.__getitem__,
+            vertical,
+            parent_stage_sha256="a" * 64,
+        )
+    )
+    alignment = _alignment()
+    selected_index = alignment.selected_candidate_index
+    shape = (schedule.canvas_height, schedule.canvas_width)
+    shifted = m5_module.replace(
+        alignment.selected,
+        x0=0,
+        x1=schedule.canvas_width,
+        target_delta_u=np.full(shape, delta_u, dtype=np.float32),
+        target_delta_v=np.zeros(shape, dtype=np.float32),
+        source_u=np.zeros(shape, dtype=np.float32),
+        source_v=np.zeros(shape, dtype=np.float32),
+        valid=np.ones(shape, dtype=bool),
+    )
+    candidates = list(alignment.candidates)
+    candidates[selected_index] = shifted
+    pairs[0] = m5_module.replace(
+        pairs[0], alignment=m5_module.replace(alignment, candidates=tuple(candidates))
+    )
+    pairs_tuple = tuple(pairs)
+
+    _map_provider, _sample_provider, cropped = (
+        m5_module._ordinary_s13_sampled_source_provider(
+            schedule, calibration, images.__getitem__, vertical, pairs_tuple
+        )
+    )
+    full = np.zeros_like(cropped)
+    for source_index in range(len(schedule.assignments)):
+        candidate = (
+            pairs_tuple[source_index - 1].alignment.selected
+            if source_index > 0
+            and pairs_tuple[source_index - 1].alignment is not None
+            else None
+        )
+        full |= m5_module._map_crop(
+            schedule,
+            calibration,
+            source_index,
+            0,
+            schedule.canvas_width,
+            vertical.global_offsets_px[source_index],
+            candidate,
+        )[2]
+
+    assert np.array_equal(cropped, full)
 
 
 def test_r4_continues_to_zero_lag_seam_for_supported_horizontal_structure(
