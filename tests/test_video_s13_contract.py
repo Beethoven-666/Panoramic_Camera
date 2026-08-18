@@ -12,6 +12,8 @@ from panorama_demo.video_s13_contract import (
     S13_ALGORITHM_ID,
     S13_FORMAL_M6_ALGORITHM_ID,
     S13_FORMAL_M6_IMPLEMENTATION_ID,
+    S13_M62_EFFECTIVE_ALGORITHM_ID,
+    S13_M62_EFFECTIVE_IMPLEMENTATION_ID,
     claims_s13_document,
     is_s13_identity,
     load_s13_config,
@@ -26,6 +28,7 @@ FORMAL_M6_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progr
 CUDA_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v1.yaml"
 CUDA_V2_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v2.yaml"
 CUDA_V3_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_structural_equivalent_v3.yaml"
+M62_EFFECTIVE_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_m62_effective_v6.yaml"
 
 
 def test_s13_config_and_sibling_manifest_are_isolated_and_hash_bound() -> None:
@@ -87,6 +90,92 @@ def test_cuda_v3_isolated_structural_equivalence_identity_is_hash_bound() -> Non
     assert config.runtime_backend == "cupy_cuda_structural_equivalent_v3"
     assert spec.algorithm_id.endswith("structural_equivalent_v3")
     assert config.document["cuda_structural_equivalence"]["probes"]["ambiguous_action"] == "full_reference_fallback"
+
+
+def test_m62_effective_successor_has_single_pass_identity_and_safe_component_model() -> None:
+    config = load_s13_config(M62_EFFECTIVE_CONFIG)
+    spec = build_algorithm_spec(M62_EFFECTIVE_CONFIG, expected_role="candidate")
+    component = config.component
+
+    assert spec.algorithm_id == S13_M62_EFFECTIVE_ALGORITHM_ID
+    assert spec.implementation_id == S13_M62_EFFECTIVE_IMPLEMENTATION_ID
+    assert config.runtime_backend == "cupy_cuda_m62_effective_v6"
+    assert config.m62_effective is True
+    assert config.document["m62_execution"]["mode"] == "candidate_single_pass"
+    assert config.document["m62_execution"]["available_modes"] == [
+        "reference",
+        "shadow_audit",
+        "candidate_single_pass",
+        "parity_test",
+    ]
+    assert component["photometric_evidence"]["tier_b"]["blend_eligible"] is False
+    assert component["photometric_evidence"]["bridge"]["photometric_relation_only"] is True
+    assert component["photometric_component_model"]["model"] == (
+        "Q4c_component_boundary_anchored_scalar_gain"
+    )
+    assert component["photometric_component_model"]["authority"] == "shadow"
+    assert component["repair"]["q4_enabled"] is False
+    assert component["output"]["write_production_delivery"] is False
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        (("m62_execution", "mode"), "parity_test", "execution"),
+        (("m62_execution", "gpu_shadow_every_run"), True, "execution"),
+        (
+            (
+                "m61_bootstrap",
+                "selection",
+                "minimum_actionable_macro_p95_benefit_fraction",
+            ),
+            0.0,
+            "quality selection",
+        ),
+        (
+            (
+                "components",
+                "s013_output_first_progressive_dense_central_slit",
+                "photometric_evidence",
+                "tier_b",
+                "blend_eligible",
+            ),
+            True,
+            "evidence",
+        ),
+        (
+            (
+                "components",
+                "s013_output_first_progressive_dense_central_slit",
+                "photometric_component_model",
+                "model",
+            ),
+            "Q4_repair",
+            "component model",
+        ),
+        (
+            (
+                "components",
+                "s013_output_first_progressive_dense_central_slit",
+                "repair",
+                "q4_enabled",
+            ),
+            True,
+            "repair",
+        ),
+    ],
+)
+def test_m62_effective_contract_rejects_execution_or_q4_scope_drift(
+    path: tuple[str, ...], value: object, message: str
+) -> None:
+    document = yaml.safe_load(M62_EFFECTIVE_CONFIG.read_text(encoding="utf-8"))
+    target = document
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    with pytest.raises(ValueError, match=message):
+        validate_s13_document(document, path=M62_EFFECTIVE_CONFIG)
 
 
 def test_malformed_formal_m6_claim_is_recognized_and_rejected() -> None:

@@ -10,7 +10,9 @@ import numpy as np
 from .video_s13_blend import apply_s13_blend_plan
 from .video_s13_m62_equivalence import compare_s13_m62_arrays, compare_s13_m62_u8, build_s13_m62_equivalence_report
 from .video_s13_m62_plan import S13M62ExecutionPlan
-from .video_s13_m62_reference import _compose_owner_only_roi, _pair_tiles
+from .video_s13_m62_reference import (
+    _compose_owner_only_roi, _pair_tiles, build_s13_m62_cpu_corrected_rois,
+)
 from .video_s13_photometric import linear_to_srgb_bgr
 
 
@@ -31,20 +33,30 @@ def execute_s13_m62_gpu_shadow(
             build_s13_m62_equivalence_report(corrected_roi=[], owner_linear={"passed": False, "max_abs": None},
                 b1_pairs=[], final_linear={"passed": False, "max_abs": None},
                 final_u8={"authority_gate_passed": False}, fallback_reason="cuda_runtime_unavailable"), None, None)
+    if plan.q0_b0_direct_return:
+        final_u8 = np.asarray(plan.p2_image).copy()
+        exact = compare_s13_m62_u8(cpu_reference.visual_panorama, final_u8)
+        report = build_s13_m62_equivalence_report(
+            corrected_roi=[], owner_linear={"passed": True, "max_abs": 0.0},
+            b1_pairs=[], final_linear={"passed": True, "max_abs": 0.0}, final_u8=exact,
+        )
+        report.update({"gpu_evaluated": True, "b0_noop": True})
+        return S13M62GpuShadowResult(report, None, final_u8)
+    cpu_corrected = build_s13_m62_cpu_corrected_rois(plan)
     # The reference is publication authority; CUDA performs the same frozen
     # corrected ROI operations and is compared before it can reach B1.
     corrected: dict[int, np.ndarray] = {}
     corrected_reports: list[dict[str, Any]] = []
     for parameter, roi in zip(plan.photometric_solution.source_parameters, plan.source_rois, strict=True):
         gpu_roi = cuda_runtime.remap_resident_frame_corrected_linear(
-            parameter.frame_id, plan.raw_by_frame[parameter.frame_id], roi.map_u, roi.map_v,
+            parameter.frame_id, plan.image_loader(parameter.frame_id), roi.map_u, roi.map_v,
             parameter.gain_bgr, parameter.bias_bgr, roi.mapped,
         )
         corrected[roi.source_index] = np.asarray(gpu_roi, np.float32)
         corrected_reports.append({"source_index": roi.source_index, "comparison": compare_s13_m62_arrays(
-            plan.corrected_rois[roi.source_index], corrected[roi.source_index], label="corrected_roi", maximum=1e-6)})
+            cpu_corrected[roi.source_index], corrected[roi.source_index], label="corrected_roi", maximum=1e-6)})
     owner = _compose_owner_only_roi(plan, corrected)
-    expected_owner = _compose_owner_only_roi(plan, plan.corrected_rois)
+    expected_owner = _compose_owner_only_roi(plan, cpu_corrected)
     canvas_device = cuda_runtime.device_copy(owner)
     expected_canvas = expected_owner.copy()
     owner_report = compare_s13_m62_arrays(expected_owner, owner, label="owner_linear", maximum=1e-6)
@@ -54,7 +66,7 @@ def execute_s13_m62_gpu_shadow(
         if not np.any(active):
             continue
         left, right = _pair_tiles(plan, corrected, pair)
-        expected_left, expected_right = _pair_tiles(plan, plan.corrected_rois, pair)
+        expected_left, expected_right = _pair_tiles(plan, cpu_corrected, pair)
         gpu_pair = cuda_runtime.apply_b1_secondary_weight_roi_device(
             canvas_device=canvas_device, x0=pair.corridor_x0, x1=pair.corridor_x1,
             left_device=left, right_device=right, primary_owner_right_mask=pair.primary_owner_right_mask,

@@ -1,0 +1,81 @@
+config_schema: gemini305-video-candidate/v1
+role: candidate
+candidate_id: S013_output_first_progressive_dense_central_slit_v4_cuda_m62_effective_v6
+parent_candidate_id: S013_output_first_progressive_dense_central_slit_v4_cuda_m62_cpu_equivalent_v5
+algorithm_id: S013_output_first_progressive_dense_central_slit_v4_cuda_m62_effective_v6
+implementation_id: s013_m62_effective_photometric_single_pass_cuda_v6
+allow_baseline_fallback: false
+changed_components: [s013_output_first_progressive_dense_central_slit]
+required_evidence_components: [real_rgb_sources, rgb_motion_telemetry, s013_m61_threshold_approval]
+required_output_components: [s013_m61_p3]
+replaces_output_components: []
+model_sha256: {}
+config_sha256: 4e70f59ce4c977b59888b0c28391ef9dbb9bc6e28b19cb24d5bb35946ecb5462
+
+components:
+  s013_output_first_progressive_dense_central_slit:
+    contract_schema: gemini305-video-s13-output-first/v4
+    diagnostic_only: true
+    production_eligible: false
+    production_lock_eligible: false
+    runtime_backend: cupy_cuda_m62_effective_v6
+    truth: {require_real_rgb_source: true, allow_raw_rgb_fallback: true, allow_interpolated_pose: false, allow_extrapolated_pose: false, allow_virtual_rgb_source: false, allow_foreign_fill: false, allow_synthetic_color_fill: false}
+    depth_assist: {enabled: false, scope: pair_risk_only, allow_color_generation: false, allow_pose_replacement: false, allow_global_layout: false, allow_mesh_in_v3_mvp: false}
+    motion: {analysis_width_px: 424, adjacent_steps: [1], skip_steps: [2, 4], maximum_motion_hypotheses_per_edge: 3, use_grid_lk: true, use_phase_correlation: true, dis_policy: risky_pairs_only, fixed_kmeans_forbidden: true, direct_local_delta_used_as_gate: false}
+    progress: {coherent_lineage_dp: true, use_pose_as_soft_prior_only: true, allow_rgb_motion_without_pose: true, fallback_order: [coherent_rgb_motion, phase_correlation, rgb_calibrated_pose_trend, local_median, session_median, zero_duplicate, normalized_pose, temporal_order]}
+    schedule: {normal_target_advance_px: 8, risky_target_advance_px: 5, base_owner_policy: fixed_midpoint, preserve_first_last_outer_fov: true, maximum_internal_source_u_span_fraction: 0.20, overwide_gap_policy: real_source_rescue_then_scale_then_panel, permit_owner_expansion_on_failure: false}
+    base: {publish_before_optimization: true, transition_width_px: 0, color_gain_enabled: false, local_warp_enabled: false, blend_enabled: false, atomic_publish: true}
+    vertical: {global_scalar_dy_enabled: true, global_gain_candidates: [0.0, 0.25, 0.5, 1.0], pair_local_row_residual_enabled: true, pair_independent: true, nonoverlapping_application_bands: true, missing_rows_zero: true}
+    geometry: {models: [identity, vertical, translation, tiny_rotation, light_affine], alignment_shoulder_width_px: [64, 128], continuous_support_taper: true, require_positive_jacobian_to_apply: true, bounded_mesh_enabled: false}
+    seam: {models: [midpoint_straight, shifted_straight, monotone_dp], graphcut_enabled: false, maximum_shift_px: 8, require_non_crossing_seams: true, final_seam_requires_final_corridor_geometry: true, failure_policy: restore_parent_owner}
+    forward_pipeline: {stage_order: [P0, P1, P2, P3], default_stop_after: P3, allow_resume_from_sealed_stage: false, forbid_parent_reselection: true, current_preview_runtime_authority: false}
+    p2_replay: {enabled: false, completion_schema: null, maximum_secondary_corridor_width_px: 8, require_transaction_hash_match: false}
+    photometric: {enabled: true, color_domain: linear_srgb, model_candidates: [identity, scalar_luminance_gain, rgb_diagonal_gain, bounded_rgb_gain_bias], safe_background_only: true, train_heldout_split: true, train_fraction: 0.75, deterministic_split_seed: 20260804, minimum_pair_sample_count: 128, maximum_samples_per_pair: 8192, minimum_gain: 0.80, maximum_gain: 1.25, maximum_absolute_bias_linear: 0.03, low_frequency_luminance_field: false, low_frequency_field_zero_candidate: true, failure_policy: identity}
+    photometric_evidence:
+      tier_a: {enabled: true, uses: [solve, blend, heldout], minimum_train_samples: 128, safe_background_only: true, exclude_protected: true, exclude_strong_edges: true, exclude_high_color_residual: true, exclude_geometry_inconsistent: true}
+      tier_b: {enabled: true, uses: [solve], blend_eligible: false, minimum_combined_train_samples: 192, allow_low_to_medium_texture: true, require_low_motion: true, require_geometry_consistent: true, require_unsaturated: true, require_stable_residual: true, exclude_protected: true, exclude_strong_contours: true, exclude_high_residual: true}
+      bridge: {enabled: true, source_index_gap: 2, minimum_overlap_width_px: 32, minimum_safe_samples: 256, minimum_inlier_fraction: 0.7, require_log_luminance_mad_gate: true, require_heldout_nonregression: true, deterministic_split: true, photometric_relation_only: true, failure_policy: omit_edge}
+    photometric_component_model: {enabled: true, model: Q4c_component_boundary_anchored_scalar_gain, authority: shadow, scalar_luminance_only: true, bias: 0.0, minimum_gain: 0.94, maximum_gain: 1.06, component_atomic: true, unsupported_cut_anchor_identity: true, unsupported_cut_blend_model: B0_owner_only, cut_guard_width_px: 12, minimum_component_heldout_median_benefit_fraction: 0.02, minimum_component_macro_p95_benefit_fraction: 0.03, failure_policy: component_identity}
+    blend: {enabled: true, safe_background_only: true, minimum_total_width_px: 2, maximum_total_width_px: 2, maximum_levels: 1, adaptive_levels: false, model_candidates: [B0_owner_only, B1_narrow_feather_2px], ineligible_models: [B2_safe_masked_multiband, B3, B4], maximum_color_contributors_per_pixel: 2, protected_structure_weight: 0, failure_policy: owner_only}
+    m6: {auto_c2e: {enabled: true, authorization_required: false, policy: all_structurally_safe, full_resolution_render_count: 1}}
+    repair: {enabled: true, automatic: true, allowed_component_classes: [protected, geometry, seam, owner], systemic_photometric_component_forbidden: true, adjacent_or_merged_seam_component_forbidden: true, core_candidates: [C0_keep_standard, C1_force_owner_only, C2_downgrade_seam, C3_downgrade_geometry], q_parameters_frozen: true, thresholds_frozen: true, source_set_frozen: true, q4_enabled: false, low_frequency_field_enabled: false, expanded_feather_enabled: false, multiband_enabled: false, cross_pair_joint_repair_enabled: false, frame_insertion_enabled: false, optional_priority: [constrained_two_label_graphcut, depth_risk_veto, bounded_local_mesh], graphcut_enabled: false, depth_risk_enabled: false, bounded_mesh_enabled: false, no_handoff_or_no_winner_policy: keep_p3}
+    selection: {stage_a_always_candidate: true, use_relative_non_degradation: true, forbid_absolute_direct_local_gate: true, forbid_blur_only_improvement: true, report_all_pairs: true}
+    output: {immutable_generations: false, atomic_base_commit: false, atomic_final_commit: false, write_pixel_and_column_provenance: false, write_all_stage_images: true, write_fixed_and_worst_crops: false, write_production_delivery: false}
+    runtime: {stage_image_policy: one_lossless_png_per_image_stage, output_image_format: png, png_compression: 0, write_jpg: false, write_masks: false, write_overlays: false, write_provenance: false, write_replay_assets: false, write_transactions: false, write_performance_json: false, write_quality_report: false, write_reproducibility: false, write_completion: false, write_pointer: false, sha_validation: false, stage_sealing: false, promoted_stage_reverify: false, independent_raw_rgb_replay: false, disk_resume: false, asynchronous_stage_writer: true, stage_writer_workers: 1, stage_writer_queue_size: 4}
+
+m61_bootstrap:
+  blend: {b1_total_width_px: 2, eligible_models: [B0_owner_only, B1_narrow_feather_2px], ineligible_models: [B2_safe_masked_multiband, B3, B4], maximum_color_contributors_per_pixel: 2, minimum_immediate_seam_benefit_dn: 0.5, minimum_immediate_seam_benefit_mde_dn: 0.25, protected_structure_weight: 0.0}
+  luminance_field: {canonical_field_value: 0.0, enabled: false, schema: gemini305-video-s13-source-u-luminance-field/v1, solver: disabled}
+  photometric_evidence_config_sha256: c11540ec0a2d49845f683a8de256721f046bccebd111f1acb426adf78420923b
+  quality_thresholds_path: configs/video_candidates/s013/quality_thresholds_m61_v2.json
+  quality_thresholds_sha256: 73539ee4a8110a9ac00dfb40bfd05e9047e79a623b9e4746fdeb8452cf3575e2
+  selection: {aggregate_p95_nonreg_absolute_tolerance_linear: 0.0005, aggregate_p95_nonreg_relative_tolerance: 0.02, minimum_actionable_macro_p95_benefit_fraction: 0.05, minimum_aggregate_median_benefit_fraction: 0.01, minimum_composite_benefit_fraction: 0.03, require_macro_and_micro_nonregression: true, selection_score_mde_linear: 0.0005, worst_pair_p95_nonreg_absolute_tolerance_linear: 0.0005, worst_pair_p95_nonreg_relative_tolerance: 0.02}
+  solver: {canonical_identity_epsilon: 0.0001, convergence_tolerance: 0.000001, first_difference_regularization: 0.05, huber_delta: 1.5, identity_regularization: 0.01, irls_iterations: 8, maximum_absolute_bias_linear: 0.03, maximum_condition_number: 100000000.0, maximum_gain: 1.25, minimum_gain: 0.8, minimum_inlier_fraction: 0.5, minimum_robust_scale_linear: 0.0001, rank_tolerance: 0.00000001, second_difference_regularization: 0.02}
+  threshold_approval_path: artifacts/S013_M6_1_metrics_baseline_v2/threshold_approval.json
+  threshold_approval_sha256: 47aa86098dbfaed964406420db8059831316076774ff8e00e4b7534958c38939
+  visual_quality: {block_widths_px: [8, 16, 32, 64], color_metric: CIEDE2000, gaussian_sigma_px: 1.0, low_gradient_minimum_reference_energy: 0.000001, maximum_canvas_megapixels: 200.0, maximum_live_array_bytes: 1500000000, maximum_post_seconds_soft_sla: 60.0, maximum_process_rss_bytes: 2000000000, maximum_quality_insufficient_safe_pair_fraction: 0.0, maximum_resident_source_rois: 5, minimum_required_metric_coverage_fraction: 0.95, owner_plateau_minimum_width_px: 16}
+
+m62_execution:
+  mode: candidate_single_pass
+  available_modes: [reference, shadow_audit, candidate_single_pass, parity_test]
+  legacy_reference_comparison: false
+  gpu_shadow_every_run: false
+  audit_reference_mode_available: true
+  q0_b0_direct_return: true
+
+m62_effectiveness:
+  require_explicit_status: true
+  report_candidate_rejections: true
+  report_pair_ineligibility: true
+  report_p3_vs_p2: true
+  report_macro_seam_metrics: true
+
+m62_equivalence:
+  cpu_oracle_enabled: true
+  publish_mode: {default: cpu_authoritative_hybrid}
+  gpu_b1: {enabled: true, mode: audit, require_byte_identical_for_authority: true}
+  gpu_b2: {enabled: false, unsupported_policy: cpu_reference_fallback}
+  gpu_srgb: {enabled: true, mode: audit, require_byte_identical_for_authority: true}
+  stage_comparison: {corrected_roi_linear_max_abs: 1.0e-6, owner_linear_max_abs: 1.0e-6, b1_pair_linear_max_abs: 1.0e-6, final_linear_max_abs: 1.0e-6, final_u8_max_abs_dn_shadow: 1, final_u8_authority_differing_channel_count: 0}
+  unknown_model_policy: cpu_reference_fallback
+  CUDA_exception_policy: cpu_reference_fallback

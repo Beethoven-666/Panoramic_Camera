@@ -23,22 +23,23 @@ def execute_s13_m62_cpu_reference(
     """Execute exactly the decisions frozen in ``plan`` on CPU arrays."""
 
     started = time.perf_counter()
-    corrected = plan.corrected_rois
-    if (
-        plan.photometric_solution.model_family == "Q0_identity"
-        and all(item.transaction.model == "B0_owner_only" for item in plan.blend_plans)
-    ):
+    if plan.q0_b0_direct_return:
         image = np.asarray(plan.p2_image).copy()
+        masks = plan.evidence.masks
         return S13P3Result(
             photometric_owner_only=image.copy(), visual_panorama=image,
             valid_mask=plan.valid_mask.copy(), pixel_provenance={},
             photometric_solution=plan.photometric_solution, photometric_samples=plan.photometric_samples,
             blend_plans=plan.blend_plans, protected_structure_mask=np.zeros(plan.valid_mask.shape, bool),
             safe_blend_mask=np.zeros(plan.valid_mask.shape, bool), blend_weight_map=np.zeros(plan.valid_mask.shape, np.float32),
-            photometric_training_mask=np.asarray(plan.sample_masks["train"], bool),
-            photometric_heldout_mask=np.asarray(plan.sample_masks["heldout"], bool), diagnostic_quality={},
-            performance={"total_m6": time.perf_counter() - started, "published_pixel_authority": "cpu", "q0_b0_direct_p2": True},
+            photometric_training_mask=np.asarray(masks.get("train", np.zeros(plan.valid_mask.shape, bool)), bool),
+            photometric_heldout_mask=np.asarray(masks.get("heldout", np.zeros(plan.valid_mask.shape, bool)), bool), diagnostic_quality={},
+            performance={"total_m6": time.perf_counter() - started, "published_pixel_authority": "cpu",
+                         "q0_b0_direct_p2": True, "m6_q0_direct_p2_return": True,
+                         "m6_owner_source_remap_count": 0, "final_linear_full_d2h_count": 0,
+                         "pixel_executor_count": 0, "cpu_corrected_roi_build_count": 0},
         )
+    corrected = build_s13_m62_cpu_corrected_rois(plan)
     owner_linear = _compose_owner_only_roi(plan, corrected)
 
     def pair_provider(pair: object) -> tuple[np.ndarray, np.ndarray]:
@@ -62,9 +63,13 @@ def execute_s13_m62_cpu_reference(
         blend_plans=plans, protected_structure_mask=np.asarray(blend_masks["protected"], bool),
         safe_blend_mask=np.asarray(blend_masks["safe"], bool),
         blend_weight_map=np.asarray(blend_masks["secondary_weight"], np.float32),
-        photometric_training_mask=np.asarray(plan.sample_masks["train"], bool),
-        photometric_heldout_mask=np.asarray(plan.sample_masks["heldout"], bool), diagnostic_quality={},
-        performance={"total_m6": time.perf_counter() - started, "published_pixel_authority": "cpu"},
+        photometric_training_mask=np.asarray(plan.evidence.masks.get("train", np.zeros(plan.valid_mask.shape, bool)), bool),
+        photometric_heldout_mask=np.asarray(plan.evidence.masks.get("heldout", np.zeros(plan.valid_mask.shape, bool)), bool), diagnostic_quality={},
+        performance={"total_m6": time.perf_counter() - started, "published_pixel_authority": "cpu",
+                     "q0_b0_direct_p2": False, "m6_q0_direct_p2_return": False,
+                     "m6_owner_source_remap_count": len(plan.source_rois),
+                     "final_linear_full_d2h_count": 0, "pixel_executor_count": 1,
+                     "cpu_corrected_roi_build_count": len(plan.source_rois)},
     )
 
 
@@ -72,7 +77,7 @@ def build_s13_m62_cpu_corrected_rois(plan: S13M62ExecutionPlan) -> dict[int, np.
     """Pixel-only corrected ROI work shared with the GPU parity harness."""
     corrected: dict[int, np.ndarray] = {}
     for parameter, roi in zip(plan.photometric_solution.source_parameters, plan.source_rois, strict=True):
-        sampled = accelerated_remap(plan.raw_by_frame[parameter.frame_id], roi.map_u, roi.map_v,
+        sampled = accelerated_remap(plan.image_loader(parameter.frame_id), roi.map_u, roi.map_v,
                                     cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
         linear = srgb_to_linear_bgr(sampled)
         adjusted = apply_s13_photometric_linear(linear, parameter)

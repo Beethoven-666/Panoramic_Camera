@@ -9,6 +9,7 @@ from panorama_demo.video_s13_m6 import run_s13_m6
 from panorama_demo.video_s13_m62_equivalence import compare_s13_m62_u8
 from panorama_demo.video_s13_m62_plan import build_s13_m62_execution_plan
 from panorama_demo.video_s13_m62_reference import execute_s13_m62_cpu_reference
+from panorama_demo.video_s13_m62_runner import run_s13_m62
 from panorama_demo.video_s13_cuda_runtime import S13CudaRuntime
 from panorama_demo.cuda_backend import cuda_status
 from panorama_demo.video_s13_replay import S13P2ReplayPair, S13VerifiedP2
@@ -36,7 +37,8 @@ def test_m62_plan_is_readonly_and_cpu_reference_matches_legacy(tmp_path: Path) -
     images = {10: np.full((4, 12, 3), 80, np.uint8), 11: np.full((4, 12, 3), 90, np.uint8)}
     plan = build_s13_m62_execution_plan(p2, images.__getitem__, force_owner_only_pair_indices=frozenset({0}))
     assert plan.valid_mask.flags.writeable is False
-    assert plan.corrected_rois[0].flags.writeable is False
+    assert not hasattr(plan, "corrected_rois")
+    assert plan.source_rois[0].map_u.flags.writeable is False
     assert plan.blend_plans[0].secondary_weight.flags.writeable is False
     current = execute_s13_m62_cpu_reference(plan)
     legacy = run_s13_m6(p2, images.__getitem__, force_owner_only_pair_indices=frozenset({0}))
@@ -51,6 +53,39 @@ def test_m62_u8_authority_requires_exact_bytes() -> None:
     assert result["shadow_gate_passed"] is True
     assert result["authority_gate_passed"] is False
     assert result["differing_channel_count"] == 1
+
+
+def test_candidate_single_pass_q0_b0_skips_all_pixel_executors(tmp_path: Path) -> None:
+    p2 = _p2(tmp_path)
+    images = {10: np.full((4, 12, 3), 80, np.uint8), 11: np.full((4, 12, 3), 90, np.uint8)}
+    result, audit = run_s13_m62(
+        p2, images.__getitem__, execution_mode="candidate_single_pass",
+        force_owner_only_pair_indices=frozenset({0}),
+    )
+    np.testing.assert_array_equal(result.visual_panorama, p2.result_image)
+    assert result.performance["legacy_m6_call_count"] == 0
+    assert result.performance["gpu_shadow_call_count"] == 0
+    assert result.performance["pixel_executor_count"] == 0
+    assert result.performance["m6_owner_source_remap_count"] == 0
+    assert result.performance["final_linear_full_d2h_count"] == 0
+    assert audit["plan"].q0_b0_direct_return is True
+
+
+def test_audit_modes_are_explicit_and_isolated(tmp_path: Path) -> None:
+    p2 = _p2(tmp_path)
+    images = {10: np.full((4, 12, 3), 80, np.uint8), 11: np.full((4, 12, 3), 90, np.uint8)}
+    shadow, _ = run_s13_m62(
+        p2, images.__getitem__, execution_mode="shadow_audit",
+        force_owner_only_pair_indices=frozenset({0}),
+    )
+    assert shadow.performance["gpu_shadow_call_count"] == 1
+    assert shadow.performance["legacy_m6_call_count"] == 0
+    parity, _ = run_s13_m62(
+        p2, images.__getitem__, execution_mode="parity_test",
+        force_owner_only_pair_indices=frozenset({0}),
+    )
+    assert parity.performance["gpu_shadow_call_count"] == 1
+    assert parity.performance["legacy_m6_call_count"] == 1
 
 
 def test_m62_b1_input_gates_do_not_require_cuda_context() -> None:

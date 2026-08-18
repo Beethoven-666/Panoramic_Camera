@@ -32,6 +32,22 @@ class S13PhotometricConfig:
     maximum_absolute_bias_linear: float = 0.03
     minimum_heldout_improvement_fraction: float = 0.01
     simpler_model_tie_fraction: float = 0.005
+    aggregate_p95_nonreg_absolute_tolerance_linear: float = 0.0005
+    aggregate_p95_nonreg_relative_tolerance: float = 0.02
+    minimum_actionable_macro_p95_benefit_fraction: float = 0.05
+    minimum_aggregate_median_benefit_fraction: float = 0.01
+    selection_score_mde_linear: float = 0.0005
+    worst_pair_p95_nonreg_absolute_tolerance_linear: float = 0.0005
+    worst_pair_p95_nonreg_relative_tolerance: float = 0.02
+    require_macro_and_micro_nonregression: bool = True
+    tier_b_maximum_gradient_percentile: float = 0.90
+    tier_b_maximum_residual_percentile: float = 0.90
+    hard_protection_percentile: float = 0.95
+    minimum_tier_a_plus_b_sample_count: int = 192
+    minimum_bridge_sample_count: int = 256
+    minimum_evidence_inlier_fraction: float = 0.70
+    maximum_log_luminance_mad: float = 0.03
+    bridge_minimum_overlap_width_px: int = 32
 
 
 @dataclass(frozen=True)
@@ -50,6 +66,20 @@ class S13PhotometricSampleSet:
     common_mask: np.ndarray
     safe_mask_sha256: str
     protected_mask_sha256: str
+    tier_a_train_sample_count: int = 0
+    tier_a_heldout_sample_count: int = 0
+    tier_b_train_sample_count: int = 0
+    common_pixel_count: int = 0
+    edge_eligible: bool | None = None
+    ineligible_reason: str | None = None
+    evidence_tier: str = "tier_a"
+    robust_scale_linear: float | None = None
+    inlier_fraction: float | None = None
+    gradient_limit: float | None = None
+    residual_limit: float | None = None
+    edge_kind: str = "adjacent"
+    left_linear_corridor: np.ndarray | None = None
+    right_linear_corridor: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -224,7 +254,10 @@ def extract_s13_photometric_samples(
 def _components(source_count: int, samples: Sequence[S13PhotometricSampleSet], minimum: int) -> list[list[int]]:
     adjacency = [set() for _ in range(source_count)]
     for sample in samples:
-        if len(sample.train_left_rgb_linear) >= minimum:
+        if (
+            sample.edge_eligible is True
+            or (sample.edge_eligible is None and len(sample.train_left_rgb_linear) >= minimum)
+        ):
             adjacency[sample.left_source_index].add(sample.right_source_index)
             adjacency[sample.right_source_index].add(sample.left_source_index)
     components: list[list[int]] = []
@@ -262,7 +295,13 @@ def _solve_gain_candidate(
         edges = [
             sample for sample in samples
             if sample.left_source_index in nodes and sample.right_source_index in nodes
-            and len(sample.train_left_rgb_linear) >= config.minimum_pair_sample_count
+            and (
+                sample.edge_eligible is True
+                or (
+                    sample.edge_eligible is None
+                    and len(sample.train_left_rgb_linear) >= config.minimum_pair_sample_count
+                )
+            )
         ]
         if len(nodes) == 1 or not edges:
             fallback[nodes[0]] = "isolated_source_identity"
@@ -323,7 +362,10 @@ def _solve_affine_candidate(
             continue
         node_to_local = {node: index for index, node in enumerate(nodes)}
         edges = [s for s in samples if s.left_source_index in nodes and s.right_source_index in nodes
-                 and len(s.train_left_rgb_linear) >= config.minimum_pair_sample_count]
+                 and (s.edge_eligible is True or (
+                     s.edge_eligible is None
+                     and len(s.train_left_rgb_linear) >= config.minimum_pair_sample_count
+                 ))]
         if not edges:
             continue
         anchor = max(nodes, key=lambda node: (evidence[node], -node))
@@ -382,6 +424,7 @@ def _candidate_metrics(
     samples: Sequence[S13PhotometricSampleSet], gains: np.ndarray, biases: np.ndarray, split: str
 ) -> dict[str, object]:
     residuals: list[np.ndarray] = []
+    pair_rows: list[dict[str, object]] = []
     count = 0
     for sample in samples:
         left = getattr(sample, f"{split}_left_rgb_linear")
@@ -390,19 +433,85 @@ def _candidate_metrics(
             continue
         corrected_left = left * gains[sample.left_source_index] + biases[sample.left_source_index]
         corrected_right = right * gains[sample.right_source_index] + biases[sample.right_source_index]
-        residuals.append(np.linalg.norm(corrected_left - corrected_right, axis=1))
+        pair_values = np.linalg.norm(corrected_left - corrected_right, axis=1)
+        residuals.append(pair_values)
+        pair_rows.append({
+            "pair_index": int(sample.pair_index),
+            "left_source_index": int(sample.left_source_index),
+            "right_source_index": int(sample.right_source_index),
+            "sample_count": int(pair_values.size),
+            "median_linear": float(np.median(pair_values)),
+            "p95_linear": float(np.quantile(pair_values, 0.95)),
+            "edge_kind": sample.edge_kind,
+        })
         count += len(left)
     if not residuals:
         return {"evaluable": False, "reason": "no_safe_samples", "sample_count": 0,
-                "residual_median_linear": None, "residual_p95_linear": None}
+                "residual_median_linear": None, "residual_p95_linear": None,
+                "aggregate_median_linear": None, "aggregate_p95_linear": None,
+                "macro_pair_median_linear": None, "macro_pair_p95_linear": None,
+                "worst_pair_p95_linear": None, "pair_metrics": ()}
     values = np.concatenate(residuals)
+    pair_medians = np.asarray([row["median_linear"] for row in pair_rows], np.float64)
+    pair_p95s = np.asarray([row["p95_linear"] for row in pair_rows], np.float64)
+    aggregate_median = float(np.median(values))
+    aggregate_p95 = float(np.quantile(values, 0.95))
     return {
         "evaluable": True,
         "reason": None,
         "sample_count": count,
-        "residual_median_linear": float(np.median(values)),
-        "residual_p95_linear": float(np.quantile(values, 0.95)),
+        "residual_median_linear": aggregate_median,
+        "residual_p95_linear": aggregate_p95,
+        "aggregate_median_linear": aggregate_median,
+        "aggregate_p95_linear": aggregate_p95,
+        "macro_pair_median_linear": float(np.median(pair_medians)),
+        "macro_pair_p95_linear": float(np.mean(pair_p95s)),
+        "worst_pair_p95_linear": float(np.max(pair_p95s)),
+        "pair_metrics": tuple(pair_rows),
     }
+
+
+def _selection_rejection_reasons(
+    baseline: Mapping[str, object],
+    candidate: Mapping[str, object],
+    config: S13PhotometricConfig,
+) -> list[str]:
+    if baseline.get("evaluable") is not True or candidate.get("evaluable") is not True:
+        return ["validation_unevaluable"]
+    reasons: list[str] = []
+    before_median = float(baseline["aggregate_median_linear"])
+    after_median = float(candidate["aggregate_median_linear"])
+    required_median = max(
+        before_median * config.minimum_aggregate_median_benefit_fraction,
+        config.selection_score_mde_linear,
+    )
+    if before_median - after_median < required_median:
+        reasons.append("aggregate_benefit_too_small")
+    before_p95 = float(baseline["aggregate_p95_linear"])
+    after_p95 = float(candidate["aggregate_p95_linear"])
+    aggregate_allowance = max(
+        before_p95 * config.aggregate_p95_nonreg_relative_tolerance,
+        config.aggregate_p95_nonreg_absolute_tolerance_linear,
+    )
+    if after_p95 > before_p95 + aggregate_allowance:
+        reasons.append("aggregate_p95_regression")
+    before_macro = float(baseline["macro_pair_p95_linear"])
+    after_macro = float(candidate["macro_pair_p95_linear"])
+    required_macro = max(
+        before_macro * config.minimum_actionable_macro_p95_benefit_fraction,
+        config.selection_score_mde_linear,
+    )
+    if before_macro - after_macro < required_macro:
+        reasons.append("macro_benefit_too_small")
+    before_worst = float(baseline["worst_pair_p95_linear"])
+    after_worst = float(candidate["worst_pair_p95_linear"])
+    worst_allowance = max(
+        before_worst * config.worst_pair_p95_nonreg_relative_tolerance,
+        config.worst_pair_p95_nonreg_absolute_tolerance_linear,
+    )
+    if after_worst > before_worst + worst_allowance:
+        reasons.append("worst_pair_regression")
+    return reasons
 
 
 def solve_s13_photometric(
@@ -431,7 +540,7 @@ def solve_s13_photometric(
     audits: list[dict[str, object]] = []
     selected_index = 0
     selected_score: float | None = None
-    baseline_score: float | None = None
+    baseline_metrics: Mapping[str, object] | None = None
     for index, (model, gains, biases, components, evidence, fallback) in enumerate(candidate_values):
         train = _candidate_metrics(samples, gains, biases, "train")
         heldout = _candidate_metrics(samples, gains, biases, "heldout")
@@ -453,15 +562,28 @@ def solve_s13_photometric(
                 and all(reason is None for reason in fallback)
             )
         )
-        score = heldout.get("residual_median_linear") if heldout.get("evaluable") is True else None
+        score = heldout.get("aggregate_median_linear") if heldout.get("evaluable") is True else None
         if index == 0 and isinstance(score, (float, int)):
-            baseline_score = float(score)
-            selected_score = baseline_score
+            baseline_metrics = heldout
+            selected_score = float(score)
+        rejection_reasons: list[str] = []
+        if index > 0:
+            if not hard_safe:
+                rejection_reasons.append("parameters_not_hard_safe")
+            if not globally_connected:
+                rejection_reasons.append("disconnected_evidence_graph")
+            if any(reason is not None for reason in fallback):
+                rejection_reasons.append("source_fallback")
+            if baseline_metrics is None:
+                rejection_reasons.append("identity_baseline_unevaluable")
+            else:
+                rejection_reasons.extend(
+                    _selection_rejection_reasons(baseline_metrics, heldout, config)
+                )
         if (
-            index > 0 and hard_safe and globally_connected
+            index > 0 and not rejection_reasons
             and isinstance(score, (float, int))
-            and baseline_score is not None and selected_score is not None
-            and float(score) <= baseline_score * (1.0 - config.minimum_heldout_improvement_fraction)
+            and selected_score is not None
             and float(score) < selected_score * (1.0 - config.simpler_model_tie_fraction)
         ):
             selected_index, selected_score = index, float(score)
@@ -471,6 +593,21 @@ def solve_s13_photometric(
             "maximum_absolute_bias_linear": float(np.max(np.abs(biases))),
             "identity_fallback_source_count": sum(reason is not None for reason in fallback),
             "globally_connected": globally_connected,
+            "component_count": len(set(int(value) for value in components)),
+            "fallback_source_count": sum(reason is not None for reason in fallback),
+            "train_sample_count": int(train.get("sample_count", 0)),
+            "heldout_sample_count": int(heldout.get("sample_count", 0)),
+            "aggregate_median_before": None if baseline_metrics is None else baseline_metrics.get("aggregate_median_linear"),
+            "aggregate_median_after": heldout.get("aggregate_median_linear"),
+            "aggregate_p95_before": None if baseline_metrics is None else baseline_metrics.get("aggregate_p95_linear"),
+            "aggregate_p95_after": heldout.get("aggregate_p95_linear"),
+            "macro_pair_median_before": None if baseline_metrics is None else baseline_metrics.get("macro_pair_median_linear"),
+            "macro_pair_median_after": heldout.get("macro_pair_median_linear"),
+            "macro_pair_p95_before": None if baseline_metrics is None else baseline_metrics.get("macro_pair_p95_linear"),
+            "macro_pair_p95_after": heldout.get("macro_pair_p95_linear"),
+            "worst_pair_p95_before": None if baseline_metrics is None else baseline_metrics.get("worst_pair_p95_linear"),
+            "worst_pair_p95_after": heldout.get("worst_pair_p95_linear"),
+            "rejection_reasons": rejection_reasons,
             "selected": False,
         })
     audits[selected_index]["selected"] = True

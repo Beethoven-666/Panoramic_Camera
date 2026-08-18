@@ -277,6 +277,7 @@ def run_s13_fast_pipeline(
             from .video_s13_photometric import S13PhotometricConfig
             options = dict(m62_options or {})
             photometric_values = dict(options.get("photometric", {}))
+            photometric_values.update(dict(options.get("selection", {})))
             blend_values = dict(options.get("blend", {}))
             allowed_photo = set(S13PhotometricConfig.__dataclass_fields__)
             allowed_blend = set(S13BlendConfig.__dataclass_fields__)
@@ -289,6 +290,9 @@ def run_s13_fast_pipeline(
                 blend_config=S13BlendConfig(**{
                     key: value for key, value in blend_values.items() if key in allowed_blend
                 }),
+                execution_mode=str(dict(options.get("execution", {})).get(
+                    "mode", "parity_test"
+                )),
             )
         elif m6_cuda_v3:
             if p0_resident_device_remap is None or resident_runtime is None:

@@ -24,6 +24,7 @@ class S13BlendConfig:
     maximum_safe_residual_for_multiband: float = 0.06
     minimum_safe_fraction_for_feather: float = 0.20
     minimum_safe_fraction_for_multiband: float = 0.50
+    minimum_immediate_seam_benefit_linear: float = 0.5 / 255.0
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,27 @@ def _residual(sample: S13PhotometricSampleSet, corrected_left: np.ndarray, corre
     return float(np.median(values)) if values.size else None
 
 
+def _seam_jump(
+    pair: S13P2ReplayPair, left: np.ndarray, right: np.ndarray,
+    weight: np.ndarray,
+) -> float | None:
+    direct = np.where(pair.primary_owner_right_mask[..., None], right, left)
+    alpha_right = np.where(
+        pair.primary_owner_right_mask, 1.0 - weight, weight
+    ).astype(np.float32)
+    candidate = left * (1.0 - alpha_right[..., None]) + right * alpha_right[..., None]
+    output = direct.copy()
+    active = weight > 0.0
+    output[active] = candidate[active]
+    values: list[float] = []
+    for row, seam_x in enumerate(np.asarray(pair.seam_x_by_row, np.int32)):
+        column = int(seam_x) - int(pair.corridor_x0)
+        if column <= 0 or column >= output.shape[1]:
+            continue
+        values.append(float(np.linalg.norm(output[row, column] - output[row, column - 1])))
+    return float(np.median(values)) if values else None
+
+
 def select_s13_blend_plans(
     replay_pairs: Sequence[S13P2ReplayPair],
     samples: Sequence[S13PhotometricSampleSet],
@@ -95,6 +117,7 @@ def select_s13_blend_plans(
     config: S13BlendConfig = S13BlendConfig(),
     force_owner_only: bool = False,
     force_owner_only_pair_indices: frozenset[int] = frozenset(),
+    unsupported_cut_pair_indices: frozenset[int] = frozenset(),
 ) -> tuple[tuple[S13BlendPlan, ...], dict[str, np.ndarray]]:
     """Try B0, B1, then B2 per pair with global corridor non-overlap."""
 
@@ -130,11 +153,19 @@ def select_s13_blend_plans(
                 pair, sample.safe_mask, sample.protected_mask,
                 total_width_px=feather_width,
             )
+            owner_jump = _seam_jump(pair, left, right, np.zeros_like(feather))
+            feather_jump = _seam_jump(pair, left, right, feather)
+            feather_benefit = (
+                None if owner_jump is None or feather_jump is None
+                else owner_jump - feather_jump
+            )
             feather_ok = bool(
                 residual is not None
                 and residual <= config.maximum_safe_residual_for_feather
                 and safe_fraction >= config.minimum_safe_fraction_for_feather
                 and np.any(feather > 0.0)
+                and feather_benefit is not None
+                and feather_benefit >= config.minimum_immediate_seam_benefit_linear
             )
             candidate_audits.append({
                 "model": "B1_narrow_feather", "hard_safe": feather_ok,
@@ -143,6 +174,9 @@ def select_s13_blend_plans(
                 "safe_fraction": safe_fraction, "residual_median_linear": residual,
                 "total_width_px": feather_width,
                 "blended_pixel_count": int(np.count_nonzero(feather)),
+                "immediate_seam_before_linear": owner_jump,
+                "immediate_seam_after_linear": feather_jump,
+                "immediate_seam_benefit_linear": feather_benefit,
             })
             multiband_width = min(config.maximum_total_width_px, 6 if safe_fraction >= 0.70 else 4)
             multiband = _candidate_weight(
@@ -150,12 +184,19 @@ def select_s13_blend_plans(
                 total_width_px=multiband_width,
             )
             multiband_levels = adaptive_s13_multiband_levels(multiband_width, config.maximum_levels)
+            multiband_jump = _seam_jump(pair, left, right, multiband)
+            multiband_benefit = (
+                None if owner_jump is None or multiband_jump is None
+                else owner_jump - multiband_jump
+            )
             multiband_ok = bool(
                 residual is not None
                 and residual <= config.maximum_safe_residual_for_multiband
                 and safe_fraction >= config.minimum_safe_fraction_for_multiband
                 and multiband_levels > 0
                 and np.any(multiband > 0.0)
+                and multiband_benefit is not None
+                and multiband_benefit >= config.minimum_immediate_seam_benefit_linear
             )
             candidate_audits.append({
                 "model": "B2_safe_masked_multiband", "hard_safe": multiband_ok,
@@ -164,6 +205,9 @@ def select_s13_blend_plans(
                 "safe_fraction": safe_fraction, "residual_median_linear": residual,
                 "total_width_px": multiband_width, "pyramid_levels": multiband_levels,
                 "blended_pixel_count": int(np.count_nonzero(multiband)),
+                "immediate_seam_before_linear": owner_jump,
+                "immediate_seam_after_linear": multiband_jump,
+                "immediate_seam_benefit_linear": multiband_benefit,
             })
             if multiband_ok:
                 model, width, levels, weight = (
@@ -174,7 +218,11 @@ def select_s13_blend_plans(
             else:
                 fallback = "no_safe_blend_candidate"
         else:
-            fallback = "forced_owner_only_rebuild"
+            fallback = (
+                "unsupported_cut_forced_owner_only"
+                if pair.pair_index in unsupported_cut_pair_indices
+                else "forced_owner_only_rebuild"
+            )
         roi = np.s_[:, pair.corridor_x0:pair.corridor_x1]
         if np.any(used[roi] & (weight > 0.0)):
             model, width, levels = "B0_owner_only", 0, 0

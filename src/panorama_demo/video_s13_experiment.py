@@ -2874,7 +2874,7 @@ def run_s13_experiment(
             raise ValueError("S1.3 fast pipeline does not support disk resume")
         if manual_c2e_forward_m7:
             raise ValueError("S1.3 fast pipeline has automatic C2E; M7 is unavailable")
-        if config.runtime_backend in {"cupy_cuda_resident", "cupy_cuda_resident_v2", "cupy_cuda_structural_equivalent_v3", "cupy_cuda_m62_cpu_equivalent_v5"}:
+        if config.runtime_backend in {"cupy_cuda_resident", "cupy_cuda_resident_v2", "cupy_cuda_structural_equivalent_v3", "cupy_cuda_m62_cpu_equivalent_v5", "cupy_cuda_m62_effective_v6"}:
             from .video_s13_cuda_fast_pipeline import run_s13_cuda_fast_pipeline
             runner = run_s13_cuda_fast_pipeline
         elif config.runtime_backend == "numpy_reference":
@@ -2896,6 +2896,8 @@ def run_s13_experiment(
                 "photometric": dict(config.component["photometric"]),
                 "blend": dict(config.component["blend"]),
                 "equivalence": dict(config.document.get("m62_equivalence", {})),
+                "execution": dict(config.document.get("m62_execution", {})),
+                "selection": dict(config.document.get("m61_bootstrap", {}).get("selection", {})),
             } if config.m62_equivalence else None,
         )
         if config.runtime_backend == "cupy_cuda_structural_equivalent_v3":
@@ -2948,6 +2950,12 @@ def run_s13_experiment(
                 },
                 "artifacts": {"png_write_count": 4, "json_write_count": 2, "jpg_write_count": 0,
                               "npz_write_count": 0, "sha_call_count": 0, "m7_call_count": 0},
+                "execution_mode": str((fast.get("m6_performance") or {}).get("execution_mode", "")),
+                "decision_plan_seconds": float((fast.get("m6_performance") or {}).get("decision_plan_seconds", 0.0)),
+                "pixel_executor_seconds": float((fast.get("m6_performance") or {}).get("pixel_executor_seconds", 0.0)),
+                "legacy_m6_executed": bool((fast.get("m6_performance") or {}).get("legacy_m6_executed", False)),
+                "gpu_shadow_executed": bool((fast.get("m6_performance") or {}).get("gpu_shadow_executed", False)),
+                "pixel_executor_count": int((fast.get("m6_performance") or {}).get("pixel_executor_count", 0)),
             })
         m62_report_path = None
         if config.m62_equivalence:
@@ -2956,35 +2964,14 @@ def run_s13_experiment(
             plan = m62.pop("plan", None)
             gpu_equivalence = dict(m62.get("gpu_equivalence") or {})
             report_write_started = time.perf_counter()
-            atomic_write_json(m62_report_path, {
-                "schema": "gemini305-video-s13-m62-report/v2",
-                "cpu_oracle": {"enabled": True,
-                    "photometric_model": "" if plan is None else str(plan.photometric_solution.model_family),
-                    "blend_plan_count": 0 if plan is None else len(plan.blend_plans),
-                    "B0_count": 0 if plan is None else sum(item.transaction.model == "B0_owner_only" for item in plan.blend_plans),
-                    "B1_count": 0 if plan is None else sum(item.transaction.model == "B1_narrow_feather" for item in plan.blend_plans),
-                    "B2_count": 0 if plan is None else sum(item.transaction.model == "B2_safe_masked_multiband" for item in plan.blend_plans),
-                    "published_pixel_authority": "cpu"},
-                "gpu_equivalence": gpu_equivalence,
-                "photometric": {
-                    "model_family": "" if plan is None else plan.photometric_solution.model_family,
-                    "source_count": 0 if plan is None else len(plan.photometric_solution.source_parameters),
-                    "candidate_audits": [] if plan is None else list(plan.photometric_solution.candidate_audits),
-                },
-                "blend": {
-                    "models": [] if plan is None else [item.transaction.model for item in plan.blend_plans],
-                    "active_pair_count": 0 if plan is None else sum(bool((item.secondary_weight > 0).any()) for item in plan.blend_plans),
-                },
-                "safety": {
-                    "invalid_nonzero": int((fast["p3"].image[~fast["p3"].valid] != 0).sum()),
-                    "protected_active": 0 if plan is None else sum(int(((item.secondary_weight > 0) & item.protected_mask).sum()) for item in plan.blend_plans),
-                    "gpu_evaluated": bool(gpu_equivalence.get("gpu_evaluated", False)),
-                }, "performance": dict(fast.get("m6_performance", {})),
-                "p3_relation_to_p2": {
-                    "differing_pixel_count": int((fast["p3"].image != fast["p2"].image).any(axis=2).sum()),
-                    "max_abs_dn": int(abs(fast["p3"].image.astype(np.int16) - fast["p2"].image.astype(np.int16)).max(initial=0)),
-                },
-            })
+            if plan is None:
+                raise RuntimeError("S1.3 M6.2 run did not return a decision plan")
+            from .video_s13_m62_report import build_s13_m62_report
+            atomic_write_json(m62_report_path, build_s13_m62_report(
+                plan, p2_image=fast["p2"].image, p3_image=fast["p3"].image,
+                gpu_equivalence=gpu_equivalence,
+                performance=dict(fast.get("m6_performance", {})),
+            ))
             timing_document["wall_seconds"]["m62_report_write"] = time.perf_counter() - report_write_started
         atomic_write_json(timing_path, timing_document)
         return {

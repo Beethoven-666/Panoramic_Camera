@@ -46,6 +46,12 @@ S13_CUDA_STRUCTURAL_V3_ALGORITHM_ID = "S013_output_first_progressive_dense_centr
 S13_CUDA_STRUCTURAL_V3_IMPLEMENTATION_ID = "s013_m61_cuda_guarded_probe_structural_equivalent_v3"
 S13_M62_ALGORITHM_ID = "S013_output_first_progressive_dense_central_slit_v4_cuda_m62_cpu_equivalent_v5"
 S13_M62_IMPLEMENTATION_ID = "s013_m62_cpu_oracle_gpu_staged_equivalence_v5"
+S13_M62_EFFECTIVE_ALGORITHM_ID = (
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_m62_effective_v6"
+)
+S13_M62_EFFECTIVE_IMPLEMENTATION_ID = (
+    "s013_m62_effective_photometric_single_pass_cuda_v6"
+)
 
 _S13_COMPONENT_NAME = "s013_output_first_progressive_dense_central_slit"
 
@@ -65,6 +71,7 @@ class S13IdentityDescriptor:
     stage_order: tuple[str, ...]
     runtime_backend: str = "numpy_reference"
     m62_equivalence: bool = False
+    m62_effective: bool = False
 
 
 _S13_IDENTITY_CONTRACTS = {
@@ -95,6 +102,11 @@ _S13_IDENTITY_CONTRACTS = {
         M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
         True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3"),
         "cupy_cuda_m62_cpu_equivalent_v5", True,
+    ),
+    (S13_M62_EFFECTIVE_ALGORITHM_ID, S13_M62_EFFECTIVE_IMPLEMENTATION_ID): S13IdentityDescriptor(
+        M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
+        True, False, False, False, True, "s013_m61_p3", "P3", ("P0", "P1", "P2", "P3"),
+        "cupy_cuda_m62_effective_v6", True, True,
     ),
     (S13_M51_R2_ALGORITHM_ID, S13_M51_R2_IMPLEMENTATION_ID): S13IdentityDescriptor(
         S13_M51_R2_CONTRACT_SCHEMA, S13_M51_R2_P2_COMPLETION_SCHEMA, True,
@@ -153,6 +165,10 @@ class S13Config:
     @property
     def m62_equivalence(self) -> bool:
         return self.identity.m62_equivalence
+
+    @property
+    def m62_effective(self) -> bool:
+        return self.identity.m62_effective
 
     @property
     def analysis_width_px(self) -> int:
@@ -231,6 +247,46 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
         publish = _mapping(equivalence.get("publish_mode"), "M6.2 publish mode")
         if publish.get("default") != "cpu_authoritative_hybrid":
             raise ValueError("S1.3 M6.2 must publish CPU-authoritative P3")
+    if identity_contract.m62_effective:
+        execution = _mapping(document.get("m62_execution"), "M6.2 execution")
+        if (
+            execution.get("mode") != "candidate_single_pass"
+            or list(execution.get("available_modes", ()))
+            != ["reference", "shadow_audit", "candidate_single_pass", "parity_test"]
+            or execution.get("legacy_reference_comparison") is not False
+            or execution.get("gpu_shadow_every_run") is not False
+            or execution.get("audit_reference_mode_available") is not True
+            or execution.get("q0_b0_direct_return") is not True
+        ):
+            raise ValueError("S1.3 effective M6.2 execution contract is invalid")
+        effectiveness = _mapping(document.get("m62_effectiveness"), "M6.2 effectiveness")
+        if any(
+            effectiveness.get(key) is not True
+            for key in (
+                "require_explicit_status",
+                "report_candidate_rejections",
+                "report_pair_ineligibility",
+                "report_p3_vs_p2",
+                "report_macro_seam_metrics",
+            )
+        ):
+            raise ValueError("S1.3 effective M6.2 reporting contract is invalid")
+        m61_selection = _mapping(
+            _mapping(document.get("m61_bootstrap"), "M6.1 bootstrap").get("selection"),
+            "M6.1 selection",
+        )
+        if dict(m61_selection) != {
+            "aggregate_p95_nonreg_absolute_tolerance_linear": 0.0005,
+            "aggregate_p95_nonreg_relative_tolerance": 0.02,
+            "minimum_actionable_macro_p95_benefit_fraction": 0.05,
+            "minimum_aggregate_median_benefit_fraction": 0.01,
+            "minimum_composite_benefit_fraction": 0.03,
+            "require_macro_and_micro_nonregression": True,
+            "selection_score_mde_linear": 0.0005,
+            "worst_pair_p95_nonreg_absolute_tolerance_linear": 0.0005,
+            "worst_pair_p95_nonreg_relative_tolerance": 0.02,
+        }:
+            raise ValueError("S1.3 effective M6.2 must retain the M6.1 quality selection gate")
     if (
         component.get("diagnostic_only") is not True
         or component.get("production_eligible") is not False
@@ -350,6 +406,47 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
             or photometric.get("failure_policy") != "identity"
         ):
             raise ValueError("S1.3 M6 photometric safety contract is invalid")
+        if identity_contract.m62_effective:
+            evidence = _mapping(component.get("photometric_evidence"), "photometric evidence")
+            tier_a = _mapping(evidence.get("tier_a"), "photometric Tier A")
+            tier_b = _mapping(evidence.get("tier_b"), "photometric Tier B")
+            bridge = _mapping(evidence.get("bridge"), "photometric bridge")
+            if (
+                tier_a.get("enabled") is not True
+                or list(tier_a.get("uses", ())) != ["solve", "blend", "heldout"]
+                or int(tier_a.get("minimum_train_samples", -1)) != 128
+                or tier_b.get("enabled") is not True
+                or list(tier_b.get("uses", ())) != ["solve"]
+                or tier_b.get("blend_eligible") is not False
+                or int(tier_b.get("minimum_combined_train_samples", -1)) != 192
+                or bridge.get("enabled") is not True
+                or int(bridge.get("source_index_gap", -1)) != 2
+                or int(bridge.get("minimum_overlap_width_px", -1)) != 32
+                or int(bridge.get("minimum_safe_samples", -1)) != 256
+                or float(bridge.get("minimum_inlier_fraction", -1.0)) != 0.7
+                or bridge.get("photometric_relation_only") is not True
+                or bridge.get("failure_policy") != "omit_edge"
+            ):
+                raise ValueError("S1.3 effective M6.2 evidence contract is invalid")
+            component_model = _mapping(
+                component.get("photometric_component_model"),
+                "photometric component model",
+            )
+            if (
+                component_model.get("enabled") is not True
+                or component_model.get("model")
+                != "Q4c_component_boundary_anchored_scalar_gain"
+                or component_model.get("authority") != "shadow"
+                or component_model.get("scalar_luminance_only") is not True
+                or float(component_model.get("bias", -1.0)) != 0.0
+                or float(component_model.get("minimum_gain", -1.0)) != 0.94
+                or float(component_model.get("maximum_gain", -1.0)) != 1.06
+                or component_model.get("component_atomic") is not True
+                or component_model.get("unsupported_cut_anchor_identity") is not True
+                or component_model.get("unsupported_cut_blend_model") != "B0_owner_only"
+                or int(component_model.get("cut_guard_width_px", -1)) != 12
+            ):
+                raise ValueError("S1.3 effective M6.2 component model contract is invalid")
         blend = _mapping(component.get("blend"), "blend")
         expected_blend_width = 2 if requires_m61_bootstrap else 8
         expected_blend_levels = 1 if requires_m61_bootstrap else 2
@@ -475,6 +572,10 @@ __all__ = [
     "S13_M51_R4_P2_COMPLETION_SCHEMA",
     "S13_CUDA_RESIDENT_ALGORITHM_ID",
     "S13_CUDA_RESIDENT_IMPLEMENTATION_ID",
+    "S13_M62_ALGORITHM_ID",
+    "S13_M62_IMPLEMENTATION_ID",
+    "S13_M62_EFFECTIVE_ALGORITHM_ID",
+    "S13_M62_EFFECTIVE_IMPLEMENTATION_ID",
     "M61_ALGORITHM_ID",
     "M61_CONTRACT_SCHEMA",
     "M61_IMPLEMENTATION_ID",
