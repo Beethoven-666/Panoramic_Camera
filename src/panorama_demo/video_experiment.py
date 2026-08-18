@@ -62,6 +62,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Mark this S1.3 M6.2 candidate run as benchmark warm-up only.",
     )
     parser.add_argument(
+        "--m62-execution-mode",
+        choices=("reference", "shadow_audit", "candidate_single_pass", "parity_test"),
+        help="S1.3 M6.2 only: override the configured execution mode for a dedicated audit.",
+    )
+    parser.add_argument(
         "--simulate-optimizer-all-fail",
         action="store_true",
         help="S1.3 test hook: fail all post-P0 optimizers after the immutable base seal.",
@@ -213,9 +218,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             config_path=getattr(args, "config", None),
             simulate_optimizer_all_fail=simulate_optimizer_all_fail,
             m62_warmup=bool(getattr(args, "m62_warmup", False)),
+            m62_execution_mode=getattr(args, "m62_execution_mode", None),
         )
         return report
-    if run_offline_orb or ignore_pose or simulate_optimizer_all_fail:
+    if run_offline_orb or ignore_pose or simulate_optimizer_all_fail or getattr(args, "m62_execution_mode", None):
         raise ValueError("S1.3-only flags cannot be used by legacy baseline/candidates")
     observe = ObservabilitySpec.from_values(
         report_level=args.report_level, artifact_level=args.artifact_level

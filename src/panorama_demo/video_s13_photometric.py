@@ -135,8 +135,9 @@ def _gradient(image: np.ndarray) -> np.ndarray:
 def _deterministic_train_mask(
     pair: S13P2ReplayPair, safe: np.ndarray, config: S13PhotometricConfig
 ) -> np.ndarray:
-    rows, columns = np.indices(safe.shape, dtype=np.uint64)
-    absolute_x = columns + np.uint64(pair.corridor_x0)
+    flat = np.arange(safe.size, dtype=np.uint64)
+    rows = flat // np.uint64(safe.shape[1])
+    absolute_x = flat % np.uint64(safe.shape[1]) + np.uint64(pair.corridor_x0)
     # Classification is canvas-global rather than pair-local.  Adjacent replay
     # shoulders may overlap; the same canvas sample must never be train for one
     # pair and held-out for its neighbour.
@@ -147,7 +148,7 @@ def _deterministic_train_mask(
             ^ np.uint64(config.deterministic_split_seed)
         )
     bucket = mixed % np.uint64(10000)
-    return safe & (bucket < int(round(config.train_fraction * 10000.0)))
+    return safe & (bucket < int(round(config.train_fraction * 10000.0))).reshape(safe.shape)
 
 
 def extract_s13_photometric_samples(
@@ -208,8 +209,6 @@ def extract_s13_photometric_samples(
         safe = common & intensity_safe & ~protected
         train = _deterministic_train_mask(pair, safe, config)
         heldout = safe & ~train
-        coordinates = np.indices(safe.shape, dtype=np.int32)
-        xy = np.stack((coordinates[1] + pair.corridor_x0, coordinates[0]), axis=2)
         train_indices = np.flatnonzero(train)
         heldout_indices = np.flatnonzero(heldout)
         if train_indices.size > config.maximum_samples_per_pair:
@@ -217,9 +216,11 @@ def extract_s13_photometric_samples(
         maximum_heldout = max(1, config.maximum_samples_per_pair // 3)
         if heldout_indices.size > maximum_heldout:
             heldout_indices = heldout_indices[:maximum_heldout]
-        flat_left, flat_right, flat_xy = (
-            left_linear.reshape(-1, 3), right_linear.reshape(-1, 3), xy.reshape(-1, 2)
-        )
+        flat_left, flat_right = left_linear.reshape(-1, 3), right_linear.reshape(-1, 3)
+        train_rows = train_indices // safe.shape[1]
+        train_columns = train_indices % safe.shape[1] + pair.corridor_x0
+        heldout_rows = heldout_indices // safe.shape[1]
+        heldout_columns = heldout_indices % safe.shape[1] + pair.corridor_x0
         sample_sets.append(S13PhotometricSampleSet(
             pair_index=pair.pair_index,
             left_source_index=pair.left_source_index,
@@ -228,8 +229,8 @@ def extract_s13_photometric_samples(
             train_right_rgb_linear=flat_right[train_indices],
             heldout_left_rgb_linear=flat_left[heldout_indices],
             heldout_right_rgb_linear=flat_right[heldout_indices],
-            train_canvas_xy=flat_xy[train_indices],
-            heldout_canvas_xy=flat_xy[heldout_indices],
+            train_canvas_xy=np.stack((train_columns, train_rows), axis=1).astype(np.int32),
+            heldout_canvas_xy=np.stack((heldout_columns, heldout_rows), axis=1).astype(np.int32),
             safe_mask=safe,
             protected_mask=protected,
             common_mask=common,

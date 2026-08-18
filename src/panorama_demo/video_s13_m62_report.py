@@ -82,7 +82,7 @@ def build_s13_m62_report(
             and performance.get("execution_mode") == "candidate_single_pass" else None
         ),
     )
-    component_count = int(selected.get("component_count", 0) or 0)
+    component_count = int(plan.evidence.component_count)
     return {
         "schema": "gemini305-video-s13-m62-report/v3",
         "effectiveness": effectiveness,

@@ -39,6 +39,10 @@ def execute_s13_m62_cpu_reference(
                          "m6_owner_source_remap_count": 0, "final_linear_full_d2h_count": 0,
                          "pixel_executor_count": 0, "cpu_corrected_roi_build_count": 0},
         )
+    if plan.photometric_solution.model_family == "Q0_identity":
+        return _execute_q0_compact_blend(
+            plan, started=started, retain_runtime_details=retain_runtime_details
+        )
     corrected = build_s13_m62_cpu_corrected_rois(plan)
     owner_linear = _compose_owner_only_roi(plan, corrected)
 
@@ -84,6 +88,54 @@ def build_s13_m62_cpu_corrected_rois(plan: S13M62ExecutionPlan) -> dict[int, np.
         adjusted[~roi.mapped] = 0.0
         corrected[parameter.source_index] = adjusted
     return corrected
+
+
+def _execute_q0_compact_blend(
+    plan: S13M62ExecutionPlan, *, started: float, retain_runtime_details: bool,
+) -> S13P3Result:
+    """Apply frozen B1 only where it changes P2; Q0 owner pixels need no remap."""
+
+    final_u8 = np.asarray(plan.p2_image).copy()
+    for pair, blend_plan, sample in zip(
+        plan.p2.replay_pairs, plan.blend_plans, plan.photometric_samples, strict=True
+    ):
+        active = np.asarray(blend_plan.secondary_weight) > 0.0
+        if not np.any(active):
+            continue
+        if sample.left_linear_corridor is None or sample.right_linear_corridor is None:
+            raise RuntimeError("S1.3 Q0 compact B1 linear pair evidence is unavailable")
+        pair_linear = apply_s13_blend_plan(
+            sample.left_linear_corridor, sample.right_linear_corridor, pair, blend_plan
+        )
+        pair_u8 = linear_to_srgb_bgr(pair_linear)
+        roi = np.s_[:, pair.corridor_x0:pair.corridor_x1]
+        final_u8[roi][active] = pair_u8[active]
+    final_u8[~plan.valid_mask] = 0
+    masks = _blend_masks(plan)
+    empty = np.zeros(plan.valid_mask.shape, bool)
+    return S13P3Result(
+        photometric_owner_only=np.asarray(plan.p2_image).copy(),
+        visual_panorama=final_u8, valid_mask=plan.valid_mask.copy(),
+        pixel_provenance=_p3_provenance(plan.p2, plan.blend_plans) if retain_runtime_details else {},
+        photometric_solution=plan.photometric_solution,
+        photometric_samples=plan.photometric_samples, blend_plans=plan.blend_plans,
+        protected_structure_mask=np.asarray(masks["protected"], bool),
+        safe_blend_mask=np.asarray(masks["safe"], bool),
+        blend_weight_map=np.asarray(masks["secondary_weight"], np.float32),
+        photometric_training_mask=np.asarray(plan.evidence.masks.get("train", empty), bool),
+        photometric_heldout_mask=np.asarray(plan.evidence.masks.get("heldout", empty), bool),
+        diagnostic_quality={},
+        performance={
+            "total_m6": time.perf_counter() - started,
+            "published_pixel_authority": "cpu", "q0_b0_direct_p2": False,
+            "m6_q0_direct_p2_return": False, "m6_owner_source_remap_count": 0,
+            "final_linear_full_d2h_count": 0, "pixel_executor_count": 1,
+            "cpu_corrected_roi_build_count": 0,
+            "q0_compact_blend_pair_count": sum(
+                np.any(item.secondary_weight > 0.0) for item in plan.blend_plans
+            ),
+        },
+    )
 
 
 def _blend_masks(plan: S13M62ExecutionPlan) -> dict[str, np.ndarray]:

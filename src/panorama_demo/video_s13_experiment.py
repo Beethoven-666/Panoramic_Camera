@@ -2647,9 +2647,14 @@ def run_s13_experiment(
     resume_generation: Path | None = None,
     manual_c2e_forward_m7: bool = False,
     m62_warmup: bool = False,
+    m62_execution_mode: str | None = None,
 ) -> dict[str, Any]:
     run_started = time.perf_counter()
     config = load_s13_config(candidate_config)
+    if m62_execution_mode is not None:
+        available = tuple(dict(config.document.get("m62_execution", {})).get("available_modes", ()))
+        if not config.m62_equivalence or m62_execution_mode not in available:
+            raise ValueError("S1.3 M6.2 execution-mode override is unavailable for this candidate")
     configured_algorithm_id = str(config.document["algorithm_id"])
     configured_implementation_id = str(config.document["implementation_id"])
     if (
@@ -2896,7 +2901,10 @@ def run_s13_experiment(
                 "photometric": dict(config.component["photometric"]),
                 "blend": dict(config.component["blend"]),
                 "equivalence": dict(config.document.get("m62_equivalence", {})),
-                "execution": dict(config.document.get("m62_execution", {})),
+                "execution": {
+                    **dict(config.document.get("m62_execution", {})),
+                    **({"mode": m62_execution_mode} if m62_execution_mode is not None else {}),
+                },
                 "selection": dict(config.document.get("m61_bootstrap", {}).get("selection", {})),
             } if config.m62_equivalence else None,
         )

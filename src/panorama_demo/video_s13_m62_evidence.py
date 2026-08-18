@@ -24,6 +24,7 @@ class S13M62EvidenceBundle:
     tier_b_sample_count: int
     adjacent_edge_count: int
     bridge_edge_count: int
+    component_count: int
     unsupported_cut_pair_indices: tuple[int, ...]
 
 
@@ -241,13 +242,30 @@ def extract_s13_m62_evidence(
     if not retain_runtime_details:
         masks = {}
     solve_samples = tuple(adjacent) + tuple(bridges)
+    adjacency = [set() for _ in source_rois]
+    for item in solve_samples:
+        if item.edge_eligible is True:
+            adjacency[item.left_source_index].add(item.right_source_index)
+            adjacency[item.right_source_index].add(item.left_source_index)
+    remaining = set(range(len(source_rois)))
+    component_count = 0
+    while remaining:
+        component_count += 1
+        stack = [min(remaining)]
+        while stack:
+            node = stack.pop()
+            if node not in remaining:
+                continue
+            remaining.remove(node)
+            stack.extend(adjacency[node])
     return S13M62EvidenceBundle(
         adjacent_samples=tuple(adjacent), solve_samples=solve_samples, masks=masks,
         raw_by_frame=raw,
         tier_a_sample_count=sum(item.tier_a_train_sample_count for item in solve_samples),
         tier_b_sample_count=sum(item.tier_b_train_sample_count for item in solve_samples),
         adjacent_edge_count=sum(item.edge_eligible is True for item in adjacent),
-        bridge_edge_count=len(bridges), unsupported_cut_pair_indices=unsupported,
+        bridge_edge_count=len(bridges), component_count=component_count,
+        unsupported_cut_pair_indices=unsupported,
     )
 
 
