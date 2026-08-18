@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import numpy as np
 import pytest
@@ -69,6 +70,7 @@ def test_candidate_single_pass_q0_b0_skips_all_pixel_executors(tmp_path: Path) -
     assert result.performance["m6_owner_source_remap_count"] == 0
     assert result.performance["final_linear_full_d2h_count"] == 0
     assert audit["plan"].q0_b0_direct_return is True
+    json.dumps(result.performance)
 
 
 def test_audit_modes_are_explicit_and_isolated(tmp_path: Path) -> None:

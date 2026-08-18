@@ -131,9 +131,9 @@ def _execute_q0_compact_blend(
             "m6_q0_direct_p2_return": False, "m6_owner_source_remap_count": 0,
             "final_linear_full_d2h_count": 0, "pixel_executor_count": 1,
             "cpu_corrected_roi_build_count": 0,
-            "q0_compact_blend_pair_count": sum(
+            "q0_compact_blend_pair_count": int(sum(
                 np.any(item.secondary_weight > 0.0) for item in plan.blend_plans
-            ),
+            )),
         },
     )
 
