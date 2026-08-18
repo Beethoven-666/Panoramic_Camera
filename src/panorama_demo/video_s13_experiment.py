@@ -2648,6 +2648,7 @@ def run_s13_experiment(
     manual_c2e_forward_m7: bool = False,
     m62_warmup: bool = False,
     m62_execution_mode: str | None = None,
+    post_p2_fixture: Path | None = None,
 ) -> dict[str, Any]:
     run_started = time.perf_counter()
     config = load_s13_config(candidate_config)
@@ -2907,6 +2908,7 @@ def run_s13_experiment(
                 },
                 "selection": dict(config.document.get("m61_bootstrap", {}).get("selection", {})),
             } if config.m62_equivalence else None,
+            post_p2_fixture=post_p2_fixture,
         )
         if config.runtime_backend == "cupy_cuda_structural_equivalent_v3":
             runner_arguments["structural_equivalent_v3"] = True

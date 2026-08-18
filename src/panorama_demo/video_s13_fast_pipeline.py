@@ -66,6 +66,7 @@ def run_s13_fast_pipeline(
     m6_cuda_v3: bool = False,
     m62_equivalence: bool = False,
     m62_options: Mapping[str, object] | None = None,
+    post_p2_fixture: Path | None = None,
 ) -> dict[str, Any]:
     """Render P0--P3 once, keeping every parent and decision in memory."""
 
@@ -270,6 +271,15 @@ def run_s13_fast_pipeline(
             replay_pairs=selected_replay,
             immutable_sha256={},
         )
+        if post_p2_fixture is not None:
+            from .video_s13_post_p2_fixture import export_s13_post_p2_fixture
+
+            export_s13_post_p2_fixture(
+                post_p2_fixture,
+                p2_runtime,
+                session_path=session.root,
+                force_owner_only_pair_indices=frozenset(owner_only_pairs),
+            )
         m62: dict[str, Any] | None = None
         if m62_equivalence:
             from .video_s13_m62_runner import run_s13_m62_cpu_authoritative
