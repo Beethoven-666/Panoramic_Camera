@@ -6,7 +6,6 @@ import hashlib
 import json
 import math
 import os
-from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar
 import time
 from dataclasses import dataclass, replace
@@ -1124,7 +1123,6 @@ def estimate_s13_m5_transactions(
     p0_ancestor_completion_sha256: str | None = None,
     maximum_seam_shift_px: int = 8,
     m51_r2_config: S13M51R2Config | None = None,
-    base_pair_workers: int = 1,
 ) -> tuple[S13M5Pair, ...]:
     """Evaluate peer seam candidates independently from immutable P1/P0 grids."""
 
@@ -1135,28 +1133,22 @@ def estimate_s13_m5_transactions(
     vertical_parent = vertical if isinstance(successor, S13M51R4Config) else None
     instrumentation_requested = m51_r2_config is not None
     audit_all = os.environ.get("G305_S13_M5_AUDIT_ALL_CANDIDATES", "0") == "1"
-    if base_pair_workers not in (1, 2):
-        raise ValueError("S1.3 M5 base pair workers must be 1 or 2")
 
     def raw(frame_id: int) -> np.ndarray:
         if frame_id not in raw_cache:
             raw_cache[frame_id] = np.asarray(image_loader(frame_id))
         return raw_cache[frame_id]
 
-    parallel_base: dict[int, tuple[object, ...] | Exception] = {}
-    if base_pair_workers == 2:
-        # Populate the loader cache on the calling thread. Workers only observe
-        # immutable views, so neither this cache nor caller-owned sources race.
-        for assignment in schedule.assignments:
-            frame_id = int(assignment.frame_id)
-            if frame_id not in raw_cache:
-                image = np.asarray(image_loader(frame_id)).view()
-                image.flags.writeable = False
-                raw_cache[frame_id] = image
-
-        def prepare_maps(pair_index: int) -> tuple[int, int, S13M5PairInput]:
-            left_assignment = schedule.assignments[pair_index]
-            right_assignment = schedule.assignments[pair_index + 1]
+    for pair_index, (left_assignment, right_assignment) in enumerate(
+        zip(schedule.assignments[:-1], schedule.assignments[1:])
+    ):
+        frame_ids = (left_assignment.frame_id, right_assignment.frame_id)
+        correspondence_audit: Mapping[str, object] | None = None
+        complete_reassessment = (
+            isinstance(successor, S13M51R3Config)
+            and successor.requires_complete_seam_reassessment(pair_index)
+        )
+        try:
             x0, x1 = _pair_domain(schedule, pair_index)
             if x1 - x0 < 12:
                 raise ValueError("final_corridor_too_narrow")
@@ -1170,106 +1162,22 @@ def estimate_s13_m5_transactions(
                 vertical.global_offsets_px[pair_index + 1], None,
                 vertical_parent=vertical_parent,
             )
-            return x0, x1, _freeze_m5_pair_input(
+            pair_input = _freeze_m5_pair_input(
                 pair_index=pair_index,
-                left_frame_id=int(left_assignment.frame_id),
-                right_frame_id=int(right_assignment.frame_id),
+                left_frame_id=frame_ids[0],
+                right_frame_id=frame_ids[1],
                 corridor_x0=x0,
                 corridor_x1=x1,
                 left_maps=left_maps,
                 right_maps=right_maps,
             )
-
-        pair_count = max(0, len(schedule.assignments) - 1)
-        with ThreadPoolExecutor(
-            max_workers=base_pair_workers, thread_name_prefix="s13-m5-base"
-        ) as executor:
-            map_futures: dict[int, Future[tuple[int, int, S13M5PairInput]]] = {}
-            next_map = 0
-            for _ in range(min(base_pair_workers, pair_count)):
-                map_futures[next_map] = executor.submit(prepare_maps, next_map)
-                next_map += 1
-            for pair_index in range(pair_count):
-                try:
-                    x0, x1, pair_input = map_futures.pop(pair_index).result()
-                    # The resident CUDA sampler owns one stream and explicit
-                    # synchronization boundary, so it stays on this thread.
-                    left_image, left_valid, right_image, right_valid = (
-                        _sample_m5_base_pair(pair_input, raw)
-                    )
-                    correspondence = executor.submit(
-                        _pair_correspondences,
-                        left_image,
-                        right_image,
-                        left_valid,
-                        right_valid,
-                        x_offset=x0,
-                        config=successor,
-                    )
-                    parallel_base[pair_index] = (
-                        x0, x1, left_image, left_valid, right_image, right_valid,
-                        correspondence,
-                    )
-                except Exception as exc:
-                    parallel_base[pair_index] = exc
-                if next_map < pair_count:
-                    map_futures[next_map] = executor.submit(prepare_maps, next_map)
-                    next_map += 1
-
-            # Executor exit waits for every correspondence future. Consumption
-            # below remains strictly ordered by pair index.
-
-    for pair_index, (left_assignment, right_assignment) in enumerate(
-        zip(schedule.assignments[:-1], schedule.assignments[1:])
-    ):
-        frame_ids = (left_assignment.frame_id, right_assignment.frame_id)
-        correspondence_audit: Mapping[str, object] | None = None
-        complete_reassessment = (
-            isinstance(successor, S13M51R3Config)
-            and successor.requires_complete_seam_reassessment(pair_index)
-        )
-        try:
-            if base_pair_workers == 2:
-                prepared = parallel_base[pair_index]
-                if isinstance(prepared, Exception):
-                    raise prepared
-                (
-                    x0, x1, left_image, left_valid, right_image, right_valid,
-                    correspondence_future,
-                ) = prepared
-                if not isinstance(correspondence_future, Future):
-                    raise TypeError("S1.3 M5 parallel correspondence future is invalid")
-                correspondence_result = correspondence_future.result()
-            else:
-                x0, x1 = _pair_domain(schedule, pair_index)
-                if x1 - x0 < 12:
-                    raise ValueError("final_corridor_too_narrow")
-                left_maps = _map_crop(
-                    schedule, calibration, pair_index, x0, x1,
-                    vertical.global_offsets_px[pair_index], None,
-                    vertical_parent=vertical_parent,
-                )
-                right_maps = _map_crop(
-                    schedule, calibration, pair_index + 1, x0, x1,
-                    vertical.global_offsets_px[pair_index + 1], None,
-                    vertical_parent=vertical_parent,
-                )
-                pair_input = _freeze_m5_pair_input(
-                    pair_index=pair_index,
-                    left_frame_id=frame_ids[0],
-                    right_frame_id=frame_ids[1],
-                    corridor_x0=x0,
-                    corridor_x1=x1,
-                    left_maps=left_maps,
-                    right_maps=right_maps,
-                )
-                left_image, left_valid, right_image, right_valid = (
-                    _sample_m5_base_pair(pair_input, raw)
-                )
-                correspondence_result = _pair_correspondences(
-                    left_image, right_image, left_valid, right_valid,
-                    x_offset=x0, config=successor,
-                )
+            left_image, left_valid, right_image, right_valid = (
+                _sample_m5_base_pair(pair_input, raw)
+            )
+            correspondence_result = _pair_correspondences(
+                left_image, right_image, left_valid, right_valid,
+                x_offset=x0, config=successor,
+            )
             reference, moving = correspondence_result
             correspondence_audit = correspondence_result.audit
             p0_u, p0_v, p0_valid = _base_calibrated_map(
@@ -2532,7 +2440,6 @@ def run_s13_m5(
     placement_methods: tuple[str, ...] | None = None,
     m51_r2_config: S13M51R2Config | None = None,
     final_image_composer: Callable[[tuple[int, ...], np.ndarray, dict[str, np.ndarray]], np.ndarray] | None = None,
-    base_pair_workers: int = 1,
 ) -> S13M5Result:
     started = time.perf_counter()
     tick = time.perf_counter()
@@ -2555,7 +2462,6 @@ def run_s13_m5(
         parent_result_sha256=parent_result_sha256,
         p0_ancestor_completion_sha256=p0_ancestor_completion_sha256,
         m51_r2_config=m51_r2_config,
-        base_pair_workers=base_pair_workers,
     )
     component_chain_audit: dict[str, object] | None = None
     component_chain_seconds = 0.0
@@ -4223,7 +4129,6 @@ def run_s13_m5(
         after_mean_score=after_mean,
         selection_audit=selection_audit,
         performance={
-            "base_pair_workers": int(base_pair_workers),
             "geometry": geometry_seconds,
             "seam_and_p2_render": seam_seconds,
             "total_m5": time.perf_counter() - started,

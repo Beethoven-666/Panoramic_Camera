@@ -151,9 +151,7 @@ def run_s13_fast_pipeline(
 
         tick = time.perf_counter()
         estimate_tick = time.perf_counter()
-        vertical = estimate_s13_vertical(
-            schedule, session.calibration, image_loader, evidence_workers=2
-        )
+        vertical = estimate_s13_vertical(schedule, session.calibration, image_loader)
         timings["m4.estimate"] = time.perf_counter() - estimate_tick
         selection_tick = time.perf_counter()
         vertical_selection = select_s13_vertical_parent(
@@ -220,7 +218,6 @@ def run_s13_fast_pipeline(
                 placement_methods=selection.placement_methods,
                 m51_r2_config=m51_r2_config,
                 final_image_composer=final_image_composer,
-                base_pair_workers=2,
             )
         finally:
             if resident_m5_batch_token is not None:

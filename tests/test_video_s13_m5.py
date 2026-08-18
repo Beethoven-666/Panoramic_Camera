@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 
 import numpy as np
 import pytest
@@ -556,65 +555,6 @@ def test_transactions_cover_every_pair_and_p2_remaps_each_raw_source_once() -> N
     assert np.isfinite(result.pixel_provenance["source_v"][valid]).all()
     assert np.all(result.pixel_provenance["secondary_frame_id"] == -1)
     assert np.all(result.pixel_provenance["secondary_weight"] == 0.0)
-
-
-def test_parallel_base_pair_preparation_is_exact_and_samples_on_calling_thread(
-    monkeypatch,
-) -> None:
-    import panorama_demo.video_s13_m5 as m5_module
-
-    calibration, schedule, images, vertical = _m5_inputs()
-    serial = estimate_s13_m5_transactions(
-        schedule, calibration, images.__getitem__, vertical,
-        parent_stage_sha256="7" * 64,
-    )
-    calling_thread = threading.get_ident()
-    sample_threads: list[int] = []
-    correspondence_threads: list[int] = []
-    load_count: dict[int, int] = {}
-    original_sample = m5_module._sample_m5_base_pair
-    original_correspondences = m5_module._pair_correspondences
-
-    def loader(frame_id: int) -> np.ndarray:
-        load_count[frame_id] = load_count.get(frame_id, 0) + 1
-        return images[frame_id]
-
-    def recording_sample(*args, **kwargs):
-        sample_threads.append(threading.get_ident())
-        return original_sample(*args, **kwargs)
-
-    def recording_correspondences(*args, **kwargs):
-        correspondence_threads.append(threading.get_ident())
-        return original_correspondences(*args, **kwargs)
-
-    monkeypatch.setattr(m5_module, "_sample_m5_base_pair", recording_sample)
-    monkeypatch.setattr(m5_module, "_pair_correspondences", recording_correspondences)
-    parallel = estimate_s13_m5_transactions(
-        schedule, calibration, loader, vertical,
-        parent_stage_sha256="7" * 64,
-        base_pair_workers=2,
-    )
-
-    assert load_count == {frame_id: 1 for frame_id in images}
-    assert sample_threads == [calling_thread] * (len(schedule.assignments) - 1)
-    assert correspondence_threads
-    assert all(thread_id != calling_thread for thread_id in correspondence_threads)
-    assert [pair.transaction for pair in parallel] == [
-        pair.transaction for pair in serial
-    ]
-    for actual, expected in zip(parallel, serial, strict=True):
-        assert np.array_equal(actual.seam_x_by_row, expected.seam_x_by_row)
-        assert (actual.alignment is None) is (expected.alignment is None)
-        if actual.alignment is not None and expected.alignment is not None:
-            assert actual.alignment.selected_model == expected.alignment.selected_model
-            assert np.array_equal(
-                actual.alignment.selected.target_delta_u,
-                expected.alignment.selected.target_delta_u,
-            )
-            assert np.array_equal(
-                actual.alignment.selected.target_delta_v,
-                expected.alignment.selected.target_delta_v,
-            )
 
 
 def test_ordinary_p2_sample_cache_is_exact_for_both_owner_topologies() -> None:

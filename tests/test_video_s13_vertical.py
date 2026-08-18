@@ -44,38 +44,6 @@ def test_vertical_solution_uses_required_shoulder_gain_and_zero_missing_rows() -
     assert solution.pairs[0].status == "local_zero"
 
 
-def test_two_worker_local_evidence_is_exactly_equal_to_serial() -> None:
-    calibration = _calibration()
-    schedule = build_s012_schedule(
-        (0, 1, 2, 3), (47.5, 55.5, 63.5, 71.5), calibration,
-        hard_internal_width_px=None,
-    )
-    base = _textured_image(27)
-    images = {
-        0: base,
-        1: _textured_image(27, 1),
-        2: _textured_image(27, 2),
-        3: _textured_image(27, 3),
-    }
-    serial = estimate_s13_vertical(
-        schedule, calibration, images.__getitem__, evidence_workers=1
-    )
-    parallel = estimate_s13_vertical(
-        schedule, calibration, images.__getitem__, evidence_workers=2
-    )
-
-    assert parallel.global_offsets_px == serial.global_offsets_px
-    assert parallel.gain_scores == serial.gain_scores
-    assert parallel.pairs == serial.pairs
-    assert parallel.selected_gain == serial.selected_gain
-    assert all(
-        np.array_equal(left, right)
-        for left, right in zip(
-            parallel.local_row_residuals, serial.local_row_residuals, strict=True
-        )
-    )
-
-
 def test_p1_formally_samples_each_raw_contributor_once() -> None:
     calibration = _calibration()
     schedule = build_s012_schedule((0, 1, 2), (47.5, 55.5, 63.5), calibration, hard_internal_width_px=None)

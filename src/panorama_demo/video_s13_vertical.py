@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -460,13 +459,10 @@ def estimate_s13_vertical(
     *,
     shoulder_width_px: int = 96,
     gain_candidates: tuple[float, ...] = (0.0, 0.25, 0.5, 1.0),
-    evidence_workers: int = 1,
 ) -> S13VerticalSolution:
     camera_matrix(calibration)
     validate_s012_schedule(schedule)
     shoulder = int(np.clip(shoulder_width_px, 64, 128))
-    if evidence_workers not in (1, 2):
-        raise ValueError("S1.3 vertical evidence supports only 1 or 2 workers")
     cache: OrderedDict[int, np.ndarray] = OrderedDict()
 
     def load(frame_id: int) -> np.ndarray:
@@ -502,17 +498,10 @@ def estimate_s13_vertical(
         sampled_pairs.append((left_gray, right_gray, common, left_x, right_x))
     observation = np.asarray(measurements, dtype=np.float64)
     weight = np.clip(np.asarray(responses, dtype=np.float64), 0.0, 1.0)
-    evidence_inputs = tuple(
-        (left, right, common)
+    local_evidence = tuple(
+        _local_row_evidence(left, right, common)
         for left, right, common, _left_x, _right_x in sampled_pairs
     )
-    if evidence_workers == 1:
-        local_evidence = tuple(_local_row_evidence(*item) for item in evidence_inputs)
-    else:
-        with ThreadPoolExecutor(
-            max_workers=evidence_workers, thread_name_prefix="s13-m4-evidence"
-        ) as pool:
-            local_evidence = tuple(pool.map(lambda item: _local_row_evidence(*item), evidence_inputs))
     gain_scores: dict[str, float] = {}
     candidates: dict[float, np.ndarray] = {}
     for gain in gain_candidates:
@@ -575,7 +564,6 @@ def estimate_s13_vertical(
             "measurement_source": "immutable_P0_target_grids",
             "gain_candidates": list(gain_candidates),
             "selected_gain": float(selected_gain),
-            "evidence_workers": evidence_workers,
             "missing_rows_are_zero": True,
             "maximum_local_residual_px": 2.0,
             "translation_rotation_affine_seam_photometric_blend_depth_mesh_enabled": False,
