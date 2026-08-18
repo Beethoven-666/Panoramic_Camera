@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar
 import time
 from dataclasses import dataclass, replace
@@ -80,6 +81,9 @@ from .video_s13_hard_audit import long_horizontal_structure_catastrophe_guard
 
 S13SourceMapProvider = Callable[
     [int, int, int], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+]
+S13SampledSourceProvider = Callable[
+    [int, int, int], tuple[np.ndarray, np.ndarray, bool]
 ]
 
 
@@ -261,6 +265,7 @@ class S13P2Result:
     remap_invocations: int
     decoded_frame_ids: tuple[int, ...]
     expected_support_mask: np.ndarray
+    actual_remap_invocations: int = 0
 
 
 @dataclass(frozen=True)
@@ -1119,6 +1124,7 @@ def estimate_s13_m5_transactions(
     p0_ancestor_completion_sha256: str | None = None,
     maximum_seam_shift_px: int = 8,
     m51_r2_config: S13M51R2Config | None = None,
+    base_pair_workers: int = 1,
 ) -> tuple[S13M5Pair, ...]:
     """Evaluate peer seam candidates independently from immutable P1/P0 grids."""
 
@@ -1129,11 +1135,89 @@ def estimate_s13_m5_transactions(
     vertical_parent = vertical if isinstance(successor, S13M51R4Config) else None
     instrumentation_requested = m51_r2_config is not None
     audit_all = os.environ.get("G305_S13_M5_AUDIT_ALL_CANDIDATES", "0") == "1"
+    if base_pair_workers not in (1, 2):
+        raise ValueError("S1.3 M5 base pair workers must be 1 or 2")
 
     def raw(frame_id: int) -> np.ndarray:
         if frame_id not in raw_cache:
             raw_cache[frame_id] = np.asarray(image_loader(frame_id))
         return raw_cache[frame_id]
+
+    parallel_base: dict[int, tuple[object, ...] | Exception] = {}
+    if base_pair_workers == 2:
+        # Populate the loader cache on the calling thread. Workers only observe
+        # immutable views, so neither this cache nor caller-owned sources race.
+        for assignment in schedule.assignments:
+            frame_id = int(assignment.frame_id)
+            if frame_id not in raw_cache:
+                image = np.asarray(image_loader(frame_id)).view()
+                image.flags.writeable = False
+                raw_cache[frame_id] = image
+
+        def prepare_maps(pair_index: int) -> tuple[int, int, S13M5PairInput]:
+            left_assignment = schedule.assignments[pair_index]
+            right_assignment = schedule.assignments[pair_index + 1]
+            x0, x1 = _pair_domain(schedule, pair_index)
+            if x1 - x0 < 12:
+                raise ValueError("final_corridor_too_narrow")
+            left_maps = _map_crop(
+                schedule, calibration, pair_index, x0, x1,
+                vertical.global_offsets_px[pair_index], None,
+                vertical_parent=vertical_parent,
+            )
+            right_maps = _map_crop(
+                schedule, calibration, pair_index + 1, x0, x1,
+                vertical.global_offsets_px[pair_index + 1], None,
+                vertical_parent=vertical_parent,
+            )
+            return x0, x1, _freeze_m5_pair_input(
+                pair_index=pair_index,
+                left_frame_id=int(left_assignment.frame_id),
+                right_frame_id=int(right_assignment.frame_id),
+                corridor_x0=x0,
+                corridor_x1=x1,
+                left_maps=left_maps,
+                right_maps=right_maps,
+            )
+
+        pair_count = max(0, len(schedule.assignments) - 1)
+        with ThreadPoolExecutor(
+            max_workers=base_pair_workers, thread_name_prefix="s13-m5-base"
+        ) as executor:
+            map_futures: dict[int, Future[tuple[int, int, S13M5PairInput]]] = {}
+            next_map = 0
+            for _ in range(min(base_pair_workers, pair_count)):
+                map_futures[next_map] = executor.submit(prepare_maps, next_map)
+                next_map += 1
+            for pair_index in range(pair_count):
+                try:
+                    x0, x1, pair_input = map_futures.pop(pair_index).result()
+                    # The resident CUDA sampler owns one stream and explicit
+                    # synchronization boundary, so it stays on this thread.
+                    left_image, left_valid, right_image, right_valid = (
+                        _sample_m5_base_pair(pair_input, raw)
+                    )
+                    correspondence = executor.submit(
+                        _pair_correspondences,
+                        left_image,
+                        right_image,
+                        left_valid,
+                        right_valid,
+                        x_offset=x0,
+                        config=successor,
+                    )
+                    parallel_base[pair_index] = (
+                        x0, x1, left_image, left_valid, right_image, right_valid,
+                        correspondence,
+                    )
+                except Exception as exc:
+                    parallel_base[pair_index] = exc
+                if next_map < pair_count:
+                    map_futures[next_map] = executor.submit(prepare_maps, next_map)
+                    next_map += 1
+
+            # Executor exit waits for every correspondence future. Consumption
+            # below remains strictly ordered by pair index.
 
     for pair_index, (left_assignment, right_assignment) in enumerate(
         zip(schedule.assignments[:-1], schedule.assignments[1:])
@@ -1145,24 +1229,47 @@ def estimate_s13_m5_transactions(
             and successor.requires_complete_seam_reassessment(pair_index)
         )
         try:
-            x0, x1 = _pair_domain(schedule, pair_index)
-            if x1 - x0 < 12:
-                raise ValueError("final_corridor_too_narrow")
-            left_maps = _map_crop(schedule, calibration, pair_index, x0, x1,
-                                  vertical.global_offsets_px[pair_index], None,
-                                  vertical_parent=vertical_parent)
-            right_maps = _map_crop(schedule, calibration, pair_index + 1, x0, x1,
-                                   vertical.global_offsets_px[pair_index + 1], None,
-                                   vertical_parent=vertical_parent)
-            pair_input = _freeze_m5_pair_input(
-                pair_index=pair_index, left_frame_id=frame_ids[0], right_frame_id=frame_ids[1],
-                corridor_x0=x0, corridor_x1=x1, left_maps=left_maps, right_maps=right_maps,
-            )
-            left_image, left_valid, right_image, right_valid = _sample_m5_base_pair(pair_input, raw)
-            correspondence_result = _pair_correspondences(
-                left_image, right_image, left_valid, right_valid, x_offset=x0,
-                config=successor,
-            )
+            if base_pair_workers == 2:
+                prepared = parallel_base[pair_index]
+                if isinstance(prepared, Exception):
+                    raise prepared
+                (
+                    x0, x1, left_image, left_valid, right_image, right_valid,
+                    correspondence_future,
+                ) = prepared
+                if not isinstance(correspondence_future, Future):
+                    raise TypeError("S1.3 M5 parallel correspondence future is invalid")
+                correspondence_result = correspondence_future.result()
+            else:
+                x0, x1 = _pair_domain(schedule, pair_index)
+                if x1 - x0 < 12:
+                    raise ValueError("final_corridor_too_narrow")
+                left_maps = _map_crop(
+                    schedule, calibration, pair_index, x0, x1,
+                    vertical.global_offsets_px[pair_index], None,
+                    vertical_parent=vertical_parent,
+                )
+                right_maps = _map_crop(
+                    schedule, calibration, pair_index + 1, x0, x1,
+                    vertical.global_offsets_px[pair_index + 1], None,
+                    vertical_parent=vertical_parent,
+                )
+                pair_input = _freeze_m5_pair_input(
+                    pair_index=pair_index,
+                    left_frame_id=frame_ids[0],
+                    right_frame_id=frame_ids[1],
+                    corridor_x0=x0,
+                    corridor_x1=x1,
+                    left_maps=left_maps,
+                    right_maps=right_maps,
+                )
+                left_image, left_valid, right_image, right_valid = (
+                    _sample_m5_base_pair(pair_input, raw)
+                )
+                correspondence_result = _pair_correspondences(
+                    left_image, right_image, left_valid, right_valid,
+                    x_offset=x0, config=successor,
+                )
             reference, moving = correspondence_result
             correspondence_audit = correspondence_result.audit
             p0_u, p0_v, p0_valid = _base_calibrated_map(
@@ -1933,15 +2040,11 @@ def build_s13_p2_replay(
     return tuple(replay)
 
 
-def plan_s13_m5_oracle_domains(
+def plan_s13_m5_render_domains(
     schedule: S012Schedule,
     pairs: Sequence[S13M5Pair],
-    registry: SourceCorrectionRegistry,
-    *,
-    corridor_half_width_px: int = 8,
-    bilinear_halo_px: int = 1,
 ) -> Mapping[int, tuple[int, int]]:
-    """Plan the union of both owner topologies, replay, and correction halos."""
+    """Plan the union of the fixed and selected owner topologies."""
 
     width, height = schedule.canvas_width, schedule.canvas_height
     canvas = np.arange(width, dtype=np.int32)[None, :]
@@ -1956,6 +2059,29 @@ def plan_s13_m5_oracle_domains(
             columns = np.flatnonzero(np.any(owner == source, axis=0))
             if columns.size:
                 domains[source].append((int(columns[0]), int(columns[-1]) + 1))
+    return MappingProxyType({
+        source: (min(row[0] for row in rows), max(row[1] for row in rows))
+        for source, rows in domains.items() if rows
+    })
+
+
+def plan_s13_m5_oracle_domains(
+    schedule: S012Schedule,
+    pairs: Sequence[S13M5Pair],
+    registry: SourceCorrectionRegistry,
+    *,
+    corridor_half_width_px: int = 8,
+    bilinear_halo_px: int = 1,
+) -> Mapping[int, tuple[int, int]]:
+    """Plan the union of both owner topologies, replay, and correction halos."""
+
+    width = schedule.canvas_width
+    domains: dict[int, list[tuple[int, int]]] = {
+        source: [domain]
+        for source, domain in plan_s13_m5_render_domains(schedule, pairs).items()
+    }
+    for source in range(len(schedule.assignments)):
+        domains.setdefault(source, [])
     for pair_index, pair in enumerate(pairs):
         seam = np.asarray(pair.seam_x_by_row, np.int32)
         x0 = max(0, int(seam.min()) - corridor_half_width_px)
@@ -2090,23 +2216,108 @@ def _finalize_s13_m5_render(
     def raw(frame_id: int) -> np.ndarray:
         return estimate.evidence_context.raw_rgb_by_frame[frame_id]
 
+    oracle_by_source = {
+        row.source_index: row for row in estimate.final_source_map_oracles
+    }
+    sampled_cache: dict[int, tuple[int, int, np.ndarray, np.ndarray]] = {}
+
+    def sampled_source(source_index: int, x0: int, x1: int):
+        cached = sampled_cache.get(source_index)
+        cache_miss = cached is None
+        if cached is None:
+            oracle = oracle_by_source.get(source_index)
+            if oracle is None:
+                raise ValueError("sampled source cache authority is missing")
+            ox0, oy0, ox1, oy1 = oracle.domain_xyxy
+            if oy0 != 0 or oy1 != schedule.canvas_height:
+                raise ValueError("sampled source cache domain is not full-height")
+            assignment = schedule.assignments[source_index]
+            source = np.asarray(raw(int(assignment.frame_id)))
+            maps = map_provider(source_index, ox0, ox1)
+            sampled, valid = _sample_crop(source, maps[:3])
+            sampled = np.asarray(sampled).view()
+            valid = np.asarray(valid, dtype=bool).view()
+            sampled.flags.writeable = False
+            valid.flags.writeable = False
+            cached = (ox0, ox1, sampled, valid)
+            sampled_cache[source_index] = cached
+        ox0, ox1, sampled, valid = cached
+        if x0 < ox0 or x1 > ox1 or x0 >= x1:
+            raise ValueError("sampled source request exceeds frozen domain")
+        local = np.s_[:, x0 - ox0:x1 - ox0]
+        return sampled[local], valid[local], cache_miss
+
     geometry = render_s13_p2_from_raw(
         schedule, calibration, raw, vertical, estimate.pairs, final_seams=False,
         selected_hypothesis_ids=selected_hypothesis_ids,
         placement_methods=placement_methods, map_provider=map_provider,
         expected_support_provider=expected_support_provider,
+        sampled_source_provider=sampled_source,
     )
     final = render_s13_p2_from_raw(
         schedule, calibration, raw, vertical, estimate.pairs, final_seams=True,
         selected_hypothesis_ids=selected_hypothesis_ids,
         placement_methods=placement_methods, map_provider=map_provider,
         expected_support_provider=expected_support_provider,
+        sampled_source_provider=sampled_source,
         image_composer=final_image_composer,
     )
     replay = build_s13_p2_replay(
         schedule, calibration, vertical, estimate.pairs, map_provider=map_provider
     )
     return geometry, final, replay
+
+
+def _ordinary_s13_sampled_source_provider(
+    schedule: S012Schedule,
+    calibration: CameraIntrinsics,
+    image_loader: Callable[[int], np.ndarray],
+    vertical: S13VerticalSolution,
+    pairs: Sequence[S13M5Pair],
+) -> S13SampledSourceProvider:
+    """Cache one immutable union-domain sample for both ordinary P2 renders."""
+
+    domains = plan_s13_m5_render_domains(schedule, pairs)
+    cache: dict[int, tuple[int, int, np.ndarray, np.ndarray]] = {}
+
+    def provide(source_index: int, x0: int, x1: int):
+        cached = cache.get(source_index)
+        cache_miss = cached is None
+        if cached is None:
+            domain = domains.get(source_index)
+            if domain is None:
+                raise ValueError("ordinary sampled source cache authority is missing")
+            ox0, ox1 = domain
+            candidate = (
+                pairs[source_index - 1].alignment.selected
+                if source_index > 0
+                and pairs[source_index - 1].alignment is not None
+                else None
+            )
+            maps = _map_crop(
+                schedule, calibration, source_index, ox0, ox1,
+                vertical.global_offsets_px[source_index], candidate,
+            )
+            assignment = schedule.assignments[source_index]
+            source = np.asarray(image_loader(int(assignment.frame_id)))
+            if source.shape != (
+                schedule.canvas_height, int(calibration.width), 3
+            ) or source.dtype != np.uint8:
+                raise ValueError("S1.3 M5 raw RGB source shape/type changed")
+            sampled, valid = _sample_crop(source, maps[:3])
+            sampled = np.asarray(sampled).view()
+            valid = np.asarray(valid, dtype=bool).view()
+            sampled.flags.writeable = False
+            valid.flags.writeable = False
+            cached = (ox0, ox1, sampled, valid)
+            cache[source_index] = cached
+        ox0, ox1, sampled, valid = cached
+        if x0 < ox0 or x1 > ox1 or x0 >= x1:
+            raise ValueError("ordinary sampled source request exceeds owner union")
+        local = np.s_[:, x0 - ox0:x1 - ox0]
+        return sampled[local], valid[local], cache_miss
+
+    return provide
 
 
 def render_s13_p2_from_raw(
@@ -2121,6 +2332,7 @@ def render_s13_p2_from_raw(
     placement_methods: tuple[str, ...] | None = None,
     map_provider: S13SourceMapProvider | None = None,
     expected_support_provider: S13SourceMapProvider | None = None,
+    sampled_source_provider: S13SampledSourceProvider | None = None,
     image_composer: Callable[[tuple[int, ...], np.ndarray, dict[str, np.ndarray]], np.ndarray] | None = None,
 ) -> S13P2Result:
     """Formally remap each real contributor once from raw RGB for this P2 asset."""
@@ -2145,6 +2357,7 @@ def render_s13_p2_from_raw(
     placement = np.full((height, width), -1, dtype=np.int16)
     component_field = np.full((height, width), -1, dtype=np.int32)
     decoded: list[int] = []
+    actual_remap_invocations = 0
     expected_support = np.zeros((height, width), dtype=bool)
     for source_index, assignment in enumerate(schedule.assignments):
         candidate = None
@@ -2173,11 +2386,20 @@ def render_s13_p2_from_raw(
         else:
             maps = map_provider(source_index, x0, x1)
         decoded.append(assignment.frame_id)
-        if image_composer is None:
+        if sampled_source_provider is not None:
+            sampled, cached_valid, cache_miss = sampled_source_provider(
+                source_index, x0, x1
+            )
+            map_valid = maps[2]
+            if not np.array_equal(cached_valid, map_valid):
+                raise ValueError("sampled source cache valid support changed")
+            actual_remap_invocations += int(cache_miss)
+        elif image_composer is None:
             raw = np.asarray(image_loader(assignment.frame_id))
             if raw.shape != (height, int(calibration.width), 3) or raw.dtype != np.uint8:
                 raise ValueError("S1.3 M5 raw RGB source shape/type changed")
             sampled, map_valid = _sample_crop(raw, maps[:3])
+            actual_remap_invocations += 1
         else:
             map_valid = maps[2]
         owned = mask[:, x0:x1] & map_valid
@@ -2230,7 +2452,8 @@ def render_s13_p2_from_raw(
         if output.shape != (height, width, 3) or output.dtype != np.uint8:
             raise ValueError("S1.3 M5 resident P2 composer returned an invalid image")
     return S13P2Result(
-        output, valid_full, pixel, len(decoded), tuple(decoded), expected_support
+        output, valid_full, pixel, len(decoded), tuple(decoded), expected_support,
+        actual_remap_invocations,
     )
 
 
@@ -2309,6 +2532,7 @@ def run_s13_m5(
     placement_methods: tuple[str, ...] | None = None,
     m51_r2_config: S13M51R2Config | None = None,
     final_image_composer: Callable[[tuple[int, ...], np.ndarray, dict[str, np.ndarray]], np.ndarray] | None = None,
+    base_pair_workers: int = 1,
 ) -> S13M5Result:
     started = time.perf_counter()
     tick = time.perf_counter()
@@ -2331,6 +2555,7 @@ def run_s13_m5(
         parent_result_sha256=parent_result_sha256,
         p0_ancestor_completion_sha256=p0_ancestor_completion_sha256,
         m51_r2_config=m51_r2_config,
+        base_pair_workers=base_pair_workers,
     )
     component_chain_audit: dict[str, object] | None = None
     component_chain_seconds = 0.0
@@ -3536,15 +3761,20 @@ def run_s13_m5(
         p2_full_resolution_render_count += 2
     else:
         source_map_oracles = []
+        ordinary_sampled_source = _ordinary_s13_sampled_source_provider(
+            schedule, calibration, cached_image_loader, vertical, pairs
+        )
         geometry = render_s13_p2_from_raw(
             schedule, calibration, cached_image_loader, vertical, pairs,
             final_seams=False, selected_hypothesis_ids=selected_hypothesis_ids,
             placement_methods=placement_methods,
+            sampled_source_provider=ordinary_sampled_source,
         )
         final = render_s13_p2_from_raw(
             schedule, calibration, cached_image_loader, vertical, pairs,
             final_seams=True, selected_hypothesis_ids=selected_hypothesis_ids,
             placement_methods=placement_methods,
+            sampled_source_provider=ordinary_sampled_source,
             image_composer=final_image_composer,
         )
         p2_full_resolution_render_count += 2
@@ -3690,13 +3920,20 @@ def run_s13_m5(
             "repair_complete"
         ):
             component_failures.append("repair_complete_authority_mismatch")
-        formal_remap_invocations = geometry.remap_invocations + final.remap_invocations
+        formal_logical_source_render_count = (
+            geometry.remap_invocations + final.remap_invocations
+        )
+        formal_remap_invocations = (
+            geometry.actual_remap_invocations + final.actual_remap_invocations
+        )
         extra_full_resolution_render_count = max(
             0, p2_full_resolution_render_count - 2
         )
         if p2_full_resolution_render_count != 2:
             component_failures.append("p2_full_resolution_render_count_invalid")
-        if formal_remap_invocations != 2 * len(schedule.assignments):
+        if formal_logical_source_render_count != 2 * len(schedule.assignments):
+            component_failures.append("formal_logical_source_render_count_invalid")
+        if formal_remap_invocations != len(schedule.assignments):
             component_failures.append("formal_raw_rgb_remap_invocation_count_invalid")
         provenance_fields = final.pixel_provenance[
             "component_correction_field_id"
@@ -3736,6 +3973,7 @@ def run_s13_m5(
             "obligation_coverage": dict(obligation_coverage),
             "p2_full_resolution_render_count": p2_full_resolution_render_count,
             "extra_full_resolution_render_count": extra_full_resolution_render_count,
+            "formal_logical_source_render_count": formal_logical_source_render_count,
             "formal_raw_rgb_remap_invocations": formal_remap_invocations,
             "fatal_failures": component_failures,
             "passed": not component_failures,
@@ -3985,6 +4223,7 @@ def run_s13_m5(
         after_mean_score=after_mean,
         selection_audit=selection_audit,
         performance={
+            "base_pair_workers": int(base_pair_workers),
             "geometry": geometry_seconds,
             "seam_and_p2_render": seam_seconds,
             "total_m5": time.perf_counter() - started,
@@ -4001,7 +4240,16 @@ def run_s13_m5(
             "micro_rescue_attempt_count": 0,
             "p2_full_resolution_render_count": p2_full_resolution_render_count,
             "extra_full_resolution_render_count": 0,
-            "formal_raw_rgb_remap_invocations": geometry.remap_invocations + final.remap_invocations,
+            "formal_logical_source_render_count": (
+                geometry.remap_invocations + final.remap_invocations
+            ),
+            "formal_raw_rgb_remap_invocations": (
+                geometry.actual_remap_invocations + final.actual_remap_invocations
+            ),
+            "sampled_source_cache_hit_count": (
+                geometry.remap_invocations + final.remap_invocations
+                - geometry.actual_remap_invocations - final.actual_remap_invocations
+            ),
             "depth_call_count": 0,
             "dis_call_count": 0,
             "open3d_call_count": 0,

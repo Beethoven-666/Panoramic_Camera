@@ -189,6 +189,20 @@ def build_s13_m62_report(
                 x1 = min(difference.shape[1], int(seam_x) + width + 1)
                 cut_guard[row, x0:x1] = True
         cut_guard_changed = int(np.count_nonzero(difference & cut_guard))
+    ql_rows = (
+        [] if m63 is None else list(dict(m63.audit.get("ql", {})).get("pairs", ()))
+    )
+    if not detailed:
+        ql_rows = [row for row in ql_rows if row.get("accepted") is True]
+    blend_rows = list(effectiveness["pair_blend_audits"])
+    b0_reason_counts: dict[str, int] = {}
+    for row in blend_rows:
+        reason = row.get("b0_reason")
+        if reason is not None:
+            key = str(reason)
+            b0_reason_counts[key] = b0_reason_counts.get(key, 0) + 1
+    if not detailed:
+        blend_rows = [row for row in blend_rows if row.get("model") != "B0_owner_only"][:10]
     return {
         "schema": "gemini305-video-s13-m62-report/v3",
         "effectiveness": effectiveness,
@@ -294,7 +308,7 @@ def build_s13_m62_report(
             ),
             "authority": "shadow" if m63 is not None else "disabled",
             "overlap_normalization": "log_domain_clamp",
-            "pairs": [] if m63 is None else list(dict(m63.audit.get("ql", {})).get("pairs", ())),
+            "pairs": ql_rows,
         },
         "qt": {
             "selected_gain": 1.0,
@@ -307,7 +321,8 @@ def build_s13_m62_report(
         "blend": {
             "models": [item.transaction.model for item in plan.blend_plans],
             "active_pair_count": sum(bool(np.any(item.secondary_weight > 0.0)) for item in plan.blend_plans),
-            "pairs": effectiveness["pair_blend_audits"],
+            "pairs": blend_rows,
+            "b0_reason_counts": b0_reason_counts,
         },
         "safety": {
             "invalid_nonzero": int(np.count_nonzero(p3_image[~plan.valid_mask])),

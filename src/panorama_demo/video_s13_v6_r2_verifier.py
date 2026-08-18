@@ -1303,12 +1303,20 @@ def verify_s13_v6_r2_p2(p2: str | Path) -> dict[str, object]:
         "resolved_field_overlap_pixel_count": 0,
         "p2_full_resolution_render_count": 2,
         "extra_full_resolution_render_count": 0,
-        "formal_raw_rgb_remap_invocations": 2 * len(oracles),
         "owner_valid_topology_unchanged": True,
         "base_geometry_provenance_valid": True,
         "secondary_provenance_unchanged": True,
         "seam_topology_valid": True,
     }
+    if "formal_logical_source_render_count" in component_hard:
+        required_hard_values.update({
+            "formal_logical_source_render_count": 2 * len(oracles),
+            "formal_raw_rgb_remap_invocations": len(oracles),
+        })
+    else:
+        # Sealed v6-r2 artifacts written before sampled-source reuse recorded
+        # the logical render count under the old remap field.
+        required_hard_values["formal_raw_rgb_remap_invocations"] = 2 * len(oracles)
     if any(component_hard.get(key) != value for key, value in required_hard_values.items()):
         raise ValueError("S1.3 v6-r2 component hard audit semantic authority disagrees")
     if component_hard.get("repair_complete") is not obligation_coverage["repair_complete"]:

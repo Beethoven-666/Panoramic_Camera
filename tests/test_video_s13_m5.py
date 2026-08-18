@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 import pytest
 
@@ -556,6 +558,104 @@ def test_transactions_cover_every_pair_and_p2_remaps_each_raw_source_once() -> N
     assert np.all(result.pixel_provenance["secondary_weight"] == 0.0)
 
 
+def test_parallel_base_pair_preparation_is_exact_and_samples_on_calling_thread(
+    monkeypatch,
+) -> None:
+    import panorama_demo.video_s13_m5 as m5_module
+
+    calibration, schedule, images, vertical = _m5_inputs()
+    serial = estimate_s13_m5_transactions(
+        schedule, calibration, images.__getitem__, vertical,
+        parent_stage_sha256="7" * 64,
+    )
+    calling_thread = threading.get_ident()
+    sample_threads: list[int] = []
+    correspondence_threads: list[int] = []
+    load_count: dict[int, int] = {}
+    original_sample = m5_module._sample_m5_base_pair
+    original_correspondences = m5_module._pair_correspondences
+
+    def loader(frame_id: int) -> np.ndarray:
+        load_count[frame_id] = load_count.get(frame_id, 0) + 1
+        return images[frame_id]
+
+    def recording_sample(*args, **kwargs):
+        sample_threads.append(threading.get_ident())
+        return original_sample(*args, **kwargs)
+
+    def recording_correspondences(*args, **kwargs):
+        correspondence_threads.append(threading.get_ident())
+        return original_correspondences(*args, **kwargs)
+
+    monkeypatch.setattr(m5_module, "_sample_m5_base_pair", recording_sample)
+    monkeypatch.setattr(m5_module, "_pair_correspondences", recording_correspondences)
+    parallel = estimate_s13_m5_transactions(
+        schedule, calibration, loader, vertical,
+        parent_stage_sha256="7" * 64,
+        base_pair_workers=2,
+    )
+
+    assert load_count == {frame_id: 1 for frame_id in images}
+    assert sample_threads == [calling_thread] * (len(schedule.assignments) - 1)
+    assert correspondence_threads
+    assert all(thread_id != calling_thread for thread_id in correspondence_threads)
+    assert [pair.transaction for pair in parallel] == [
+        pair.transaction for pair in serial
+    ]
+    for actual, expected in zip(parallel, serial, strict=True):
+        assert np.array_equal(actual.seam_x_by_row, expected.seam_x_by_row)
+        assert (actual.alignment is None) is (expected.alignment is None)
+        if actual.alignment is not None and expected.alignment is not None:
+            assert actual.alignment.selected_model == expected.alignment.selected_model
+            assert np.array_equal(
+                actual.alignment.selected.target_delta_u,
+                expected.alignment.selected.target_delta_u,
+            )
+            assert np.array_equal(
+                actual.alignment.selected.target_delta_v,
+                expected.alignment.selected.target_delta_v,
+            )
+
+
+def test_ordinary_p2_sample_cache_is_exact_for_both_owner_topologies() -> None:
+    calibration, schedule, images, vertical = _m5_inputs()
+    parent = render_s13_p1_from_raw(
+        schedule, calibration, images.__getitem__, vertical
+    ).image
+    cached = run_s13_m5(
+        schedule, calibration, images.__getitem__, vertical, parent,
+        parent_stage_sha256="8" * 64,
+    )
+    uncached_geometry = render_s13_p2_from_raw(
+        schedule, calibration, images.__getitem__, vertical, cached.pairs,
+        final_seams=False,
+    )
+    uncached_final = render_s13_p2_from_raw(
+        schedule, calibration, images.__getitem__, vertical, cached.pairs,
+        final_seams=True,
+    )
+
+    assert cached.performance["formal_logical_source_render_count"] == 2 * len(images)
+    assert cached.performance["formal_raw_rgb_remap_invocations"] == len(images)
+    assert cached.performance["sampled_source_cache_hit_count"] == len(images)
+    assert cached.geometry_result.actual_remap_invocations == len(images)
+    assert cached.final_result.actual_remap_invocations == 0
+    for actual, expected in (
+        (cached.geometry_result, uncached_geometry),
+        (cached.final_result, uncached_final),
+    ):
+        assert np.array_equal(actual.image, expected.image)
+        assert np.array_equal(actual.valid_mask, expected.valid_mask)
+        assert set(actual.pixel_provenance) == set(expected.pixel_provenance)
+        for name, value in actual.pixel_provenance.items():
+            reference = expected.pixel_provenance[name]
+            assert np.array_equal(
+                value,
+                reference,
+                equal_nan=np.issubdtype(value.dtype, np.floating),
+            )
+
+
 def test_frozen_source_map_provider_is_shared_by_render_and_replay() -> None:
     calibration, schedule, images, vertical = _m5_inputs()
     pairs = estimate_s13_m5_transactions(
@@ -703,6 +803,11 @@ def test_r4_pre_render_estimation_freezes_oracle_domain_and_evidence_context(
         "source_map_oracle_freeze", "formal_render",
     )
     assert result.performance["p2_full_resolution_render_count"] == 2
+    assert result.performance["formal_logical_source_render_count"] == 2 * len(images)
+    assert result.performance["formal_raw_rgb_remap_invocations"] == len(images)
+    assert result.performance["sampled_source_cache_hit_count"] == len(images)
+    assert result.geometry_result.actual_remap_invocations == len(images)
+    assert result.final_result.actual_remap_invocations == 0
     assert decode_count == {frame_id: 1 for frame_id in images}
     assert all(not image.flags.writeable for image in context.raw_rgb_by_frame.values())
     with pytest.raises(TypeError):
@@ -724,6 +829,51 @@ def test_r4_pre_render_estimation_freezes_oracle_domain_and_evidence_context(
         assert oracle.domain_xyxy == (
             min(row[0] for row in domains), 0,
             max(row[1] for row in domains), schedule.canvas_height,
+        )
+
+    provider = source_map_oracle_provider(estimate.final_source_map_oracles)
+    def expected_support(source_index: int, x0: int, x1: int):
+        candidate = (
+            result.pairs[source_index - 1].alignment.selected
+            if source_index > 0
+            and result.pairs[source_index - 1].alignment is not None
+            else None
+        )
+        return m5_module._map_crop(
+            schedule, calibration, source_index, x0, x1,
+            vertical.global_offsets_px[source_index], candidate,
+            vertical_parent=vertical,
+        )
+
+    uncached_geometry = render_s13_p2_from_raw(
+        schedule, calibration, images.__getitem__, vertical, result.pairs,
+        final_seams=False, map_provider=provider,
+        expected_support_provider=expected_support,
+    )
+    uncached_final = render_s13_p2_from_raw(
+        schedule, calibration, images.__getitem__, vertical, result.pairs,
+        final_seams=True, map_provider=provider,
+        expected_support_provider=expected_support,
+    )
+    assert np.array_equal(result.geometry_result.image, uncached_geometry.image)
+    assert np.array_equal(result.final_result.image, uncached_final.image)
+    assert np.array_equal(result.geometry_result.valid_mask, uncached_geometry.valid_mask)
+    assert np.array_equal(result.final_result.valid_mask, uncached_final.valid_mask)
+    assert set(result.geometry_result.pixel_provenance) == set(
+        uncached_geometry.pixel_provenance
+    )
+    assert set(result.final_result.pixel_provenance) == set(
+        uncached_final.pixel_provenance
+    )
+    for name, value in result.geometry_result.pixel_provenance.items():
+        expected = uncached_geometry.pixel_provenance[name]
+        assert np.array_equal(
+            value, expected, equal_nan=np.issubdtype(value.dtype, np.floating)
+        )
+    for name, value in result.final_result.pixel_provenance.items():
+        expected = uncached_final.pixel_provenance[name]
+        assert np.array_equal(
+            value, expected, equal_nan=np.issubdtype(value.dtype, np.floating)
         )
         assert oracle.oracle_sha256 == next(
             row.oracle_sha256 for row in result.source_map_oracles

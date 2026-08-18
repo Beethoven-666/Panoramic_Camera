@@ -152,7 +152,7 @@ def run_s13_fast_pipeline(
         tick = time.perf_counter()
         estimate_tick = time.perf_counter()
         vertical = estimate_s13_vertical(
-            schedule, session.calibration, image_loader, measurement_workers=2
+            schedule, session.calibration, image_loader, evidence_workers=2
         )
         timings["m4.estimate"] = time.perf_counter() - estimate_tick
         selection_tick = time.perf_counter()
@@ -220,6 +220,7 @@ def run_s13_fast_pipeline(
                 placement_methods=selection.placement_methods,
                 m51_r2_config=m51_r2_config,
                 final_image_composer=final_image_composer,
+                base_pair_workers=2,
             )
         finally:
             if resident_m5_batch_token is not None:
@@ -305,18 +306,20 @@ def run_s13_fast_pipeline(
             blend_values = dict(options.get("blend", {}))
             allowed_photo = set(S13PhotometricConfig.__dataclass_fields__)
             allowed_blend = set(S13BlendConfig.__dataclass_fields__)
+            execution_mode = str(dict(options.get("execution", {})).get(
+                "mode", "parity_test"
+            ))
             p3_render, m62 = run_s13_m62_cpu_authoritative(
                 p2_runtime, image_loader, cuda_runtime=resident_runtime,
-                retain_runtime_details=False, force_owner_only_pair_indices=owner_only_pairs,
+                retain_runtime_details=execution_mode in {"shadow_audit", "parity_test"},
+                force_owner_only_pair_indices=owner_only_pairs,
                 photometric_config=S13PhotometricConfig(**{
                     key: value for key, value in photometric_values.items() if key in allowed_photo
                 }),
                 blend_config=S13BlendConfig(**{
                     key: value for key, value in blend_values.items() if key in allowed_blend
                 }),
-                execution_mode=str(dict(options.get("execution", {})).get(
-                    "mode", "parity_test"
-                )),
+                execution_mode=execution_mode,
                 m63_config=S13M63Config.from_document(options.get("m63")),
             )
         elif m6_cuda_v3:

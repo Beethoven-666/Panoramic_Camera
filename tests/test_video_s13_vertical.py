@@ -44,7 +44,7 @@ def test_vertical_solution_uses_required_shoulder_gain_and_zero_missing_rows() -
     assert solution.pairs[0].status == "local_zero"
 
 
-def test_two_worker_measurement_is_exactly_equal_to_serial() -> None:
+def test_two_worker_local_evidence_is_exactly_equal_to_serial() -> None:
     calibration = _calibration()
     schedule = build_s012_schedule(
         (0, 1, 2, 3), (47.5, 55.5, 63.5, 71.5), calibration,
@@ -58,10 +58,10 @@ def test_two_worker_measurement_is_exactly_equal_to_serial() -> None:
         3: _textured_image(27, 3),
     }
     serial = estimate_s13_vertical(
-        schedule, calibration, images.__getitem__, measurement_workers=1
+        schedule, calibration, images.__getitem__, evidence_workers=1
     )
     parallel = estimate_s13_vertical(
-        schedule, calibration, images.__getitem__, measurement_workers=2
+        schedule, calibration, images.__getitem__, evidence_workers=2
     )
 
     assert parallel.global_offsets_px == serial.global_offsets_px

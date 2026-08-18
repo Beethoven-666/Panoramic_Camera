@@ -200,7 +200,13 @@ def test_v6_defaults_to_sealed_p2_and_rejects_m6_or_resume(tmp_path: Path) -> No
         (generation / "P2/source_maps/manifest.json").read_text(encoding="utf-8")
     )
     assert performance["p2_full_resolution_render_count"] == 2
-    assert performance["formal_raw_rgb_remap_invocations"] == 2 * len(
+    assert performance["formal_logical_source_render_count"] == 2 * len(
+        source_map_manifest["sources"]
+    )
+    assert performance["formal_raw_rgb_remap_invocations"] == len(
+        source_map_manifest["sources"]
+    )
+    assert performance["sampled_source_cache_hit_count"] == len(
         source_map_manifest["sources"]
     )
     assert performance["component_segment_split_count"] == len(
