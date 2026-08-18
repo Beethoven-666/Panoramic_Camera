@@ -128,6 +128,16 @@ def build_s13_m62_execution_plan(
         () if m63 is None else m63.quality_cut_pair_indices
     )
     forced_pairs = frozenset(force_owner_only_pair_indices) | unsupported
+    excluded_canvas_mask = np.zeros(p2.valid_mask.shape, dtype=bool)
+    if m63 is not None:
+        cut_guard_width = int(m63.audit.get("cut_guard_width_px", 12))
+        pairs_by_index = {item.pair_index: item for item in p2.replay_pairs}
+        for pair_index in m63.quality_cut_pair_indices:
+            pair = pairs_by_index[pair_index]
+            for row, seam_x in enumerate(np.asarray(pair.seam_x_by_row, np.int32)):
+                x0 = max(0, int(seam_x) - cut_guard_width)
+                x1 = min(p2.valid_mask.shape[1], int(seam_x) + cut_guard_width + 1)
+                excluded_canvas_mask[row, x0:x1] = True
     tick = time.perf_counter()
     plans, _ = select_s13_blend_plans(
         p2.replay_pairs, evidence.adjacent_samples, {},
@@ -135,6 +145,7 @@ def build_s13_m62_execution_plan(
         config=blend_config, force_owner_only=force_identity_owner_only,
         force_owner_only_pair_indices=forced_pairs,
         unsupported_cut_pair_indices=unsupported,
+        excluded_canvas_mask=excluded_canvas_mask,
     )
     blend_seconds = time.perf_counter() - tick
     frozen_plans = tuple(S13BlendPlan(

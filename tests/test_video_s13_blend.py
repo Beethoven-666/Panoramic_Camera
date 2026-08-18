@@ -70,6 +70,27 @@ def test_force_owner_only_selects_b0() -> None:
     assert not np.any(plans[0].secondary_weight)
 
 
+def test_excluded_canvas_mask_is_owner_only_across_pair_corridors() -> None:
+    pair = _pair()
+    corrected = {
+        0: np.full((8, 12, 3), 0.30, np.float32),
+        1: np.full((8, 12, 3), 0.34, np.float32),
+    }
+    excluded = np.zeros((8, 12), bool)
+    excluded[:, 5:8] = True
+    plans, masks = select_s13_blend_plans(
+        [pair], [_sample(np.zeros((8, 8), bool))], corrected,
+        canvas_shape=(8, 12), excluded_canvas_mask=excluded,
+        config=S13BlendConfig(
+            minimum_safe_fraction_for_feather=0.0,
+            minimum_immediate_seam_benefit_linear=-1.0,
+        ),
+    )
+    local_excluded = excluded[:, pair.corridor_x0:pair.corridor_x1]
+    assert not np.any(plans[0].secondary_weight[local_excluded])
+    assert not np.any(masks["safe"][excluded])
+
+
 def test_compact_corrected_pair_provider_matches_full_source_input() -> None:
     pair = _pair()
     corrected = {

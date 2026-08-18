@@ -118,17 +118,27 @@ def select_s13_blend_plans(
     force_owner_only: bool = False,
     force_owner_only_pair_indices: frozenset[int] = frozenset(),
     unsupported_cut_pair_indices: frozenset[int] = frozenset(),
+    excluded_canvas_mask: np.ndarray | None = None,
 ) -> tuple[tuple[S13BlendPlan, ...], dict[str, np.ndarray]]:
     """Try B0, B1, then B2 per pair with global corridor non-overlap."""
 
     if len(replay_pairs) != len(samples):
         raise ValueError("S1.3 blend replay/sample pair counts disagree")
+    excluded = (
+        np.zeros(canvas_shape, dtype=bool)
+        if excluded_canvas_mask is None
+        else np.asarray(excluded_canvas_mask, dtype=bool)
+    )
+    if excluded.shape != canvas_shape:
+        raise ValueError("S1.3 excluded blend canvas mask has the wrong shape")
     used = np.zeros(canvas_shape, dtype=bool)
     safe_canvas = np.zeros(canvas_shape, dtype=bool)
     protected_canvas = np.zeros(canvas_shape, dtype=bool)
     weight_canvas = np.zeros(canvas_shape, dtype=np.float32)
     plans: list[S13BlendPlan] = []
     for pair, sample in zip(replay_pairs, samples, strict=True):
+        excluded_roi = excluded[:, pair.corridor_x0:pair.corridor_x1]
+        effective_safe = sample.safe_mask & ~excluded_roi
         if corrected_pair_provider is None:
             left = corrected_by_source[pair.left_source_index][:, pair.corridor_x0:pair.corridor_x1]
             right = corrected_by_source[pair.right_source_index][:, pair.corridor_x0:pair.corridor_x1]
@@ -139,7 +149,7 @@ def select_s13_blend_plans(
                 raise ValueError("S1.3 compact corrected pair provider returned the wrong shape")
         residual = _residual(sample, left, right)
         common_count = int(np.count_nonzero(sample.common_mask))
-        safe_count = int(np.count_nonzero(sample.safe_mask))
+        safe_count = int(np.count_nonzero(effective_safe))
         safe_fraction = safe_count / max(1, common_count)
         candidate_audits: list[dict[str, object]] = [{
             "model": "B0_owner_only", "hard_safe": True, "selected": False,
@@ -150,7 +160,7 @@ def select_s13_blend_plans(
         if not force_owner_only and pair.pair_index not in force_owner_only_pair_indices:
             feather_width = 2 if safe_fraction >= 0.35 else 1
             feather = _candidate_weight(
-                pair, sample.safe_mask, sample.protected_mask,
+                pair, effective_safe, sample.protected_mask,
                 total_width_px=feather_width,
             )
             owner_jump = _seam_jump(pair, left, right, np.zeros_like(feather))
@@ -180,7 +190,7 @@ def select_s13_blend_plans(
             })
             multiband_width = min(config.maximum_total_width_px, 6 if safe_fraction >= 0.70 else 4)
             multiband = _candidate_weight(
-                pair, sample.safe_mask, sample.protected_mask,
+                pair, effective_safe, sample.protected_mask,
                 total_width_px=multiband_width,
             )
             multiband_levels = adaptive_s13_multiband_levels(multiband_width, config.maximum_levels)
@@ -249,7 +259,7 @@ def select_s13_blend_plans(
         for candidate in candidate_audits[1:]:
             candidate["selected"] = candidate["model"] == model
         used[roi] |= weight > 0.0
-        safe_canvas[roi] |= sample.safe_mask
+        safe_canvas[roi] |= effective_safe
         protected_canvas[roi] |= sample.protected_mask
         weight_canvas[roi] = np.maximum(weight_canvas[roi], weight)
         transaction = S13BlendTransaction(
