@@ -44,6 +44,95 @@ def test_vertical_solution_uses_required_shoulder_gain_and_zero_missing_rows() -
     assert solution.pairs[0].status == "local_zero"
 
 
+def test_gain_independent_row_evidence_cache_is_solution_and_p1_exact(
+    monkeypatch,
+) -> None:
+    import cv2
+    import panorama_demo.video_s13_vertical as vertical_module
+
+    calibration = _calibration()
+    schedule = build_s012_schedule(
+        (0, 1, 2),
+        (47.5, 55.5, 63.5),
+        calibration,
+        hard_internal_width_px=None,
+    )
+    base = _textured_image(41)
+    images = {0: base, 1: _textured_image(41, 1), 2: _textured_image(41, 3)}
+    cached = estimate_s13_vertical(schedule, calibration, images.__getitem__)
+
+    def legacy_evidence(left, right, valid):
+        if int(valid.sum()) < 256:
+            return None
+        flow = cv2.calcOpticalFlowFarneback(
+            left,
+            right,
+            None,
+            0.5,
+            3,
+            19,
+            3,
+            5,
+            1.1,
+            cv2.OPTFLOW_FARNEBACK_GAUSSIAN,
+        )
+        return flow[:, :, 1], np.abs(
+            cv2.Sobel(left, cv2.CV_32F, 1, 0, ksize=3)
+        )
+
+    def legacy_rows(left, right, valid, global_relative, *, evidence=None):
+        residual = np.zeros(left.shape[0], dtype=np.float32)
+        evidence = legacy_evidence(left, right, valid) if evidence is None else evidence
+        if evidence is None:
+            return residual, 0
+        flow_y, texture = evidence
+        supported = np.zeros(left.shape[0], dtype=bool)
+        for row in range(left.shape[0]):
+            mask = valid[row] & np.isfinite(flow_y[row]) & (texture[row] > 3.0)
+            if int(mask.sum()) < 12:
+                continue
+            row_correction = -float(np.median(flow_y[row, mask])) - global_relative
+            residual[row] = float(np.clip(row_correction, -2.0, 2.0))
+            supported[row] = True
+        if np.any(supported):
+            smooth = cv2.GaussianBlur(residual[:, None], (1, 9), 0).reshape(-1)
+            residual[supported] = smooth[supported]
+            residual[~supported] = 0.0
+        return residual, int(supported.sum())
+
+    monkeypatch.setattr(vertical_module, "_local_row_evidence", legacy_evidence)
+    monkeypatch.setattr(vertical_module, "_local_rows", legacy_rows)
+    uncached = estimate_s13_vertical(schedule, calibration, images.__getitem__)
+
+    assert cached.global_offsets_px == uncached.global_offsets_px
+    assert cached.selected_gain == uncached.selected_gain
+    assert cached.gain_scores == uncached.gain_scores
+    assert cached.pairs == uncached.pairs
+    assert cached.audit == uncached.audit
+    assert cached.gain_global_offsets_px == uncached.gain_global_offsets_px
+    for gain in cached.gain_local_row_residuals:
+        for actual, expected in zip(
+            cached.gain_local_row_residuals[gain],
+            uncached.gain_local_row_residuals[gain],
+            strict=True,
+        ):
+            assert np.array_equal(actual, expected)
+    cached_p1 = render_s13_p1_from_raw(
+        schedule, calibration, images.__getitem__, cached
+    )
+    uncached_p1 = render_s13_p1_from_raw(
+        schedule, calibration, images.__getitem__, uncached
+    )
+    assert np.array_equal(cached_p1.image, uncached_p1.image)
+    assert np.array_equal(cached_p1.valid_mask, uncached_p1.valid_mask)
+    for name, value in cached_p1.pixel_provenance.items():
+        assert np.array_equal(
+            value,
+            uncached_p1.pixel_provenance[name],
+            equal_nan=np.issubdtype(value.dtype, np.floating),
+        )
+
+
 def test_p1_formally_samples_each_raw_contributor_once() -> None:
     calibration = _calibration()
     schedule = build_s012_schedule((0, 1, 2), (47.5, 55.5, 63.5), calibration, hard_internal_width_px=None)

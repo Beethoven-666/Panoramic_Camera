@@ -413,14 +413,24 @@ def _solve_offsets(observations: np.ndarray, weights: np.ndarray, gain: float) -
 def _local_row_evidence(
     left: np.ndarray, right: np.ndarray, valid: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray] | None:
-    """Return the gain-independent Farneback and texture evidence for one pair."""
+    """Return gain-independent per-row correction and support for one pair."""
 
     if int(valid.sum()) < 256:
         return None
     flow = cv2.calcOpticalFlowFarneback(
         left, right, None, 0.5, 3, 19, 3, 5, 1.1, cv2.OPTFLOW_FARNEBACK_GAUSSIAN
     )
-    return flow[:, :, 1], np.abs(cv2.Sobel(left, cv2.CV_32F, 1, 0, ksize=3))
+    flow_y = flow[:, :, 1]
+    texture = np.abs(cv2.Sobel(left, cv2.CV_32F, 1, 0, ksize=3))
+    base_correction = np.zeros(left.shape[0], dtype=np.float64)
+    supported = np.zeros(left.shape[0], dtype=bool)
+    for row in range(left.shape[0]):
+        mask = valid[row] & np.isfinite(flow_y[row]) & (texture[row] > 3.0)
+        if int(mask.sum()) < 12:
+            continue
+        base_correction[row] = -float(np.median(flow_y[row, mask]))
+        supported[row] = True
+    return base_correction, supported
 
 
 def _local_rows(
@@ -436,15 +446,10 @@ def _local_rows(
     evidence = _local_row_evidence(left, right, valid) if evidence is None else evidence
     if evidence is None:
         return residual, 0
-    flow_y, texture = evidence
-    supported = np.zeros(height, dtype=bool)
-    for row in range(height):
-        mask = valid[row] & np.isfinite(flow_y[row]) & (texture[row] > 3.0)
-        if int(mask.sum()) < 12:
-            continue
-        row_correction = -float(np.median(flow_y[row, mask])) - global_relative
-        residual[row] = float(np.clip(row_correction, -2.0, 2.0))
-        supported[row] = True
+    base_correction, supported = evidence
+    residual[supported] = np.clip(
+        base_correction[supported] - global_relative, -2.0, 2.0
+    ).astype(np.float32)
     if np.any(supported):
         smooth = cv2.GaussianBlur(residual[:, None], (1, 9), 0).reshape(-1)
         residual[supported] = smooth[supported]
