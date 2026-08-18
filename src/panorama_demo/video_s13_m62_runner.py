@@ -109,6 +109,7 @@ def run_s13_m62(
         "gpu_shadow_executed": bool(shadow_count),
         "total_m6": time.perf_counter() - started,
         "published_pixel_authority": "cpu",
+        **plan.decision_timings,
     })
     object.__setattr__(reference, "performance", performance)
     return reference, {"plan": plan, "gpu_equivalence": equivalence}

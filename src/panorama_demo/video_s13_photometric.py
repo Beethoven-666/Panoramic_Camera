@@ -357,6 +357,13 @@ def _solve_affine_candidate(
         "Q2_rgb_diagonal_gain", source_count, samples, config
     )
     biases = np.zeros_like(gains)
+    # Q3 inherits Q2's component graph and fallback vector.  The active
+    # selection contract rejects every source-level partial fallback, so an
+    # affine least-squares solve cannot become eligible once Q2 has already
+    # exposed one.  Avoid constructing the large matrix for a candidate whose
+    # next decision is fixed to reject.
+    if any(reason is not None for reason in fallback):
+        return gains, biases, component_ids, evidence, fallback
     components = _components(source_count, samples, config.minimum_pair_sample_count)
     for component_id, nodes in enumerate(components):
         if len(nodes) == 1:
