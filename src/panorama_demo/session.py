@@ -3,10 +3,11 @@ from __future__ import annotations
 import csv
 import json
 import math
+import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 
 import cv2
 import numpy as np
@@ -84,6 +85,7 @@ class RGBDSession:
     frames: tuple[RGBDFrame, ...]
     manifest: dict[str, Any] | None = None
     depth_alignment: str = "color"
+    validation_performance: Mapping[str, int | float] = field(default_factory=dict)
 
 
 def load_session_manifest(input_path: str | Path) -> dict[str, Any] | None:
@@ -261,7 +263,7 @@ def _decode_image(path: Path, flags: int, *, label: str) -> np.ndarray:
 
 def _validate_frame_files(
     frame: RGBDFrame, calibration: CameraIntrinsics, *, row_number: int
-) -> None:
+) -> np.ndarray:
     color = _decode_image(frame.color_path, cv2.IMREAD_COLOR, label="color image")
     expected_shape = (calibration.height, calibration.width)
     if color.dtype != np.uint8 or color.ndim != 3 or color.shape[2] != 3:
@@ -293,6 +295,10 @@ def _validate_frame_files(
     max_depth_mm = float(depth.max()) * frame.depth_scale_mm_per_unit
     if not math.isfinite(max_depth_mm):
         raise ValueError(f"frames.csv row {row_number} depth conversion is not finite")
+    if not color.flags.c_contiguous:
+        raise ValueError(f"frames.csv row {row_number} color image is not C contiguous")
+    color.setflags(write=False)
+    return color
 
 
 def _parse_optional_int(
@@ -312,6 +318,7 @@ def load_rgbd_session(
     *,
     validate_frame_files: bool = True,
     validation_workers: int = 1,
+    validated_color_sink: Callable[[RGBDFrame, np.ndarray], None] | None = None,
 ) -> RGBDSession:
     """Load and fully validate a formal color-aligned RGB-D capture session.
 
@@ -322,6 +329,9 @@ def load_rgbd_session(
 
     if isinstance(validation_workers, bool) or int(validation_workers) < 1:
         raise ValueError("validation_workers must be a positive integer")
+    if validated_color_sink is not None and not validate_frame_files:
+        raise ValueError("validated_color_sink requires validate_frame_files=True")
+    load_started = time.perf_counter()
     root, csv_path = _session_root_and_csv(input_path)
     calibration_payload = _read_json_object(
         root / "calibration.json", "calibration.json"
@@ -474,20 +484,44 @@ def load_rgbd_session(
     # exact strict validation and deterministic first-error ordering remain
     # identical to the serial formal-session contract.
     if validate_frame_files:
-        def _validate_item(item: tuple[RGBDFrame, int]) -> None:
+        validation_started = time.perf_counter()
+
+        def _validate_item(item: tuple[RGBDFrame, int]) -> np.ndarray:
             frame, row_number = item
-            _validate_frame_files(frame, calibration, row_number=row_number)
+            return _validate_frame_files(frame, calibration, row_number=row_number)
 
         if int(validation_workers) == 1:
             for item in pending_file_validation:
-                _validate_item(item)
+                color = _validate_item(item)
+                if validated_color_sink is not None:
+                    validated_color_sink(item[0], color)
         else:
             with ThreadPoolExecutor(max_workers=int(validation_workers)) as executor:
-                list(executor.map(_validate_item, pending_file_validation))
+                for item, color in zip(
+                    pending_file_validation,
+                    executor.map(_validate_item, pending_file_validation),
+                    strict=True,
+                ):
+                    if validated_color_sink is not None:
+                        validated_color_sink(item[0], color)
+        validation_seconds = time.perf_counter() - validation_started
+    else:
+        validation_seconds = 0.0
 
     if not frames:
         raise ValueError("Formal RGB-D session contains no frames")
-    return RGBDSession(root, calibration, tuple(frames), manifest)
+    return RGBDSession(
+        root,
+        calibration,
+        tuple(frames),
+        manifest,
+        validation_performance={
+            "total_wall_seconds": time.perf_counter() - load_started,
+            "strict_file_validation_wall_seconds": validation_seconds,
+            "strict_rgb_decode_count": len(pending_file_validation),
+            "strict_depth_decode_count": len(pending_file_validation),
+        },
+    )
 
 
 def read_aligned_depth_mm(frame: RGBDFrame) -> np.ndarray:

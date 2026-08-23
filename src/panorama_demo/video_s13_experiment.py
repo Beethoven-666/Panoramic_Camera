@@ -64,7 +64,11 @@ from .video_s13_replay import (
 )
 from .video_s13_progress import S13M3Layout, build_s13_m3_layout
 from .video_s13_schedule import S13SchedulePlan, plan_s13_m3_schedule
-from .video_s13_session import S13Session, load_s13_session, read_s13_rgb
+from .video_s13_session import (
+    S13Session,
+    load_s13_session_bundle,
+    read_s13_rgb,
+)
 from .video_s13_trajectory import S13Trajectory, load_s13_trajectory
 from .video_s13_vertical import (
     estimate_s13_vertical,
@@ -2741,7 +2745,8 @@ def run_s13_experiment(
     stage_seconds: dict[str, float] = {}
     tick = time.perf_counter()
     try:
-        session = load_s13_session(input_path, validation_workers=4)
+        session_bundle = load_s13_session_bundle(input_path, validation_workers=4)
+        session = session_bundle.session
     except Exception as exc:
         atomic_write_json(root / "S013_failure.json", {
             "schema": "gemini305-video-s13-failure/v1",
@@ -2910,6 +2915,7 @@ def run_s13_experiment(
                 "m63": dict(config.document.get("m63_photometric", {})),
             } if config.m62_equivalence else None,
             post_p2_fixture=post_p2_fixture,
+            validated_rgb_handoff=session_bundle.validated_rgb_handoff,
         )
         if config.runtime_backend == "cupy_cuda_structural_equivalent_v3":
             runner_arguments["structural_equivalent_v3"] = True
@@ -2962,22 +2968,10 @@ def run_s13_experiment(
                 "m5_performance": dict(fast.get("m5_performance") or {}),
                 "frame_store": dict(fast.get("frame_store") or {}),
                 "input": {
-                    "total_wall_seconds": float(stage_seconds.get("input_and_preflight", 0.0)),
-                    "strict_session_load_wall_seconds": float(stage_seconds.get("input_and_preflight", 0.0)),
-                    "strict_file_validation_wall_seconds": 0.0,
-                    "s13_session_materialize_wall_seconds": 0.0,
-                    "validated_rgb_handoff_wall_seconds": 0.0,
-                    "strict_rgb_decode_count": int(
-                        0 if session.strict_video is None else len(session.strict_video.rgbd.frames)
+                    **dict(session_bundle.performance),
+                    "validated_rgb_handoff_wall_seconds": float(
+                        timings.get("m0_m3.handoff", 0.0)
                     ),
-                    "strict_depth_decode_count": int(
-                        0 if session.strict_video is None else len(session.strict_video.rgbd.frames)
-                    ),
-                    "s13_fallback_rgb_decode_count": int(
-                        len(session.frames) if session.strict_video is None else 0
-                    ),
-                    "validated_rgb_retained_count": 0,
-                    "validated_rgb_retained_bytes": 0,
                     "frame_store_post_handoff_decode_count": int(
                         (fast.get("frame_store") or {}).get("raw_decode_after_adopt_count", 0)
                     ),

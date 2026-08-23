@@ -6,7 +6,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from threading import RLock
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import cv2
 import numpy as np
@@ -91,10 +91,72 @@ class S13FrameStore:
                 return existing
             self._raw[frame.frame_id] = image
             self._raw_decode_count += 1
+            if self._bulk_adopt_count:
+                self._raw_decode_after_adopt_count += 1
             self._note_array(image)
             self._raw_bytes += int(image.nbytes)
             self._evict_raw()
             return image
+
+    def adopt_validated_raw_bulk(
+        self,
+        frames_by_id: Mapping[int, S13RenderFrame],
+        images_by_frame_id: dict[int, np.ndarray],
+    ) -> None:
+        """Take ownership of one complete validated RGB set without copying pixels."""
+
+        if set(images_by_frame_id) != set(frames_by_id):
+            raise ValueError("S1.3 validated RGB handoff frame ids do not match the session")
+        prepared: list[tuple[int, np.ndarray]] = []
+        total_bytes = 0
+        with self._lock:
+            duplicate_ids = set(images_by_frame_id).intersection(self._raw)
+            if duplicate_ids:
+                raise ValueError("S1.3 FrameStore cannot adopt a cached frame twice")
+            for frame_id, image in images_by_frame_id.items():
+                frame = frames_by_id[frame_id]
+                if image.dtype != np.uint8 or image.shape != (frame.height, frame.width, 3):
+                    raise ValueError("S1.3 validated RGB handoff dtype or shape changed")
+                if not image.flags.c_contiguous:
+                    raise ValueError("S1.3 validated RGB handoff must be C contiguous")
+                prepared.append((frame_id, image))
+                total_bytes += int(image.nbytes)
+            if total_bytes > self.maximum_bytes:
+                raise ValueError("S1.3 FrameStore raw budget cannot retain the validated handoff")
+            for _frame_id, image in prepared:
+                image.setflags(write=False)
+            for frame_id, image in prepared:
+                self._raw[frame_id] = image
+            self._resident_bytes += total_bytes
+            self._raw_bytes += total_bytes
+            self._peak_bytes = max(self._peak_bytes, self._resident_bytes)
+            self._adopted_raw_count += len(prepared)
+            self._adopted_raw_bytes += total_bytes
+            self._bulk_adopt_count += 1
+            images_by_frame_id.clear()
+
+    def retain_raw(self, frame_ids: set[int]) -> None:
+        """Drop unselected raw sources after M3 without disturbing analysis caches."""
+
+        with self._lock:
+            missing = frame_ids.difference(self._raw)
+            if missing:
+                raise ValueError("S1.3 FrameStore cannot retain missing raw sources")
+            retained: OrderedDict[int, np.ndarray] = OrderedDict()
+            released_count = 0
+            released_bytes = 0
+            for frame_id, image in self._raw.items():
+                if frame_id in frame_ids:
+                    retained[frame_id] = image
+                else:
+                    released_count += 1
+                    released_bytes += int(image.nbytes)
+            self._raw = retained
+            self._resident_bytes -= released_bytes
+            self._raw_bytes -= released_bytes
+            self._released_unselected_raw_count += released_count
+            self._retained_raw_count_after_schedule = len(retained)
+            self._raw_bytes_after_schedule_retain = self._raw_bytes
 
     def analysis_gray(self, frame: S13RenderFrame, width: int) -> tuple[np.ndarray, float]:
         key = (frame.frame_id, int(width))

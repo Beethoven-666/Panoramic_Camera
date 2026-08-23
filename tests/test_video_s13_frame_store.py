@@ -57,3 +57,48 @@ def test_frame_store_releases_analysis_without_dropping_raw_sources(tmp_path) ->
     assert after.resident_bytes < before.resident_bytes
     assert after.raw_decode_count == 2
     assert after.eviction_count == 0
+
+
+def test_frame_store_bulk_adopt_and_schedule_retain_transfer_ownership(tmp_path) -> None:
+    frames = _frames(tmp_path, count=4)
+    images = {
+        frame.frame_id: cv2.imread(str(frame.color_path), cv2.IMREAD_COLOR)
+        for frame in frames
+    }
+    identities = {frame_id: id(image) for frame_id, image in images.items()}
+    store = S13FrameStore(maximum_bytes=2 * 1024 * 1024)
+
+    store.adopt_validated_raw_bulk(
+        {frame.frame_id: frame for frame in frames}, images
+    )
+    assert images == {}
+    assert all(id(store.raw_bgr(frame)) == identities[frame.frame_id] for frame in frames)
+    store.retain_raw({1, 3})
+    report = store.report()
+
+    assert report.raw_decode_count == 0
+    assert report.raw_decode_after_adopt_count == 0
+    assert report.adopted_raw_count == 4
+    assert report.bulk_adopt_count == 1
+    assert report.released_unselected_raw_count == 2
+    assert report.retained_raw_count_after_schedule == 2
+    assert report.raw_bytes_after_schedule_retain == sum(
+        frames[index].width * frames[index].height * 3 for index in (1, 3)
+    )
+
+
+def test_frame_store_failed_bulk_adopt_is_atomic(tmp_path) -> None:
+    frames = _frames(tmp_path, count=2)
+    images = {
+        frame.frame_id: cv2.imread(str(frame.color_path), cv2.IMREAD_COLOR)
+        for frame in frames
+    }
+    images[1] = images[1][:, :-1]
+    store = S13FrameStore(maximum_bytes=1024 * 1024)
+
+    with np.testing.assert_raises_regex(ValueError, "dtype or shape"):
+        store.adopt_validated_raw_bulk(
+            {frame.frame_id: frame for frame in frames}, images
+        )
+    assert store.report().adopted_raw_count == 0
+    assert set(images) == {0, 1}

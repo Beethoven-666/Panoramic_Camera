@@ -18,7 +18,7 @@ from panorama_demo.video_algorithm import build_algorithm_spec
 from panorama_demo.video_s13_bundle import sha256_file, verify_p0_completion
 from panorama_demo.video_s13_experiment import run_s13_experiment
 from panorama_demo.video_s13_motion import S13MotionEdge, S13MotionHypothesis
-from panorama_demo.video_s13_session import load_s13_session
+from panorama_demo.video_s13_session import load_s13_session, load_s13_session_bundle
 from panorama_demo.video_s13_trajectory import load_s13_trajectory
 from panorama_demo.video_trajectory_cache import session_input_sha256
 
@@ -247,6 +247,30 @@ def test_invalid_explicit_trajectory_degrades_to_rgb_p0(tmp_path: Path) -> None:
     assert audit["trajectory_valid"] is False
     assert audit["fallback"] == "rgb_motion_without_pose"
     assert report["panorama_claim"] == "visual_nonmetric"
+
+
+def test_strict_s13_bundle_reuses_validated_rgb_without_second_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _video_session(tmp_path)
+    from panorama_demo import video_s13_session
+
+    monkeypatch.setattr(
+        video_s13_session,
+        "_decode",
+        lambda _path: pytest.fail("strict S1.3 path decoded RGB a second time"),
+    )
+    bundle = load_s13_session_bundle(root, validation_workers=2)
+
+    assert bundle.session.strict_video is not None
+    assert bundle.performance["strict_rgb_decode_count"] == len(bundle.session.frames)
+    assert bundle.performance["strict_depth_decode_count"] == len(bundle.session.frames)
+    assert bundle.performance["s13_fallback_rgb_decode_count"] == 0
+    images = bundle.validated_rgb_handoff.take_all()
+    assert set(images) == {frame.frame_id for frame in bundle.session.frames}
+    assert all(image.flags.writeable is False for image in images.values())
+    with pytest.raises(RuntimeError, match="already consumed"):
+        bundle.validated_rgb_handoff.take_all()
 
 
 def test_online_trajectory_is_bound_to_committed_current_source_files(tmp_path: Path) -> None:

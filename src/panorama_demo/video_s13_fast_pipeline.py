@@ -29,7 +29,7 @@ from .video_s13_replay import S13VerifiedP2
 from .video_s13_runtime_state import S13RuntimeContext, S13Stage, S13StageResult
 from .video_s13_schedule import plan_s13_m3_schedule
 from .video_s13_selection import select_s13_vertical_parent
-from .video_s13_session import S13Session
+from .video_s13_session import S13Session, S13ValidatedRgbHandoff
 from .video_s13_stage_writer import S13StageImageWriter
 from .video_s13_trajectory import S13Trajectory
 from .video_s13_vertical import estimate_s13_vertical, render_s13_p1_from_raw
@@ -68,6 +68,7 @@ def run_s13_fast_pipeline(
     m62_equivalence: bool = False,
     m62_options: Mapping[str, object] | None = None,
     post_p2_fixture: Path | None = None,
+    validated_rgb_handoff: S13ValidatedRgbHandoff | None = None,
 ) -> dict[str, Any]:
     """Render P0--P3 once, keeping every parent and decision in memory."""
 
@@ -76,7 +77,19 @@ def run_s13_fast_pipeline(
     started = time.perf_counter()
     timings: dict[str, float] = {}
     frame_by_id = session.frame_by_id
-    frame_store = S13FrameStore()
+    validated_rgb_bytes = (
+        0 if validated_rgb_handoff is None else validated_rgb_handoff.retained_bytes
+    )
+    frame_store = S13FrameStore(maximum_bytes=max(
+        512 * 1024 * 1024,
+        validated_rgb_bytes + 32 * 1024 * 1024,
+    ))
+    handoff_tick = time.perf_counter()
+    if validated_rgb_handoff is not None:
+        frame_store.adopt_validated_raw_bulk(
+            frame_by_id, validated_rgb_handoff.take_all()
+        )
+    timings["m0_m3.handoff"] = time.perf_counter() - handoff_tick
 
     def image_loader(frame_id: int) -> np.ndarray:
         return frame_store.raw_bgr(frame_by_id[frame_id])
@@ -114,6 +127,11 @@ def run_s13_fast_pipeline(
         if len(schedule_plan.schedules) != 1:
             raise ValueError("S1.3 fast pipeline does not publish panel sets")
         selection, schedule = schedule_plan.selections[0], schedule_plan.schedules[0]
+        frame_store.retain_raw({
+            assignment.frame_id
+            for assignment in schedule.assignments
+            if not assignment.zero_width
+        })
         timings["m0_m3.motion_and_layout"] = time.perf_counter() - tick
         preload_tick = time.perf_counter()
         if resident_runtime is not None:

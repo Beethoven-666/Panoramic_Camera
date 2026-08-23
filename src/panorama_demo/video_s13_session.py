@@ -5,8 +5,10 @@ from __future__ import annotations
 import csv
 import json
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Mapping
 import cv2
 import numpy as np
 
@@ -40,6 +42,38 @@ class S13Session:
     @property
     def frame_by_id(self) -> dict[int, S13RenderFrame]:
         return {frame.frame_id: frame for frame in self.frames}
+
+
+@dataclass
+class S13ValidatedRgbHandoff:
+    images_by_frame_id: dict[int, np.ndarray]
+    strict_rgb_decode_count: int
+    strict_depth_decode_count: int
+    fallback_rgb_decode_count: int
+    _taken: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def retained_count(self) -> int:
+        return len(self.images_by_frame_id)
+
+    @property
+    def retained_bytes(self) -> int:
+        return sum(int(image.nbytes) for image in self.images_by_frame_id.values())
+
+    def take_all(self) -> dict[int, np.ndarray]:
+        if self._taken:
+            raise RuntimeError("S1.3 validated RGB handoff was already consumed")
+        self._taken = True
+        images = self.images_by_frame_id
+        self.images_by_frame_id = {}
+        return images
+
+
+@dataclass(frozen=True)
+class S13SessionLoadBundle:
+    session: S13Session
+    validated_rgb_handoff: S13ValidatedRgbHandoff
+    performance: Mapping[str, object]
 
 
 def _decode(path: Path) -> np.ndarray | None:
@@ -140,28 +174,45 @@ def _salvage_calibration(root: Path, *, width: int, height: int) -> CameraIntrin
         return None
 
 
-def load_s13_session(input_path: str | Path, *, validation_workers: int = 4) -> S13Session:
+def load_s13_session_bundle(
+    input_path: str | Path, *, validation_workers: int = 4
+) -> S13SessionLoadBundle:
+    total_started = time.perf_counter()
     root = Path(input_path).expanduser().resolve()
     root = root if root.is_dir() else root.parent
     strict: VideoSession | None = None
     strict_error: str | None = None
+    strict_images: dict[int, np.ndarray] = {}
+    strict_started = time.perf_counter()
+
+    def retain_validated(frame, image: np.ndarray) -> None:
+        strict_images[int(frame.frame_id)] = image
+
     try:
-        # Depth pixels are deliberately not decoded: P0 depends only on real RGB.
-        strict = load_video_session(root, validate_frame_files=True, validation_workers=validation_workers)
+        strict = load_video_session(
+            root,
+            validate_frame_files=True,
+            validation_workers=validation_workers,
+            validated_color_sink=retain_validated,
+        )
         candidates = [
             (frame.frame_id, int(frame.timestamp_us or index), frame.color_path)
             for index, frame in enumerate(strict.rgbd.frames)
         ]
     except Exception as exc:
+        strict_images.clear()
         strict_error = f"{type(exc).__name__}: {exc}"
         candidates = _rows_from_csv(root) or _rows_from_color_dir(root)
+    strict_seconds = time.perf_counter() - strict_started
 
+    materialize_started = time.perf_counter()
     decoded: list[S13RenderFrame] = []
     skipped: list[dict[str, object]] = []
+    handoff_images = strict_images if strict is not None else {}
     expected_shape: tuple[int, int] | None = None
     seen: set[int] = set()
     for frame_id, timestamp, path in candidates:
-        image = _decode(path)
+        image = strict_images.get(frame_id) if strict is not None else _decode(path)
         reason = None
         if frame_id in seen:
             reason = "duplicate_frame_id"
@@ -173,8 +224,14 @@ def load_s13_session(input_path: str | Path, *, validation_workers: int = 4) -> 
             skipped.append({"frame_id": frame_id, "path": str(path), "reason": reason})
             continue
         expected_shape = image.shape[:2]
+        if not image.flags.c_contiguous:
+            skipped.append({"frame_id": frame_id, "path": str(path), "reason": "rgb_not_c_contiguous"})
+            continue
+        image.setflags(write=False)
         seen.add(frame_id)
         decoded.append(S13RenderFrame(frame_id, path.resolve(), max(0, timestamp), image.shape[1], image.shape[0]))
+        if strict is None:
+            handoff_images[frame_id] = image
     decoded.sort(key=lambda item: (item.timestamp_us, item.frame_id))
     if not decoded:
         raise ValueError("S1.3 input_fatal: no decodable real RGB source")
@@ -194,7 +251,7 @@ def load_s13_session(input_path: str | Path, *, validation_workers: int = 4) -> 
         calibration = _raw_intrinsics(width, height)
         calibration_mode = "raw_rgb_fallback"
     trust = "strict_session_rgb_motion" if strict is not None and calibration_mode == "calibrated_target" else "readable_rgb_untrusted_metadata"
-    return S13Session(
+    session = S13Session(
         root=root,
         frames=tuple(decoded),
         calibration=calibration,
@@ -204,6 +261,44 @@ def load_s13_session(input_path: str | Path, *, validation_workers: int = 4) -> 
         trust_state=trust,
         skipped_rgb=tuple(skipped),
     )
+    validation = {} if strict is None else dict(strict.rgbd.validation_performance)
+    materialize_seconds = time.perf_counter() - materialize_started
+    handoff = S13ValidatedRgbHandoff(
+        images_by_frame_id=handoff_images,
+        strict_rgb_decode_count=int(validation.get("strict_rgb_decode_count", 0)),
+        strict_depth_decode_count=int(validation.get("strict_depth_decode_count", 0)),
+        fallback_rgb_decode_count=len(candidates) if strict is None else 0,
+    )
+    performance = {
+        "total_wall_seconds": time.perf_counter() - total_started,
+        "strict_session_load_wall_seconds": strict_seconds,
+        "strict_file_validation_wall_seconds": float(
+            validation.get("strict_file_validation_wall_seconds", 0.0)
+        ),
+        "s13_session_materialize_wall_seconds": materialize_seconds,
+        "validated_rgb_handoff_wall_seconds": 0.0,
+        "strict_rgb_decode_count": handoff.strict_rgb_decode_count,
+        "strict_depth_decode_count": handoff.strict_depth_decode_count,
+        "s13_fallback_rgb_decode_count": handoff.fallback_rgb_decode_count,
+        "validated_rgb_retained_count": handoff.retained_count,
+        "validated_rgb_retained_bytes": handoff.retained_bytes,
+        "frame_store_post_handoff_decode_count": 0,
+    }
+    return S13SessionLoadBundle(session, handoff, performance)
 
 
-__all__ = ["S13RenderFrame", "S13Session", "load_s13_session", "read_s13_rgb"]
+def load_s13_session(input_path: str | Path, *, validation_workers: int = 4) -> S13Session:
+    return load_s13_session_bundle(
+        input_path, validation_workers=validation_workers
+    ).session
+
+
+__all__ = [
+    "S13RenderFrame",
+    "S13Session",
+    "S13SessionLoadBundle",
+    "S13ValidatedRgbHandoff",
+    "load_s13_session",
+    "load_s13_session_bundle",
+    "read_s13_rgb",
+]

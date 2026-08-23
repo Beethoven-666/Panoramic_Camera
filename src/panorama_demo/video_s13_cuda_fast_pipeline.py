@@ -13,7 +13,7 @@ from typing import Any
 from .cuda_backend import reset_cuda_audit
 from .video_s13_cuda_runtime import S13CudaRuntime
 from .video_s13_fast_pipeline import run_s13_fast_pipeline
-from .video_s13_session import S13Session
+from .video_s13_session import S13Session, S13ValidatedRgbHandoff
 from .video_s13_trajectory import S13Trajectory
 
 
@@ -26,7 +26,8 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
                                structural_equivalent_v3: bool = False,
                                m62_equivalence: bool = False,
                                m62_options: dict[str, object] | None = None,
-                               post_p2_fixture: Path | None = None) -> dict[str, Any]:
+                               post_p2_fixture: Path | None = None,
+                               validated_rgb_handoff: S13ValidatedRgbHandoff | None = None) -> dict[str, Any]:
     reset_cuda_audit()
     runtime = S13CudaRuntime()
     try:
@@ -48,6 +49,7 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
             m62_equivalence=m62_equivalence,
             m62_options=m62_options,
             post_p2_fixture=post_p2_fixture,
+            validated_rgb_handoff=validated_rgb_handoff,
         )
         for key, value in result["timings"].items():
             runtime.note_stage(str(key), float(value))
