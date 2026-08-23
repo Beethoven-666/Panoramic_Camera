@@ -86,7 +86,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     ):
         raise ValueError("g305-video-live requires the exact locked S013 V11 production algorithm")
 
-    observer = S13V11LiveObserver(production_config_sha256=spec.config_sha256)
+    observer = S13V11LiveObserver(
+        production_config_sha256=spec.config_sha256,
+        preview_output=args.panorama_output,
+    )
     session_root = run_video_capture(args, observer=observer)
     handoff = observer.freeze_handoff()
     snapshot = observer.snapshot()

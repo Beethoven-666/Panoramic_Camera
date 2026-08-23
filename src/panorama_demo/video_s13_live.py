@@ -110,6 +110,7 @@ class S13V11LiveObserver:
         minimum_reliable_fraction: float = 0.75,
         minimum_source_candidates: int = 5,
         preview_hz: float = 4.0,
+        preview_output: Path | None = None,
         motion_estimator: MotionEstimator = _phase_motion,
     ) -> None:
         if analysis_width_px != 424:
@@ -122,6 +123,7 @@ class S13V11LiveObserver:
         self.minimum_reliable_fraction = minimum_reliable_fraction
         self.minimum_source_candidates = minimum_source_candidates
         self.preview_interval_ns = int(1_000_000_000 / preview_hz)
+        self.preview_output = None if preview_output is None else preview_output.expanduser().resolve()
         self.motion_estimator = motion_estimator
         self._analysis_queue: queue.Queue[LiveFramePacket | None] = queue.Queue(maxsize=64)
         self._preview_queue: queue.Queue[tuple[int, int, np.ndarray] | None] = queue.Queue(maxsize=1)
@@ -158,6 +160,11 @@ class S13V11LiveObserver:
     def on_session_ready(self, session: LiveSessionInfo) -> None:
         with self._lock:
             self._session = session
+        if self.preview_output is not None:
+            self.preview_output.mkdir(parents=True, exist_ok=True)
+
+    def _preview_root(self, session: LiveSessionInfo) -> Path:
+        return session.root if self.preview_output is None else self.preview_output
 
     def on_frame_accepted(self, packet: LiveFramePacket) -> None:
         with self._lock:
@@ -366,13 +373,14 @@ class S13V11LiveObserver:
                 ok, encoded = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 if not ok:
                     raise OSError("Could not encode S013 live preview")
-                pending = session.root / ".live_preview.pending.jpg"
+                preview_root = self._preview_root(session)
+                pending = preview_root / ".live_preview.pending.jpg"
                 pending.write_bytes(encoded.tobytes())
                 with self._lock:
                     if self._stopped:
                         pending.unlink(missing_ok=True)
                         continue
-                os.replace(pending, session.root / "live_preview.jpg")
+                os.replace(pending, preview_root / "live_preview.jpg")
                 published_ns = time.monotonic_ns()
                 metadata = {
                     "schema": LIVE_PREVIEW_SCHEMA,
@@ -386,9 +394,9 @@ class S13V11LiveObserver:
                     "capture_active": True,
                     "published_monotonic_ns": published_ns,
                 }
-                metadata_pending = session.root / ".live_preview.pending.json"
+                metadata_pending = preview_root / ".live_preview.pending.json"
                 metadata_pending.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-                os.replace(metadata_pending, session.root / "live_preview_state.json")
+                os.replace(metadata_pending, preview_root / "live_preview_state.json")
                 with self._lock:
                     self._preview_updates += 1
                     self._preview_generation += 1
@@ -417,9 +425,10 @@ class S13V11LiveObserver:
             "message": str(exc),
             "capture_continues": True,
         }
-        pending = session.root / ".live_preview_failure.pending.json"
+        preview_root = self._preview_root(session)
+        pending = preview_root / ".live_preview_failure.pending.json"
         pending.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(pending, session.root / "live_preview_failure.json")
+        os.replace(pending, preview_root / "live_preview_failure.json")
 
     def _write_stopped_state(self) -> None:
         with self._lock:
@@ -437,9 +446,10 @@ class S13V11LiveObserver:
                 "stage_visualization": "incremental_p0_owner_preview",
                 "capture_active": False,
             }
-        pending = session.root / ".live_preview_state.pending.json"
+        preview_root = self._preview_root(session)
+        pending = preview_root / ".live_preview_state.pending.json"
         pending.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(pending, session.root / "live_preview_state.json")
+        os.replace(pending, preview_root / "live_preview_state.json")
 
     def snapshot(self) -> S13LiveSnapshot:
         with self._lock:
