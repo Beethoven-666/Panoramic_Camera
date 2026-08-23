@@ -729,6 +729,19 @@ def test_final_authority_renders_only_final_p2_and_preserves_runtime_authority()
     assert candidate.performance["full_canvas_feature_build_count"] == 0
     runtime_profile = candidate.performance["m5_runtime_profile"]
     assert runtime_profile["seam_overlay_build_count"] == 0
+    assert runtime_profile["m5_p0_reference_map_build_count"] == len(candidate.pairs)
+    assert runtime_profile["m5_p0_reference_map_pixel_count"] == (
+        len(candidate.pairs) * schedule.canvas_height * schedule.canvas_width
+    )
+    assert runtime_profile["m5_p0_reference_map_seconds"] >= 0.0
+    assert runtime_profile["m5_p0_compact_map_build_count"] == 0
+    assert runtime_profile["m5_p0_compact_window_mean_width_px"] is None
+    assert runtime_profile["m5_alignment_preliminary_count"] == len(candidate.pairs)
+    assert runtime_profile["m5_alignment_final_reestimate_count"] >= len(candidate.pairs)
+    assert runtime_profile["m5_alignment_candidate_count"] == 5 * (
+        runtime_profile["m5_alignment_preliminary_count"]
+        + runtime_profile["m5_alignment_final_reestimate_count"]
+    )
     assert candidate.diagnostic_quality["status"] == "not_run_in_timed_candidate"
     assert candidate.hard_audit == reference.hard_audit
     assert len(candidate.pairs) == len(reference.pairs)

@@ -1194,6 +1194,14 @@ def estimate_s13_m5_transactions(
     remap_count = 0
     remap_pixel_count = 0
     remap_seconds = 0.0
+    p0_reference_map_build_count = 0
+    p0_reference_map_pixel_count = 0
+    p0_reference_map_seconds = 0.0
+    alignment_preliminary_count = 0
+    alignment_preliminary_seconds = 0.0
+    alignment_final_reestimate_count = 0
+    alignment_final_reestimate_seconds = 0.0
+    alignment_candidate_count = 0
     atlas_cache: dict[int, S13M5BaseSourceAtlas] = {}
     peak_cached_source_count = 0
     peak_cached_bytes = 0
@@ -1335,14 +1343,19 @@ def estimate_s13_m5_transactions(
             )
             reference, moving = correspondence_result
             correspondence_audit = correspondence_result.audit
+            p0_map_started = time.perf_counter()
             p0_u, p0_v, p0_valid = _base_calibrated_map(
                 schedule, calibration, pair_index + 1
             )
+            p0_reference_map_seconds += time.perf_counter() - p0_map_started
+            p0_reference_map_build_count += 1
+            p0_reference_map_pixel_count += schedule.canvas_height * schedule.canvas_width
             allowed_left, allowed_right = _allowed_application_bounds(schedule, pair_index)
             base_band = S13ApplicationBand.straight(
                 height=schedule.canvas_height, left_x=allowed_left, right_x=allowed_right
             )
             local_vertical = -np.asarray(vertical.local_row_residuals[pair_index], dtype=np.float64)
+            preliminary_started = time.perf_counter()
             preliminary = estimate_s13_pair_alignment(
                 pair_index=pair_index, pair_frame_ids=frame_ids, non_reference_side="right",
                 p0_source_u=p0_u, p0_source_v=p0_v, p0_valid=p0_valid,
@@ -1352,6 +1365,9 @@ def estimate_s13_m5_transactions(
                 alignment_shoulder=(x0, x1),
                 vertical_accepted=bool(np.any(local_vertical != 0.0)),
             )
+            alignment_preliminary_seconds += time.perf_counter() - preliminary_started
+            alignment_preliminary_count += 1
+            alignment_candidate_count += len(preliminary.candidates)
             _preliminary_maps, preliminary_right, preliminary_valid, _ = (
                 _sample_m5_right_candidate(
                     schedule=schedule,
@@ -1452,6 +1468,7 @@ def estimate_s13_m5_transactions(
                 candidate_component_forward_probe: tuple[object, ...] | None = None
                 geometry_rank = 0
                 if not failures:
+                    final_reestimate_started = time.perf_counter()
                     alignment = reestimate_s13_final_corridor_alignment(
                         final_seam_x_by_row=seam_global,
                         application_half_width_px=max(2, min(8, (allowed_right - allowed_left - 1) // 2)),
@@ -1465,6 +1482,11 @@ def estimate_s13_m5_transactions(
                         vertical_accepted=bool(np.any(local_vertical != 0.0)),
                         m51_r2_config=successor,
                     )
+                    alignment_final_reestimate_seconds += (
+                        time.perf_counter() - final_reestimate_started
+                    )
+                    alignment_final_reestimate_count += 1
+                    alignment_candidate_count += len(alignment.candidates)
                     selected_map = alignment.selected
                     geometry_candidates = [
                         {"model": item.model, "accepted": item.accepted,
@@ -2071,6 +2093,23 @@ def estimate_s13_m5_transactions(
             "base_atlas_effective": bool(base_atlas),
             "peak_cached_source_count": peak_cached_source_count,
             "peak_cached_bytes": peak_cached_bytes,
+            "m5_p0_reference_map_build_count": p0_reference_map_build_count,
+            "m5_p0_reference_map_pixel_count": p0_reference_map_pixel_count,
+            "m5_p0_reference_map_seconds": p0_reference_map_seconds,
+            "m5_p0_compact_map_build_count": 0,
+            "m5_p0_compact_map_pixel_count": 0,
+            "m5_p0_compact_map_seconds": 0.0,
+            "m5_p0_compact_fallback_count": 0,
+            "m5_p0_compact_fallback_pair_indices": [],
+            "m5_p0_compact_fallback_reasons": {},
+            "m5_p0_compact_window_min_width_px": None,
+            "m5_p0_compact_window_max_width_px": None,
+            "m5_p0_compact_window_mean_width_px": None,
+            "m5_alignment_preliminary_count": alignment_preliminary_count,
+            "m5_alignment_preliminary_seconds": alignment_preliminary_seconds,
+            "m5_alignment_final_reestimate_count": alignment_final_reestimate_count,
+            "m5_alignment_final_reestimate_seconds": alignment_final_reestimate_seconds,
+            "m5_alignment_candidate_count": alignment_candidate_count,
         })
     return tuple(pairs)
 
@@ -4548,6 +4587,28 @@ def run_s13_m5(
                 "full_canvas_feature_build_count": int(geometry_features is not None)
                 + int(final_features is not None),
                 "seam_overlay_build_count": int(seam_overlay is not None),
+                **{
+                    key: pair_base_profile[key]
+                    for key in (
+                        "m5_p0_reference_map_build_count",
+                        "m5_p0_reference_map_pixel_count",
+                        "m5_p0_reference_map_seconds",
+                        "m5_p0_compact_map_build_count",
+                        "m5_p0_compact_map_pixel_count",
+                        "m5_p0_compact_map_seconds",
+                        "m5_p0_compact_fallback_count",
+                        "m5_p0_compact_fallback_pair_indices",
+                        "m5_p0_compact_fallback_reasons",
+                        "m5_p0_compact_window_min_width_px",
+                        "m5_p0_compact_window_max_width_px",
+                        "m5_p0_compact_window_mean_width_px",
+                        "m5_alignment_preliminary_count",
+                        "m5_alignment_preliminary_seconds",
+                        "m5_alignment_final_reestimate_count",
+                        "m5_alignment_final_reestimate_seconds",
+                        "m5_alignment_candidate_count",
+                    )
+                },
             },
             "m5_pair_base_profile": pair_base_profile,
             "m5_pair_base_atlas": {

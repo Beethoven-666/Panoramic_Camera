@@ -52,7 +52,7 @@ class S13M62DecisionPlan:
     decision_plan_seconds: float
     component_shadow: dict[str, object]
     m63: S13M63SolveResult | None
-    decision_timings: dict[str, float]
+    decision_timings: dict[str, object]
     retain_runtime_details: bool
 
 
@@ -193,6 +193,7 @@ def build_s13_m62_execution_plan(
             "photometric_solve_seconds": solve_seconds,
             "blend_decision_seconds": blend_seconds,
             "component_shadow_seconds": component_seconds,
+            **evidence.performance,
         },
         retain_runtime_details=retain_runtime_details,
     )

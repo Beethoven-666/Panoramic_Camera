@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Callable, Sequence
 
 import cv2
@@ -26,6 +27,7 @@ class S13M62EvidenceBundle:
     bridge_edge_count: int
     component_count: int
     unsupported_cut_pair_indices: tuple[int, ...]
+    performance: dict[str, object]
 
 
 def _sample_raw(raw: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -182,6 +184,10 @@ def extract_s13_m62_evidence(
     """Extract Tier A/Tier B adjacent evidence and deterministic i-to-i+2 bridges."""
 
     raw: dict[int, np.ndarray] = {}
+    reference_adjacent_remap_count = 0
+    reference_bridge_remap_count = 0
+    reference_remap_pixel_count = 0
+    reference_remap_seconds = 0.0
     def load(frame_id: int) -> np.ndarray:
         if frame_id not in raw:
             value = np.asarray(image_loader(frame_id))
@@ -194,8 +200,16 @@ def extract_s13_m62_evidence(
     height, width = canvas_shape
     masks = {name: np.zeros((height, width), bool) for name in ("safe", "protected", "train", "heldout")}
     for pair in replay_pairs:
+        remap_started = time.perf_counter()
         left = _sample_raw(load(pair.left_frame_id), pair.left_source_u, pair.left_source_v)
+        reference_remap_seconds += time.perf_counter() - remap_started
+        reference_adjacent_remap_count += 1
+        reference_remap_pixel_count += int(pair.left_source_u.size)
+        remap_started = time.perf_counter()
         right = _sample_raw(load(pair.right_frame_id), pair.right_source_u, pair.right_source_v)
+        reference_remap_seconds += time.perf_counter() - remap_started
+        reference_adjacent_remap_count += 1
+        reference_remap_pixel_count += int(pair.right_source_u.size)
         sample = _sample_set(
             pair_index=pair.pair_index, left_source_index=pair.left_source_index,
             right_source_index=pair.right_source_index, x0=pair.corridor_x0,
@@ -227,8 +241,18 @@ def extract_s13_m62_evidence(
         common = left_roi.mapped[left_slice] & right_roi.mapped[right_slice]
         if not np.any(common):
             continue
-        left = _sample_raw(load(left_roi.frame_id), left_roi.map_u[left_slice], left_roi.map_v[left_slice])
-        right = _sample_raw(load(right_roi.frame_id), right_roi.map_u[right_slice], right_roi.map_v[right_slice])
+        left_map_u, left_map_v = left_roi.map_u[left_slice], left_roi.map_v[left_slice]
+        right_map_u, right_map_v = right_roi.map_u[right_slice], right_roi.map_v[right_slice]
+        remap_started = time.perf_counter()
+        left = _sample_raw(load(left_roi.frame_id), left_map_u, left_map_v)
+        reference_remap_seconds += time.perf_counter() - remap_started
+        reference_bridge_remap_count += 1
+        reference_remap_pixel_count += int(left_map_u.size)
+        remap_started = time.perf_counter()
+        right = _sample_raw(load(right_roi.frame_id), right_map_u, right_map_v)
+        reference_remap_seconds += time.perf_counter() - remap_started
+        reference_bridge_remap_count += 1
+        reference_remap_pixel_count += int(right_map_u.size)
         sample = _sample_set(
             pair_index=len(replay_pairs) + len(bridges), left_source_index=left_index,
             right_source_index=right_index, x0=x0, left=left, right=right, common=common,
@@ -268,6 +292,24 @@ def extract_s13_m62_evidence(
         adjacent_edge_count=sum(item.edge_eligible is True for item in adjacent),
         bridge_edge_count=len(bridges), component_count=component_count,
         unsupported_cut_pair_indices=unsupported,
+        performance={
+            "m62_evidence_reference_adjacent_remap_count": reference_adjacent_remap_count,
+            "m62_evidence_reference_bridge_remap_count": reference_bridge_remap_count,
+            "m62_evidence_reference_remap_pixel_count": reference_remap_pixel_count,
+            "m62_evidence_reference_remap_seconds": reference_remap_seconds,
+            "m62_evidence_packed_source_count": 0,
+            "m62_evidence_packed_remap_count": 0,
+            "m62_evidence_packed_remap_pixel_count": 0,
+            "m62_evidence_packed_plan_seconds": 0.0,
+            "m62_evidence_packed_remap_seconds": 0.0,
+            "m62_evidence_unpack_seconds": 0.0,
+            "m62_evidence_adjacent_usage_count": reference_adjacent_remap_count,
+            "m62_evidence_bridge_usage_count": reference_bridge_remap_count,
+            "m62_evidence_sample_mismatch_count": 0,
+            "m62_evidence_fallback_count": 0,
+            "m62_evidence_fallback_reasons": {},
+            "m62_evidence_peak_temporary_bytes": 0,
+        },
     )
 
 

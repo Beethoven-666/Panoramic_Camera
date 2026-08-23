@@ -41,6 +41,14 @@ def test_m62_plan_is_readonly_and_cpu_reference_matches_legacy(tmp_path: Path) -
     assert not hasattr(plan, "corrected_rois")
     assert plan.source_rois[0].map_u.flags.writeable is False
     assert plan.blend_plans[0].secondary_weight.flags.writeable is False
+    profile = plan.evidence.performance
+    assert profile["m62_evidence_reference_adjacent_remap_count"] == 2
+    assert profile["m62_evidence_reference_bridge_remap_count"] == 0
+    assert profile["m62_evidence_reference_remap_pixel_count"] == 64
+    assert profile["m62_evidence_reference_remap_seconds"] >= 0.0
+    assert profile["m62_evidence_packed_remap_count"] == 0
+    assert profile["m62_evidence_adjacent_usage_count"] == 2
+    assert plan.decision_timings["m62_evidence_reference_adjacent_remap_count"] == 2
     current = execute_s13_m62_cpu_reference(plan)
     legacy = run_s13_m6(p2, images.__getitem__, force_owner_only_pair_indices=frozenset({0}))
     np.testing.assert_array_equal(current.visual_panorama, legacy.visual_panorama)
