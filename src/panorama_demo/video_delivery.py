@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+import time
 from typing import Any
 
 import cv2
@@ -109,14 +110,14 @@ def invalidate_video_delivery(output: Path) -> None:
         "video_panorama.jpg", "video_panorama.png", "video_pixel_provenance.npz",
         "video_annotation_projection.json", "video_annotation_projection_masks.npz",
         "video_source_progress_evidence.json", "video_annotation_source_progress_audit.json",
-        "visual_metrics.json", "video_timing.json",
+        "visual_metrics.json", "video_timing.json", ".video_timing.pending.json",
         "central_strips", ".central_strips.pending",
         "central_strips_owner_only", ".central_strips_owner_only.pending",
         # A fresh 2-D delivery must not appear to be paired with a mesh made
         # from a previous source session or prior video rendering run.
         "video_3d_delivery.json", "video_3d_failure.json",
         "video_tsdf_mesh.glb", "video_tsdf_mesh_mobile.glb",
-        "video_tsdf_mesh_viewer.html",
+        "video_tsdf_mesh_viewer.html", "3d",
     ):
         path = output / name
         if path.is_symlink() or path.is_file():
@@ -186,11 +187,23 @@ def publish_video_2d(
     *,
     pending_central_strips: Path | None = None,
     pending_central_strips_owner_only: Path | None = None,
+    capture_stop_monotonic_ns: int | None = None,
+    p3_memory_monotonic_ns: int | None = None,
+    timing_origin: str | None = None,
 ) -> dict[str, Any]:
     if panorama.dtype != np.uint8 or panorama.ndim != 3 or panorama.shape[2] != 3:
         raise ValueError("Video panorama must be an 8-bit BGR image")
     if owner.shape != panorama.shape[:2]:
         raise ValueError("Video owner map shape does not match panorama")
+    publish_timing = capture_stop_monotonic_ns is not None or p3_memory_monotonic_ns is not None
+    if publish_timing and (
+        not isinstance(capture_stop_monotonic_ns, int)
+        or not isinstance(p3_memory_monotonic_ns, int)
+        or p3_memory_monotonic_ns < capture_stop_monotonic_ns
+        or not isinstance(timing_origin, str)
+        or not timing_origin
+    ):
+        raise ValueError("Video final 2-D timing origin and monotonic timestamps are invalid")
     report = _without_legacy_presets(report)
     delivery_fields = _delivery_fields(report)
     if pending_central_strips is not None:
@@ -237,11 +250,33 @@ def publish_video_2d(
     delivery_path.write_text(json.dumps(delivery, indent=2), encoding="utf-8")
     os.replace(pending_jpg, output / "video_panorama.jpg")
     os.replace(pending_png, output / "video_panorama.png")
+    p3_published_monotonic_ns = time.monotonic_ns()
+    if publish_timing:
+        assert capture_stop_monotonic_ns is not None
+        assert p3_memory_monotonic_ns is not None
+        timing_path = output / ".video_timing.pending.json"
+        timing_path.write_text(json.dumps({
+            "schema": "gemini305-video-timing/v1",
+            "final_2d": {
+                "measurement_origin": timing_origin,
+                "capture_stop_monotonic_ns": capture_stop_monotonic_ns,
+                "p3_memory_monotonic_ns": p3_memory_monotonic_ns,
+                "p3_published_monotonic_ns": p3_published_monotonic_ns,
+                "capture_stop_to_p3_memory_seconds": (
+                    p3_memory_monotonic_ns - capture_stop_monotonic_ns
+                ) / 1_000_000_000.0,
+                "capture_stop_to_p3_published_seconds": (
+                    p3_published_monotonic_ns - capture_stop_monotonic_ns
+                ) / 1_000_000_000.0,
+            },
+        }, indent=2), encoding="utf-8")
     os.replace(pending_prov, output / "video_pixel_provenance.npz")
     if pending_central_strips is not None:
         os.replace(pending_central_strips, output / "central_strips")
     if pending_central_strips_owner_only is not None:
         os.replace(pending_central_strips_owner_only, output / "central_strips_owner_only")
     os.replace(report_path, output / "video_report.json")
+    if publish_timing:
+        os.replace(output / ".video_timing.pending.json", output / "video_timing.json")
     os.replace(delivery_path, output / "video_delivery.json")
     return report

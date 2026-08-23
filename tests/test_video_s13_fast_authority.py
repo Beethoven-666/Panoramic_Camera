@@ -36,10 +36,17 @@ def test_fast_authority_exposes_exact_in_memory_decisions() -> None:
     )
     plan = SimpleNamespace(
         photometric_solution=SimpleNamespace(
-            model_family="Q4c_quality_cut_component_scalar_gain"
+            model_family="Q4c_quality_cut_component_scalar_gain",
+            candidate_audits=(
+                {"model": "Q1R_robust_centered_scalar_gain", "selected": False},
+                {"model": "Q4c_quality_cut_component_scalar_gain", "selected": True},
+            ),
         ),
         blend_plans=blend_plans,
-        m63=SimpleNamespace(quality_cut_pair_indices=(0,)),
+        m63=SimpleNamespace(
+            quality_cut_pair_indices=(0,),
+            audit={"selected_model": "Q4c", "candidate_models": ("Q1R", "Q4c")},
+        ),
     )
 
     authority = _build_fast_authority(
@@ -74,6 +81,11 @@ def test_fast_authority_exposes_exact_in_memory_decisions() -> None:
         "b0_count": 0,
         "b1_count": 1,
         "quality_cut_pair_indices": (0,),
+        "m63_audit": {"selected_model": "Q4c", "candidate_models": ("Q1R", "Q4c")},
+        "photometric_candidate_audits": (
+            {"model": "Q1R_robust_centered_scalar_gain", "selected": False},
+            {"model": "Q4c_quality_cut_component_scalar_gain", "selected": True},
+        ),
         "c2e_decisions": ("C1_owner_only",),
         "c2e_owner_only_pair_indices": (0,),
     }

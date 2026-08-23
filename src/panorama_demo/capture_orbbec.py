@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib import metadata as importlib_metadata
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Protocol
 
 import cv2
 import numpy as np
@@ -25,7 +25,6 @@ from .video_online_state import (
     OnlineScanAccumulator,
     write_online_state,
 )
-from .video_online_orb import OnlineORBSource, OnlineORBTracker
 
 
 COLOR_EXPOSURE_UNIT_US = 100
@@ -71,6 +70,48 @@ class FramePacket:
     aligned_depth: np.ndarray
     raw_depth: np.ndarray | None
     metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LiveSessionInfo:
+    root: Path
+    capture_started_monotonic_ns: int
+    calibration: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class LiveFramePacket:
+    frame_id: int
+    color_bgr: np.ndarray
+    aligned_depth_mm: np.ndarray
+    metadata: Mapping[str, object]
+    accepted_monotonic_ns: int
+    writer_queue_fraction: float
+    writer_queue_drops: int
+
+
+@dataclass(frozen=True)
+class CaptureResult:
+    session_root: Path
+    received_frames: int
+    written_frames: int
+    queue_drops: int
+    write_errors: int
+    max_queue_depth: int
+    capture_started_monotonic_ns: int
+    capture_stopped_monotonic_ns: int
+
+
+class CaptureObserver(Protocol):
+    def on_session_ready(self, session: LiveSessionInfo) -> None: ...
+
+    def on_frame_accepted(self, packet: LiveFramePacket) -> None: ...
+
+    def on_frame_committed(self, frame: "WrittenRGBDFrame") -> None: ...
+
+    def on_capture_stopping(self) -> None: ...
+
+    def on_capture_closed(self, result: CaptureResult) -> None: ...
 
 
 @dataclass
@@ -152,6 +193,8 @@ class WrittenRGBDFrame:
     aligned_depth_sha256: str
     timestamp_us: int
     depth_scale_mm_per_unit: float
+    frames_csv_row_index: int
+    commit_monotonic_ns: int
 
 
 class SessionWriter:
@@ -262,6 +305,8 @@ class SessionWriter:
                             aligned_depth_sha256=aligned_depth_sha256,
                             timestamp_us=int(packet.metadata.get("color_device_timestamp_us", packet.frame_id)),
                             depth_scale_mm_per_unit=float(packet.metadata.get("depth_scale_mm_per_unit", 1.0)),
+                            frames_csv_row_index=self.stats.written,
+                            commit_monotonic_ns=time.monotonic_ns(),
                         )
                     self.written_rgbd_frames.append(written_frame)
                     # Keep expensive downstream processing off this writer
@@ -1546,6 +1591,16 @@ def run_capture(args: argparse.Namespace) -> Path:
 
         return run_photo_sequence(args)
 
+    return run_video_capture(args)
+
+
+def run_video_capture(
+    args: argparse.Namespace,
+    *,
+    observer: CaptureObserver | None = None,
+) -> Path:
+    """Capture one continuous RGB-D session with an optional non-blocking observer."""
+
     config_file = load_config(args.config)
     capture_config = config_file.get("capture", {})
     if not isinstance(capture_config, dict):
@@ -1722,25 +1777,44 @@ def run_capture(args: argparse.Namespace) -> Path:
             manifest["frame_sync"] = False
             manifest["frame_sync_warning"] = str(exc)
     align_filter = sdk.AlignFilter(align_to_stream=sdk.OBStreamType.COLOR_STREAM)
-    online_orb_tracker: OnlineORBTracker | None = None
+    diagnostic_online_orb = bool(getattr(args, "diagnostic_online_orbslam3", False))
+    online_orb_tracker: Any | None = None
+    online_orb_source_type: Any | None = None
+    observer_error: str | None = None
+    capture_runtime_audit = {
+        "online_orb_tracker_construct_count": 0,
+        "capture_orbslam3_process_count": 0,
+        "capture_orbslam3_frame_submit_count": 0,
+        "capture_open3d_import_count": 0,
+        "capture_open3d_tsdf_call_count": 0,
+        "capture_3d_process_count": 0,
+    }
 
     def _enqueue_online_orb(item: WrittenRGBDFrame) -> None:
+        nonlocal observer_error
         tracker = online_orb_tracker
-        if tracker is None:
-            return
-        tracker.submit_committed(
-            OnlineORBSource(
-                frame=RGBDFrame(
-                    frame_id=item.frame_id,
-                    color_path=item.color_path,
-                    aligned_depth_path=item.aligned_depth_path,
-                    depth_scale_mm_per_unit=item.depth_scale_mm_per_unit,
-                    timestamp_us=item.timestamp_us,
-                ),
-                color_sha256=item.color_sha256,
-                aligned_depth_sha256=item.aligned_depth_sha256,
+        if tracker is not None:
+            if online_orb_source_type is None:
+                raise RuntimeError("Diagnostic online ORB source type is unavailable")
+            tracker.submit_committed(
+                online_orb_source_type(
+                    frame=RGBDFrame(
+                        frame_id=item.frame_id,
+                        color_path=item.color_path,
+                        aligned_depth_path=item.aligned_depth_path,
+                        depth_scale_mm_per_unit=item.depth_scale_mm_per_unit,
+                        timestamp_us=item.timestamp_us,
+                    ),
+                    color_sha256=item.color_sha256,
+                    aligned_depth_sha256=item.aligned_depth_sha256,
+                )
             )
-        )
+            capture_runtime_audit["capture_orbslam3_frame_submit_count"] += 1
+        if observer is not None:
+            try:
+                observer.on_frame_committed(item)
+            except Exception as exc:
+                observer_error = f"{type(exc).__name__}: {exc}"
 
     writer = SessionWriter(
         session_root,
@@ -1761,6 +1835,8 @@ def run_capture(args: argparse.Namespace) -> Path:
     timestamp_regressions = 0
     previous_color_timestamp: int | None = None
     started_monotonic = 0.0
+    capture_started_monotonic_ns = 0
+    capture_stopped_monotonic_ns = 0
     metadata_checked = False
     exposure_violation_run = 0
     warmup_exposure_fallback = False
@@ -1848,31 +1924,46 @@ def run_capture(args: argparse.Namespace) -> Path:
             manifest["color_control_lock"] = color_control_lock
             _write_manifest(session_root, manifest)
         started_monotonic = time.monotonic()
+        capture_started_monotonic_ns = time.monotonic_ns()
         last_frame_monotonic = started_monotonic
         manifest["calibration"] = _calibration_to_dict(pipeline.get_camera_param())
         (session_root / "calibration.json").write_text(
             json.dumps(manifest["calibration"], indent=2), encoding="utf-8"
         )
-        try:
-            calibration = _parse_color_intrinsics_for_online_orb(manifest["calibration"])
-            online_orb_tracker = OnlineORBTracker(
-                intrinsics=calibration,
-                tracking_fps=float(video_runtime_config.get("tracking_fps", 8.0)),
-                work_dir=session_root / ".online_orbslam3_work",
-                config=dict(stitch_config.get("orbslam3_rgbd", {})),
-            )
+        if observer is not None:
+            observer.on_session_ready(LiveSessionInfo(
+                root=session_root,
+                capture_started_monotonic_ns=capture_started_monotonic_ns,
+                calibration=dict(manifest["calibration"]),
+            ))
+        if diagnostic_online_orb:
+            try:
+                from .video_online_orb import OnlineORBSource, OnlineORBTracker
+
+                calibration = _parse_color_intrinsics_for_online_orb(manifest["calibration"])
+                online_orb_source_type = OnlineORBSource
+                online_orb_tracker = OnlineORBTracker(
+                    intrinsics=calibration,
+                    tracking_fps=float(video_runtime_config.get("tracking_fps", 8.0)),
+                    work_dir=session_root / ".online_orbslam3_work",
+                    config=dict(stitch_config.get("orbslam3_rgbd", {})),
+                )
+                capture_runtime_audit["online_orb_tracker_construct_count"] += 1
+                capture_runtime_audit["capture_orbslam3_process_count"] += 1
+                manifest["online_orbslam3_trajectory"] = {
+                    "state": "tracking",
+                    "path": "online_orbslam3_trajectory.json",
+                    "source_selection": "real_timestamp_spaced_capture_frames_only",
+                }
+            except Exception as exc:
+                manifest["online_orbslam3_trajectory"] = {
+                    "state": "unavailable",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+        else:
             manifest["online_orbslam3_trajectory"] = {
-                "state": "tracking",
-                "path": "online_orbslam3_trajectory.json",
-                "source_selection": "real_timestamp_spaced_capture_frames_only",
-            }
-        except Exception as exc:
-            # Continuous capture and its independently useful RGB-D session
-            # remain valid; video assembly will use the batch bridge if an
-            # online tracker cannot start on this host.
-            manifest["online_orbslam3_trajectory"] = {
-                "state": "unavailable",
-                "reason": f"{type(exc).__name__}: {exc}",
+                "state": "deferred",
+                "reason": "post_2d_publication_only",
             }
 
         while True:
@@ -1988,10 +2079,30 @@ def run_capture(args: argparse.Namespace) -> Path:
                 ),
                 "depth_scale_mm_per_unit": depth_scale,
             }
+            color_image.setflags(write=False)
+            aligned_depth.setflags(write=False)
+            if raw_depth_array is not None:
+                raw_depth_array.setflags(write=False)
+            accepted_monotonic_ns = time.monotonic_ns()
             accepted_for_write = writer.submit(
                 FramePacket(received, color_image, aligned_depth, raw_depth_array, packet_metadata)
             )
-            if accepted_for_write and online_scan_error is None:
+            if accepted_for_write and observer is not None:
+                try:
+                    observer.on_frame_accepted(LiveFramePacket(
+                        frame_id=received,
+                        color_bgr=color_image,
+                        aligned_depth_mm=aligned_depth,
+                        metadata=packet_metadata,
+                        accepted_monotonic_ns=accepted_monotonic_ns,
+                        writer_queue_fraction=(
+                            writer.queue.qsize() / max(1, int(options["queue_size"]))
+                        ),
+                        writer_queue_drops=writer.stats.queue_drops,
+                    ))
+                except Exception as exc:
+                    observer_error = f"{type(exc).__name__}: {exc}"
+            if accepted_for_write and observer is None and online_scan_error is None:
                 if (
                     color_image.dtype != np.uint8
                     or color_image.shape != (int(options["height"]), int(options["width"]), 3)
@@ -2037,6 +2148,12 @@ def run_capture(args: argparse.Namespace) -> Path:
     except Exception as exc:
         capture_exception = exc
     finally:
+        capture_stopped_monotonic_ns = time.monotonic_ns()
+        if observer is not None:
+            try:
+                observer.on_capture_stopping()
+            except Exception as exc:
+                observer_error = f"{type(exc).__name__}: {exc}"
         if pipeline_started:
             pipeline.stop()
         writer.close()
@@ -2055,8 +2172,11 @@ def run_capture(args: argparse.Namespace) -> Path:
             "writer_errors": writer.stats.errors,
             "max_queue_depth": writer.stats.max_queue_depth,
             "timestamp_regressions": timestamp_regressions,
+            "capture_runtime_audit": capture_runtime_audit,
         }
     )
+    if observer_error is not None:
+        manifest["live_observer_warning"] = observer_error
     manifest["product_eligibility"] = {
         "photo_panorama": False,
         "video_panorama": bool(
@@ -2181,6 +2301,18 @@ def run_capture(args: argparse.Namespace) -> Path:
                 "reason": f"{type(exc).__name__}: {exc}",
             }
             _write_manifest(session_root, manifest)
+    capture_result = CaptureResult(
+        session_root=session_root,
+        received_frames=received,
+        written_frames=writer.stats.written,
+        queue_drops=writer.stats.queue_drops,
+        write_errors=writer.stats.write_errors,
+        max_queue_depth=writer.stats.max_queue_depth,
+        capture_started_monotonic_ns=capture_started_monotonic_ns,
+        capture_stopped_monotonic_ns=capture_stopped_monotonic_ns,
+    )
+    if observer is not None:
+        observer.on_capture_closed(capture_result)
     if capture_exception is not None:
         raise capture_exception
     print(f"Session saved to: {session_root}")
@@ -2264,6 +2396,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--duration", type=float, help="Stop after this many seconds")
     parser.add_argument("--max-frames", type=int)
     parser.add_argument("--no-preview", action="store_true")
+    parser.add_argument(
+        "--diagnostic-online-orbslam3",
+        action="store_true",
+        help="Diagnostic-only capture-time ORB-SLAM3; forbidden by g305-video-live",
+    )
     raw_depth = parser.add_mutually_exclusive_group()
     raw_depth.add_argument(
         "--raw-depth",

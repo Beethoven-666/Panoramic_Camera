@@ -37,7 +37,6 @@ from .video_delivery import (
     write_invalid_candidate_experiment,
     write_video_failure,
 )
-from .video_3d import publish_video_3d
 from .video_motion_resampler import (
     MotionResamplingConfig,
     compose_selected_motions,
@@ -1863,11 +1862,6 @@ def run_legacy(args: argparse.Namespace) -> dict[str, Any]:
             **final_timing,
             "measurement_only": True,
         }
-        if not args.defer_3d:
-            try:
-                publish_video_3d(output, input_path=input_path, config=config)
-            except Exception:
-                published["three_d_delivery_state"] = "failed"
         return published
     except Exception as exc:
         if not two_d_published:

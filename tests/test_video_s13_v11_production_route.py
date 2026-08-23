@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -109,6 +110,13 @@ def test_exact_v11_production_routes_before_legacy_and_publishes_only_final_p3(
     assert (output / "video_panorama.png").is_file()
     assert (output / "video_panorama.jpg").is_file()
     assert (output / "video_pixel_provenance.npz").is_file()
+    timing = json.loads((output / "video_timing.json").read_text(encoding="utf-8"))
+    assert timing["final_2d"]["measurement_origin"] == "offline_production_start"
+    assert timing["final_2d"]["capture_stop_to_p3_memory_seconds"] >= 0.0
+    assert (
+        timing["final_2d"]["capture_stop_to_p3_published_seconds"]
+        >= timing["final_2d"]["capture_stop_to_p3_memory_seconds"]
+    )
     assert not any(output.glob("P[0-3]_*.png"))
     published = json.loads((output / "video_delivery.json").read_text(encoding="utf-8"))
     assert published["algorithm_id"] == S13_VISUAL_CONTINUITY_ALGORITHM_ID
@@ -216,10 +224,13 @@ def test_default_authority_uses_production_config_ignore_pose_and_no_stage_files
 
     def fake_cuda(**kwargs: object) -> dict[str, object]:
         calls["runner"] = kwargs
-        image = np.full((8, 16, 3), 40, dtype=np.uint8)
+        stages = {
+            name: SimpleNamespace(image=np.full((8, 16, 3), value, dtype=np.uint8))
+            for name, value in (("p0", 10), ("p1", 20), ("p2", 30), ("p3", 40))
+        }
         owner = np.ones((8, 16), dtype=np.int32)
         return {
-            "p3": SimpleNamespace(image=image),
+            **stages,
             "authority": {
                 "source_frame_ids": (1, 2),
                 "schedule": {"canvas_shape": (8, 16)},
@@ -258,3 +269,54 @@ def test_default_authority_uses_production_config_ignore_pose_and_no_stage_files
     assert runner["motion_execution_policy"] == "deferred_step4"
     assert np.array_equal(result.owner_frame_id, np.ones((8, 16), dtype=np.int32))
     assert result.report["trajectory"] == {"source": "ignore_pose", "direct_pose_count": 0}
+    stage_hashes = result.report["stage_pixel_sha256"]
+    assert isinstance(stage_hashes, dict)
+    assert tuple(stage_hashes) == ("P0", "P1", "P2", "P3")
+    assert len(set(stage_hashes.values())) == 4
+
+
+def test_stage_pixel_hash_includes_shape_semantics() -> None:
+    pixels = np.arange(12, dtype=np.uint8)
+
+    assert production._stage_pixel_sha256(pixels.reshape(2, 2, 3)) != (
+        production._stage_pixel_sha256(pixels.reshape(1, 4, 3))
+    )
+
+
+def test_live_production_timing_uses_capture_stop_origin(tmp_path: Path) -> None:
+    spec = _spec(tmp_path)
+    session = tmp_path / "session"
+    session.mkdir()
+    stopped_ns = time.monotonic_ns() - 1_000_000_000
+    handoff = SimpleNamespace(
+        algorithm_id=spec.algorithm_id,
+        implementation_id=spec.implementation_id,
+        production_config_sha256=spec.config_sha256,
+        session_root=session,
+        reuse_level="validated_inputs_only",
+        committed_frames=(
+            SimpleNamespace(frame_id=1, frames_csv_row_index=0),
+            SimpleNamespace(frame_id=2, frames_csv_row_index=1),
+        ),
+        motion_edges=(),
+        capture_stopped_monotonic_ns=stopped_ns,
+    )
+
+    production.run_s13_v11_production(
+        session_path=session,
+        output=tmp_path / "output",
+        algorithm_spec=spec,
+        live_handoff=handoff,
+        authority_runner=lambda **_kwargs: production.S13V11AuthorityResult(
+            panorama=np.zeros((2, 4, 3), dtype=np.uint8),
+            owner_frame_id=np.ones((2, 4), dtype=np.int32),
+            report=_authority_report(),
+        ),
+    )
+
+    timing = json.loads(
+        (tmp_path / "output/video_timing.json").read_text(encoding="utf-8")
+    )["final_2d"]
+    assert timing["measurement_origin"] == "live_capture_stop"
+    assert timing["capture_stop_monotonic_ns"] == stopped_ns
+    assert timing["capture_stop_to_p3_memory_seconds"] >= 1.0

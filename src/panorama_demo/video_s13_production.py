@@ -6,9 +6,12 @@ from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 import time
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .video_s13_live import S13V11LiveHandoff
 
 from .video_algorithm import VideoAlgorithmSpec
 from .video_delivery import (
@@ -104,6 +107,23 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _stage_pixel_sha256(image: object) -> str:
+    """Hash canonical in-memory uint8 pixels, including shape and dtype."""
+
+    pixels = np.asarray(image)
+    if pixels.dtype != np.uint8 or pixels.ndim != 3:
+        raise RuntimeError("S013 V11 stage authority must be a three-dimensional uint8 array")
+    contiguous = np.ascontiguousarray(pixels)
+    semantic_header = (
+        f"s013-stage-pixels/v1\0dtype={contiguous.dtype.str}\0"
+        f"shape={','.join(str(value) for value in contiguous.shape)}\0"
+    ).encode("ascii")
+    digest = hashlib.sha256()
+    digest.update(semantic_header)
+    digest.update(memoryview(contiguous).cast("B"))
+    return digest.hexdigest()
+
+
 def _run_s13_v11_authority(**kwargs: object) -> S13V11AuthorityResult:
     """Private lazy adapter point for the V11 CUDA authority runner.
 
@@ -196,6 +216,13 @@ def _run_s13_v11_authority(**kwargs: object) -> S13V11AuthorityResult:
     owner = authority.get("owner")
     if not isinstance(owner, Mapping):
         raise RuntimeError("S013 V11 runner authority lacks the owner map")
+    stage_pixel_sha256: dict[str, str] = {}
+    for stage_name, result_name in (("P0", "p0"), ("P1", "p1"), ("P2", "p2"), ("P3", "p3")):
+        stage_result = fast.get(result_name)
+        stage_image = getattr(stage_result, "image", None)
+        if stage_image is None:
+            raise RuntimeError(f"S013 V11 runner authority lacks in-memory {stage_name} pixels")
+        stage_pixel_sha256[stage_name] = _stage_pixel_sha256(stage_image)
     elapsed = time.perf_counter() - started
     maximum = kwargs.get("maximum_post_seconds")
     within_budget = maximum is None or elapsed <= float(maximum)
@@ -224,6 +251,7 @@ def _run_s13_v11_authority(**kwargs: object) -> S13V11AuthorityResult:
         "owner_summary": _json_value(owner.get("summary", {})),
         "pair_seam_decisions": _json_value(authority.get("pair_seam_decisions", ())),
         "m6_decisions": _json_value(authority.get("m6", {})),
+        "stage_pixel_sha256": stage_pixel_sha256,
         "trajectory": dict(trajectory.audit),
         "performance": {
             "primary_post_capture_seconds": elapsed,
@@ -286,6 +314,30 @@ def _bind_authority_report(
     return report
 
 
+def _validate_live_handoff(
+    handoff: "S13V11LiveHandoff",
+    *,
+    spec: VideoAlgorithmSpec,
+    session_path: Path,
+) -> None:
+    if (
+        handoff.algorithm_id != spec.algorithm_id
+        or handoff.implementation_id != spec.implementation_id
+        or handoff.production_config_sha256 != spec.config_sha256
+    ):
+        raise ValueError("S013 V11 live handoff identity does not match production lock")
+    if handoff.session_root.resolve() != session_path.resolve():
+        raise ValueError("S013 V11 live handoff belongs to a different session")
+    if handoff.reuse_level != "validated_inputs_only":
+        raise ValueError("S013 V11 live handoff requests an unvalidated reuse level")
+    ids = [item.frame_id for item in handoff.committed_frames]
+    rows = [item.frames_csv_row_index for item in handoff.committed_frames]
+    if not ids or ids != sorted(ids) or len(ids) != len(set(ids)):
+        raise ValueError("S013 V11 live handoff committed ledger is incomplete")
+    if rows != list(range(len(rows))):
+        raise ValueError("S013 V11 live handoff CSV ledger is not contiguous")
+
+
 def run_s13_v11_production(
     *,
     session_path: Path,
@@ -295,6 +347,7 @@ def run_s13_v11_production(
     online_state: Path | None = None,
     maximum_post_seconds: float | None = None,
     observability: Mapping[str, object] | None = None,
+    live_handoff: "S13V11LiveHandoff | None" = None,
     authority_runner: S13V11AuthorityRunner | None = None,
 ) -> dict[str, Any]:
     """Run exact V11 authority and atomically publish only its final P3."""
@@ -304,7 +357,17 @@ def run_s13_v11_production(
     source = session_path.expanduser().resolve()
     observe = dict(observability or {"report_level": "summary", "artifact_level": "minimal"})
     runner = authority_runner or _run_s13_v11_authority
+    if live_handoff is not None:
+        _validate_live_handoff(live_handoff, spec=algorithm_spec, session_path=source)
+    production_started_monotonic_ns = time.monotonic_ns()
+    capture_stop_monotonic_ns = (
+        live_handoff.capture_stopped_monotonic_ns
+        if live_handoff is not None
+        else production_started_monotonic_ns
+    )
+    timing_origin = "live_capture_stop" if live_handoff is not None else "offline_production_start"
     invalidate_video_delivery(destination)
+    authority: S13V11AuthorityResult | None = None
     try:
         authority = runner(
             session_path=source,
@@ -314,23 +377,43 @@ def run_s13_v11_production(
             online_state=online_state,
             maximum_post_seconds=maximum_post_seconds,
             stage_output_stages=(),
+            live_handoff=live_handoff,
         )
         if not isinstance(authority, S13V11AuthorityResult):
             raise TypeError("S013 V11 authority runner returned an unsupported result")
+        p3_memory_monotonic_ns = time.monotonic_ns()
         report = _bind_authority_report(
             authority,
             spec=algorithm_spec,
             observability=observe,
         )
-        return publish_video_2d(
+        if live_handoff is not None:
+            report["live_handoff"] = {
+                "reuse_level": live_handoff.reuse_level,
+                "committed_frame_count": len(live_handoff.committed_frames),
+                "motion_edge_count": len(live_handoff.motion_edges),
+                "pixel_evidence_reused": False,
+            }
+        published = publish_video_2d(
             destination,
             np.asarray(authority.panorama),
             np.asarray(authority.owner_frame_id),
             report,
+            capture_stop_monotonic_ns=capture_stop_monotonic_ns,
+            p3_memory_monotonic_ns=p3_memory_monotonic_ns,
+            timing_origin=timing_origin,
         )
+        published["_two_d_delivery_published_monotonic_ns"] = time.monotonic_ns()
     except Exception as exc:
         write_video_failure(destination, source, exc)
         raise
+    finally:
+        # The CUDA runtime is closed by the authority adapter before it
+        # returns.  Drop the last formal P3/owner references before the outer
+        # pipeline is allowed to create the independent 3-D process.
+        authority = None
+    published["_two_d_resources_released_monotonic_ns"] = time.monotonic_ns()
+    return published
 
 
 __all__ = [

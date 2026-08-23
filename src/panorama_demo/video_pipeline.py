@@ -553,6 +553,7 @@ def run_video_algorithm(
     reuse_online_trajectory: bool = False,
     trajectory_cache: Path | None = None,
     online_state: Path | None = None,
+    live_handoff: Any | None = None,
     scan_progress_interval: tuple[float, float] | None = None,
     evaluation_scope: str | None = None,
 ) -> dict[str, Any]:
@@ -588,6 +589,7 @@ def run_video_algorithm(
             online_state=online_state,
             maximum_post_seconds=maximum_post_seconds,
             observability=observe.as_dict(),
+            live_handoff=live_handoff,
         )
         # The production wrapper has already invalidated stale delivery state
         # as its first output action and atomically published the new 2-D
@@ -606,6 +608,40 @@ def run_video_algorithm(
             published["audit_manifest"] = str(output / "audit_manifest.json")
             published["audit_status"] = audit_manifest["status"]
             published["audit_error"] = str(exc)
+        delivery_published_value = published.pop(
+            "_two_d_delivery_published_monotonic_ns", None
+        )
+        resources_released_value = published.pop(
+            "_two_d_resources_released_monotonic_ns", None
+        )
+        if not defer_3d:
+            from .video_3d_launcher import spawn_post_capture_3d
+
+            if not isinstance(delivery_published_value, int) or not isinstance(
+                resources_released_value, int
+            ):
+                raise RuntimeError("S013 V11 production lacks the 2-D release timing proof")
+
+            try:
+                process = spawn_post_capture_3d(
+                    session_path=session_root,
+                    two_d_output=output,
+                    config_path=config_path,
+                    two_d_delivery_published_monotonic_ns=delivery_published_value,
+                    two_d_resources_released_monotonic_ns=resources_released_value,
+                )
+                published["three_d_process"] = {
+                    "state": "spawned_post_capture",
+                    "pid": process.pid,
+                    "output": str(output / "3d"),
+                }
+            except Exception as exc:
+                published["three_d_process"] = {
+                    "state": "spawn_failed_2d_preserved",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                    "output": str(output / "3d"),
+                }
         return published
     # Candidate models are explicit local evidence.  This check is before any
     # session decoding or publishing, and the public production facade never
@@ -676,6 +712,7 @@ def run_video_algorithm(
     finally:
         effective_config.unlink(missing_ok=True)
 
+    published.pop("_two_d_delivery_published_monotonic_ns", None)
     # Evidence is post-publication, read-only work.  It receives only the
     # encoded primary artifacts, so it cannot influence renderer decisions.
     try:

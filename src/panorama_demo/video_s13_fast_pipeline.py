@@ -178,12 +178,18 @@ def _build_fast_authority(
         selected_photometric_model = None
         blend_models: tuple[str, ...] = ()
         quality_cut_pair_indices: tuple[int, ...] = ()
+        m63_audit: dict[str, object] = {}
+        photometric_candidate_audits: tuple[dict[str, object], ...] = ()
     else:
         selected_photometric_model = str(plan.photometric_solution.model_family)
         blend_models = tuple(str(item.transaction.model) for item in plan.blend_plans)
         quality_cut_pair_indices = tuple(
             int(value)
             for value in (() if plan.m63 is None else plan.m63.quality_cut_pair_indices)
+        )
+        m63_audit = {} if plan.m63 is None else dict(plan.m63.audit)
+        photometric_candidate_audits = tuple(
+            dict(value) for value in plan.photometric_solution.candidate_audits
         )
 
     assignments = tuple({
@@ -220,6 +226,8 @@ def _build_fast_authority(
             "b0_count": int(sum(model == "B0_owner_only" for model in blend_models)),
             "b1_count": int(sum(model.startswith("B1_") for model in blend_models)),
             "quality_cut_pair_indices": quality_cut_pair_indices,
+            "m63_audit": m63_audit,
+            "photometric_candidate_audits": photometric_candidate_audits,
             "c2e_decisions": tuple(str(value) for value in c2e),
             "c2e_owner_only_pair_indices": tuple(sorted(int(value) for value in owner_only_pairs)),
         },

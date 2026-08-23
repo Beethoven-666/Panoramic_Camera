@@ -7,7 +7,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
+
+import numpy as np
 
 from .config import load_config
 from .dense_fusion import export_tsdf_mesh_pair
@@ -43,8 +45,82 @@ def _load_2d_report(output: Path) -> dict[str, Any]:
 
 
 def _invalidate_3d(output: Path) -> None:
-    for name in ("video_3d_delivery.json", "video_3d_failure.json", "video_tsdf_mesh.glb", "video_tsdf_mesh_mobile.glb", "video_tsdf_mesh_viewer.html"):
+    for name in ("video_3d_delivery.json", "video_3d_failure.json", "video_3d_timing.json", "video_tsdf_mesh.glb", "video_tsdf_mesh_mobile.glb", "video_tsdf_mesh_viewer.html"):
         (output / name).unlink(missing_ok=True)
+
+
+def write_video_3d_failure(
+    output: Path, *, two_d_output: Path, exc: Exception
+) -> dict[str, Any]:
+    """Write an isolated 3-D failure while proving the 2-D marker is unchanged."""
+
+    output.mkdir(parents=True, exist_ok=True)
+    marker = two_d_output / "video_delivery.json"
+    before = _sha256(marker) if marker.is_file() else None
+    payload: dict[str, Any] = {
+        "schema": "gemini305-video-3d-failure/v2",
+        "two_d_delivery_preserved": before is not None,
+        "two_d_delivery_sha256": before,
+        "error_type": type(exc).__name__,
+        "message": str(exc),
+    }
+    pending = output / ".video_3d_failure.pending.json"
+    pending.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(pending, output / "video_3d_failure.json")
+    after = _sha256(marker) if marker.is_file() else None
+    if after != before:
+        raise RuntimeError("3-D failure handling changed the published 2-D delivery")
+    return payload
+
+
+def _load_trajectory(path: Path) -> tuple[list[int], dict[int, np.ndarray]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema") != "gemini305-video-post-capture-orbslam3-trajectory/v1":
+        raise ValueError("Video 3-D requires a post-capture ORB-SLAM3 trajectory")
+    if payload.get("pose_convention") != "camera_to_world":
+        raise ValueError("Video 3-D trajectory pose convention is not camera_to_world")
+    tracked = payload.get("tracked_frame_ids")
+    poses = payload.get("camera_to_world")
+    if not isinstance(tracked, list) or not isinstance(poses, list) or len(tracked) != len(poses):
+        raise ValueError("Video 3-D trajectory has inconsistent IDs and poses")
+    tracked_ids = [int(value) for value in tracked]
+    pose_map: dict[int, np.ndarray] = {}
+    for frame_id, value in zip(tracked_ids, poses, strict=True):
+        pose = np.asarray(value, dtype=np.float64)
+        if pose.shape != (4, 4) or not np.isfinite(pose).all():
+            raise ValueError("Video 3-D trajectory contains an invalid SE(3)")
+        if not np.allclose(pose[3], [0.0, 0.0, 0.0, 1.0], atol=1e-9):
+            raise ValueError("Video 3-D trajectory contains an invalid homogeneous row")
+        rotation = pose[:3, :3]
+        if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-5) or not np.isclose(
+            np.linalg.det(rotation), 1.0, atol=1e-5
+        ):
+            raise ValueError("Video 3-D trajectory contains a non-rigid pose")
+        if frame_id in pose_map:
+            raise ValueError("Video 3-D trajectory repeats a frame ID")
+        pose_map[frame_id] = pose
+    return tracked_ids, pose_map
+
+
+def _verify_trajectory_lock(path: Path, *, session_root: Path) -> None:
+    lock_path = path.with_name("orbslam3_trajectory.lock.json")
+    if not lock_path.is_file():
+        raise ValueError("Video 3-D trajectory lock is missing")
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    if lock.get("schema") != "gemini305-video-post-capture-orbslam3-lock/v1":
+        raise ValueError("Video 3-D trajectory lock schema is invalid")
+    if lock.get("trajectory") != path.name or lock.get("trajectory_sha256") != _sha256(path):
+        raise ValueError("Video 3-D trajectory lock no longer matches its trajectory")
+    expected_input = {
+        name: _sha256(session_root / filename)
+        for name, filename in (
+            ("manifest", "manifest.json"),
+            ("calibration", "calibration.json"),
+            ("frames_csv", "frames.csv"),
+        )
+    }
+    if lock.get("session_input_sha256") != expected_input:
+        raise ValueError("Video 3-D trajectory lock no longer matches its session")
 
 
 def _offline_glb_viewer(mesh_filename: str = "video_tsdf_mesh.glb") -> str:
@@ -82,13 +158,28 @@ def _offline_glb_viewer(mesh_filename: str = "video_tsdf_mesh.glb") -> str:
 </script>'''
 
 
-def publish_video_3d(output: str | Path, *, input_path: str | Path, config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Produce video GLBs without changing any 2-D delivery file."""
+def publish_video_3d(
+    output: str | Path,
+    *,
+    input_path: str | Path,
+    trajectory_path: str | Path,
+    source_frame_ids: Sequence[int],
+    config: Mapping[str, object] | None = None,
+    two_d_output: str | Path | None = None,
+) -> dict[str, Any]:
+    """Produce final GLBs from an explicit independent ORB trajectory."""
     root = Path(output).expanduser().resolve()
     source = Path(input_path).expanduser().resolve()
+    two_d_root = (
+        Path(two_d_output).expanduser().resolve()
+        if two_d_output is not None
+        else root.parent
+    )
+    root.mkdir(parents=True, exist_ok=True)
     _invalidate_3d(root)
+    delivery_sha = _sha256(two_d_root / "video_delivery.json")
     try:
-        report = _load_2d_report(root)
+        report = _load_2d_report(two_d_root)
         session = load_video_session(source)
         expected = report.get("input_sha256")
         actual = {
@@ -102,11 +193,14 @@ def publish_video_3d(output: str | Path, *, input_path: str | Path, config: dict
             if key in actual
         ) or not {"manifest", "calibration"}.issubset(expected):
             raise ValueError("Video source input hashes no longer match its published 2-D delivery")
-        ids = report.get("source_frame_ids")
-        orb = report.get("orbslam3", {})
-        if not isinstance(ids, list) or not isinstance(orb, dict):
-            raise ValueError("Video 2-D report does not contain audited real sources")
-        pose_map = {int(frame_id): pose for frame_id, pose in zip(orb.get("tracked_frame_ids", []), orb.get("camera_to_world", []), strict=True)}
+        ids = [int(value) for value in source_frame_ids]
+        if len(ids) < 2 or len(set(ids)) != len(ids):
+            raise ValueError("Video 3-D source IDs must be distinct real frames")
+        resolved_trajectory = Path(trajectory_path).expanduser().resolve()
+        _verify_trajectory_lock(resolved_trajectory, session_root=session.rgbd.root)
+        tracked_ids, pose_map = _load_trajectory(resolved_trajectory)
+        if tracked_ids != ids:
+            raise ValueError("Video 3-D source IDs differ from the independent trajectory")
         frames = tuple(frame for frame in session.rgbd.frames if frame.frame_id in set(ids))
         if [frame.frame_id for frame in frames] != ids or any(frame_id not in pose_map for frame_id in ids):
             raise ValueError("Video 3-D sources lack complete genuine ORB poses")
@@ -117,29 +211,40 @@ def publish_video_3d(output: str | Path, *, input_path: str | Path, config: dict
         (root / ".video_tsdf_mesh.pending.glb").write_bytes(desktop)
         (root / ".video_tsdf_mesh_mobile.pending.glb").write_bytes(mobile)
         (root / ".video_tsdf_mesh_viewer.pending.html").write_text(_offline_glb_viewer(), encoding="utf-8")
-        marker = {"schema": "gemini305-video-3d-delivery/v1", "delivery_state": "published", "mesh": "video_tsdf_mesh.glb", "mobile_mesh": "video_tsdf_mesh_mobile.glb", "viewer": "video_tsdf_mesh_viewer.html", "audit": audit}
+        marker = {"schema": "gemini305-video-3d-delivery/v2", "delivery_state": "published", "mesh": "video_tsdf_mesh.glb", "mobile_mesh": "video_tsdf_mesh_mobile.glb", "viewer": "video_tsdf_mesh_viewer.html", "trajectory": Path(trajectory_path).name, "source_frame_ids": ids, "preview_generated": False, "audit": audit}
         (root / ".video_3d_delivery.pending.json").write_text(json.dumps(marker, indent=2), encoding="utf-8")
         os.replace(root / ".video_tsdf_mesh.pending.glb", root / "video_tsdf_mesh.glb")
         os.replace(root / ".video_tsdf_mesh_mobile.pending.glb", root / "video_tsdf_mesh_mobile.glb")
         os.replace(root / ".video_tsdf_mesh_viewer.pending.html", root / "video_tsdf_mesh_viewer.html")
         os.replace(root / ".video_3d_delivery.pending.json", root / "video_3d_delivery.json")
+        if _sha256(two_d_root / "video_delivery.json") != delivery_sha:
+            raise RuntimeError("Video 3-D publication changed the 2-D delivery")
         return marker
     except Exception as exc:
-        pending = root / ".video_3d_failure.pending.json"
-        pending.write_text(json.dumps({"schema": "gemini305-video-3d-failure/v1", "error_type": type(exc).__name__, "message": str(exc), "two_d_delivery_preserved": (root / "video_delivery.json").is_file()}, indent=2), encoding="utf-8")
-        os.replace(pending, root / "video_3d_failure.json")
+        _invalidate_3d(root)
+        write_video_3d_failure(root, two_d_output=two_d_root, exc=exc)
         raise
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate GLB artifacts for an existing video 2-D delivery")
+    parser = argparse.ArgumentParser(description="Publish GLBs from a post-capture ORB trajectory")
     parser.add_argument("output", type=Path)
     parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--trajectory", type=Path, required=True)
+    parser.add_argument("--source-frame-id", type=int, action="append", required=True)
+    parser.add_argument("--two-d-output", type=Path, required=True)
     parser.add_argument("--config", type=Path)
     args = parser.parse_args()
     config = load_config(args.config)
     try:
-        publish_video_3d(args.output, input_path=args.input, config=config)
+        publish_video_3d(
+            args.output,
+            input_path=args.input,
+            trajectory_path=args.trajectory,
+            source_frame_ids=args.source_frame_id,
+            config=config,
+            two_d_output=args.two_d_output,
+        )
     except Exception as exc:
         raise SystemExit(f"ERROR: {exc}") from exc
 
