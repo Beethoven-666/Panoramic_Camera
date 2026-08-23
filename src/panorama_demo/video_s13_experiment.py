@@ -2961,6 +2961,29 @@ def run_s13_experiment(
                 },
                 "m5_performance": dict(fast.get("m5_performance") or {}),
                 "frame_store": dict(fast.get("frame_store") or {}),
+                "input": {
+                    "total_wall_seconds": float(stage_seconds.get("input_and_preflight", 0.0)),
+                    "strict_session_load_wall_seconds": float(stage_seconds.get("input_and_preflight", 0.0)),
+                    "strict_file_validation_wall_seconds": 0.0,
+                    "s13_session_materialize_wall_seconds": 0.0,
+                    "validated_rgb_handoff_wall_seconds": 0.0,
+                    "strict_rgb_decode_count": int(
+                        0 if session.strict_video is None else len(session.strict_video.rgbd.frames)
+                    ),
+                    "strict_depth_decode_count": int(
+                        0 if session.strict_video is None else len(session.strict_video.rgbd.frames)
+                    ),
+                    "s13_fallback_rgb_decode_count": int(
+                        len(session.frames) if session.strict_video is None else 0
+                    ),
+                    "validated_rgb_retained_count": 0,
+                    "validated_rgb_retained_bytes": 0,
+                    "frame_store_post_handoff_decode_count": int(
+                        (fast.get("frame_store") or {}).get("raw_decode_after_adopt_count", 0)
+                    ),
+                },
+                "m4_probe": dict(fast.get("m4_probe") or {}),
+                "m5_expected_support": dict(fast.get("m5_expected_support") or {}),
                 "artifacts": {"png_write_count": 4, "json_write_count": 2, "jpg_write_count": 0,
                               "npz_write_count": 0, "sha_call_count": 0, "m7_call_count": 0},
                 "execution_mode": str((fast.get("m6_performance") or {}).get("execution_mode", "")),

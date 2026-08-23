@@ -26,6 +26,13 @@ class S13FrameStoreReport:
     resident_bytes: int
     peak_resident_bytes: int
     prefetch_workers: int
+    adopted_raw_count: int
+    adopted_raw_bytes: int
+    bulk_adopt_count: int
+    retained_raw_count_after_schedule: int
+    released_unselected_raw_count: int
+    raw_decode_after_adopt_count: int
+    raw_bytes_after_schedule_retain: int
 
 
 class S13FrameStore:
@@ -48,6 +55,13 @@ class S13FrameStore:
         self._gradient_hit_count = 0
         self._eviction_count = 0
         self._prefetch_workers = 1
+        self._adopted_raw_count = 0
+        self._adopted_raw_bytes = 0
+        self._bulk_adopt_count = 0
+        self._retained_raw_count_after_schedule = 0
+        self._released_unselected_raw_count = 0
+        self._raw_decode_after_adopt_count = 0
+        self._raw_bytes_after_schedule_retain = 0
 
     def _note_array(self, array: np.ndarray) -> None:
         self._resident_bytes += int(array.nbytes)
@@ -163,6 +177,13 @@ class S13FrameStore:
                 resident_bytes=self._resident_bytes,
                 peak_resident_bytes=self._peak_bytes,
                 prefetch_workers=self._prefetch_workers,
+                adopted_raw_count=self._adopted_raw_count,
+                adopted_raw_bytes=self._adopted_raw_bytes,
+                bulk_adopt_count=self._bulk_adopt_count,
+                retained_raw_count_after_schedule=self._retained_raw_count_after_schedule,
+                released_unselected_raw_count=self._released_unselected_raw_count,
+                raw_decode_after_adopt_count=self._raw_decode_after_adopt_count,
+                raw_bytes_after_schedule_retain=self._raw_bytes_after_schedule_retain,
             )
 
     def release_analysis_arrays(self) -> None:

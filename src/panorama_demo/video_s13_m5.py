@@ -2186,7 +2186,12 @@ def _finalize_s13_m5_render(
     map_provider: S13SourceMapProvider,
     expected_support_provider: S13SourceMapProvider,
     final_image_composer: Callable[[tuple[int, ...], np.ndarray, dict[str, np.ndarray]], np.ndarray] | None = None,
-) -> tuple[S13P2Result, S13P2Result, tuple[S13P2ReplayPair, ...]]:
+) -> tuple[
+    S13P2Result,
+    S13P2Result,
+    tuple[S13P2ReplayPair, ...],
+    Mapping[str, int | float],
+]:
     """Consume only frozen pre-render authority for both formal renders/replay."""
 
     def raw(frame_id: int) -> np.ndarray:
@@ -2196,6 +2201,16 @@ def _finalize_s13_m5_render(
         row.source_index: row for row in estimate.final_source_map_oracles
     }
     sampled_cache: dict[int, tuple[int, int, np.ndarray, np.ndarray]] = {}
+    support_provider_call_count = 0
+    support_build_seconds = 0.0
+
+    def profiled_expected_support(source_index: int, x0: int, x1: int):
+        nonlocal support_provider_call_count, support_build_seconds
+        tick = time.perf_counter()
+        result = expected_support_provider(source_index, x0, x1)
+        support_build_seconds += time.perf_counter() - tick
+        support_provider_call_count += 1
+        return result
 
     def sampled_source(source_index: int, x0: int, x1: int):
         cached = sampled_cache.get(source_index)
@@ -2227,21 +2242,31 @@ def _finalize_s13_m5_render(
         schedule, calibration, raw, vertical, estimate.pairs, final_seams=False,
         selected_hypothesis_ids=selected_hypothesis_ids,
         placement_methods=placement_methods, map_provider=map_provider,
-        expected_support_provider=expected_support_provider,
+        expected_support_provider=profiled_expected_support,
         sampled_source_provider=sampled_source,
     )
     final = render_s13_p2_from_raw(
         schedule, calibration, raw, vertical, estimate.pairs, final_seams=True,
         selected_hypothesis_ids=selected_hypothesis_ids,
         placement_methods=placement_methods, map_provider=map_provider,
-        expected_support_provider=expected_support_provider,
+        expected_support_provider=profiled_expected_support,
         sampled_source_provider=sampled_source,
         image_composer=final_image_composer,
     )
     replay = build_s13_p2_replay(
         schedule, calibration, vertical, estimate.pairs, map_provider=map_provider
     )
-    return geometry, final, replay
+    return geometry, final, replay, {
+        "build_seconds": support_build_seconds,
+        "build_count": 2,
+        "provider_call_count": support_provider_call_count,
+        "requested_pixel_count": (
+            support_provider_call_count * schedule.canvas_height * schedule.canvas_width
+        ),
+        "formal_geometry_rebuild_count": 1,
+        "formal_final_rebuild_count": 1,
+        "mask_true_pixel_count": int(np.count_nonzero(final.expected_support_mask)),
+    }
 
 
 def _ordinary_s13_sampled_source_provider(
@@ -3796,7 +3821,7 @@ def run_s13_m5(
             )
         )
         source_map_oracles = list(estimation_result.final_source_map_oracles)
-        geometry, final, replay_pairs = _finalize_s13_m5_render(
+        geometry, final, replay_pairs, expected_support_audit = _finalize_s13_m5_render(
             estimate=estimation_result, schedule=schedule, calibration=calibration,
             vertical=vertical, selected_hypothesis_ids=selected_hypothesis_ids,
             placement_methods=placement_methods, map_provider=formal_provider,
@@ -3805,6 +3830,17 @@ def run_s13_m5(
         )
         p2_full_resolution_render_count += 2
     else:
+        expected_support_audit = {
+            "build_seconds": 0.0,
+            "build_count": 1,
+            "provider_call_count": len(schedule.assignments),
+            "requested_pixel_count": (
+                len(schedule.assignments) * schedule.canvas_height * schedule.canvas_width
+            ),
+            "formal_geometry_rebuild_count": 0,
+            "formal_final_rebuild_count": 0,
+            "mask_true_pixel_count": 0,
+        }
         source_map_oracles = []
         (
             ordinary_map_provider,
@@ -4279,6 +4315,7 @@ def run_s13_m5(
             "geometry": geometry_seconds,
             "seam_and_p2_render": seam_seconds,
             "total_m5": time.perf_counter() - started,
+            "m5_expected_support": dict(expected_support_audit),
             "gftt_call_count": sum(int(row.get("gftt_call_count", 0)) for row in correspondence_rows if isinstance(row, Mapping)),
             "forward_pyr_lk_call_count": sum(int(row.get("forward_pyr_lk_call_count", 0)) for row in correspondence_rows if isinstance(row, Mapping)),
             "backward_pyr_lk_call_count": 0,

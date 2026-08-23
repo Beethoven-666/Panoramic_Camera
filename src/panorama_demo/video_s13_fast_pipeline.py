@@ -380,6 +380,25 @@ def run_s13_fast_pipeline(
         "c2e_full_provenance_copy_count": c2e_copy_count,
         "m6_performance": dict(p3_render.performance),
         "m5_performance": dict(m5.performance),
+        "m4_probe": {
+            "mode": "legacy_exact_probe" if vertical_exact_seam_probes else "full_reference",
+            "plan_seconds": 0.0,
+            "global_atlas_render_seconds": 0.0,
+            "full_local_atlas_render_seconds": 0.0,
+            "metric_seconds": float(timings.get("m4.candidate_decision", 0.0)),
+            "final_full_p1_guard_seconds": 0.0,
+            "slot_count": len(vertical.pairs),
+            "packed_width_px": 0,
+            "source_remap_count": 0,
+            "legacy_probe_shadow_count": 0,
+            "full_reference_shadow_count": 0,
+            "metric_mismatch_count": 0,
+            "decision_mismatch_count": 0,
+            "fallback_count": 0,
+        },
+        "m5_expected_support": dict(
+            m5.performance.get("m5_expected_support", {})
+        ),
         "m62": m62,
         "frame_store": frame_store.report().__dict__,
     }
