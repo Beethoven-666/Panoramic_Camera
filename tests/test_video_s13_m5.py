@@ -18,6 +18,7 @@ from panorama_demo.video_s13_alignment import (
     estimate_s13_pair_alignment,
     reestimate_s13_final_corridor_alignment,
 )
+from panorama_demo.video_s13_seam import seam_search_bounds
 from panorama_demo.video_s13_m5 import (
     S13M5EstimationResult,
     _base_calibrated_map,
@@ -412,6 +413,26 @@ def test_seam_dp_has_bounded_unit_steps_and_complete_fallback_chain(monkeypatch)
         "monotone_dp", "shifted_straight", "midpoint_straight"
     )
     assert np.all(midpoint.seam_x_by_row == 32)
+
+
+def test_adjacent_seam_search_domains_are_strictly_disjoint() -> None:
+    boundaries = (945, 954, 962, 972)
+    domains = [
+        seam_search_bounds(
+            1850,
+            boundary,
+            previous_boundary_x=(None if index == 0 else boundaries[index - 1]),
+            next_boundary_x=(
+                None if index + 1 == len(boundaries) else boundaries[index + 1]
+            ),
+        )
+        for index, boundary in enumerate(boundaries)
+    ]
+
+    assert all(
+        left[1] < right[0]
+        for left, right in zip(domains[:-1], domains[1:], strict=True)
+    )
 
 
 def test_seam_dp_requires_cost_margin_over_shifted_straight(monkeypatch) -> None:

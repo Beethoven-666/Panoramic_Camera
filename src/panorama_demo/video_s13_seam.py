@@ -176,8 +176,9 @@ def seam_search_bounds(
     """Return inclusive, ordered search bounds for one seam.
 
     Midpoints to adjacent *base* boundaries divide neighbouring search domains.
-    Equal limits are allowed because a duplicate source may legitimately have a
-    zero-width owner, while crossing is never allowed.
+    The integer tie column belongs to only one side, so two independently
+    optimized neighbouring seams cannot meet and erase the owner between them.
+    Zero-width schedule sources are removed before formal M5 seam planning.
     """
 
     width = int(width)
@@ -197,9 +198,9 @@ def seam_search_bounds(
     ordered_left = 1
     ordered_right = width - 2
     if previous_boundary_x is not None:
-        ordered_left = int(math.ceil(0.5 * (int(previous_boundary_x) + boundary)))
+        ordered_left = (int(previous_boundary_x) + boundary + 1) // 2
     if next_boundary_x is not None:
-        ordered_right = int(math.floor(0.5 * (boundary + int(next_boundary_x))))
+        ordered_right = (boundary + int(next_boundary_x) - 1) // 2
     search_left = max(1, boundary - shift, ordered_left)
     search_right = min(width - 2, boundary + shift, ordered_right)
     if search_left > search_right:
