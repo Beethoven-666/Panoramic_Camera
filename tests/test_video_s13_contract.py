@@ -9,6 +9,8 @@ import yaml
 
 from panorama_demo.video_algorithm import build_algorithm_spec
 from panorama_demo.video_s13_contract import (
+    S13_FIRST_ROUND_PERF_ALGORITHM_ID,
+    S13_FIRST_ROUND_PERF_IMPLEMENTATION_ID,
     S13_ALGORITHM_ID,
     S13_FORMAL_M6_ALGORITHM_ID,
     S13_FORMAL_M6_IMPLEMENTATION_ID,
@@ -29,6 +31,24 @@ CUDA_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressiv
 CUDA_V2_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v2.yaml"
 CUDA_V3_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_structural_equivalent_v3.yaml"
 M62_EFFECTIVE_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_m62_effective_v6.yaml"
+FIRST_ROUND_PERF_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_m63_first_round_perf_v8.yaml"
+
+
+def test_first_round_performance_successor_is_distinct_and_hash_bound() -> None:
+    config = load_s13_config(FIRST_ROUND_PERF_CONFIG)
+    spec = build_algorithm_spec(FIRST_ROUND_PERF_CONFIG, expected_role="candidate")
+
+    assert spec.algorithm_id == S13_FIRST_ROUND_PERF_ALGORITHM_ID
+    assert spec.implementation_id == S13_FIRST_ROUND_PERF_IMPLEMENTATION_ID
+    assert config.runtime_backend == "cupy_cuda_m63_robust_v7"
+    assert config.document["parent_candidate_id"] == (
+        "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_robust_photometric_v7"
+    )
+    assert is_s13_identity(
+        algorithm_id=spec.algorithm_id,
+        implementation_id=spec.implementation_id,
+        role=spec.role,
+    )
 
 
 def test_s13_config_and_sibling_manifest_are_isolated_and_hash_bound() -> None:
