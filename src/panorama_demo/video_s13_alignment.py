@@ -29,6 +29,50 @@ AlignmentSide = Literal["left", "right"]
 QualityEvaluator = Callable[[str, np.ndarray, np.ndarray, np.ndarray], Mapping[str, object]]
 
 
+class S13CompactP0WindowMiss(RuntimeError):
+    """A compact P0 map omitted an in-canvas coordinate required by a candidate."""
+
+    def __init__(
+        self,
+        *,
+        required_absolute_x: tuple[float, float],
+        window_x: tuple[int, int],
+    ) -> None:
+        self.required_absolute_x = required_absolute_x
+        self.window_x = window_x
+        super().__init__(
+            "S1.3 compact P0 window does not cover required in-canvas x "
+            f"{required_absolute_x} within [{window_x[0]}, {window_x[1]})"
+        )
+
+
+@dataclass(frozen=True)
+class S13ImmutableP0MapWindow:
+    canvas_x0: int
+    canvas_x1: int
+    full_canvas_width: int
+    source_u: np.ndarray
+    source_v: np.ndarray
+    valid: np.ndarray
+
+    def __post_init__(self) -> None:
+        shape = np.asarray(self.valid).shape
+        if (
+            np.asarray(self.source_u).shape != shape
+            or np.asarray(self.source_v).shape != shape
+            or len(shape) != 2
+        ):
+            raise ValueError("S1.3 compact P0 map arrays must share one HxW shape")
+        if not 0 <= int(self.canvas_x0) < int(self.canvas_x1) <= int(self.full_canvas_width):
+            raise ValueError("S1.3 compact P0 window bounds are outside the full canvas")
+        if shape[1] != int(self.canvas_x1) - int(self.canvas_x0):
+            raise ValueError("S1.3 compact P0 map width disagrees with its canvas bounds")
+        if np.asarray(self.source_u).dtype != np.float32 or np.asarray(self.source_v).dtype != np.float32:
+            raise ValueError("S1.3 compact P0 source maps must remain float32")
+        if np.asarray(self.valid).dtype != np.bool_:
+            raise ValueError("S1.3 compact P0 validity must remain boolean")
+
+
 @dataclass(frozen=True)
 class S13AlignmentConfig:
     """Closed M5 geometry limits, expressed in full-resolution pixels."""
@@ -292,25 +336,44 @@ def _compose_from_p0(
     application_mask: np.ndarray,
     source_size: tuple[int, int],
     minimum_jacobian: float,
+    p0_canvas_x0: int = 0,
+    full_canvas_width: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, object]]:
-    height, width = p0_valid.shape
+    height, window_width = p0_valid.shape
+    resolved_full_width = window_width if full_canvas_width is None else int(full_canvas_width)
+    window_x0 = int(p0_canvas_x0)
+    window_x1 = window_x0 + window_width
     target_x = np.broadcast_to(np.arange(x0, x1, dtype=np.float32)[None, :], delta_u.shape)
     target_y = np.broadcast_to(np.arange(height, dtype=np.float32)[:, None], delta_v.shape)
-    query_x = target_x + delta_u.astype(np.float32)
+    query_x_absolute = target_x + delta_u.astype(np.float32)
+    query_x_local = query_x_absolute - np.float32(window_x0)
     query_y = target_y + delta_v.astype(np.float32)
+    finite_query_x = np.isfinite(query_x_absolute)
+    in_full_canvas = finite_query_x & (query_x_absolute >= 0.0) & (
+        query_x_absolute <= resolved_full_width - 1
+    )
+    missed = in_full_canvas & (
+        (query_x_local < 0.0) | (query_x_local > window_width - 1)
+    )
+    if np.any(missed):
+        required = np.asarray(query_x_absolute[missed], dtype=np.float64)
+        raise S13CompactP0WindowMiss(
+            required_absolute_x=(float(required.min()), float(required.max())),
+            window_x=(window_x0, window_x1),
+        )
     p0_u = np.asarray(p0_source_u, dtype=np.float32)
     p0_v = np.asarray(p0_source_v, dtype=np.float32)
     valid_float = np.asarray(p0_valid, dtype=np.uint8) * 255
-    source_u = cv2.remap(p0_u, query_x, query_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=np.nan)
-    source_v = cv2.remap(p0_v, query_x, query_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=np.nan)
-    sampled_valid = cv2.remap(valid_float, query_x, query_y, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 0
+    source_u = cv2.remap(p0_u, query_x_local, query_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=np.nan)
+    source_v = cv2.remap(p0_v, query_x_local, query_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=np.nan)
+    sampled_valid = cv2.remap(valid_float, query_x_local, query_y, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 0
     source_width, source_height = (int(value) for value in source_size)
     finite = np.isfinite(source_u) & np.isfinite(source_v) & np.isfinite(delta_u) & np.isfinite(delta_v)
     in_bounds = (
         (source_u >= 0.0) & (source_u <= source_width - 1)
         & (source_v >= 0.0) & (source_v <= source_height - 1)
     )
-    map_x = query_x.astype(np.float64)
+    map_x = query_x_absolute.astype(np.float64)
     map_y = query_y.astype(np.float64)
     du_dx = np.gradient(map_x, axis=1) if map_x.shape[1] > 1 else np.ones_like(map_x)
     du_dy = np.gradient(map_x, axis=0) if map_x.shape[0] > 1 else np.zeros_like(map_x)
@@ -320,7 +383,13 @@ def _compose_from_p0(
     # Missing immutable P0 support is not a numerical map failure.  It remains
     # invalid in the returned map and must never be filled by this geometry
     # stage; safety is audited only where this real source had P0 support.
-    base_support = application_mask & np.asarray(p0_valid[:, x0:x1], dtype=bool)
+    base_x0, base_x1 = x0 - window_x0, x1 - window_x0
+    if base_x0 < 0 or base_x1 > window_width:
+        raise S13CompactP0WindowMiss(
+            required_absolute_x=(float(x0), float(x1 - 1)),
+            window_x=(window_x0, window_x1),
+        )
+    base_support = application_mask & np.asarray(p0_valid[:, base_x0:base_x1], dtype=bool)
     retained = base_support & sampled_valid & finite & in_bounds
     inspected = retained
     positive = bool(np.all(jacobian[inspected] > minimum_jacobian)) if np.any(inspected) else True
@@ -385,6 +454,8 @@ def estimate_s13_pair_alignment(
     config: S13AlignmentConfig | None = None,
     reestimated_for_final_seam: bool = False,
     seam_local_evidence: Mapping[str, object] | None = None,
+    p0_canvas_x0: int = 0,
+    full_canvas_width: int | None = None,
 ) -> S13PairAlignment:
     """Estimate and audit C0--C4 from one immutable P0 non-reference grid.
 
@@ -402,7 +473,11 @@ def estimate_s13_pair_alignment(
     valid = np.asarray(p0_valid, dtype=bool)
     if p0_source_u.shape != valid.shape or p0_source_v.shape != valid.shape or valid.ndim != 2:
         raise ValueError("S1.3 M5 immutable P0 maps must share one HxW shape")
-    height, width = valid.shape
+    height, window_width = valid.shape
+    width = window_width if full_canvas_width is None else int(full_canvas_width)
+    window_x0 = int(p0_canvas_x0)
+    if width <= 0 or window_x0 < 0 or window_x0 + window_width > width:
+        raise ValueError("S1.3 M5 immutable P0 window is outside the full canvas")
     application_band.validate(
         canvas_width=width, canvas_height=height,
         shoulder_width_px=settings.alignment_shoulder_width_px,
@@ -464,6 +539,7 @@ def estimate_s13_pair_alignment(
             p0_source_u, p0_source_v, valid, x0=x0, x1=x1,
             delta_u=delta_u, delta_v=delta_v, application_mask=application_mask,
             source_size=source_size, minimum_jacobian=settings.minimum_jacobian,
+            p0_canvas_x0=window_x0, full_canvas_width=width,
         )
         numeric_pass = bool(
             numeric_pass
@@ -681,8 +757,9 @@ def reestimate_s13_final_corridor_alignment(
     p0_valid = np.asarray(estimator_arguments.get("p0_valid"), dtype=bool)
     if p0_valid.ndim != 2:
         raise ValueError("S1.3 M5 final-corridor re-estimation requires immutable P0 validity")
+    full_canvas_width = int(estimator_arguments.get("full_canvas_width") or p0_valid.shape[1])
     band = final_corridor_application_band(
-        final_seam_x_by_row, canvas_width=p0_valid.shape[1],
+        final_seam_x_by_row, canvas_width=full_canvas_width,
         half_width_px=int(application_half_width_px),
         allowed_left_x_by_row=allowed_left_x_by_row,
         allowed_right_x_by_row=allowed_right_x_by_row,
@@ -708,7 +785,8 @@ def reestimate_s13_final_corridor_alignment(
 
 __all__ = [
     "AlignmentSide", "QualityEvaluator", "S13AlignmentCandidate", "S13AlignmentConfig",
-    "S13ApplicationBand", "S13PairAlignment", "estimate_s13_pair_alignment",
+    "S13ApplicationBand", "S13CompactP0WindowMiss", "S13ImmutableP0MapWindow",
+    "S13PairAlignment", "estimate_s13_pair_alignment",
     "filter_s13_correspondences_for_final_seam", "final_corridor_application_band",
     "reestimate_s13_final_corridor_alignment",
 ]

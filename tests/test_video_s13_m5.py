@@ -11,6 +11,8 @@ from panorama_demo.video_s13_alignment import (
     S13AlignmentCandidate,
     S13AlignmentConfig,
     S13ApplicationBand,
+    S13CompactP0WindowMiss,
+    S13ImmutableP0MapWindow,
     estimate_s13_pair_alignment,
     reestimate_s13_final_corridor_alignment,
 )
@@ -256,6 +258,55 @@ def test_alignment_exposes_c0_to_c4_fallback_jacobian_and_identity_taper() -> No
     assert np.allclose(selected.target_delta_u[:, -1], 0.0, atol=1e-6)
     assert np.all(selected.target_delta_v[:, 0] == 0.0)
     assert np.allclose(selected.target_delta_v[:, -1], 0.0, atol=1e-6)
+
+
+def test_compact_p0_alignment_uses_local_lookup_and_preserves_absolute_geometry() -> None:
+    reference = _alignment()
+    u, v, valid = _identity_grid()
+    window = S13ImmutableP0MapWindow(
+        canvas_x0=16,
+        canvas_x1=80,
+        full_canvas_width=96,
+        source_u=u[:, 16:80].copy(),
+        source_v=v[:, 16:80].copy(),
+        valid=valid[:, 16:80].copy(),
+    )
+
+    compact = _alignment(
+        p0_source_u=window.source_u,
+        p0_source_v=window.source_v,
+        p0_valid=window.valid,
+        p0_canvas_x0=window.canvas_x0,
+        full_canvas_width=window.full_canvas_width,
+    )
+
+    assert compact.selected_model == reference.selected_model
+    assert compact.alignment_shoulder == reference.alignment_shoulder
+    for candidate, expected in zip(compact.candidates, reference.candidates, strict=True):
+        np.testing.assert_array_equal(candidate.source_u, expected.source_u)
+        np.testing.assert_array_equal(candidate.source_v, expected.source_v)
+        np.testing.assert_array_equal(candidate.valid, expected.valid)
+        np.testing.assert_array_equal(candidate.target_delta_u, expected.target_delta_u)
+        np.testing.assert_array_equal(candidate.target_delta_v, expected.target_delta_v)
+        assert candidate.audit == expected.audit
+        assert candidate.metrics == expected.metrics
+        assert candidate.accepted == expected.accepted
+        assert candidate.failure_reason == expected.failure_reason
+
+
+def test_compact_p0_window_miss_reports_absolute_required_range() -> None:
+    u, v, valid = _identity_grid()
+    with pytest.raises(S13CompactP0WindowMiss) as caught:
+        _alignment(
+            p0_source_u=u[:, 40:60].copy(),
+            p0_source_v=v[:, 40:60].copy(),
+            p0_valid=valid[:, 40:60].copy(),
+            p0_canvas_x0=40,
+            full_canvas_width=96,
+        )
+
+    assert caught.value.window_x == (40, 60)
+    assert caught.value.required_absolute_x == (32.0, 63.0)
 
 
 def test_alignment_rejects_estimated_model_with_bad_absolute_held_out_p95() -> None:
