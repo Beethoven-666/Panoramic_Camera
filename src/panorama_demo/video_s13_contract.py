@@ -60,7 +60,7 @@ S13_FIRST_ROUND_PERF_ALGORITHM_ID = (
     "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_first_round_perf_v8"
 )
 S13_FIRST_ROUND_PERF_IMPLEMENTATION_ID = (
-    "s013_m63_preflight_rgb_handoff_m5_support_cache_v8"
+    "s013_m63_preflight_rgb_handoff_v8"
 )
 
 _S13_COMPONENT_NAME = "s013_output_first_progressive_dense_central_slit"
