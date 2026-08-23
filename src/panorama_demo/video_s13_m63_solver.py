@@ -315,6 +315,25 @@ def _metrics(samples: Sequence[S13PhotometricSampleSet], gains: np.ndarray) -> d
     }
 
 
+def _catastrophic_pair_regressions(
+    baseline: Mapping[str, object], candidate: Mapping[str, object]
+) -> set[int]:
+    """Return held-out pairs whose P95 regression requires an identity cut."""
+
+    before_by = {
+        int(item["pair_index"]): item for item in baseline.get("pair_metrics", ())
+    }
+    after_by = {
+        int(item["pair_index"]): item for item in candidate.get("pair_metrics", ())
+    }
+    return {
+        key
+        for key in set(before_by) & set(after_by)
+        if float(after_by[key]["p95_linear"])
+        > float(before_by[key]["p95_linear"]) * 1.10 + 0.001
+    }
+
+
 def _selection_reasons(
     baseline: Mapping[str, object], candidate: Mapping[str, object], config: S13M63Config,
 ) -> tuple[list[str], dict[str, float]]:
@@ -405,9 +424,11 @@ def solve_s13_m63_photometric(
     frame_ids: Sequence[int],
     config: S13M63Config,
     force_identity: bool = False,
+    _forced_quality_cut_pair_indices: frozenset[int] = frozenset(),
+    _quality_cut_refit_depth: int = 0,
 ) -> S13M63SolveResult:
     source_count = len(frame_ids)
-    forced_regression: set[int] = set()
+    forced_regression = set(_forced_quality_cut_pair_indices)
     quality_rows: tuple[S13M63PairQuality, ...] = ()
     raw_logs: np.ndarray | None = None
     evidence = np.zeros(source_count, np.float64)
@@ -449,13 +470,7 @@ def solve_s13_m63_photometric(
                 [item for item in adjacent_samples if item.pair_index not in cuts],
                 np.ones(source_count),
             )
-            before_by = {int(item["pair_index"]): item for item in baseline.get("pair_metrics", ())}
-            after_by = {int(item["pair_index"]): item for item in raw_metrics.get("pair_metrics", ())}
-            catastrophic = {
-                key for key in set(before_by) & set(after_by)
-                if float(after_by[key]["p95_linear"])
-                > float(before_by[key]["p95_linear"]) * 1.10 + 0.001
-            }
+            catastrophic = _catastrophic_pair_regressions(baseline, raw_metrics)
             new = catastrophic - cuts - forced_regression
             if new and refit == 0:
                 forced_regression.update(new)
@@ -520,6 +535,7 @@ def solve_s13_m63_photometric(
     # Quality cuts intentionally split the graph.  Q4c solves each component
     # atomically while fixing every source adjacent to a cut at identity.
     q4c_rows: list[dict[str, object]] = []
+    q4c_forced_regression: set[int] = set()
     if selected_model == "Q0_identity" and cuts and config.q4c_enabled and not force_identity:
         cut_set = set(cuts)
         eligible = [
@@ -561,6 +577,7 @@ def solve_s13_m63_photometric(
                 reasons.append("component_heldout_unevaluable")
             elif not reasons:
                 candidate_reasons: list[str] = []
+                component_catastrophic: set[int] = set()
                 for alpha in config.shrink_candidates:
                     trial = np.ones(source_count, np.float64)
                     trial[columns] = np.exp(alpha * raw_component_logs[columns])
@@ -585,6 +602,14 @@ def solve_s13_m63_photometric(
                             trial_reasons.append("component_macro_benefit_too_small")
                         if float(trial_after["worst_pair_p95_linear"]) > float(before["worst_pair_p95_linear"]) * 1.05 + 0.001:
                             trial_reasons.append("component_worst_pair_regression")
+                        catastrophic = _catastrophic_pair_regressions(
+                            before, trial_after
+                        )
+                        if catastrophic:
+                            component_catastrophic.update(catastrophic)
+                            trial_reasons.append(
+                                "component_pair_catastrophic_regression"
+                            )
                     candidate_reasons = trial_reasons
                     if not trial_reasons:
                         candidate = trial
@@ -592,6 +617,7 @@ def solve_s13_m63_photometric(
                         break
                 else:
                     reasons.extend(candidate_reasons)
+                    q4c_forced_regression.update(component_catastrophic)
             if not reasons:
                 q4_gains[nodes] = candidate[nodes]
                 accepted += 1
@@ -606,6 +632,19 @@ def solve_s13_m63_photometric(
                 "before": before,
                 "after": after,
             })
+        new_q4c_cuts = q4c_forced_regression - set(cuts)
+        if new_q4c_cuts and _quality_cut_refit_depth == 0:
+            return solve_s13_m63_photometric(
+                solve_samples,
+                adjacent_samples,
+                frame_ids=frame_ids,
+                config=config,
+                force_identity=force_identity,
+                _forced_quality_cut_pair_indices=frozenset(
+                    set(_forced_quality_cut_pair_indices) | new_q4c_cuts
+                ),
+                _quality_cut_refit_depth=1,
+            )
         q4_metrics = _metrics(trusted_samples, q4_gains)
         q4_reasons, fractions = _selection_reasons(baseline, q4_metrics, config)
         if accepted == 0:

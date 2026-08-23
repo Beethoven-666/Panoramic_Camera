@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
 from panorama_demo.video_s13_m63_solver import (
@@ -121,3 +123,27 @@ def test_nonfinite_or_unusable_model_falls_back_as_one_whole_candidate():
     assert result.solution.model_family == "Q0_identity"
     assert all(item.fallback_reason is None for item in result.solution.source_parameters)
     assert result.audit["source_fallback_count"] == 0
+
+
+def test_q4c_refits_when_one_pair_regresses_but_is_not_component_worst() -> None:
+    levels = np.asarray([-0.06, -0.04, -0.02, 0.0, 0.0, 0.02, 0.04, 0.06])
+    samples = list(_chain(levels))
+    samples[3] = _sample(3, 3, 4, 0.0, 0.0, outlier=True)
+    inconsistent = samples[1]
+    samples[1] = replace(
+        inconsistent,
+        heldout_right_rgb_linear=inconsistent.heldout_left_rgb_linear.copy(),
+    )
+
+    result = solve_s13_m63_photometric(
+        samples,
+        samples,
+        frame_ids=range(8),
+        config=S13M63Config(enabled=True),
+    )
+
+    assert result.quality_cut_pair_indices == (1, 3)
+    assert result.solution.model_family == Q4C_MODEL
+    pair = next(item for item in result.quality_rows if item.pair_index == 1)
+    assert pair.reasons == ("candidate_regression",)
+    assert result.audit["pair_nonregression_fraction"] == 1.0
