@@ -11,7 +11,11 @@ import numpy as np
 from .video_s13_blend import S13BlendConfig, S13BlendPlan, select_s13_blend_plans
 from .video_s13_m6 import _source_frame_ids
 from .video_s13_m6_cuda import S13M6SourceROI, build_s13_m6_source_rois
-from .video_s13_m62_evidence import S13M62EvidenceBundle, extract_s13_m62_evidence
+from .video_s13_m62_evidence import (
+    S13M62EvidenceBundle,
+    S13M62EvidenceSamplingMode,
+    extract_s13_m62_evidence,
+)
 from .video_s13_m62_component import evaluate_s13_m62_q4c_shadow
 from .video_s13_m63_solver import (
     S13M63Config,
@@ -69,6 +73,8 @@ def build_s13_m62_execution_plan(
     force_owner_only_pair_indices: frozenset[int] = frozenset(),
     retain_runtime_details: bool = False,
     m63_config: S13M63Config = S13M63Config(),
+    evidence_sampling_mode: S13M62EvidenceSamplingMode = "pair_reference",
+    packed_reference_fallback: bool = True,
 ) -> S13M62DecisionPlan:
     """Build evidence, model, and blend decisions without corrected ROI pixels."""
 
@@ -86,6 +92,8 @@ def build_s13_m62_execution_plan(
         p2.replay_pairs, source_rois, image_loader,
         canvas_shape=p2.valid_mask.shape, config=photometric_config,
         retain_runtime_details=retain_runtime_details,
+        sampling_mode=evidence_sampling_mode,
+        packed_reference_fallback=packed_reference_fallback,
     )
     evidence_seconds = time.perf_counter() - tick
     tick = time.perf_counter()

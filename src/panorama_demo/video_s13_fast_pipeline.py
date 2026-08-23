@@ -413,6 +413,7 @@ def run_s13_fast_pipeline(
             execution_mode = str(dict(options.get("execution", {})).get(
                 "mode", "parity_test"
             ))
+            evidence_sampling = dict(options.get("evidence_sampling", {}))
             p3_render, m62 = run_s13_m62_cpu_authoritative(
                 p2_runtime, image_loader, cuda_runtime=resident_runtime,
                 retain_runtime_details=execution_mode in {"shadow_audit", "parity_test"},
@@ -425,6 +426,12 @@ def run_s13_fast_pipeline(
                 }),
                 execution_mode=execution_mode,
                 m63_config=S13M63Config.from_document(options.get("m63")),
+                evidence_sampling_mode=str(evidence_sampling.get(
+                    "mode", "pair_reference"
+                )),
+                packed_reference_fallback=bool(evidence_sampling.get(
+                    "reference_mode_available", True
+                )),
             )
         elif m6_cuda_v3:
             if p0_resident_device_remap is None or resident_runtime is None:

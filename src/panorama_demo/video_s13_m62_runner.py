@@ -10,6 +10,7 @@ import numpy as np
 from .video_s13_blend import S13BlendConfig
 from .video_s13_m6 import run_s13_m6
 from .video_s13_m62_equivalence import compare_s13_m62_u8
+from .video_s13_m62_evidence import S13M62EvidenceSamplingMode
 from .video_s13_m62_gpu import execute_s13_m62_gpu_shadow
 from .video_s13_m62_plan import build_s13_m62_execution_plan
 from .video_s13_m62_reference import execute_s13_m62_cpu_reference
@@ -35,6 +36,8 @@ def run_s13_m62(
     photometric_config: S13PhotometricConfig = S13PhotometricConfig(),
     blend_config: S13BlendConfig = S13BlendConfig(),
     m63_config: S13M63Config = S13M63Config(),
+    evidence_sampling_mode: S13M62EvidenceSamplingMode = "pair_reference",
+    packed_reference_fallback: bool = True,
 ) -> tuple[object, dict[str, Any]]:
     """Run exactly the work authorized by ``execution_mode``."""
 
@@ -47,6 +50,8 @@ def run_s13_m62(
         force_owner_only_pair_indices=force_owner_only_pair_indices,
         retain_runtime_details=retain_runtime_details,
         m63_config=m63_config,
+        evidence_sampling_mode=evidence_sampling_mode,
+        packed_reference_fallback=packed_reference_fallback,
     )
     reference = execute_s13_m62_cpu_reference(
         plan, retain_runtime_details=retain_runtime_details
@@ -127,6 +132,8 @@ def run_s13_m62_cpu_authoritative(
     blend_config: S13BlendConfig = S13BlendConfig(),
     execution_mode: S13M62ExecutionMode = "parity_test",
     m63_config: S13M63Config = S13M63Config(),
+    evidence_sampling_mode: S13M62EvidenceSamplingMode = "pair_reference",
+    packed_reference_fallback: bool = True,
 ) -> tuple[object, dict[str, Any]]:
     """Compatibility wrapper; callers should pass an explicit mode."""
     return run_s13_m62(
@@ -135,6 +142,8 @@ def run_s13_m62_cpu_authoritative(
         retain_runtime_details=retain_runtime_details,
         photometric_config=photometric_config, blend_config=blend_config,
         m63_config=m63_config,
+        evidence_sampling_mode=evidence_sampling_mode,
+        packed_reference_fallback=packed_reference_fallback,
     )
 
 
