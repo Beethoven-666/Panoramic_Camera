@@ -7,7 +7,7 @@ import os
 import shutil
 from pathlib import Path
 import time
-from typing import Any
+from typing import Any, Mapping
 
 import cv2
 import numpy as np
@@ -190,6 +190,7 @@ def publish_video_2d(
     capture_stop_monotonic_ns: int | None = None,
     p3_memory_monotonic_ns: int | None = None,
     timing_origin: str | None = None,
+    timing_sections: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     if panorama.dtype != np.uint8 or panorama.ndim != 3 or panorama.shape[2] != 3:
         raise ValueError("Video panorama must be an 8-bit BGR image")
@@ -255,8 +256,12 @@ def publish_video_2d(
         assert capture_stop_monotonic_ns is not None
         assert p3_memory_monotonic_ns is not None
         timing_path = output / ".video_timing.pending.json"
+        extra_timing = dict(timing_sections or {})
+        if "final_2d" in extra_timing or "schema" in extra_timing:
+            raise ValueError("Video timing sections cannot replace schema or final_2d")
         timing_path.write_text(json.dumps({
             "schema": "gemini305-video-timing/v1",
+            **extra_timing,
             "final_2d": {
                 "measurement_origin": timing_origin,
                 "capture_stop_monotonic_ns": capture_stop_monotonic_ns,

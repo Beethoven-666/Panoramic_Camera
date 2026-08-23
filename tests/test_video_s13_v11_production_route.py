@@ -300,6 +300,8 @@ def test_live_production_timing_uses_capture_stop_origin(tmp_path: Path) -> None
         ),
         motion_edges=(),
         capture_stopped_monotonic_ns=stopped_ns,
+        capture_metrics={"received_frames": 2, "written_frames": 2, "queue_drops": 0},
+        online_2d_metrics={"preview_update_count": 1},
     )
 
     production.run_s13_v11_production(

@@ -107,6 +107,14 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _monotonic_after(previous_ns: int) -> int:
+    value = time.monotonic_ns()
+    while value <= previous_ns:
+        time.sleep(0)
+        value = time.monotonic_ns()
+    return value
+
+
 def _stage_pixel_sha256(image: object) -> str:
     """Hash canonical in-memory uint8 pixels, including shape and dtype."""
 
@@ -402,6 +410,19 @@ def run_s13_v11_production(
             capture_stop_monotonic_ns=capture_stop_monotonic_ns,
             p3_memory_monotonic_ns=p3_memory_monotonic_ns,
             timing_origin=timing_origin,
+            timing_sections=(
+                None
+                if live_handoff is None
+                else {
+                    "capture": dict(live_handoff.capture_metrics),
+                    "online_2d": dict(live_handoff.online_2d_metrics),
+                    "isolation": {
+                        "capture_orbslam3_call_count": 0,
+                        "pre_2d_open3d_call_count": 0,
+                        "pre_2d_3d_process_count": 0,
+                    },
+                }
+            ),
         )
         published["_two_d_delivery_published_monotonic_ns"] = time.monotonic_ns()
     except Exception as exc:
@@ -412,7 +433,9 @@ def run_s13_v11_production(
         # returns.  Drop the last formal P3/owner references before the outer
         # pipeline is allowed to create the independent 3-D process.
         authority = None
-    published["_two_d_resources_released_monotonic_ns"] = time.monotonic_ns()
+    published["_two_d_resources_released_monotonic_ns"] = _monotonic_after(
+        published["_two_d_delivery_published_monotonic_ns"]
+    )
     return published
 
 

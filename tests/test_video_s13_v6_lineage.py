@@ -139,7 +139,10 @@ def test_v6_identity_is_an_isolated_p2_only_successor() -> None:
 
 
 def test_v6_does_not_mutate_v5_config_or_manifest_entry() -> None:
-    assert hashlib.sha256(V5_CONFIG.read_bytes()).hexdigest() == V5_FILE_SHA256
+    # Git's Windows checkout may materialize CRLF even though the immutable
+    # declaration was sealed from canonical LF bytes.
+    canonical_bytes = V5_CONFIG.read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(canonical_bytes).hexdigest() == V5_FILE_SHA256
     document = yaml.safe_load(V5_CONFIG.read_text(encoding="utf-8"))
     assert document["config_sha256"] == V5_CONFIG_SHA256
     manifest = json.loads((CONFIG_ROOT / "candidate_manifest.json").read_text(encoding="utf-8"))

@@ -1,0 +1,103 @@
+{
+  "schema": "gemini305-s013-v11-live-final-acceptance/v1",
+  "baseline_commit": "0cc93e7cff231ffc2370847034aa89a727023269",
+  "algorithm": {
+    "algorithm_id": "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_visual_continuity_v11",
+    "implementation_id": "s013_m5_disjoint_seam_m63_pair_guard_v11",
+    "candidate_config_sha256": "a03f443aaf72463afc1f06507fe2bfc888d9211f4c4a62634bbfb29fa0f2dab0",
+    "production_config_sha256": "3a49f8cbaa622592eff41b2a9e34cb518c6067d74d15574cf01faeea0cc8fafc",
+    "pixel_contract_sha256": "cb75af143310f2e405bae3e084704e5f74cc1309a10f9b4e01e1b9d7d97a62ef",
+    "pixel_contract_equal": true,
+    "fallback_used": false,
+    "execution_backend": "s013_v11_production_cuda"
+  },
+  "datasets": {
+    "fast": "D:/central_strip_Panoramic_Camera/data/captures/video/run_20260804_162340",
+    "slow": "D:/central_strip_Panoramic_Camera/data/captures/video/run_20260806_153033",
+    "input_kind": "real_continuous_rgbd_video"
+  },
+  "capture_isolation": {
+    "online_orb_tracker_construct_count": 0,
+    "orbslam3_subprocess_count_before_2d": 0,
+    "open3d_import_count_before_2d": 0,
+    "tsdf_call_count_before_2d": 0,
+    "three_d_process_count_before_2d": 0,
+    "queue_drops": 0,
+    "write_errors": 0
+  },
+  "preview": {
+    "fast_first_display_seconds": [1.765, 1.750],
+    "fast_latency_p95_ms": [16.0, 16.0],
+    "fast_updates": [32, 32],
+    "slow_first_display_seconds": [2.703, 2.719],
+    "slow_latency_p95_ms": [16.0, 16.0],
+    "slow_updates": [48, 48],
+    "authority": "non_authoritative_live_preview"
+  },
+  "timing_seconds": {
+    "fast_offline": {
+      "warmup_published": 16.234,
+      "formal_published": [16.203, 14.797],
+      "formal_median_published": 15.500,
+      "formal_max_published": 16.203
+    },
+    "fast_live": {
+      "warmup_published": 16.281,
+      "formal_memory": [15.844, 15.875],
+      "formal_published": [16.016, 16.047],
+      "formal_median_memory": 15.8595,
+      "formal_median_published": 16.0315,
+      "formal_max_published": 16.047,
+      "stage_formal": {
+        "m0_m3": [4.0806076, 4.0428435],
+        "m4": [2.3231113, 2.2685860],
+        "m5": [4.4775476, 4.5306670],
+        "m6": [1.3075873, 1.3260450],
+        "c2e": [0.0681470, 0.0834068],
+        "core_total": [12.1893277, 12.1686837]
+      }
+    },
+    "slow_offline": {
+      "warmup_published": 20.781,
+      "formal_published": [20.937, 20.812],
+      "formal_median_published": 20.8745,
+      "formal_max_published": 20.937
+    },
+    "slow_live": {
+      "warmup_published": 20.484,
+      "formal_memory": [18.953, 20.359],
+      "formal_published": [19.125, 20.547],
+      "formal_median_memory": 19.656,
+      "formal_median_published": 19.836,
+      "formal_max_published": 20.547
+    }
+  },
+  "equivalence": {
+    "formal_comparison_count": 4,
+    "all_equivalent": true,
+    "p3_differing_pixel_count": [0, 0, 0, 0],
+    "owner_differing_pixel_count": [0, 0, 0, 0],
+    "fast_png_sha256": "0444b45354984297008e38ecbee347ed95f73512b2546dc7a7349c2d42caa4d4",
+    "slow_png_sha256": "a8d7bf90106acb12ebf4030cafd181c0321f5ee6c5188e78b0a8e1f5e7550f87",
+    "source_schedule_owner_pair_seam_m63_q1r_q4c_b0_b1_c2e_equal": true,
+    "production_stage_png_files_written": 0
+  },
+  "post_3d": {
+    "real_success": true,
+    "orb_source_frame_count": 74,
+    "desktop_glb_bytes": 25655720,
+    "mobile_glb_bytes": 25655720,
+    "preview_generated": false,
+    "spawn_order_strict": true,
+    "forced_orb_failure_exit_code": 1,
+    "forced_orb_failure_all_2d_sha_unchanged": true,
+    "forced_tsdf_cleanup_glb_failure_isolation_tested": true
+  },
+  "limitations": {
+    "physical_camera_capture_executed": false,
+    "live_acceptance_method": "recorded_real_rgbd_frames_replayed_at_device_timestamp_cadence",
+    "slow_live_max_exceeded_20_seconds_by": 0.547,
+    "pixel_evidence_reuse_level": "validated_inputs_only",
+    "pair_evidence_reused_count": 0
+  }
+}

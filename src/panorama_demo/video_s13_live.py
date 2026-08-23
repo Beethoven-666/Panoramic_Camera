@@ -62,6 +62,8 @@ class S13V11LiveHandoff:
     motion_edges: tuple[S13LiveMotionEdge, ...]
     capture_started_monotonic_ns: int
     capture_stopped_monotonic_ns: int
+    capture_metrics: Mapping[str, object]
+    online_2d_metrics: Mapping[str, object]
     reuse_level: str = "validated_inputs_only"
 
 
@@ -483,6 +485,7 @@ class S13V11LiveObserver:
             )
 
     def freeze_handoff(self) -> S13V11LiveHandoff:
+        snapshot = self.snapshot()
         with self._lock:
             if self._session is None or self._capture_result is None or not self._stopped:
                 raise RuntimeError("S013 live handoff requires a closed capture")
@@ -491,6 +494,10 @@ class S13V11LiveObserver:
                 raise RuntimeError("S013 live committed ledger does not cover every written frame")
             if [item.frame_id for item in committed] != sorted(item.frame_id for item in committed):
                 raise RuntimeError("S013 live committed ledger is not chronological")
+            capture_seconds = (
+                self._capture_result.capture_stopped_monotonic_ns
+                - self._capture_result.capture_started_monotonic_ns
+            ) / 1_000_000_000.0
             return S13V11LiveHandoff(
                 algorithm_id=S13_VISUAL_CONTINUITY_ALGORITHM_ID,
                 implementation_id=S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
@@ -501,6 +508,30 @@ class S13V11LiveObserver:
                 motion_edges=tuple(self._motion_edges),
                 capture_started_monotonic_ns=self._capture_result.capture_started_monotonic_ns,
                 capture_stopped_monotonic_ns=self._capture_result.capture_stopped_monotonic_ns,
+                capture_metrics=MappingProxyType({
+                    "physical_seconds": capture_seconds,
+                    "received_frames": self._capture_result.received_frames,
+                    "written_frames": self._capture_result.written_frames,
+                    "max_queue_depth": self._capture_result.max_queue_depth,
+                    "queue_drops": self._capture_result.queue_drops,
+                    "write_errors": self._capture_result.write_errors,
+                }),
+                online_2d_metrics=MappingProxyType({
+                    "first_preview_seconds": (
+                        None
+                        if snapshot.first_preview_monotonic_ns is None
+                        else (
+                            snapshot.first_preview_monotonic_ns
+                            - self._capture_result.capture_started_monotonic_ns
+                        ) / 1_000_000_000.0
+                    ),
+                    "preview_latency_p95_ms": snapshot.preview_latency_p95_ms,
+                    "preview_update_count": snapshot.preview_updates,
+                    "preview_skipped_due_to_load": snapshot.preview_skipped_due_to_load,
+                    "preview_failures": snapshot.preview_failures,
+                    "pair_evidence_reused_count": 0,
+                    "reuse_level": "validated_inputs_only",
+                }),
             )
 
 

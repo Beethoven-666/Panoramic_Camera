@@ -64,6 +64,9 @@ def spawn_post_capture_3d(
     if not marker.is_file():
         raise ValueError("Cannot spawn post-capture 3-D before 2-D delivery publication")
     spawned_ns = time.monotonic_ns()
+    while spawned_ns <= two_d_resources_released_monotonic_ns:
+        time.sleep(0)
+        spawned_ns = time.monotonic_ns()
     if not (
         spawned_ns > two_d_resources_released_monotonic_ns
         > two_d_delivery_published_monotonic_ns

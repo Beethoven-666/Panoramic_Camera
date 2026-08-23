@@ -137,9 +137,63 @@ def _m6_contract(report: Mapping[str, object]) -> dict[str, object]:
     models = {
         item.get("model") for item in audits if isinstance(item, Mapping)
     }
-    if not {_Q1R_MODEL, _Q4C_MODEL}.issubset(models):
-        raise ValueError("S013 V11 report lacks Q1R/Q4c candidate decisions")
-    return {str(key): decisions[key] for key in decisions}
+    if _Q4C_MODEL not in models:
+        raise ValueError("S013 V11 report lacks the Q4c candidate decision")
+    canonical = {str(key): decisions[key] for key in decisions}
+    if _Q1R_MODEL not in models:
+        m63 = decisions["m63_audit"]
+        if (
+            not isinstance(m63, Mapping)
+            or m63.get("selected_model") != _Q4C_MODEL
+            or not isinstance(m63.get("quality_cut_pair_indices"), (tuple, list))
+        ):
+            raise ValueError("S013 V11 report cannot explain the absent Q1R decision")
+        canonical["q1r_quality_cut_outcome"] = {
+            "status": "not_evaluated_under_q4c_quality_cut_authority",
+            "quality_cut_pair_indices": list(m63["quality_cut_pair_indices"]),
+        }
+    return canonical
+
+
+def _pair_decision_contract(pairs: object) -> list[dict[str, object]]:
+    if not isinstance(pairs, (tuple, list)):
+        raise ValueError("S013 V11 report lacks pair seam decisions")
+    canonical: list[dict[str, object]] = []
+    for pair in pairs:
+        if not isinstance(pair, Mapping):
+            raise ValueError("S013 V11 pair seam decision is malformed")
+        transaction = pair.get("m5_transaction")
+        if not isinstance(transaction, Mapping):
+            raise ValueError("S013 V11 pair seam transaction is missing")
+        evaluations = transaction.get("candidate_evaluations")
+        if not isinstance(evaluations, list):
+            raise ValueError("S013 V11 pair seam evaluations are missing")
+        canonical.append({
+            "pair_index": pair.get("pair_index"),
+            "left_frame_id": pair.get("left_frame_id"),
+            "right_frame_id": pair.get("right_frame_id"),
+            "corridor_x0": pair.get("corridor_x0"),
+            "corridor_x1": pair.get("corridor_x1"),
+            "seam_x_by_row": pair.get("seam_x_by_row"),
+            "m5_selected_seam_model": pair.get("m5_selected_seam_model"),
+            "c2e_decision": pair.get("c2e_decision"),
+            "owner_only": pair.get("owner_only"),
+            "candidate_outcomes": [
+                {
+                    "candidate_id": item.get("candidate_id"),
+                    "model_code": item.get("model_code"),
+                    "model_name": item.get("model_name"),
+                    "generation_status": item.get("generation_status"),
+                    "evaluation_status": item.get("evaluation_status"),
+                    "geometry_model": item.get("geometry_model"),
+                    "hard_gate_passed": item.get("hard_gate_passed"),
+                    "hard_gate_failures": item.get("hard_gate_failures"),
+                }
+                for item in evaluations
+                if isinstance(item, Mapping)
+            ],
+        })
+    return canonical
 
 
 def _first_divergent_stage(checks: Mapping[str, bool]) -> str | None:
@@ -250,7 +304,8 @@ def compare_s13_v11_live_offline(
             and isinstance(live_seams, (tuple, list))
             and isinstance(offline_sources, (tuple, list))
             and len(offline_seams) == len(offline_sources) - 1
-            and offline_seams == live_seams
+            and _pair_decision_contract(offline_seams)
+            == _pair_decision_contract(live_seams)
         ),
         "owner_map_exact": np.array_equal(offline["owner"], live["owner"]),
         "m6_decisions": _m6_contract(offline_report) == _m6_contract(live_report),
