@@ -44,14 +44,14 @@ def test_default_video_capture_uses_capped_auto_exposure_and_locked_awb() -> Non
         "default_algorithm": "baseline",
         "maximum_post_seconds": 60.0,
         "baseline_lock": "configs/video_algorithms/baseline_legacy_fast_b07b561.lock.json",
-        "production_lock": "configs/video_algorithms/production.lock.json",
+        "production_lock": "configs/video_algorithms/s013_visual_continuity_v11_production.lock.json",
         "dataset_lock_required_for_experiments": True,
         "observability": {
             "report_level": "summary",
             "artifact_level": "minimal",
         },
         "fallback": {
-            "production_to_baseline_on_structural_failure": True,
+            "production_to_baseline_on_structural_failure": False,
             "fallback_grade": "C",
             "manual_review_required": True,
         },

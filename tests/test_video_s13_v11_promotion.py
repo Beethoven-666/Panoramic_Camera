@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from panorama_demo.video_algorithm import load_algorithm_config
+from panorama_demo.video_algorithm_lock import read_algorithm_lock, verify_algorithm_lock
 from panorama_demo.video_s13_contract import (
     S13_VISUAL_CONTINUITY_ALGORITHM_ID,
     S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
@@ -169,3 +170,20 @@ def test_production_must_enable_eligible_delivery_lifecycle(tmp_path: Path) -> N
 
     with pytest.raises(S13V11PromotionError, match="lifecycle flags"):
         verify_s13_v11_promotion(CANDIDATE, production)
+
+
+def test_repository_production_config_and_lock_are_exact_v11() -> None:
+    production = ROOT / "configs/video_algorithms/s013_visual_continuity_v11_production.yaml"
+    lock_path = production.with_suffix(".lock.json")
+
+    verify_s13_v11_promotion(CANDIDATE, production)
+    spec = verify_algorithm_lock(lock_path, expected_role="production")
+    lock = read_algorithm_lock(lock_path, expected_role="production")
+
+    assert spec.algorithm_id == S13_VISUAL_CONTINUITY_ALGORITHM_ID
+    assert spec.implementation_id == S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID
+    assert spec.allow_baseline_fallback is False
+    assert lock.dataset_lock_sha256 == (
+        "42f989f5aa21863963beaa7fe8d6f9cf2df3c5243e766a49259735908c4e6397"
+    )
+    assert len(lock.dataset_lock_sha256) == 64
