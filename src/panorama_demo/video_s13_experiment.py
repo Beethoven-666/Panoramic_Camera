@@ -2913,9 +2913,6 @@ def run_s13_experiment(
                 },
                 "selection": dict(config.document.get("m61_bootstrap", {}).get("selection", {})),
                 "m63": dict(config.document.get("m63_photometric", {})),
-                "evidence_sampling": dict(
-                    config.document.get("m62_evidence_sampling", {})
-                ),
             } if config.m62_equivalence else None,
             post_p2_fixture=post_p2_fixture,
             validated_rgb_handoff=session_bundle.validated_rgb_handoff,
