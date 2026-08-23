@@ -1,0 +1,282 @@
+"""Fail-closed configuration contract for the standalone S1.2 experiment."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any, Mapping
+
+import yaml
+
+
+S12_CONFIG_SCHEMA = "gemini305-video-s12-standalone/v1"
+S12_ALGORITHM_ID = "S012_standalone_auto_anchor_dense_central_slit_v1"
+
+
+def _mapping(value: object, name: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"S1.2 configuration section {name!r} must be a mapping")
+    return dict(value)
+
+
+def _number(section: Mapping[str, Any], key: str, *, minimum: float = 0.0) -> float:
+    value = section.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"S1.2 configuration {key!r} must be numeric")
+    result = float(value)
+    if not result >= minimum or result == float("inf"):
+        raise ValueError(f"S1.2 configuration {key!r} must be finite and >= {minimum}")
+    return result
+
+
+def _integer(section: Mapping[str, Any], key: str, *, minimum: int = 0) -> int:
+    value = section.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"S1.2 configuration {key!r} must be an integer >= {minimum}")
+    return value
+
+
+@dataclass(frozen=True)
+class S12TrajectoryConfig:
+    maximum_timestamp_delta_ms: float
+    maximum_relative_roll_deg: float
+    maximum_relative_pitch_deg: float
+    maximum_relative_yaw_deg: float
+    maximum_source_pruning_rounds: int
+    audit_rotation: bool
+
+
+@dataclass(frozen=True)
+class S12ScanConfig:
+    minimum_pose_count: int
+    minimum_scan_displacement_m: float
+    rail_axis_ransac_iterations: int
+    rail_axis_inlier_threshold_m: float
+    maximum_cross_track_error_m: float
+    maximum_backward_step_m: float
+    maximum_pause_span_frames: int
+    require_image_motion_direction_agreement: bool
+
+
+@dataclass(frozen=True)
+class S12Config:
+    """Validated immutable view plus typed M0/M1 settings."""
+
+    trajectory: S12TrajectoryConfig
+    scan: S12ScanConfig
+    raw: Mapping[str, Any]
+
+    def section(self, name: str) -> Mapping[str, Any]:
+        return MappingProxyType(_mapping(self.raw.get(name), name))
+
+
+_REQUIRED_SECTIONS = {
+    "trajectory",
+    "scan",
+    "motion_graph",
+    "anchors",
+    "horizontal_solver",
+    "source_selection",
+    "schedule",
+    "open3d_audit",
+    "render",
+    "vertical",
+    "tracks",
+    "acceptance",
+    "output",
+}
+
+
+def _require_fixed(section: Mapping[str, Any], values: Mapping[str, object], name: str) -> None:
+    for key, expected in values.items():
+        if section.get(key) != expected:
+            raise ValueError(
+                f"S1.2 {name}.{key} is fixed at {expected!r}, got {section.get(key)!r}"
+            )
+
+
+def parse_s12_config(document: Mapping[str, Any]) -> S12Config:
+    raw = dict(document)
+    if raw.get("schema") != S12_CONFIG_SCHEMA:
+        raise ValueError(f"S1.2 configuration schema must be {S12_CONFIG_SCHEMA!r}")
+    if raw.get("algorithm_id") != S12_ALGORITHM_ID:
+        raise ValueError(f"S1.2 algorithm_id must be {S12_ALGORITHM_ID!r}")
+    if raw.get("diagnostic_only") is not True or raw.get("production_eligible") is not False:
+        raise ValueError("S1.2 Stage A is diagnostic-only and not production eligible")
+    missing = sorted(_REQUIRED_SECTIONS - raw.keys())
+    if missing:
+        raise ValueError("S1.2 configuration is missing sections: " + ", ".join(missing))
+
+    sections = {name: _mapping(raw[name], name) for name in _REQUIRED_SECTIONS}
+    trajectory = sections["trajectory"]
+    _require_fixed(
+        trajectory,
+        {
+            "require_direct_orb_pose": True,
+            "allow_interpolated_pose": False,
+            "allow_extrapolated_pose": False,
+            "require_uniform_pose_origin": True,
+        },
+        "trajectory",
+    )
+    scan = sections["scan"]
+    _require_fixed(
+        sections["motion_graph"],
+        {
+            "preserve_reliable_measurements": True,
+            "apply_median_filter": False,
+            "interpolate_unreliable_edges": False,
+            "extrapolate_edges": False,
+        },
+        "motion_graph",
+    )
+    motion = sections["motion_graph"]
+    local_edge = _mapping(motion.get("local_edge"), "motion_graph.local_edge")
+    anchor_long = _mapping(motion.get("anchor_long"), "motion_graph.anchor_long")
+    _require_fixed(
+        anchor_long,
+        {
+            "use_local_frame_gap": False,
+            "require_timestamp_audit": True,
+            "require_predicted_overlap": True,
+            "require_direct_image_match": True,
+            "use_provisional_initial_flow": False,
+            "initial_flow_source": "endpoint_phase_correlation",
+            "feature_domain": "fixed_calibrated_cx_slit",
+            "preprocessing": "sobel_gradient_magnitude",
+            "phase_correlation_window": "none",
+        },
+        "motion_graph.anchor_long",
+    )
+    if _integer(local_edge, "maximum_frame_gap", minimum=1) != 64:
+        raise ValueError("S1.2 motion_graph.local_edge.maximum_frame_gap is fixed at 64")
+    _integer(local_edge, "lk_window_size", minimum=3)
+    _integer(local_edge, "lk_max_level")
+    _integer(anchor_long, "maximum_frame_gap", minimum=65)
+    if _integer(anchor_long, "lk_window_size", minimum=3) != 91:
+        raise ValueError("S1.2 motion_graph.anchor_long.lk_window_size is fixed at 91")
+    if _integer(anchor_long, "lk_max_level") != 4:
+        raise ValueError("S1.2 motion_graph.anchor_long.lk_max_level is fixed at 4")
+    if _integer(anchor_long, "feature_slit_width_px", minimum=1) != 48:
+        raise ValueError("S1.2 motion_graph.anchor_long.feature_slit_width_px is fixed at 48")
+    if _integer(motion, "minimum_model_inlier_count", minimum=4) != 16:
+        raise ValueError("S1.2 motion_graph.minimum_model_inlier_count is fixed at 16")
+    for key, expected in (
+        ("minimum_fb_retention_ratio", 0.45),
+        ("minimum_model_inlier_ratio_retained", 0.45),
+        ("minimum_effective_inlier_ratio_detected", 0.25),
+    ):
+        if _number(motion, key, minimum=1e-12) != expected:
+            raise ValueError(f"S1.2 motion_graph.{key} is fixed at {expected}")
+    _require_fixed(
+        motion,
+        {
+            "reliability_gate_mode": "split_v1",
+            "minimum_inlier_count": 16,
+            "minimum_inlier_ratio": 0.45,
+        },
+        "motion_graph",
+    )
+    minimum_anchor_spacing = _number(anchor_long, "minimum_spacing_px", minimum=1e-12)
+    maximum_anchor_spacing = _number(anchor_long, "maximum_spacing_px", minimum=1e-12)
+    if minimum_anchor_spacing > maximum_anchor_spacing:
+        raise ValueError("S1.2 motion_graph.anchor_long spacing limits are reversed")
+    minimum_anchor_time = _number(anchor_long, "minimum_timestamp_gap_ms")
+    maximum_anchor_time = _number(anchor_long, "maximum_timestamp_gap_ms", minimum=1e-12)
+    if minimum_anchor_time > maximum_anchor_time:
+        raise ValueError("S1.2 motion_graph.anchor_long timestamp limits are reversed")
+    overlap = _number(anchor_long, "minimum_predicted_overlap_fraction", minimum=1e-12)
+    if overlap > 1.0:
+        raise ValueError("S1.2 anchor_long predicted overlap fraction cannot exceed one")
+    anchors = sections["anchors"]
+    _number(anchors, "maximum_direct_local_path_difference_px", minimum=1e-12)
+    _require_fixed(
+        sections["source_selection"],
+        {"permit_virtual_rgb_source": False},
+        "source_selection",
+    )
+    _require_fixed(
+        sections["schedule"],
+        {"permit_dynamic_pair_boundary": False, "permit_object_owner": False},
+        "schedule",
+    )
+    _require_fixed(
+        sections["open3d_audit"],
+        {"allow_rgb_generation": False, "allow_pose_replacement": False, "allow_tsdf": False},
+        "open3d_audit",
+    )
+    _require_fixed(
+        sections["render"],
+        {
+            "transition_width_px": 0,
+            "color_gain_enabled": False,
+            "rotation_enabled": False,
+            "synthetic_hole_fill": False,
+            "foreign_source_fill": False,
+        },
+        "render",
+    )
+    _require_fixed(
+        sections["vertical"],
+        {
+            "enabled_for_stage_a": False,
+            "allow_canvas_interpolated_offset": False,
+            "allow_pair_local_warp": False,
+            "allow_row_dependent_warp": False,
+        },
+        "vertical",
+    )
+    return S12Config(
+        trajectory=S12TrajectoryConfig(
+            maximum_timestamp_delta_ms=_number(trajectory, "maximum_timestamp_delta_ms"),
+            maximum_relative_roll_deg=_number(trajectory, "maximum_relative_roll_deg"),
+            maximum_relative_pitch_deg=_number(trajectory, "maximum_relative_pitch_deg"),
+            maximum_relative_yaw_deg=_number(trajectory, "maximum_relative_yaw_deg"),
+            maximum_source_pruning_rounds=_integer(
+                trajectory, "maximum_source_pruning_rounds"
+            ),
+            audit_rotation=trajectory.get("audit_rotation") is True,
+        ),
+        scan=S12ScanConfig(
+            minimum_pose_count=_integer(scan, "minimum_pose_count", minimum=2),
+            minimum_scan_displacement_m=_number(scan, "minimum_scan_displacement_m"),
+            rail_axis_ransac_iterations=_integer(
+                scan, "rail_axis_ransac_iterations", minimum=1
+            ),
+            rail_axis_inlier_threshold_m=_number(
+                scan, "rail_axis_inlier_threshold_m", minimum=1e-12
+            ),
+            maximum_cross_track_error_m=_number(scan, "maximum_cross_track_error_m"),
+            maximum_backward_step_m=_number(scan, "maximum_backward_step_m"),
+            maximum_pause_span_frames=_integer(scan, "maximum_pause_span_frames"),
+            require_image_motion_direction_agreement=(
+                scan.get("require_image_motion_direction_agreement") is True
+            ),
+        ),
+        raw=MappingProxyType(raw),
+    )
+
+
+def load_s12_config(path_or_mapping: str | Path | Mapping[str, Any]) -> S12Config:
+    if isinstance(path_or_mapping, Mapping):
+        return parse_s12_config(path_or_mapping)
+    path = Path(path_or_mapping).expanduser().resolve()
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise ValueError(f"Invalid S1.2 configuration: {path}") from exc
+    if not isinstance(document, Mapping):
+        raise ValueError("S1.2 configuration root must be a mapping")
+    return parse_s12_config(document)
+
+
+__all__ = [
+    "S12_ALGORITHM_ID",
+    "S12_CONFIG_SCHEMA",
+    "S12Config",
+    "S12ScanConfig",
+    "S12TrajectoryConfig",
+    "load_s12_config",
+    "parse_s12_config",
+]

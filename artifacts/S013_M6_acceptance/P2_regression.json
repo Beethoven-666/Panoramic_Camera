@@ -1,0 +1,77 @@
+{
+  "runs": {
+    "fast_direct": {
+      "all_original_fields_equal": true,
+      "original_provenance_fields_equal": {
+        "assignment_index": true,
+        "geometry_transaction_id": true,
+        "owner_frame_id": true,
+        "owner_source_index": true,
+        "placement_method_code": true,
+        "seam_transaction_id": true,
+        "selected_motion_hypothesis_id": true,
+        "source_u": true,
+        "source_v": true,
+        "valid": true
+      },
+      "p2_image_hash_equal": true,
+      "p2_image_sha256_baseline": "628bdd367e4a74aa1f0ffad4257f6a9464b4067b467fe325dd98e65c080fd936",
+      "p2_image_sha256_new": "628bdd367e4a74aa1f0ffad4257f6a9464b4067b467fe325dd98e65c080fd936"
+    },
+    "fast_ignore_pose": {
+      "all_original_fields_equal": true,
+      "original_provenance_fields_equal": {
+        "assignment_index": true,
+        "geometry_transaction_id": true,
+        "owner_frame_id": true,
+        "owner_source_index": true,
+        "placement_method_code": true,
+        "seam_transaction_id": true,
+        "selected_motion_hypothesis_id": true,
+        "source_u": true,
+        "source_v": true,
+        "valid": true
+      },
+      "p2_image_hash_equal": true,
+      "p2_image_sha256_baseline": "16f5bec214209418d80f7f413cc4d691fd0dc2dae45923ee64f4f6fca8fba3ed",
+      "p2_image_sha256_new": "16f5bec214209418d80f7f413cc4d691fd0dc2dae45923ee64f4f6fca8fba3ed"
+    },
+    "slow_direct": {
+      "all_original_fields_equal": true,
+      "original_provenance_fields_equal": {
+        "assignment_index": true,
+        "geometry_transaction_id": true,
+        "owner_frame_id": true,
+        "owner_source_index": true,
+        "placement_method_code": true,
+        "seam_transaction_id": true,
+        "selected_motion_hypothesis_id": true,
+        "source_u": true,
+        "source_v": true,
+        "valid": true
+      },
+      "p2_image_hash_equal": true,
+      "p2_image_sha256_baseline": "7ee4c8b8978377252b562a8a5a75dce29e5354fcd65646cf110dc96b5444d27c",
+      "p2_image_sha256_new": "7ee4c8b8978377252b562a8a5a75dce29e5354fcd65646cf110dc96b5444d27c"
+    },
+    "slow_ignore_pose": {
+      "all_original_fields_equal": true,
+      "original_provenance_fields_equal": {
+        "assignment_index": true,
+        "geometry_transaction_id": true,
+        "owner_frame_id": true,
+        "owner_source_index": true,
+        "placement_method_code": true,
+        "seam_transaction_id": true,
+        "selected_motion_hypothesis_id": true,
+        "source_u": true,
+        "source_v": true,
+        "valid": true
+      },
+      "p2_image_hash_equal": true,
+      "p2_image_sha256_baseline": "08c5e904f5fcd845a679b937583093ad1e0bdd859e9ca8369d0edc5c700acdea",
+      "p2_image_sha256_new": "08c5e904f5fcd845a679b937583093ad1e0bdd859e9ca8369d0edc5c700acdea"
+    }
+  },
+  "schema": "gemini305-video-s13-m6-p2-regression/v1"
+}

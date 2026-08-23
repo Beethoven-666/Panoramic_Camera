@@ -279,11 +279,12 @@ class TorchCudaCandidateTileRenderer:
                 sampled_bgr = sampled_rgb[[2, 1, 0]]
                 # A requested owner outside the inverse grid's valid range is
                 # invalid rather than a black fabricated source sample.
-                # ``compose_inverse_grid`` may introduce a one-ULP CUDA
-                # rounding excursion at a mathematically exact border.  Keep
-                # that genuine boundary sample; this epsilon is far below a
-                # pixel and does not legitimise a real out-of-source lookup.
-                inside = (grid[..., 0].abs() <= 1.0 + 1e-6) & (grid[..., 1].abs() <= 1.0 + 1e-6)
+                # CUDA arithmetic can make a mathematically exact border
+                # exceed one by a few ULPs after calibration and composition.
+                # Keep that genuine boundary sample.  The tolerance remains
+                # many orders of magnitude below one source pixel, so it does
+                # not turn a real out-of-source lookup into valid content.
+                inside = (grid[..., 0].abs() <= 1.0 + 1e-5) & (grid[..., 1].abs() <= 1.0 + 1e-5)
                 accepted = mask & inside
                 output[:, accepted] = sampled_bgr[:, accepted]
                 valid |= accepted

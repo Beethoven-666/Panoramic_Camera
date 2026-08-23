@@ -1,0 +1,201 @@
+config_schema: gemini305-video-candidate/v1
+role: candidate
+candidate_id: S013_output_first_progressive_dense_central_slit_v6
+parent_candidate_id: S013_output_first_progressive_dense_central_slit_v5
+algorithm_id: S013_output_first_progressive_dense_central_slit_v6
+implementation_id: s013_output_first_progressive_dense_central_slit_m51_r4_component_chain_c2e
+allow_baseline_fallback: false
+changed_components: [s013_output_first_progressive_dense_central_slit]
+required_evidence_components: [real_rgb_sources, rgb_motion_telemetry]
+required_output_components: [s013_p2_v6]
+replaces_output_components: []
+model_sha256: {}
+config_sha256: 5ccaf952fe94d4c42626f3ec9e9555666c023a5ad654885ac4d9def2c96b3dde
+
+components:
+  s013_output_first_progressive_dense_central_slit:
+    contract_schema: gemini305-video-s13-output-first/v6-r2
+    diagnostic_only: true
+    production_eligible: false
+    production_lock_eligible: false
+    truth:
+      require_real_rgb_source: true
+      allow_raw_rgb_fallback: true
+      allow_interpolated_pose: false
+      allow_extrapolated_pose: false
+      allow_virtual_rgb_source: false
+      allow_foreign_fill: false
+      allow_synthetic_color_fill: false
+    artifact_semantics:
+      allow_pose_supported_panorama: true
+      allow_rgb_motion_visual_nonmetric_panorama: true
+      allow_temporal_slit_preview: true
+      allow_single_view_preview: true
+      never_label_temporal_preview_as_panorama: true
+    depth_assist:
+      enabled: false
+      scope: pair_risk_only
+      allow_color_generation: false
+      allow_pose_replacement: false
+      allow_global_layout: false
+      allow_mesh_in_v3_mvp: false
+    motion:
+      analysis_width_px: 424
+      adjacent_steps: [1]
+      skip_steps: [2, 4]
+      maximum_motion_hypotheses_per_edge: 3
+      use_grid_lk: true
+      use_phase_correlation: true
+      dis_policy: risky_pairs_only
+      fixed_kmeans_forbidden: true
+      direct_local_delta_used_as_gate: false
+    progress:
+      coherent_lineage_dp: true
+      use_pose_as_soft_prior_only: true
+      allow_rgb_motion_without_pose: true
+      fallback_order: [coherent_rgb_motion, phase_correlation, rgb_calibrated_pose_trend, local_median, session_median, zero_duplicate, normalized_pose, temporal_order]
+    schedule:
+      normal_target_advance_px: 8
+      risky_target_advance_px: 5
+      base_owner_policy: fixed_midpoint
+      preserve_first_last_outer_fov: true
+      maximum_internal_source_u_span_fraction: 0.20
+      overwide_gap_policy: real_source_rescue_then_scale_then_panel
+      permit_owner_expansion_on_failure: false
+    base:
+      publish_before_optimization: true
+      transition_width_px: 0
+      color_gain_enabled: false
+      local_warp_enabled: false
+      blend_enabled: false
+      atomic_publish: true
+    vertical:
+      global_scalar_dy_enabled: true
+      global_gain_candidates: [0.0, 0.25, 0.5, 1.0]
+      pair_local_row_residual_enabled: true
+      pair_independent: true
+      nonoverlapping_application_bands: true
+      missing_rows_zero: true
+    geometry:
+      models: [identity, vertical, translation, tiny_rotation, light_affine]
+      alignment_shoulder_width_px: [64, 128]
+      continuous_support_taper: true
+      require_positive_jacobian_to_apply: true
+      bounded_mesh_enabled: false
+    seam:
+      models: [midpoint_straight, shifted_straight, monotone_dp]
+      graphcut_enabled: false
+      maximum_shift_px: 8
+      require_non_crossing_seams: true
+      final_seam_requires_final_corridor_geometry: true
+      failure_policy: restore_parent_owner
+    m51_r2:
+      enabled: true
+      collect_lk_error_statistics: true
+      lk_error_sigma_multiplier: 3.0
+      lk_error_mad_floor: 1.0
+      lk_error_absolute_maximum: 64.0
+      minimum_correspondence_count_for_error_filter: 16
+      evidence_half_widths_px: [16, 24]
+      moving_evidence_margin_px: 8
+      block_height_px: 32
+      block_stride_px: 16
+      seam_support_radius_px: 6
+      feature_halo_radius_px: 12
+      normal_search_maximum_px: 3.0
+      normal_search_step_px: 0.5
+      minimum_edge_component_length_px: 12
+      minimum_edge_support_count: 12
+      minimum_edge_correlation: 0.65
+      minimum_uniqueness_fraction: 0.10
+      maximum_orientation_difference_degrees: 10.0
+      suspect_lk_p95_px: 1.25
+      suspect_edge_median_px: 0.75
+      suspect_edge_p95_px: 1.0
+      equivalent_edge_p95_tolerance_px: 0.15
+      micro_rescue_enabled: false
+    m51_r3:
+      enabled: true
+      reassessment_pair_indices: [71]
+      micro_rescue_enabled: false
+      c2e_enabled: false
+    m51_r4:
+      enabled: true
+      component_chain_c2e_enabled: true
+      application_policy: all_structurally_safe
+      minimum_chain_pair_count: 2
+      minimum_application_segment_pair_count: 1
+      maximum_pair_gap: 1
+      split_on_ambiguous_or_unevaluable_observation: true
+      split_on_solver_outlier: true
+      minimum_component_y_overlap_fraction: 0.50
+      maximum_component_normal_difference_degrees: 10.0
+      maximum_component_endpoint_distance_px: 8.0
+      maximum_predicted_y_disagreement_px: 6.0
+      minimum_component_match_margin_fraction: 0.10
+      component_match_weights:
+        y_overlap: 0.30
+        predicted_y: 0.25
+        endpoint_distance: 0.20
+        correlation: 0.15
+        uniqueness: 0.10
+      minimum_signed_gradient_agreement: 0.10
+      normal_search_minimum_px: -3.0
+      normal_search_maximum_px: 3.0
+      normal_search_step_px: 0.5
+      minimum_c2e_correlation: 0.75
+      minimum_c2e_uniqueness_fraction: 0.10
+      maximum_forward_reverse_discrepancy_px: 0.5
+      source_offset_regularization: 0.05
+      maximum_solver_condition_number: 1000000.0
+      solver_huber_delta_px: 0.75
+      maximum_normalized_solver_residual: 3.0
+      maximum_source_normal_offset_px: 3.0
+      correction_gain_candidates: [1.0, 0.75, 0.5]
+      edge_core_radius_px: 2
+      normal_taper_radius_px: 8
+      endpoint_taper_px: 12
+      maximum_post_edge_p95_px: 1.0
+      maximum_post_edge_step_px: 1.5
+      minimum_evaluable_edge_columns: 12
+      minimum_evaluable_transition_fraction: 0.50
+      minimum_resolved_improvement_px: 0.10
+      minimum_absolute_improvement_px: 0.5
+      minimum_relative_improvement_fraction: 0.30
+      minimum_break_length_reduction_fraction: 0.50
+      maximum_non_target_p95_regression_px: 0.10
+      maximum_non_target_step_regression_px: 0.25
+      minimum_formal_owner_support_retention: 1.0
+      minimum_evidence_sample_retention: 0.98
+      minimum_jacobian: 0.5
+      maximum_combined_map_displacement_px: 8.0
+      maximum_halo_regression_px: 0.25
+      allow_partial_application: true
+      maximum_segment_split_depth: 4
+      maximum_candidates_per_segment: 3
+      maximum_total_roi_candidate_pixels: 1000000
+      maximum_exact_conflict_group_nodes: 12
+    forward_pipeline:
+      stage_order: [P0, P1, P2]
+      default_stop_after: P2
+      forbid_parent_reselection: true
+      current_preview_runtime_authority: false
+    p2_replay:
+      enabled: true
+      completion_schema: gemini305-video-s13-p2-completion/v6-r2
+      maximum_secondary_corridor_width_px: 8
+      require_transaction_hash_match: true
+    selection:
+      stage_a_always_candidate: true
+      use_relative_non_degradation: true
+      forbid_absolute_direct_local_gate: true
+      forbid_blur_only_improvement: true
+      report_all_pairs: true
+    output:
+      immutable_generations: true
+      atomic_base_commit: true
+      atomic_final_commit: true
+      write_pixel_and_column_provenance: true
+      write_all_stage_images: true
+      write_fixed_and_worst_crops: true
+      write_production_delivery: false

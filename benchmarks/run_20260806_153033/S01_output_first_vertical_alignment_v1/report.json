@@ -1,0 +1,149 @@
+{
+  "algorithm_id": "S01_output_first_vertical_alignment_v1",
+  "complete_panorama_generated": true,
+  "diagnostic_errors": [],
+  "fatal_quality_gate": false,
+  "input": "D:\\central_strip_Panoramic_Camera\\data\\captures\\video\\run_20260806_153033",
+  "output": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260806_153033\\S01_output_first_vertical_alignment_v1",
+  "overlap": {
+    "pair_below_s1_minimum_count": 0,
+    "width_p5": 128.0,
+    "width_p50": 128.0,
+    "width_p95": 128.0
+  },
+  "pair_count": 32,
+  "performance": {
+    "cpu_workers": 4,
+    "each_source_remapped_once": true,
+    "full_resolution_remap_invocations": 33,
+    "gpu_used_only_for_remap": false,
+    "pair_count": 32,
+    "raw_frame_count": 789,
+    "slowest_pairs": [
+      {
+        "pair_index": 11,
+        "seconds": 0.6948677999971551
+      },
+      {
+        "pair_index": 29,
+        "seconds": 0.6855501999962144
+      },
+      {
+        "pair_index": 5,
+        "seconds": 0.6775321000022814
+      },
+      {
+        "pair_index": 10,
+        "seconds": 0.6771388999986812
+      },
+      {
+        "pair_index": 9,
+        "seconds": 0.6764793999973335
+      },
+      {
+        "pair_index": 17,
+        "seconds": 0.6737332999982755
+      },
+      {
+        "pair_index": 28,
+        "seconds": 0.673164200001338
+      },
+      {
+        "pair_index": 23,
+        "seconds": 0.6722286000003805
+      },
+      {
+        "pair_index": 31,
+        "seconds": 0.670684100005019
+      },
+      {
+        "pair_index": 6,
+        "seconds": 0.6703747999999905
+      }
+    ],
+    "source_count": 33,
+    "stage_seconds": {
+      "candidate_generation": 21.251860500000475,
+      "diagnostic_export": 0.9079319999946165,
+      "feature_precompute": 0.3526750999953947,
+      "final_full_resolution_remap": 0.4511742000031518,
+      "inverse_map_build": 0.0010668000031728297,
+      "s0_render": 0.024329499996383674,
+      "s1_compose": 0.02555739999661455,
+      "scan_analysis": 5.124521600002481,
+      "session_load": 1.375656699994579,
+      "source_selection": 0.0033878999965963885,
+      "total": 29.69454399999813
+    }
+  },
+  "quality_comparison": {
+    "double_edge_change": -140,
+    "edge_step_after_p50_px": 0.0,
+    "edge_step_after_p95_px": 1.0,
+    "edge_step_before_p50_px": 0.0,
+    "edge_step_before_p95_px": 1.0,
+    "measurement_sample_count_after": 1187,
+    "measurement_sample_count_before": 1186,
+    "relative_p95_improvement": 0.0
+  },
+  "s0_generated": true,
+  "s1": {
+    "dy_abs_p50_px": 0.5257893204689026,
+    "dy_abs_p95_px": 0.9021212458610535,
+    "gain_025_fraction": 0.0,
+    "gain_05_fraction": 0.0,
+    "gain_0_fraction": 0.0,
+    "gain_1_fraction": 1.0,
+    "pair_full_correction_count": 32,
+    "pair_partial_correction_count": 0,
+    "pair_zero_correction_count": 0,
+    "window_missing_count": 85,
+    "window_observation_count": 843
+  },
+  "s1_generated": true,
+  "schema": "gemini305-video-s1-experiment-report/v1",
+  "source_count": 33,
+  "source_selection": {
+    "adjacent_frame_rescue_count": 0,
+    "fixed_every_n_frames": false,
+    "method": "cumulative_canvas_motion",
+    "source_frame_ids": [
+      60,
+      94,
+      120,
+      144,
+      170,
+      198,
+      228,
+      257,
+      287,
+      321,
+      352,
+      374,
+      395,
+      415,
+      437,
+      458,
+      477,
+      501,
+      522,
+      543,
+      568,
+      591,
+      613,
+      637,
+      660,
+      684,
+      704,
+      724,
+      749,
+      777,
+      811,
+      845,
+      848
+    ],
+    "step_px_p5": 30.464158722162388,
+    "step_px_p50": 31.77963805198658,
+    "step_px_p95": 32.82271412551396
+  }
+}

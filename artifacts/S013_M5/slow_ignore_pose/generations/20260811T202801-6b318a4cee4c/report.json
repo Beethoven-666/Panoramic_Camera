@@ -1,0 +1,64 @@
+{
+  "diagnostic_only": true,
+  "direct_local_delta_is_fatal": false,
+  "fallback_counts": {
+    "F0": 794,
+    "F1": 0,
+    "F2": 0,
+    "F3": 0,
+    "F4": 0,
+    "F5": 54,
+    "F6": 0,
+    "F7": 0
+  },
+  "fallback_progress_edge_count": 0,
+  "fallback_unclassified_count": 0,
+  "generation_id": "20260811T202801-6b318a4cee4c",
+  "hypothesis_count_histogram": {
+    "0": 0,
+    "1": 2341,
+    "2": 196,
+    "3": 3
+  },
+  "lineage_switch_count": 793,
+  "manual_review_required": true,
+  "motion_graph_connected_telemetry": false,
+  "motion_graph_disconnection_is_fatal": false,
+  "observed_pause_expansion_count": 0,
+  "observed_pause_expansion_px": 0.0,
+  "optimizer_state": "m5_pending_after_p0",
+  "p0_parent": "P0/P0_completion.json",
+  "panorama_claim": "visual_nonmetric",
+  "performance": {
+    "stage_seconds": {
+      "input_and_preflight": 4.2496613999974215,
+      "motion_measurement": 22.265331399998104,
+      "p0_render_and_export": 4.621966999999131,
+      "progress_and_layout": 0.04326109999965411,
+      "trajectory": 1.4000001101521775e-05
+    }
+  },
+  "production_eligible": false,
+  "production_lock_eligible": false,
+  "raw_rgb_adjacent_edge_count": 848,
+  "raw_rgb_motion_edge_count": 2540,
+  "raw_rgb_motion_pair_count": 848,
+  "render_pair_count": 109,
+  "render_source_count": 110,
+  "render_state": "base_generated",
+  "schema": "gemini305-video-s13-output-first-report/v1",
+  "source_u_statistics": {
+    "configured_cap_px": 169,
+    "maximum": 847.1881713867188,
+    "maximum_internal_owner_width_px": 10,
+    "minimum": 0.0,
+    "span": 847.1881713867188
+  },
+  "subpixel_motion_edge_count": 0,
+  "trajectory": {
+    "direct_pose_count": 0,
+    "pose_supported": false,
+    "source": "ignore_pose"
+  },
+  "zero_duplicate_edge_count": 54
+}

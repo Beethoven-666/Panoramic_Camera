@@ -1,0 +1,79 @@
+{
+  "branches": {
+    "fast_direct": {
+      "canonical_p2_png_sha256": "06b3f7c375959df51776fbd15a567036a754a319a13e14f43fc47c02525ae24f",
+      "checks": {
+        "canonical_p2_png_exact": true,
+        "pair_selection_payload_exact": true,
+        "provenance_arrays_exact": true,
+        "replay_pair_content_exact": true,
+        "seam_arrays_exact": true
+      },
+      "decision_payload_sha256": "9c6fb001b7a3ff369a351c542efaef0096e1f7768790620c0b9d19ac612f3e59",
+      "pair_count": 84,
+      "run_a_generation": "20260813T143944-3ab022a94256",
+      "run_b_generation": "20260813T144319-6a302e821a25",
+      "seam_arrays_sha256": "c137e5a5d8423189873d8c551c70cfa8290df51de3d0894e339183964fe3b986"
+    },
+    "fast_ignore_pose": {
+      "canonical_p2_png_sha256": "c8f15eb162f31455159dabf1a8b8d18d55f73f413f519890fe240b110d9b0ebf",
+      "checks": {
+        "canonical_p2_png_exact": true,
+        "pair_selection_payload_exact": true,
+        "provenance_arrays_exact": true,
+        "replay_pair_content_exact": true,
+        "seam_arrays_exact": true
+      },
+      "decision_payload_sha256": "924f49fb209b6b916ce5bd5051b812ec768eec845824101c56a73e4e60f336df",
+      "pair_count": 84,
+      "run_a_generation": "20260813T144027-682ccb0c387f",
+      "run_b_generation": "20260813T144400-08f7e941d166",
+      "seam_arrays_sha256": "fe04edcf1f83fe5b47fa04cd4382f4584352731d87f494debf1a59213969bf9a"
+    },
+    "slow_direct": {
+      "canonical_p2_png_sha256": "458249ab296285190f0ee9948090a641f26c283d746d8e7b64d41e2480aea448",
+      "checks": {
+        "canonical_p2_png_exact": true,
+        "pair_selection_payload_exact": true,
+        "provenance_arrays_exact": true,
+        "replay_pair_content_exact": true,
+        "seam_arrays_exact": true
+      },
+      "decision_payload_sha256": "39a07f4bb711885cbe5153b5d50745912e0ee0495ffcefaf636a34b5b4cf3fe8",
+      "pair_count": 108,
+      "run_a_generation": "20260813T144110-1b2411a476c7",
+      "run_b_generation": "20260813T144442-21fe04c6447d",
+      "seam_arrays_sha256": "fd50c7604a3a7058c00eb074ce807f865a7002cbed7ad70a45a2b3ca4d276282"
+    },
+    "slow_ignore_pose": {
+      "canonical_p2_png_sha256": "3a0af8a477c3f24af258bc0ec07ccf4c10937d11bda7a36d43adee5e88622195",
+      "checks": {
+        "canonical_p2_png_exact": true,
+        "pair_selection_payload_exact": true,
+        "provenance_arrays_exact": true,
+        "replay_pair_content_exact": true,
+        "seam_arrays_exact": true
+      },
+      "decision_payload_sha256": "2ab3902fbf211ac215f2ac3f63cb4324224a6cafc88e27a7422f41de791de749",
+      "pair_count": 109,
+      "run_a_generation": "20260813T144215-17f975a495c4",
+      "run_b_generation": "20260813T144545-9c4e6ae06f28",
+      "seam_arrays_sha256": "4fd38d551ca89974afadaf5752de25604bb91411cf02654a58f4aa3d7e2341cf"
+    }
+  },
+  "comparison_policy": {
+    "diagnostic_float_audits_not_selection_payload": true,
+    "generation_specific_lineage_retained_but_not_compared": [
+      "P0/P1 completion SHA",
+      "pair result_stage_sha256",
+      "replay parent_pair_transaction_sha256",
+      "generation id/path/time"
+    ],
+    "nan_arrays_compared_with_equal_nan": true
+  },
+  "diagnostic_only": true,
+  "m6_eligible": false,
+  "production_eligible": false,
+  "schema": "gemini305-video-s13-m51-reproducible-seal/v1",
+  "sealed": true
+}

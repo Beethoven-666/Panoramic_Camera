@@ -1,0 +1,42 @@
+{
+  "schema": "gemini305-video-s13-m61-full-invocation-timing/v1",
+  "branch": "slow_ignore_pose",
+  "started_at": "2026-08-12T20:29:16.3966352+08:00",
+  "finished_at": "2026-08-12T20:29:34.9765573+08:00",
+  "wall_seconds": 18.5734917,
+  "exit_code": 0,
+  "hard_audit_passed": true,
+  "formal_source_count": 110,
+  "internal_sealed_phase_seconds": 0.8937585999956354,
+  "outside_internal_sealed_phase_seconds": 17.679733100004364,
+  "peak_process_rss_bytes": 832458752,
+  "peak_live_array_bytes": 632160,
+  "p3_completion_sha256": "4f036717685f8b4bf72b73feba7be5eb6b4b18be8314d44a17b8596d1aa57b63",
+  "scope": {
+    "included": [
+      "python_process_startup",
+      "sealed_p2_and_session_rgb_loading_and_validation",
+      "photometric_evidence_and_dense_solver",
+      "formal_p3_render",
+      "hard_audit",
+      "promotion_verification",
+      "old_new_quality_diagnostics",
+      "process_shutdown"
+    ],
+    "excluded": [
+      "p0_generation",
+      "p1_generation",
+      "p2_generation",
+      "multi_branch_acceptance_summary",
+      "rerun_reproducibility_pass"
+    ]
+  },
+  "inputs": {
+    "p2_root": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\prepared_p2_v7\\slow_ignore_pose\\P2",
+    "session": "D:\\central_strip_Panoramic_Camera\\data\\captures\\video\\run_20260806_153033",
+    "candidate_config": "D:\\central_strip_Panoramic_Camera\\configs\\video_candidates\\s013\\S013_output_first_progressive_dense_central_slit_m61_v2.yaml",
+    "old_m6_p3": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_acceptance\\slow_ignore_pose\\generations\\20260812T140111-6319fb59b194\\P3"
+  },
+  "output": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_timing\\run_20260812_slow_ignore_pose_01",
+  "timing_method": "System.Diagnostics.Stopwatch around the complete run_s13_m61_acceptance.py process invocation"
+}

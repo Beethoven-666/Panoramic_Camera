@@ -1,0 +1,44 @@
+{
+  "algorithm": {
+    "algorithm_id": "S013_output_first_progressive_dense_central_slit_v3",
+    "allow_baseline_fallback": false,
+    "candidate_manifest_path": "D:\\central_strip_Panoramic_Camera\\configs\\video_candidates\\s013\\candidate_manifest.json",
+    "candidate_manifest_sha256": "4238138c2d953f5d7a57dc37df22c27f014c03fcb86603e7e14ce22dd9c070ca",
+    "config_path": "D:\\central_strip_Panoramic_Camera\\configs\\video_candidates\\s013\\S013_output_first_progressive_dense_central_slit_v3.yaml",
+    "config_sha256": "13f669495f4b345df71ac3f7077f7255f15120aa04c405cac99a55b6ca8d27dc",
+    "implementation_id": "s013_output_first_progressive_dense_central_slit_preview",
+    "model_sha256": {},
+    "replaces_output_components": [],
+    "required_components": [
+      "s013_p0_owner_only"
+    ],
+    "required_evidence_components": [
+      "real_rgb_sources",
+      "rgb_motion_telemetry"
+    ],
+    "required_output_components": [
+      "s013_p0_owner_only"
+    ],
+    "role": "candidate",
+    "source_commit": "571f2bff89120ba240b0533c9d0a11154a685309",
+    "working_tree_dirty": true
+  },
+  "excluded_milestones": [
+    "M4",
+    "M5",
+    "M6",
+    "M7",
+    "M8",
+    "M9"
+  ],
+  "generation_id": "20260811T130239-2c572337a9c8",
+  "implemented_milestones": [
+    "M0",
+    "M1",
+    "M2",
+    "M3"
+  ],
+  "reads_historical_s1_artifacts": false,
+  "schema": "gemini305-video-s13-generation/v1",
+  "writes_production_delivery": false
+}

@@ -82,7 +82,7 @@ def test_video_delivery_carries_fast_sla_and_invalidates_old_3d(tmp_path):
             manual_review_required=True,
             preset="fast",
             performance={
-                "post_capture_seconds": 8.5,
+                "primary_post_capture_seconds": 8.5,
                 "maximum_post_seconds": 8.0,
                 "within_post_capture_budget": False,
             },
@@ -94,13 +94,14 @@ def test_video_delivery_carries_fast_sla_and_invalidates_old_3d(tmp_path):
     assert "preset" not in report
     assert delivery["within_post_capture_budget"] is False
     assert not (tmp_path / "video_tsdf_mesh.glb").exists()
-    assert report["performance"]["post_capture_seconds"] == 8.5
+    assert report["performance"]["primary_post_capture_seconds"] == 8.5
 
 
 def test_video_delivery_invalidation_removes_measurement_progress_sidecars(tmp_path):
     for name in (
         "video_source_progress_evidence.json",
         "video_annotation_source_progress_audit.json",
+        "video_timing.json",
     ):
         (tmp_path / name).write_text("stale", encoding="utf-8")
 
@@ -129,6 +130,20 @@ def test_video_failure_records_native_attempt_audit(tmp_path):
 
     failure = json.loads((tmp_path / "video_failure.json").read_text(encoding="utf-8"))
     assert failure["orbslam3_execution_attempts"][0]["signal"] == 11
+
+
+def test_video_failure_preserves_structured_candidate_gate_diagnostics(tmp_path):
+    class CandidateGateError(RuntimeError):
+        diagnostics = {
+            "stage": "adjacent_real_frame_dense_audit",
+            "rejected_adjacent_pair_count": 1,
+        }
+
+    write_video_failure(tmp_path, tmp_path / "input", CandidateGateError("strict dense gate failed"))
+
+    failure = json.loads((tmp_path / "video_failure.json").read_text(encoding="utf-8"))
+    assert failure["diagnostics"]["stage"] == "adjacent_real_frame_dense_audit"
+    assert failure["diagnostics"]["rejected_adjacent_pair_count"] == 1
 
 
 def test_video_delivery_rejects_fallback_without_grade_c_manual_review(tmp_path):

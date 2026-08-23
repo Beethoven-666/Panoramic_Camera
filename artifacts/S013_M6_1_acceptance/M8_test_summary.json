@@ -1,0 +1,30 @@
+{
+  "schema": "gemini305-video-s13-m8-test-summary/v1",
+  "completed_at_local_date": "2026-08-12",
+  "python": "D:/Panoramic_Camera/.conda/python.exe",
+  "results": [
+    {
+      "command": "python -m pytest -q 26 S013 test modules (excluding real_regression) plus tests/test_video_candidate_config.py",
+      "passed": 194,
+      "failed": 0
+    },
+    {
+      "command": "python -m pytest -q tests/test_video_s13_evaluation.py (final contract and verifier code)",
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "command": "python -m ruff check M8 source/scripts/tests",
+      "passed": true
+    },
+    {
+      "command": "python -m compileall -q src tests scripts",
+      "passed": true
+    }
+  ],
+  "real_camera_capture": "not_run_M8_is_read_only_evidence_review",
+  "real_open3d_edges": "not_rerun_preserved_from_parent_evidence",
+  "real_full_orbslam3": "not_rerun_preserved_from_parent_evidence",
+  "historical_failure_data": "four_existing_S013_branches_reviewed",
+  "field_speed_acceptance": "not_run"
+}

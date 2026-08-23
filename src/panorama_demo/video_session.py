@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from .session import RGBDSession, load_rgbd_session
+import numpy as np
+
+from .session import RGBDFrame, RGBDSession, load_rgbd_session
 
 
 _VIDEO_CAPTURE_MODES = {
@@ -28,6 +30,7 @@ def load_video_session(
     *,
     validate_frame_files: bool = True,
     validation_workers: int = 1,
+    validated_color_sink: Callable[[RGBDFrame, np.ndarray], None] | None = None,
 ) -> VideoSession:
     """Load a complete colour-aligned video session without admitting photo input.
 
@@ -40,6 +43,7 @@ def load_video_session(
         input_path,
         validate_frame_files=validate_frame_files,
         validation_workers=validation_workers,
+        validated_color_sink=validated_color_sink,
     )
     manifest: dict[str, Any] = rgbd.manifest or {}
     mode = manifest.get("capture_mode")

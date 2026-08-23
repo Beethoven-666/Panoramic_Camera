@@ -1,0 +1,22 @@
+{
+  "schema": "gemini305-video-s12-validation-regions/v1",
+  "runs": {
+    "run_20260806_153033": {
+      "box_and_flaps": {
+        "reference_frame_id": 480,
+        "source_bbox": [260, 265, 465, 435],
+        "description": "纸箱及翻盖完整性"
+      },
+      "cables_and_power_strip": {
+        "reference_frame_id": 480,
+        "source_bbox": [195, 345, 540, 475],
+        "description": "线缆与插线板重复/切碎检查"
+      },
+      "fan": {
+        "reference_frame_id": 480,
+        "source_bbox": [470, 255, 605, 435],
+        "description": "风扇完整重复检查"
+      }
+    }
+  }
+}

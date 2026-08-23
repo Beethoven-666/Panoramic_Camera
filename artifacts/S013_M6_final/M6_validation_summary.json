@@ -1,0 +1,137 @@
+{
+  "blend_model_counts": {
+    "B0_owner_only": 367,
+    "B1_narrow_feather": 18
+  },
+  "m7_entered": false,
+  "milestone": "M6",
+  "parent_stage": "P2",
+  "photometric_model_counts": {
+    "Q0_identity": 301,
+    "Q2_rgb_diagonal_gain": 88
+  },
+  "pixel_stage": "P3",
+  "production_eligible": false,
+  "runs": {
+    "fast_direct": {
+      "blend_model_counts": {
+        "B0_owner_only": 74,
+        "B1_narrow_feather": 10
+      },
+      "blend_pixel_count": 3023,
+      "current_latest": "P3",
+      "current_preview": "not_present",
+      "current_reviewed": "not_present",
+      "diagnostic_quality_passed": true,
+      "formal_raw_rgb_remap_invocations": 85,
+      "full_resolution_render_count": 1,
+      "generation": "generations/20260812T135608-e88ae3e122be",
+      "geometry_reestimated_in_m6": 0,
+      "hard_audit_passed": true,
+      "m4_reestimated_in_m6": 0,
+      "m5_reestimated_in_m6": 0,
+      "maximum_real_contributors_per_pixel": 2,
+      "open3d_invocations": 0,
+      "p3_completion_schema": "gemini305-video-s13-p3-visual-completion/v1",
+      "parent_stage": "P2",
+      "peak_memory_bytes_estimate": 48213600,
+      "photometric_model_counts": {
+        "Q0_identity": 85
+      },
+      "protected_blend_pixel_count": 0,
+      "seam_reestimated_in_m6": 0,
+      "total_m6_seconds": 29.016667399999278,
+      "trajectory_estimation_invocations": 0
+    },
+    "fast_ignore_pose": {
+      "blend_model_counts": {
+        "B0_owner_only": 76,
+        "B1_narrow_feather": 8
+      },
+      "blend_pixel_count": 2687,
+      "current_latest": "P3",
+      "current_preview": "not_present",
+      "current_reviewed": "not_present",
+      "diagnostic_quality_passed": true,
+      "formal_raw_rgb_remap_invocations": 85,
+      "full_resolution_render_count": 1,
+      "generation": "generations/20260812T135608-e1f6ac9db4d8",
+      "geometry_reestimated_in_m6": 0,
+      "hard_audit_passed": true,
+      "m4_reestimated_in_m6": 0,
+      "m5_reestimated_in_m6": 0,
+      "maximum_real_contributors_per_pixel": 2,
+      "open3d_invocations": 0,
+      "p3_completion_schema": "gemini305-video-s13-p3-visual-completion/v1",
+      "parent_stage": "P2",
+      "peak_memory_bytes_estimate": 47920320,
+      "photometric_model_counts": {
+        "Q0_identity": 85
+      },
+      "protected_blend_pixel_count": 0,
+      "seam_reestimated_in_m6": 0,
+      "total_m6_seconds": 29.477278000005754,
+      "trajectory_estimation_invocations": 0
+    },
+    "slow_direct": {
+      "blend_model_counts": {
+        "B0_owner_only": 108
+      },
+      "blend_pixel_count": 0,
+      "current_latest": "P3",
+      "current_preview": "not_present",
+      "current_reviewed": "not_present",
+      "diagnostic_quality_passed": true,
+      "formal_raw_rgb_remap_invocations": 109,
+      "full_resolution_render_count": 1,
+      "generation": "generations/20260812T135613-0bd15b99ce8b",
+      "geometry_reestimated_in_m6": 0,
+      "hard_audit_passed": true,
+      "m4_reestimated_in_m6": 0,
+      "m5_reestimated_in_m6": 0,
+      "maximum_real_contributors_per_pixel": 1,
+      "open3d_invocations": 0,
+      "p3_completion_schema": "gemini305-video-s13-p3-visual-completion/v1",
+      "parent_stage": "P2",
+      "peak_memory_bytes_estimate": 41468160,
+      "photometric_model_counts": {
+        "Q0_identity": 109
+      },
+      "protected_blend_pixel_count": 0,
+      "seam_reestimated_in_m6": 0,
+      "total_m6_seconds": 30.763302599996678,
+      "trajectory_estimation_invocations": 0
+    },
+    "slow_ignore_pose": {
+      "blend_model_counts": {
+        "B0_owner_only": 109
+      },
+      "blend_pixel_count": 0,
+      "current_latest": "P3",
+      "current_preview": "not_present",
+      "current_reviewed": "not_present",
+      "diagnostic_quality_passed": true,
+      "formal_raw_rgb_remap_invocations": 110,
+      "full_resolution_render_count": 1,
+      "generation": "generations/20260812T135613-695ac43d1c86",
+      "geometry_reestimated_in_m6": 0,
+      "hard_audit_passed": true,
+      "m4_reestimated_in_m6": 0,
+      "m5_reestimated_in_m6": 0,
+      "maximum_real_contributors_per_pixel": 1,
+      "open3d_invocations": 0,
+      "p3_completion_schema": "gemini305-video-s13-p3-visual-completion/v1",
+      "parent_stage": "P2",
+      "peak_memory_bytes_estimate": 41445600,
+      "photometric_model_counts": {
+        "Q0_identity": 22,
+        "Q2_rgb_diagonal_gain": 88
+      },
+      "protected_blend_pixel_count": 0,
+      "seam_reestimated_in_m6": 0,
+      "total_m6_seconds": 30.330751199995575,
+      "trajectory_estimation_invocations": 0
+    }
+  },
+  "schema": "gemini305-video-s13-m6-validation/v1"
+}

@@ -1,0 +1,48 @@
+{
+  "schema": "video-v61-blocker-poc-v1-lock/v1",
+  "purpose": "immutable Phase 1 baseline; Phase 1.1 must write a distinct evidence file",
+  "poc_code_commit": "8f45badf82c1fce9c99ecef5627c2c89d5ec8a67",
+  "plan_commit": "e1deff35bc805dd66177f6efabb4b098b4c92ae4",
+  "poc_json": {
+    "path": "benchmarks/v61_blocker_poc_primary.json",
+    "sha256": "c5fc423b01ecbc5f5b650595490aa51c3fb41c68bab238a544b32878595c1312"
+  },
+  "session_locks": [
+    {
+      "session": "run_20260807_140140",
+      "frames_csv_sha256": "ea9784b6c47e9d5b6b9898d82512a139e425cbab412d84dd55299037c7109380",
+      "rgb_sha256": {
+        "63": "3c3c2c76957a1255ed539eec1151697e9379f132aaa1726a0c6550c42230f1cf",
+        "64": "dcdf4b2ee8363ee18da857b43acf69165940ce7a93c7769e41b7e30a2c58d3b7",
+        "65": "6a07e835f41e7e1c0a7536cb72c103c2670f98811650d57a92f41d70ffb31d21",
+        "66": "7e5e6e6e997000af4e28fe523d91290c1bf57c08d93d5ef97c7602aa4eaa93be"
+      }
+    },
+    {
+      "session": "run_20260804_162340",
+      "frames_csv_sha256": "f27d7dd4b675193a3846fa70fd1e8461da7898568b300c6e1e4ea190e1fcb42d",
+      "rgb_sha256": {
+        "196": "a1783055faddcc586e67083933dd7b5c7149d99d8c0adcd91935fe7734b8799a",
+        "197": "2e4052c1154cc2efa38bcab0b234c9602077f6f07e9c34342b55ed92aefbb489",
+        "199": "2caee7f8d73d98eb0ddc18dff2d2cb08bfb4f2a869673acf36669bed46f5e9c9",
+        "200": "d5a338899f225909003e41dcae967506d5a269b59774e8ca887f722e8f555628",
+        "202": "3cd3b51cf4f6758b23e5af3952f7276c0f294f91abea4404130f0726e36f69f0"
+      }
+    },
+    {
+      "session": "run_20260806_153033",
+      "frames_csv_sha256": "67fa944e48b6534d15ed110f06740784caa65dbf40de6bfe82d56cbbcac22833",
+      "rgb_sha256": {
+        "87": "e3771cb6a36b194b1d9f3675ae4007b6098aa1b530f333dbfb965fca1992970f",
+        "88": "0be3c49c0ee624baf786bd353d68c6ac15eb897caff33b11a6e1c9340569dde4",
+        "89": "16d677f9ad139b2c19583aac268150f0f8f2cbc1c5e2d0f4475139208f08b348",
+        "90": "414a4752730dfc8464dd1e787af80231a67021611ea7932d649e0f7a5a872b98",
+        "91": "4095edb2090870c4247168619f13cf722ece717edb4a42a0c03e898bdea8f838",
+        "92": "273c733788e90e1dee0ce828aadacd0ad51de6e08670ee9bc1fe38c1831d78f3",
+        "93": "17b5b5a5d0b460ac2929371a0bbd4faffb16b10cd396c66a2816f0d78d225222",
+        "94": "5fe6a2c1516bb442fc14f2b51c9fe788e8773a7cbab3100c8832ae81be5f8276",
+        "95": "c6a50bff466b5bd669b98b31c3d4c155b0f177ab56371c6f663676ce0124f3f9"
+      }
+    }
+  ]
+}

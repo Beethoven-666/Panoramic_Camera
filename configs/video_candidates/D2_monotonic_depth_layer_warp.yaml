@@ -1,0 +1,28 @@
+# D2 is a candidate-only replacement for the failed free C3/C4 mesh family.
+# It consumes D1's real dense sources but can never enter the production lock.
+config_schema: gemini305-video-candidate/v1
+role: candidate
+candidate_id: D2_monotonic_depth_layer_warp
+parent_candidate_id: D1_dense_real_frame_scan_layout
+algorithm_id: D2_monotonic_depth_layer_warp
+implementation_id: candidate_d2_monotonic_depth_layer_warp
+model_sha256: {}
+allow_baseline_fallback: false
+changed_components: [monotonic_depth_layer_warp, bounded_vertical_residual, hard_owner]
+required_evidence_components: [orb_anchor_trajectory, dense_real_frame_pose_audit, depth_visibility_evidence, raft_correspondence_evidence, automatic_long_line_evidence]
+required_output_components: [d2_monotonic_depth_layer_warp]
+replaces_output_components: [c3_raft_mesh, c4_depth_layered_mesh, d1_dense_real_frame_hard_owner]
+components:
+  monotonic_depth_layer_warp:
+    enabled: true
+    layers: [far, mid, near]
+    horizontal_parameterization: monotonic_cubic_b_spline_softplus_increments
+    minimum_jacobian: 0.05
+    horizontal_scale: [0.70, 1.40]
+    maximum_vertical_residual_pixels: 1.5
+    multiband: false
+    actual_output_warp_required: true
+    raft_small_model_sha256: 01064c6dba73b0fc9fc8edf772248560a00a3acfd62ac6677e9eeebad9680e27
+    minimum_line_length_px: 32
+  annotations: {renderer_input: false, post_publication_evaluation_only: true}
+config_sha256: d4bd36adb4ae8d617080ecafc26342023b4531537784854a5a43a074169addb8

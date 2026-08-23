@@ -1,0 +1,75 @@
+{
+  "assignment_count": 85,
+  "config": {
+    "maximum_absolute_horizontal_lag_px": 2,
+    "maximum_horizontal_lag_increase_px": 2,
+    "maximum_seam_shift_px": 8,
+    "maximum_support_loss_fraction": 0.5,
+    "maximum_zero_lag_correlation_drop": 0.2,
+    "minimum_catastrophe_support_rows": 8,
+    "minimum_owner_width_px": 1,
+    "schema": "gemini305-video-s13-m51-hard-audit-config/v1",
+    "support_loss_check_minimum_rows": 64
+  },
+  "fatal_failures": [],
+  "horizontal_catastrophe_summary": {
+    "rejected_candidate_count": 1
+  },
+  "internal_holes": {
+    "external_invalid_component_count": 7,
+    "hole_pixel_count": 168,
+    "internal_hole_component_count": 0,
+    "internal_hole_pixel_count": 0,
+    "invalid_component_count": 7,
+    "passed": true
+  },
+  "owner_and_provenance": {
+    "missing_fields": [],
+    "owner_frame_consistent": true,
+    "owner_source_index_valid": true,
+    "provenance_valid_consistent": true,
+    "secondary_owner_only": true,
+    "shape_mismatch_fields": [],
+    "transaction_ids_owner_consistent": true,
+    "transaction_ids_valid": true,
+    "valid_owner_consistent": true,
+    "valid_source_coordinates_finite": true,
+    "valid_source_coordinates_in_bounds": true
+  },
+  "pair_fallback_count": 6,
+  "pair_transaction_count": 84,
+  "parent_verification_deferred_to_stage_sealer": true,
+  "passed": true,
+  "schema": "gemini305-video-s13-p2-hard-audit/v1",
+  "seam_family": {
+    "actual_shape": [
+      84,
+      480
+    ],
+    "allowed_row_steps_only": true,
+    "config": {
+      "maximum_absolute_horizontal_lag_px": 2,
+      "maximum_horizontal_lag_increase_px": 2,
+      "maximum_seam_shift_px": 8,
+      "maximum_support_loss_fraction": 0.5,
+      "maximum_zero_lag_correlation_drop": 0.2,
+      "minimum_catastrophe_support_rows": 8,
+      "minimum_owner_width_px": 1,
+      "schema": "gemini305-video-s13-m51-hard-audit-config/v1",
+      "support_loss_check_minimum_rows": 64
+    },
+    "expected_shape": [
+      84,
+      480
+    ],
+    "failures": [],
+    "finite": true,
+    "in_canvas": true,
+    "integral_coordinates": true,
+    "minimum_owner_width_px": 1,
+    "passed": true,
+    "schema": "gemini305-video-s13-seam-family-hard-audit/v1",
+    "seam_family_sha256": "9ac2a12563b7e428a58a37dabf6cdf1a02e5bb60806bf2790dec9e69f52b74ee",
+    "strictly_ordered": true
+  }
+}

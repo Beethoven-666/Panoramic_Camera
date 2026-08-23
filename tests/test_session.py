@@ -118,6 +118,47 @@ def _write_rgbd_session(
     return root
 
 
+def test_validated_color_sink_runs_only_after_complete_rgbd_validation(
+    tmp_path: Path,
+) -> None:
+    root = _write_rgbd_session(tmp_path / "valid")
+    received: list[tuple[RGBDFrame, np.ndarray]] = []
+    session = load_rgbd_session(
+        root,
+        validation_workers=2,
+        validated_color_sink=lambda frame, image: received.append((frame, image)),
+    )
+
+    assert [frame.frame_id for frame, _image in received] == [0]
+    assert received[0][1].flags.c_contiguous
+    assert received[0][1].flags.writeable is False
+    assert session.validation_performance["strict_rgb_decode_count"] == 1
+    assert session.validation_performance["strict_depth_decode_count"] == 1
+
+
+def test_validated_color_sink_does_not_receive_rgb_when_depth_fails(
+    tmp_path: Path,
+) -> None:
+    root = _write_rgbd_session(tmp_path / "bad", depth_shape=(12, 16))
+    received: list[int] = []
+    with pytest.raises(ValueError, match="aligned depth size"):
+        load_rgbd_session(
+            root,
+            validated_color_sink=lambda frame, _image: received.append(frame.frame_id),
+        )
+    assert received == []
+
+
+def test_validated_color_sink_requires_file_validation(tmp_path: Path) -> None:
+    root = _write_rgbd_session(tmp_path / "invalid-call")
+    with pytest.raises(ValueError, match="requires validate_frame_files"):
+        load_rgbd_session(
+            root,
+            validate_frame_files=False,
+            validated_color_sink=lambda _frame, _image: None,
+        )
+
+
 def test_discover_single_image(tmp_path: Path) -> None:
     image = _touch(tmp_path / "frame.PNG")
 

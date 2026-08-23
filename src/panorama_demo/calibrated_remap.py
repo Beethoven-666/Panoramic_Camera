@@ -10,6 +10,7 @@ colour-camera calibration contract used by both metric projection paths.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Protocol, Sequence, runtime_checkable
 
 import cv2
@@ -70,6 +71,29 @@ def distortion_coefficients(intrinsics: CalibratedIntrinsics) -> np.ndarray | No
     return np.asarray(values, dtype=np.float64)
 
 
+@lru_cache(maxsize=16)
+def _undistortion_maps_cached(
+    width: int,
+    height: int,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+    distortion_values: tuple[float, ...],
+) -> tuple[np.ndarray, np.ndarray]:
+    matrix = np.array(
+        [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64
+    )
+    return cv2.initUndistortRectifyMap(
+        matrix,
+        np.asarray(distortion_values, dtype=np.float64),
+        None,
+        matrix,
+        (width, height),
+        cv2.CV_32FC1,
+    )
+
+
 def undistortion_maps(
     intrinsics: CalibratedIntrinsics,
 ) -> tuple[np.ndarray, np.ndarray] | None:
@@ -79,13 +103,14 @@ def undistortion_maps(
     distortion = distortion_coefficients(intrinsics)
     if distortion is None:
         return None
-    return cv2.initUndistortRectifyMap(
-        matrix,
-        distortion,
-        None,
-        matrix,
-        (int(intrinsics.width), int(intrinsics.height)),
-        cv2.CV_32FC1,
+    return _undistortion_maps_cached(
+        int(intrinsics.width),
+        int(intrinsics.height),
+        float(matrix[0, 0]),
+        float(matrix[1, 1]),
+        float(matrix[0, 2]),
+        float(matrix[1, 2]),
+        tuple(float(value) for value in distortion),
     )
 
 

@@ -1,0 +1,46 @@
+{
+  "blended_pixel_count": 0,
+  "candidate_audits": [
+    {
+      "blended_pixel_count": 0,
+      "evaluable": true,
+      "hard_safe": true,
+      "model": "B0_owner_only",
+      "reason": null,
+      "selected": true
+    },
+    {
+      "blended_pixel_count": 0,
+      "evaluable": true,
+      "hard_safe": false,
+      "model": "B1_narrow_feather",
+      "reason": "insufficient_safe_background_or_residual",
+      "residual_median_linear": 0.006391705013811588,
+      "safe_fraction": 0.2631127450980392,
+      "selected": false,
+      "total_width_px": 1
+    },
+    {
+      "blended_pixel_count": 530,
+      "evaluable": true,
+      "hard_safe": false,
+      "model": "B2_safe_masked_multiband",
+      "pyramid_levels": 1,
+      "reason": "insufficient_safe_background_or_residual",
+      "residual_median_linear": 0.006391705013811588,
+      "safe_fraction": 0.2631127450980392,
+      "selected": false,
+      "total_width_px": 4
+    }
+  ],
+  "fallback_reason": "no_safe_blend_candidate",
+  "hard_audit_passed": true,
+  "model": "B0_owner_only",
+  "pair_index": 60,
+  "parent_p2_pair_transaction_sha256": "9a3ca1b06d524bcddedf3cdaa5505feaaf84eaa55a86eb49e42b6bdfe649e070",
+  "protected_pixel_count": 5387,
+  "pyramid_levels": 0,
+  "schema": "gemini305-video-s13-blend-transaction/v1",
+  "total_width_px": 0,
+  "transaction_id": 60
+}

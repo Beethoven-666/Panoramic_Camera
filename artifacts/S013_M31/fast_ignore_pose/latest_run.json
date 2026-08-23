@@ -1,0 +1,70 @@
+{
+  "algorithm_id": "S013_output_first_progressive_dense_central_slit_v3",
+  "column_provenance": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\fast_ignore_pose\\generations\\20260811T143048-9de328c9e4b5\\P0\\base_column_provenance.npz",
+  "completion": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\fast_ignore_pose\\generations\\20260811T143048-9de328c9e4b5\\P0\\P0_completion.json",
+  "current_base": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\fast_ignore_pose\\current_base.json",
+  "diagnostic_only": true,
+  "direct_local_delta_is_fatal": false,
+  "fallback_counts": {
+    "F0": 99,
+    "F1": 0,
+    "F2": 0,
+    "F3": 0,
+    "F4": 0,
+    "F5": 29,
+    "F6": 0,
+    "F7": 0
+  },
+  "fallback_unclassified_count": 0,
+  "generation": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\fast_ignore_pose\\generations\\20260811T143048-9de328c9e4b5",
+  "generation_id": "20260811T143048-9de328c9e4b5",
+  "hypothesis_count_histogram": {
+    "0": 2,
+    "1": 119,
+    "2": 61,
+    "3": 198
+  },
+  "layout": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\fast_ignore_pose\\generations\\20260811T143048-9de328c9e4b5\\P0\\base_layout.json",
+  "lineage_switch_count": 98,
+  "manual_review_required": true,
+  "motion_graph_connected_telemetry": false,
+  "motion_graph_disconnection_is_fatal": false,
+  "optimizer": {
+    "all_failed": false,
+    "attempt_count": 0,
+    "failures": [],
+    "p0_hash_unchanged": true,
+    "p0_parent_preserved": true,
+    "requested": false
+  },
+  "owner_overlay": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\fast_ignore_pose\\generations\\20260811T143048-9de328c9e4b5\\P0\\owner_boundary_overlay.png",
+  "panel_navigation_overview": null,
+  "panorama": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\fast_ignore_pose\\generations\\20260811T143048-9de328c9e4b5\\P0\\base_panorama_owner_only.png",
+  "panorama_claim": "visual_nonmetric",
+  "pixel_provenance": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M31\\fast_ignore_pose\\generations\\20260811T143048-9de328c9e4b5\\P0\\base_pixel_provenance.npz",
+  "production_eligible": false,
+  "production_lock_eligible": false,
+  "raw_rgb_adjacent_edge_count": 128,
+  "raw_rgb_motion_edge_count": 380,
+  "render_pair_count": 84,
+  "render_source_count": 85,
+  "render_state": "base_generated",
+  "schema": "gemini305-video-s13-output-first-report/v1",
+  "source_u_statistics": {
+    "configured_cap_px": 169,
+    "maximum": 847.2669067382812,
+    "maximum_internal_owner_width_px": 24,
+    "minimum": 0.0,
+    "span": 847.2669067382812
+  },
+  "spatial_panel_set": null,
+  "stage_seconds": {
+    "input_and_preflight": 0.6428464000000531,
+    "motion_measurement": 4.476345400000355,
+    "p0_render_and_export": 1.3356404000005568,
+    "progress_and_layout": 0.00564459999986866,
+    "trajectory": 1.1899999663000926e-05
+  },
+  "time_to_P0_seconds": 6.515363900000011,
+  "total_wall_seconds": 6.526465400000234
+}

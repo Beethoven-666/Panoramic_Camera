@@ -46,6 +46,11 @@ _COUNTERS = {
     "cpu_calls": 0,
     "host_to_device_bytes": 0,
     "device_to_host_bytes": 0,
+    # Wall-clock operation accounting includes transfers and the required
+    # host/device synchronisation at this public NumPy boundary.  It is not
+    # presented as kernel-only CUDA time.
+    "gpu_remap_wall_seconds": 0.0,
+    "cpu_remap_wall_seconds": 0.0,
 }
 
 
@@ -255,6 +260,11 @@ def reset_cuda_audit() -> None:
     _FALLBACKS.clear()
 
 
+def _record_remap_timing(*, device: str, elapsed_seconds: float) -> None:
+    key = "gpu_remap_wall_seconds" if device == "gpu" else "cpu_remap_wall_seconds"
+    _COUNTERS[key] += max(0.0, float(elapsed_seconds))
+
+
 def _use_cuda(nbytes: int) -> bool:
     status = cuda_status()
     if not status.available:
@@ -327,11 +337,11 @@ def _cupy_remap_kernel(dtype: np.dtype[Any]) -> Any:
         int pixel = blockDim.x * blockIdx.x + threadIdx.x;
         int count = out_h * out_w;
         if (pixel >= count) return;
-        float x = mx[pixel];
-        float y = my[pixel];
+        double x = (double)mx[pixel];
+        double y = (double)my[pixel];
         for (int c = 0; c < channels; ++c) {{
             int out_i = pixel * channels + c;
-            float value = border;
+            double value = (double)border;
             if (isfinite(x) && isfinite(y)) {{
                 if (!linear) {{
                     int ix = (int)nearbyintf(x);
@@ -345,16 +355,16 @@ def _cupy_remap_kernel(dtype: np.dtype[Any]) -> Any:
                 }} else {{
                     int x0 = (int)floorf(x);
                     int y0 = (int)floorf(y);
-                    float ax = x - (float)x0;
-                    float ay = y - (float)y0;
+                    double ax = x - (double)x0;
+                    double ay = y - (double)y0;
                     value = 0.0f;
                     for (int dy = 0; dy < 2; ++dy) {{
                         int sy = y0 + dy;
-                        float wy = dy ? ay : 1.0f - ay;
+                        double wy = dy ? ay : 1.0 - ay;
                         for (int dx = 0; dx < 2; ++dx) {{
                             int sx = x0 + dx;
-                            float wx = dx ? ax : 1.0f - ax;
-                            float sample = border;
+                            double wx = dx ? ax : 1.0 - ax;
+                            double sample = (double)border;
                             if (replicate) {{
                                 sx = min(src_w - 1, max(0, sx));
                                 sy = min(src_h - 1, max(0, sy));
@@ -467,7 +477,8 @@ def remap(
         )
         if status.mode == "auto" and _AUTO_DECISIONS.get(decision_key) == "cpu":
             _COUNTERS["cpu_calls"] += 1
-            return cv2.remap(
+            started = time.perf_counter()
+            result = cv2.remap(
                 src,
                 mx,
                 my,
@@ -475,6 +486,8 @@ def remap(
                 borderMode=borderMode,
                 borderValue=borderValue,
             )
+            _record_remap_timing(device="cpu", elapsed_seconds=time.perf_counter() - started)
+            return result
         gpu_result: np.ndarray | None = None
         gpu_elapsed = float("inf")
         gpu_error: Exception | None = None
@@ -511,8 +524,10 @@ def remap(
                 if status.mode == "required":
                     raise
         if gpu_result is not None and status.mode == "required":
+            _record_remap_timing(device="gpu", elapsed_seconds=gpu_elapsed)
             return gpu_result
         if gpu_result is not None and status.mode == "prefer":
+            _record_remap_timing(device="gpu", elapsed_seconds=gpu_elapsed)
             return gpu_result
         if gpu_result is not None and status.mode == "auto":
             started = time.perf_counter()
@@ -525,6 +540,7 @@ def remap(
                 borderValue=borderValue,
             )
             cpu_elapsed = time.perf_counter() - started
+            _record_remap_timing(device="cpu", elapsed_seconds=cpu_elapsed)
             if np.issubdtype(cpu_result.dtype, np.integer):
                 parity = bool(
                     np.max(
@@ -553,6 +569,7 @@ def remap(
             )
             _AUTO_DECISIONS[decision_key] = selected
             if selected == "cuda":
+                _record_remap_timing(device="gpu", elapsed_seconds=gpu_elapsed)
                 return gpu_result
             _COUNTERS["cpu_calls"] += 1
             return cpu_result
@@ -572,7 +589,8 @@ def remap(
             "border mode, or map shape is unsupported"
         )
     _COUNTERS["cpu_calls"] += 1
-    return cv2.remap(
+    started = time.perf_counter()
+    result = cv2.remap(
         src,
         mx,
         my,
@@ -580,6 +598,8 @@ def remap(
         borderMode=borderMode,
         borderValue=borderValue,
     )
+    _record_remap_timing(device="cpu", elapsed_seconds=time.perf_counter() - started)
+    return result
 
 
 def pinhole_unproject(

@@ -1,0 +1,96 @@
+{
+  "candidates": {
+    "S013_output_first_progressive_dense_central_slit_v3": {
+      "config_sha256": "14aff58bd23584a784ccadcb537630833d85df814cddb4c089f450b3f317054c",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry"],
+      "required_output_components": ["s013_p0_owner_only"]
+    },
+    "S013_output_first_progressive_dense_central_slit_m61_v2": {
+      "config_sha256": "237e8b5b71b6fb6b5ef4aa303a67a62070b603288051db50ca74890ca1d53c36",
+      "replaces_output_components": [],
+      "required_evidence_components": ["s013_p2_v4", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v4": {
+      "config_sha256": "f037076ba7bef6d0dc463dbfcf2d6d2aa1efda59e3598cae37d20fd4eec602a9",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v1": {
+      "config_sha256": "930b9304805c51e30cec7f9e335c4a687426d8736f78b1c0c58bfcb36739226a",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_resident_v2": {
+      "config_sha256": "ebd85be5415696af66660b5dfd8f0ee4c1b838fa491ec0d01f8be901d735d0ed",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_structural_equivalent_v3": {
+      "config_sha256": "a01d0bc1b3e9a0cca7f7986d16dec98fcbf180de20fc4f655e0b53422a677590",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_m62_cpu_equivalent_v5": {
+      "config_sha256": "b7a943464b25a0b4e824bb65e63eea36115879d9c3ffeef6c5f03d963574d67e",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_m62_effective_v6": {
+      "config_sha256": "4e70f59ce4c977b59888b0c28391ef9dbb9bc6e28b19cb24d5bb35946ecb5462",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_robust_photometric_v7": {
+      "config_sha256": "8f0e02e17b09fe8a00914960192d7dd0bf55632d21da67e7c749b620595ae167",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_first_round_perf_v8": {
+      "config_sha256": "87d8bc14af997631103a463d653172fb59d667f0ce4d95d2ac17382ff0c945a7",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_second_round_perf_v9": {
+      "config_sha256": "cda68d6d3624dce47678acbfd0a26c0afd99c8786829c4b7a03bc29a6e43ca8e",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_third_round_perf_v10": {
+      "config_sha256": "b3ddfb88ad7fcb442ed08e2bd150acc6fe2d22e62cce4a11d4a16c7b55b52141",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_visual_continuity_v11": {
+      "config_sha256": "a03f443aaf72463afc1f06507fe2bfc888d9211f4c4a62634bbfb29fa0f2dab0",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v5": {
+      "config_sha256": "3766a1f322fe3671381b1b617a19c81c45b3c5b91839da47f6db5e21f5bce813",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry"],
+      "required_output_components": ["s013_p2_v5"]
+    },
+    "S013_output_first_progressive_dense_central_slit_v6": {
+      "config_sha256": "5ccaf952fe94d4c42626f3ec9e9555666c023a5ad654885ac4d9def2c96b3dde",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry"],
+      "required_output_components": ["s013_p2_v6"]
+    }
+  },
+  "manifest_sha256": "1336cf77b704ffde66c70eb5fcfdf063fc88784c3484528f89c7a12d4e20d994",
+  "schema": "gemini305-video-candidate-manifest/v1"
+}

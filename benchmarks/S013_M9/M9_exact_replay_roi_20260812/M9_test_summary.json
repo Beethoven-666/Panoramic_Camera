@@ -1,0 +1,48 @@
+{
+  "schema": "gemini305-video-s13-m9-test-summary/v1",
+  "affected_scope_state": "passed",
+  "diagnostic_only": true,
+  "production_claim": false,
+  "twenty_metre_sla_claim": false,
+  "runs": [
+    {
+      "command": "python -m pytest -q tests/test_video_s13_m9.py tests/test_video_s13_evaluation.py tests/test_video_s13_m61_hard_audit.py",
+      "result": "29 passed",
+      "scope": "M8/M9 verifier, exact replay, canonical image/NPZ/JSON comparison"
+    },
+    {
+      "command": "python -m pytest -q tests/test_video_s13*.py tests/test_video_candidate_config.py",
+      "result": "200 passed, 2 skipped",
+      "scope": "all S013 tests; skips require G305_RUN_REAL_S13_REGRESSION=1"
+    },
+    {
+      "command": "python -m pytest -q",
+      "result": "1593 passed, 4 skipped, 8 failed",
+      "scope": "whole repository",
+      "failure_classification": {
+        "suite_order_resource_state": "4 S013 experiment/streaming failures passed on immediate isolated rerun",
+        "pre_existing_out_of_scope_cuda_v2": "4 video_visual_renderer_v2 CUDA failures reproduce in isolation; M9 does not modify that renderer"
+      }
+    },
+    {
+      "command": "python -m pytest -q <four initially failing S013 experiment/streaming node IDs>",
+      "result": "4 passed",
+      "scope": "isolated rerun after whole-suite resource-state failures"
+    }
+  ],
+  "real_data_validation": {
+    "sealed_four_run_rgb_replay": "passed; fast_direct, fast_ignore_pose, slow_direct, slow_ignore_pose",
+    "new_open3d_edges": "not_run_no_change",
+    "new_full_orbslam3": "not_run_no_change_trajectory_sha_bound_by_M8",
+    "historical_failure_dataset": "not_run",
+    "onsite_speed_acceptance": "not_run",
+    "twenty_metre_measurement": "not_available_no_claim"
+  },
+  "exactness": {
+    "sealed_p3_all_file_sha256_equal": true,
+    "visual_pixel_replay_equal": true,
+    "provenance_hash_equal": true,
+    "hard_audit_hash_equal": true,
+    "completion_hash_equal": true
+  }
+}

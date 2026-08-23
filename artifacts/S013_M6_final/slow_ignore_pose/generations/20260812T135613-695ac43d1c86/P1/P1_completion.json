@@ -1,0 +1,48 @@
+{
+  "assets_sha256": {
+    "pair_report.json": "66cb9fe55e87412f8ed941b0fa228717e4d023a2d066a59c681a00fe40ca7c0c",
+    "vertical_owner_boundary_overlay.png": "852ccc7a644e3a1bca224c81bf9af479405d1f2dcfdc9c38479f63ee8617ca2a",
+    "vertical_panorama_owner_only.jpg": "bcff71c0f5c3713ed5f69a8f10124a006fad77b11e58f1aeb41d6d8e53937460",
+    "vertical_panorama_owner_only.png": "e76a320c60a48833915cbb48be8a55ffafcfc830fdd967057fc4b00aaf02120b",
+    "vertical_pixel_provenance.npz": "a0f1b4c63620db9a377df4a6ab5e692ad8a074766b0f181982901cd6b7acbb42",
+    "vertical_selection.json": "a77f3c821dd465b5f57020243a59a0b150e62d4ef2f102ae34b05e448469e340",
+    "vertical_solution.json": "68f1d8721e8465ee96e066151850d4c223f75bdaed86b64c9192be2343637a36",
+    "vertical_solution.npz": "b76c5727a623568cb33209fbfd9114bcb0c95df61f9518f6c618a0aa1f1fc853",
+    "vertical_valid_mask.png": "36ed9d7c24050b70b37ca2ee889a3ba720686f0be56845d6ddb0dc60e04ad20d"
+  },
+  "excluded_models": [
+    "translation",
+    "rotation",
+    "affine",
+    "seam",
+    "graphcut",
+    "photometric",
+    "blend",
+    "depth",
+    "mesh"
+  ],
+  "formal_raw_rgb_remap_invocations": 110,
+  "formal_raw_rgb_unique_sources": 110,
+  "generation_id": "20260812T135613-695ac43d1c86",
+  "hard_audit_passed": true,
+  "models": [
+    "global_scalar_dy",
+    "pair_local_row_residual"
+  ],
+  "p0_parent": "../P0/P0_completion.json",
+  "p0_parent_sha256": "76807c2071ca1b0122e0f3e196d986db6233c424ddb7a0d2cec3ae7e49a53b05",
+  "parent_completion_sha256": "76807c2071ca1b0122e0f3e196d986db6233c424ddb7a0d2cec3ae7e49a53b05",
+  "parent_stage": "P0",
+  "pixel_provenance_sha256": "a0f1b4c63620db9a377df4a6ab5e692ad8a074766b0f181982901cd6b7acbb42",
+  "result_asset": "vertical_panorama_owner_only.png",
+  "result_asset_sha256": "e76a320c60a48833915cbb48be8a55ffafcfc830fdd967057fc4b00aaf02120b",
+  "schema": "gemini305-video-s13-p1-vertical-completion/v2",
+  "sealed": true,
+  "selected_global_gain": 0.0,
+  "selected_vertical_parent": "P0_identity",
+  "stage": "P1",
+  "vertical_solution_json": "vertical_solution.json",
+  "vertical_solution_json_sha256": "68f1d8721e8465ee96e066151850d4c223f75bdaed86b64c9192be2343637a36",
+  "vertical_solution_npz": "vertical_solution.npz",
+  "vertical_solution_npz_sha256": "b76c5727a623568cb33209fbfd9114bcb0c95df61f9518f6c618a0aa1f1fc853"
+}

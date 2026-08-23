@@ -1,0 +1,78 @@
+schema: gemini305-video-s1-experiment/v2
+algorithm_id: S011_object_safe_straight_handoff_v1
+diagnostic_only: true
+production_eligible: false
+motion_role: diagnostic_layout_evidence_only
+scan:
+  analysis_width: 320
+  motion_backend: lk_ransac
+  fallback_motion_backend: phase_correlation
+  maximum_workers: 4
+source_selection:
+  initial_selection_policy: inherit_s01_v1_exact
+  rescue_step_units: full_resolution_px
+  minimum_rescue_improvement_px: 2.0
+  maximum_refinement_rounds: 2
+  maximum_insertions_per_original_pair: 2
+  preserve_full_fov_endpoints: true
+handoff:
+  enabled: true
+  coordinate_domain: calibrated_target_analysis
+  analysis_width_px: 424
+  match_corridor_width_px: 128
+  maximum_boundary_shift_px: 48
+  minimum_internal_owner_width_px: 9
+  minimum_match_count: 12
+  minimum_protected_match_count: 4
+  minimum_protected_vertical_span_px: 24
+  cluster_neighbor_x_px: 24.0
+  cluster_neighbor_y_px: 32.0
+  cluster_relative_dx_tolerance_px: 1.0
+  cluster_merge_gap_px: 2.0
+  lk_forward_backward_max_px: 0.75
+  maximum_vertical_match_error_px: 4.0
+  protected_interval_min_width_px: 1.5
+  minimum_background_relative_dx_px: 1.0
+  conflict_guard_fullres_px: 3.0
+  use_aligned_depth_for_risk: true
+  straight_seam_only: true
+owner:
+  protected_transition_width_px: 0
+  safe_background_transition_width_px: 0
+  allow_foreign_owner_fill: false
+  allow_adjacent_border_fill: false
+s1:
+  horizontal_scale: 0.5
+  preserve_full_vertical_resolution: true
+  normal_coarse_search_radius_y_px: 6
+  expanded_coarse_search_radius_y_px: 16
+  coarse_window_height_px: 32
+  coarse_window_step_px: 16
+  fine_window_height_px: 24
+  fine_window_step_px: 8
+  fine_search_radius_y_px: 2.0
+  fine_search_step_px: 0.25
+  normal_top_k_candidates: 3
+  expanded_top_k_candidates: 5
+  candidate_nms_radius_px: 2
+  minimum_independent_subwindow_agreement: 2
+  maximum_subwindow_spread_px: 0.75
+  trusted_row_taper_px: 8
+  maximum_consecutive_missing_windows: 2
+  fine_vertical_trigger_p95_px: 1.25
+  warp_support_maximum_px: 16
+  warp_support_owner_fraction: 0.45
+  warp_support_minimum_px: 4
+  protected_source_reference_warp: true
+  maximum_local_slope: 0.08
+  fade_function: cosine
+output:
+  mode: audit
+  write_stage_a_nominal_midpoint: true
+  write_stage_b_handoff_only: true
+  write_stage_c_final: true
+  write_stage_provenance: true
+  write_pair_reports: true
+  write_acceptance_crops: true
+  write_performance_report: true
+report_schema: gemini305-video-s1-experiment-report/v2

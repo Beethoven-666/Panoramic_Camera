@@ -1,0 +1,29 @@
+{
+  "asset_semantics": "spatial_panorama",
+  "assets_sha256": {
+    "base_column_provenance.npz": "5df420744e901832ba39b89360e2f702c053b6349dbead03f63f5cf9ad2e736d",
+    "base_layout.json": "f7b1487a3c5a9dab55fc04f36b64049303d573ae99306c678e9921a268438b4b",
+    "base_panorama_owner_only.jpg": "168791c7fda28c9756e77f7b59c42407dc3c1a38fe6a4d24a7c89fce3b987b48",
+    "base_panorama_owner_only.png": "6cd5d6bd1c2ab02b2b86e973d8e383524a6831706755508143ccb27085dd8232",
+    "base_pixel_provenance.npz": "f0a0e6e0fb67068e8b08838ccb7db53cbaf56d2a905ba4a2ee93547d834c4ad9",
+    "base_sources.csv": "71a3eb7cc2b108f2b2af8a3b83d41c4681f5b9bbf03e995f07b0f9846eb5dd70",
+    "base_valid_mask.png": "dee1c9781433afc005955bf771b923fabc3463997fdee785424a23859e038ffa",
+    "owner_boundary_overlay.png": "00d5e025d3d403c2cb5d45f61c203c635b963aa493fc77a228690247f646a394"
+  },
+  "contributor_source_count": 85,
+  "diagnostic_only": true,
+  "duplicate_write_count": 0,
+  "generation_id": "20260811T143140-493dee356db3",
+  "manual_review_required": true,
+  "owner_policy": "fixed_midpoint",
+  "panorama_claim": "visual_nonmetric",
+  "production_eligible": false,
+  "production_lock_eligible": false,
+  "remap_invocations": 85,
+  "remap_invocations_all_panels": 85,
+  "render_state": "base_generated",
+  "schema": "gemini305-video-s13-p0-completion/v1",
+  "sealed": true,
+  "stage": "P0",
+  "trust_state": "strict_session_rgb_motion"
+}

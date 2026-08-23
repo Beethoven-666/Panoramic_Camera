@@ -22,6 +22,7 @@ def test_baseline_freeze_compares_decoded_pixels_and_raw_owner(tmp_path):
         active_owner_count=12,
         panorama_sha256=__import__("hashlib").sha256(image.tobytes()).hexdigest(),
         owner_sha256=__import__("hashlib").sha256(owner.tobytes()).hexdigest(),
+        artifact_sha256=(),
     )
     assert verify_baseline(tmp_path, reference=reference)["matches"] is True
 
@@ -48,4 +49,10 @@ def test_authorized_rebaseline_lock_matches_the_runtime_reference():
         "active_owner_count": reference.active_owner_count,
         "panorama_sha256": reference.panorama_sha256,
         "owner_sha256": reference.owner_sha256,
+        "artifact_sha256": dict(reference.artifact_sha256),
     }
+
+
+def test_committed_legacy_baseline_artifacts_match_the_byte_lock():
+    output = ROOT / "benchmarks" / "run_20260804_162340" / "baseline" / "legacy_fast_b07b561"
+    assert verify_baseline(output, write_result=False)["matches"] is True

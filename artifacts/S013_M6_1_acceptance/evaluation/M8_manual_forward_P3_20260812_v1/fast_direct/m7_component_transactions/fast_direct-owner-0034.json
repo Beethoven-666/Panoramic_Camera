@@ -1,0 +1,54 @@
+{
+  "component": {
+    "actual_winner": false,
+    "branch": "fast_direct",
+    "candidate_order": [
+      "R0_keep_p3",
+      "R1_b1_2px_to_b0_owner_only",
+      "R2_downgrade_seam_reestimate_geometry",
+      "R3_downgrade_geometry_reselect_seam"
+    ],
+    "candidates": [
+      {
+        "ghost_material_count": 1,
+        "model": "R0_keep_p3",
+        "pixel_change_count": 0,
+        "status": "baseline_selected_unless_strict_winner"
+      },
+      {
+        "affected_pixel_count": 748,
+        "b1_total_width_after_px": 0,
+        "b1_total_width_before_px": 2,
+        "geometry_frozen": true,
+        "ghost_material_count_after": 0,
+        "ghost_material_count_before": 1,
+        "ghost_material_improved": true,
+        "immediate_color_step_increase_linear": 0.002614379394799471,
+        "maximum_allowed_increase_linear": 0.0005,
+        "model": "R1_b1_2px_to_b0_owner_only",
+        "no_new_color_step": false,
+        "outside_affected_exact": true,
+        "pair_index": 34,
+        "pixel_change_count": 552,
+        "q_parameters_frozen": true,
+        "seam_frozen": true,
+        "status": "rejected"
+      },
+      {
+        "model": "R2_downgrade_seam_reestimate_geometry",
+        "status": "not_applicable_component_class"
+      },
+      {
+        "model": "R3_downgrade_geometry_reselect_seam",
+        "status": "not_applicable_component_class"
+      }
+    ],
+    "component_class": "owner",
+    "handoff_item_id": "fast_direct-owner-0034",
+    "pair_index": 34,
+    "selected_model": "R0_keep_p3"
+  },
+  "schema": "gemini305-video-s13-m7-component-transaction/v1",
+  "source_summary": "D:\\central_strip_Panoramic_Camera\\artifacts\\S013_M6_1_acceptance\\M7_core_comparisons.json",
+  "source_summary_sha256": "a5719edc85ffd79e1778baf6226dc275e472c327ce918c61e2f3335196dd7568"
+}

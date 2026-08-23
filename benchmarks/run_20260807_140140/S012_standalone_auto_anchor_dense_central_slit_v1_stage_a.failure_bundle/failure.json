@@ -1,0 +1,29 @@
+{
+  "acceptance": {
+    "pass": false,
+    "structural_fatal": true
+  },
+  "algorithm_id": "S012_standalone_auto_anchor_dense_central_slit_v1",
+  "commit_sha": "b7a9385c648f6d64936beb4737e89a950e0590c5",
+  "config": {
+    "path": "D:\\central_strip_Panoramic_Camera\\configs\\video_candidates\\S012_standalone_auto_anchor_dense_central_slit_v1.yaml",
+    "sha256": "6b5e08ddc323f7de95d8d20354bd1515413c0e5e8d0d0e71110dae89d0900fb0"
+  },
+  "error_type": "RuntimeError",
+  "failed_stage": "scan_and_motion_graph",
+  "input": "D:\\central_strip_Panoramic_Camera\\data\\captures\\video\\run_20260807_140140",
+  "lock_eligible": false,
+  "message": "S1.2 structural fatal: longest valid scan segment is insufficient",
+  "production_eligible": false,
+  "schema": "gemini305-video-s12-failure/v1",
+  "stage": "a",
+  "structural_fatal": true,
+  "structural_valid": false,
+  "tracked_diff_sha256": "ef6f29ee0a4202c7360c8d0ac0707479641c074b3e11d511cd44c6f1a32e87ba",
+  "trajectory": {
+    "path": "D:\\central_strip_Panoramic_Camera\\data\\captures\\video\\run_20260807_140140\\orbslam3_trajectory.json",
+    "sha256": "19566989ab091fd1b710f0237f4b0d1689bbf374e3dcb24da60811a2af7b4961"
+  },
+  "wall_seconds_before_failure": 2.9203744000114966,
+  "worktree_dirty": true
+}

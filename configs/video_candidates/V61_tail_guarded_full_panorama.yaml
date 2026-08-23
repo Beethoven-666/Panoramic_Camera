@@ -1,0 +1,17 @@
+config_schema: gemini305-video-candidate/v1
+role: candidate
+candidate_id: V61_tail_guarded_full_panorama
+parent_candidate_id: V6_rgb_only_graphcut
+algorithm_id: V61_tail_guarded_full_panorama
+implementation_id: v61_tail_guarded_full_panorama_once_sampling
+model_sha256: {}
+allow_baseline_fallback: false
+changed_components: [v61_geometry_gate, tail_guard, graphcut_state_machine, one_pass_sampling]
+required_evidence_components: [orb_anchor_trajectory, open3d_rgbd_edges, dis_forward_backward]
+required_output_components: [v61_tail_guarded_full_panorama]
+replaces_output_components: [v6_rgb_only_graphcut]
+components:
+  v61_tail_guarded_full_panorama: true
+  tracking_fps: 12
+  geometry_gate: {minimum_reliable_pixels: 128, fb_p95_max_px: 1.25, edge_p95_max_px: 0.75, minimum_matched_edge_fraction: 0.85, tail_threshold_px: 1.25, tail_dilation_px: 3}
+config_sha256: 97ff82bbecd3056d2a6c1a555cc666de26cbca2a214455250d8263b4a87efad5

@@ -93,9 +93,11 @@ def _read_measurement_report(request: FixedRunMeasurementRequest) -> dict[str, o
     performance = report.get("performance")
     if not isinstance(performance, Mapping):
         raise FixedRunPerformanceError(f"Measurement report lacks performance: {report_path}")
-    seconds = performance.get("post_capture_seconds")
+    seconds = performance.get("primary_post_capture_seconds")
     if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or not math.isfinite(seconds) or seconds <= 0.0:
-        raise FixedRunPerformanceError(f"Measurement post_capture_seconds must be finite and positive: {report_path}")
+        raise FixedRunPerformanceError(
+            f"Measurement primary_post_capture_seconds must be finite and positive: {report_path}"
+        )
     grades = report.get("grades")
     if not isinstance(grades, Mapping) or grades.get("performance") != "A":
         raise FixedRunPerformanceError(f"Measurement performance grade is not A: {report_path}")

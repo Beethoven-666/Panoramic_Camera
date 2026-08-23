@@ -1,0 +1,161 @@
+{
+  "candidates": [
+    {
+      "algorithm_id": "C9_positive_jacobian_line_mesh",
+      "eligible": false,
+      "hard_gate_validity": [
+        "object_integrity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "implementation_validity": [
+        "v2_component_not_applied_to_output:c3_raft_mesh",
+        "v2_component_not_applied_to_output:c4_depth_layered_mesh",
+        "v2_component_not_applied_to_output:c9_line_preserving_layered_mesh",
+        "candidate_run_state_invalid_component_execution",
+        "candidate_component_execution_not_selection_eligible"
+      ],
+      "measurement_validity": [
+        "object_integrity_measurement_not_evaluable",
+        "line_continuity_measurement_not_evaluable"
+      ],
+      "performance_validity": [],
+      "ranking": null,
+      "reasons": [
+        "v2_component_not_applied_to_output:c3_raft_mesh",
+        "v2_component_not_applied_to_output:c4_depth_layered_mesh",
+        "v2_component_not_applied_to_output:c9_line_preserving_layered_mesh",
+        "candidate_run_state_invalid_component_execution",
+        "candidate_component_execution_not_selection_eligible",
+        "object_integrity_measurement_not_evaluable",
+        "line_continuity_measurement_not_evaluable",
+        "object_integrity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\recovery\\extended_candidates\\C9_positive_jacobian_line_mesh\\video_report.json"
+    },
+    {
+      "algorithm_id": "C10_depth_conditioned_multi_perspective_layout",
+      "eligible": false,
+      "hard_gate_validity": [
+        "object_integrity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "implementation_validity": [
+        "v2_component_not_applied_to_output:c3_raft_mesh",
+        "v2_component_not_applied_to_output:c4_depth_layered_mesh",
+        "v2_component_not_applied_to_output:c10_depth_conditioned_layout",
+        "candidate_run_state_invalid_component_execution",
+        "candidate_component_execution_not_selection_eligible"
+      ],
+      "measurement_validity": [
+        "object_integrity_measurement_not_evaluable",
+        "line_continuity_measurement_not_evaluable"
+      ],
+      "performance_validity": [],
+      "ranking": null,
+      "reasons": [
+        "v2_component_not_applied_to_output:c3_raft_mesh",
+        "v2_component_not_applied_to_output:c4_depth_layered_mesh",
+        "v2_component_not_applied_to_output:c10_depth_conditioned_layout",
+        "candidate_run_state_invalid_component_execution",
+        "candidate_component_execution_not_selection_eligible",
+        "object_integrity_measurement_not_evaluable",
+        "line_continuity_measurement_not_evaluable",
+        "object_integrity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\recovery\\extended_candidates\\C10_depth_conditioned_multi_perspective_layout\\video_report.json"
+    },
+    {
+      "algorithm_id": "C11_object_first_single_view_foreground_compositor",
+      "eligible": false,
+      "hard_gate_validity": [
+        "object_integrity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "implementation_validity": [],
+      "measurement_validity": [
+        "object_integrity_measurement_not_evaluable",
+        "line_continuity_measurement_not_evaluable"
+      ],
+      "performance_validity": [],
+      "ranking": null,
+      "reasons": [
+        "object_integrity_measurement_not_evaluable",
+        "line_continuity_measurement_not_evaluable",
+        "object_integrity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\recovery\\extended_candidates\\C11_object_first_single_view_foreground_compositor\\video_report.json"
+    },
+    {
+      "algorithm_id": "C12_joint_owner_mesh_window",
+      "eligible": false,
+      "hard_gate_validity": [
+        "object_integrity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "implementation_validity": [],
+      "measurement_validity": [
+        "object_integrity_measurement_not_evaluable",
+        "line_continuity_measurement_not_evaluable"
+      ],
+      "performance_validity": [],
+      "ranking": null,
+      "reasons": [
+        "object_integrity_measurement_not_evaluable",
+        "line_continuity_measurement_not_evaluable",
+        "object_integrity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\recovery\\extended_candidates\\C12_joint_owner_mesh_window_r4\\video_report.json"
+    },
+    {
+      "algorithm_id": "C13_robust_photometric_bundle",
+      "eligible": false,
+      "hard_gate_validity": [
+        "visual_grade_not_A",
+        "overall_grade_not_A",
+        "object_integrity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "implementation_validity": [
+        "v2_component_not_applied_to_output:c7_global_photometric",
+        "v2_component_not_applied_to_output:c13_robust_photometric_bundle",
+        "candidate_run_state_invalid_component_execution",
+        "candidate_component_execution_not_selection_eligible"
+      ],
+      "measurement_validity": [
+        "object_integrity_measurement_not_evaluable",
+        "line_continuity_measurement_not_evaluable"
+      ],
+      "performance_validity": [],
+      "ranking": null,
+      "reasons": [
+        "v2_component_not_applied_to_output:c7_global_photometric",
+        "v2_component_not_applied_to_output:c13_robust_photometric_bundle",
+        "candidate_run_state_invalid_component_execution",
+        "candidate_component_execution_not_selection_eligible",
+        "object_integrity_measurement_not_evaluable",
+        "line_continuity_measurement_not_evaluable",
+        "visual_grade_not_A",
+        "overall_grade_not_A",
+        "object_integrity_hard_gate_not_passed",
+        "safe_background_hard_gate_not_passed"
+      ],
+      "report_path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\recovery\\extended_candidates\\C13_robust_photometric_bundle\\video_report.json"
+    }
+  ],
+  "eligible_candidate_count": 0,
+  "holdout_not_run": true,
+  "measurement_schema": "gemini305-video-offline-visual-evaluation/v2",
+  "quality_gate_lock": {
+    "path": "D:\\central_strip_Panoramic_Camera\\benchmarks\\run_20260804_162340\\quality_gate_lock.json",
+    "sha256": "6a627a4fa548e4e161b70b1babe6fb9c625d7d6dfe33eca2b0b12e99b421b484",
+    "version": "quality-gates-v1-unchanged"
+  },
+  "schema": "gemini305-video-algorithm-selection/v3",
+  "selected_algorithm_id": null,
+  "selection_stage": "validation",
+  "selection_status": "not_selectable"
+}

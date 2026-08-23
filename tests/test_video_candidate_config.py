@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 import yaml
 
+from panorama_demo import video_pipeline
 from panorama_demo.video_algorithm import (
     build_algorithm_spec,
     canonical_config_sha256,
     load_algorithm_config,
 )
-from panorama_demo.video_pipeline import _legacy_settings_for
+from panorama_demo.video_pipeline import _legacy_settings_for, _spec_report
+from panorama_demo.video_observability import ObservabilitySpec
+from panorama_demo.video_candidate_manifest import canonical_candidate_manifest_sha256
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +63,35 @@ def test_c0_reference_remains_runnable_with_disabled_optional_modules():
     )
     settings = _legacy_settings_for(spec)
     assert settings["motion_resampling"]["normal_target_step_pixels"] == 20.0
+
+
+def test_d2_is_a_candidate_only_d1_successor_not_a_c3_c4_mesh_alias():
+    spec = build_algorithm_spec(
+        ROOT / "configs" / "video_candidates" / "D2_monotonic_depth_layer_warp.yaml",
+        expected_role="candidate",
+    )
+    settings = _legacy_settings_for(spec)
+    assert settings["fast_renderer"] == "hard_owner_diagnostic"
+    assert settings["candidate_dense_real_frame_layout"]["real_source_fps"] == 24
+    d2 = settings["candidate_d2_monotonic_depth_layer_warp"]
+    assert d2["layers"] == ["far", "mid", "near"]
+    assert d2["multiband"] is False
+    assert spec.replaces_output_components == (
+        "c3_raft_mesh", "c4_depth_layered_mesh", "d1_dense_real_frame_hard_owner",
+    )
+
+
+def test_d3_is_a_d2_successor_with_a_real_source_owner_only_contract():
+    spec = build_algorithm_spec(
+        ROOT / "configs" / "video_candidates" / "D3_object_first_dense_source_compositor.yaml",
+        expected_role="candidate",
+    )
+    settings = _legacy_settings_for(spec)
+    d3 = settings["candidate_d3_object_first_dense_source_compositor"]
+    assert settings["candidate_d2_monotonic_depth_layer_warp"]["multiband"] is False
+    assert d3["object_flow_or_warp"] is False
+    assert d3["object_multiband"] is False
+    assert d3["source_support_gate"] == 0.98
 
 
 def test_c1_selects_its_real_source_constrained_owner_renderer():
@@ -129,6 +162,11 @@ def test_later_candidate_uses_its_own_cuda_c1_controls_but_inherits_c1_scan_step
     document["config_sha256"] = canonical_config_sha256(document)
     path = tmp_path / "C5_validation.yaml"
     path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    import json
+    manifest = json.loads((ROOT / "configs" / "video_candidates" / "candidate_manifest.json").read_text(encoding="utf-8"))
+    manifest["candidates"]["C5_object_lock"]["config_sha256"] = document["config_sha256"]
+    manifest["manifest_sha256"] = canonical_candidate_manifest_sha256(manifest)
+    (tmp_path / "candidate_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
     settings = _legacy_settings_for(build_algorithm_spec(path, expected_role="candidate"))
 
@@ -168,3 +206,159 @@ def test_c8_composes_c4_to_c7_safeguards_with_local_multilabel_optimisation():
     assert settings["candidate_safe_multiband"] is True
     assert settings["candidate_global_photometric"] is True
     assert settings["candidate_multilabel_owner"] is True
+
+
+@pytest.mark.parametrize(
+    ("candidate_id", "tracking_fps"),
+    (("V6_rgb_only_graphcut", 12.0), ("V6_rgb_only_graphcut_t2", 16.0)),
+)
+def test_v6_routes_keep_their_frozen_tracking_and_resampling_contracts(
+    candidate_id: str,
+    tracking_fps: float,
+) -> None:
+    spec = build_algorithm_spec(
+        ROOT / "configs" / "video_candidates" / f"{candidate_id}.yaml",
+        expected_role="candidate",
+    )
+
+    settings = _legacy_settings_for(spec)
+
+    assert settings["fast_renderer"] == "v6_graphcut_candidate"
+    assert settings["fast_orb_target_fps"] == tracking_fps
+    assert settings["motion_resampling"]["normal_target_step_pixels"] == 8.0
+    assert settings["motion_resampling"]["risk_target_step_pixels"] == 5.0
+    assert settings["motion_resampling"]["maximum_step_pixels"] == 12.0
+
+
+def test_v61_config_routes_immutable_tracking_geometry_and_report_contract() -> None:
+    spec = build_algorithm_spec(
+        ROOT
+        / "configs"
+        / "video_candidates"
+        / "V61_tail_guarded_full_panorama.yaml",
+        expected_role="candidate",
+    )
+
+    settings = _legacy_settings_for(spec)
+    report = _spec_report(spec)
+
+    assert settings["fast_renderer"] == "v61_tail_guarded_candidate"
+    assert settings["fast_orb_target_fps"] == 12.0
+    assert settings["motion_resampling"]["normal_target_step_pixels"] == 8.0
+    assert settings["motion_resampling"]["risk_target_step_pixels"] == 5.0
+    assert settings["motion_resampling"]["maximum_step_pixels"] == 12.0
+    assert settings["candidate_v61_geometry_gate"] == {
+        "minimum_reliable_pixels": 128,
+        "fb_p95_max_px": 1.25,
+        "edge_p95_max_px": 0.75,
+        "minimum_matched_edge_fraction": 0.85,
+        "tail_threshold_px": 1.25,
+        "tail_dilation_px": 3,
+    }
+    assert report["required_evidence_components"] == [
+        "orb_anchor_trajectory",
+        "open3d_rgbd_edges",
+        "dis_forward_backward",
+    ]
+    assert report["required_output_components"] == [
+        "v61_tail_guarded_full_panorama"
+    ]
+    assert report["replaces_output_components"] == ["v6_rgb_only_graphcut"]
+    assert report["working_tree_dirty"] is spec.working_tree_dirty
+    assert report["candidate_manifest_path"] == str(spec.candidate_manifest_path)
+    assert report["candidate_manifest_sha256"] == spec.candidate_manifest_sha256
+
+
+@pytest.mark.parametrize(
+    ("component", "invalid_value", "message"),
+    (
+        ("tracking_fps", 8, "tracking_fps=12"),
+        (
+            "geometry_gate",
+            {"minimum_reliable_pixels": 128},
+            "immutable geometry_gate",
+        ),
+    ),
+)
+def test_v61_route_rejects_mutated_runtime_contract(
+    tmp_path: Path,
+    component: str,
+    invalid_value: object,
+    message: str,
+) -> None:
+    original = ROOT / "configs" / "video_candidates" / "V61_tail_guarded_full_panorama.yaml"
+    document = load_algorithm_config(original)
+    document["components"][component] = invalid_value
+    mutated = tmp_path / original.name
+    mutated.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    spec = build_algorithm_spec(original, expected_role="candidate")
+
+    with pytest.raises(ValueError, match=message):
+        _legacy_settings_for(replace(spec, config_path=mutated))
+
+
+def test_v61_renderer_route_rejects_non_candidate_identity() -> None:
+    spec = build_algorithm_spec(
+        ROOT
+        / "configs"
+        / "video_candidates"
+        / "V61_tail_guarded_full_panorama.yaml",
+        expected_role="candidate",
+    )
+
+    with pytest.raises(ValueError, match="candidate-only"):
+        _legacy_settings_for(replace(spec, role="production"))
+
+
+def test_v61_config_reaches_only_its_candidate_runtime_route(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    candidate = (
+        ROOT
+        / "configs"
+        / "video_candidates"
+        / "V61_tail_guarded_full_panorama.yaml"
+    )
+    spec = build_algorithm_spec(candidate, expected_role="candidate")
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        video_pipeline,
+        "_lock_paths",
+        lambda _config: ({}, tmp_path / "baseline.lock", tmp_path / "production.lock"),
+    )
+    monkeypatch.setattr(
+        video_pipeline, "resolve_video_algorithm", lambda *_args, **_kwargs: spec
+    )
+    monkeypatch.setattr(video_pipeline, "verify_candidate_models", lambda _models: None)
+    monkeypatch.setattr(
+        video_pipeline, "write_observability_artifacts", lambda *_args, **_kwargs: {}
+    )
+    from panorama_demo import video_panorama
+
+    def fake_legacy(args: object) -> dict[str, str]:
+        runtime = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
+        captured["settings"] = runtime["stitch"]["video_panorama"]
+        captured["identity"] = dict(args.algorithm_spec)
+        return {"panorama": "fake"}
+
+    monkeypatch.setattr(video_panorama, "run_legacy", fake_legacy)
+
+    result = video_pipeline.run_video_algorithm(
+        input_path=tmp_path / "session",
+        output=tmp_path / "output",
+        role="candidate",
+        candidate_config=candidate,
+        observability=ObservabilitySpec(),
+    )
+
+    assert result == {"panorama": "fake"}
+    settings = captured["settings"]
+    assert settings["fast_renderer"] == "v61_tail_guarded_candidate"
+    assert settings["fast_orb_target_fps"] == 12.0
+    assert settings["candidate_v61_geometry_gate"]["tail_threshold_px"] == 1.25
+    identity = captured["identity"]
+    assert identity["role"] == "candidate"
+    assert identity["required_output_components"] == [
+        "v61_tail_guarded_full_panorama"
+    ]
