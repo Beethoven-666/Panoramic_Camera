@@ -18,6 +18,8 @@ from panorama_demo.video_s13_contract import (
     S13_M62_EFFECTIVE_IMPLEMENTATION_ID,
     S13_SECOND_ROUND_PERF_ALGORITHM_ID,
     S13_SECOND_ROUND_PERF_IMPLEMENTATION_ID,
+    S13_THIRD_ROUND_PERF_ALGORITHM_ID,
+    S13_THIRD_ROUND_PERF_IMPLEMENTATION_ID,
     claims_s13_document,
     is_s13_identity,
     load_s13_config,
@@ -35,6 +37,7 @@ CUDA_V3_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progres
 M62_EFFECTIVE_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_m62_effective_v6.yaml"
 FIRST_ROUND_PERF_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_m63_first_round_perf_v8.yaml"
 SECOND_ROUND_PERF_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_m63_second_round_perf_v9.yaml"
+THIRD_ROUND_PERF_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_m63_third_round_perf_v10.yaml"
 
 
 def test_first_round_performance_successor_is_distinct_and_hash_bound() -> None:
@@ -71,6 +74,21 @@ def test_second_round_performance_enables_only_deferred_motion_and_final_authori
         implementation_id=spec.implementation_id,
         role=spec.role,
     )
+
+
+def test_third_round_performance_enables_exact_compact_p0_only() -> None:
+    config = load_s13_config(THIRD_ROUND_PERF_CONFIG)
+    spec = build_algorithm_spec(THIRD_ROUND_PERF_CONFIG, expected_role="candidate")
+
+    assert spec.algorithm_id == S13_THIRD_ROUND_PERF_ALGORITHM_ID
+    assert spec.implementation_id == S13_THIRD_ROUND_PERF_IMPLEMENTATION_ID
+    assert config.document["parent_candidate_id"] == S13_SECOND_ROUND_PERF_ALGORITHM_ID
+    assert config.document["m5_compact_p0_map"] == {
+        "enabled": True,
+        "mode": "compact_exact_window",
+        "full_reference_fallback": True,
+    }
+    assert config.document["m62_evidence_sampling"]["mode"] == "pair_reference"
 
 
 def test_s13_config_and_sibling_manifest_are_isolated_and_hash_bound() -> None:

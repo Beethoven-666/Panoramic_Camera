@@ -20,7 +20,10 @@ from .session import CameraIntrinsics
 from .video_s12_schedule import S012Schedule, validate_s012_schedule
 from .video_s13_alignment import (
     S13AlignmentCandidate,
+    S13AlignmentConfig,
     S13ApplicationBand,
+    S13CompactP0WindowMiss,
+    S13ImmutableP0MapWindow,
     S13PairAlignment,
     estimate_s13_pair_alignment,
     reestimate_s13_final_corridor_alignment,
@@ -582,6 +585,77 @@ def _base_calibrated_map(
         & (source_v >= 0.0) & (source_v <= int(calibration.height) - 1)
     )
     return source_u.astype(np.float32), source_v.astype(np.float32), valid
+
+
+def build_s13_compact_p0_map_window(
+    schedule: S012Schedule,
+    calibration: CameraIntrinsics,
+    source_index: int,
+    *,
+    required_x0: int,
+    required_x1: int,
+    maximum_map_displacement_px: float,
+    interpolation_guard_px: int = 2,
+) -> S13ImmutableP0MapWindow:
+    """Build only the exact absolute-canvas P0 domain required by one pair."""
+
+    if (
+        not np.isfinite(maximum_map_displacement_px)
+        or maximum_map_displacement_px < 0.0
+        or interpolation_guard_px < 0
+        or required_x1 <= required_x0
+    ):
+        raise ValueError("S1.3 compact P0 window request is invalid")
+    window_x0 = max(
+        0,
+        math.floor(float(required_x0) - float(maximum_map_displacement_px))
+        - int(interpolation_guard_px),
+    )
+    window_x1 = min(
+        schedule.canvas_width,
+        math.ceil(float(required_x1) + float(maximum_map_displacement_px))
+        + int(interpolation_guard_px),
+    )
+    if window_x1 <= window_x0:
+        raise ValueError("S1.3 compact P0 window is empty after canvas clipping")
+
+    assignment = schedule.assignments[source_index]
+    height = schedule.canvas_height
+    canvas_x = np.broadcast_to(
+        np.arange(window_x0, window_x1, dtype=np.float32)[None, :],
+        (height, window_x1 - window_x0),
+    )
+    canvas_y = np.broadcast_to(
+        np.arange(height, dtype=np.float32)[:, None],
+        (height, window_x1 - window_x0),
+    )
+    calibrated_x = float(calibration.cx) + canvas_x - float(assignment.center_x)
+    calibrated_y = canvas_y
+    inverse = undistortion_maps(calibration)
+    if inverse is None:
+        source_u, source_v = calibrated_x, calibrated_y
+    else:
+        source_u = cv2.remap(
+            inverse[0], calibrated_x, calibrated_y, cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=-1,
+        )
+        source_v = cv2.remap(
+            inverse[1], calibrated_x, calibrated_y, cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=-1,
+        )
+    valid = (
+        np.isfinite(source_u) & np.isfinite(source_v)
+        & (source_u >= 0.0) & (source_u <= int(calibration.width) - 1)
+        & (source_v >= 0.0) & (source_v <= int(calibration.height) - 1)
+    )
+    return S13ImmutableP0MapWindow(
+        canvas_x0=window_x0,
+        canvas_x1=window_x1,
+        full_canvas_width=schedule.canvas_width,
+        source_u=source_u.astype(np.float32),
+        source_v=source_v.astype(np.float32),
+        valid=np.asarray(valid, dtype=bool),
+    )
 
 
 def _map_crop(
@@ -1174,10 +1248,14 @@ def estimate_s13_m5_transactions(
     m51_r2_config: S13M51R2Config | None = None,
     base_profile: MutableMapping[str, object] | None = None,
     base_atlas: bool = False,
+    p0_map_mode: Literal["full_reference", "compact_exact_window"] = "full_reference",
+    compact_full_reference_fallback: bool = True,
 ) -> tuple[S13M5Pair, ...]:
     """Evaluate peer seam candidates independently from immutable P1/P0 grids."""
 
     validate_s012_schedule(schedule)
+    if p0_map_mode not in {"full_reference", "compact_exact_window"}:
+        raise ValueError(f"unsupported S1.3 M5 P0 map mode: {p0_map_mode}")
     pairs: list[S13M5Pair] = []
     raw_cache: dict[int, np.ndarray] = {}
     successor = m51_r2_config or S13M51R2Config()
@@ -1202,6 +1280,12 @@ def estimate_s13_m5_transactions(
     alignment_final_reestimate_count = 0
     alignment_final_reestimate_seconds = 0.0
     alignment_candidate_count = 0
+    compact_map_build_count = 0
+    compact_map_pixel_count = 0
+    compact_map_seconds = 0.0
+    compact_fallback_pair_indices: list[int] = []
+    compact_fallback_reasons: dict[str, int] = {}
+    compact_window_widths: list[int] = []
     atlas_cache: dict[int, S13M5BaseSourceAtlas] = {}
     peak_cached_source_count = 0
     peak_cached_bytes = 0
@@ -1343,28 +1427,93 @@ def estimate_s13_m5_transactions(
             )
             reference, moving = correspondence_result
             correspondence_audit = correspondence_result.audit
-            p0_map_started = time.perf_counter()
-            p0_u, p0_v, p0_valid = _base_calibrated_map(
-                schedule, calibration, pair_index + 1
-            )
-            p0_reference_map_seconds += time.perf_counter() - p0_map_started
-            p0_reference_map_build_count += 1
-            p0_reference_map_pixel_count += schedule.canvas_height * schedule.canvas_width
             allowed_left, allowed_right = _allowed_application_bounds(schedule, pair_index)
+            alignment_settings = S13AlignmentConfig()
+            p0_canvas_x0 = 0
+            p0_full_canvas_width: int | None = None
+            if p0_map_mode == "compact_exact_window":
+                compact_started = time.perf_counter()
+                compact_window = build_s13_compact_p0_map_window(
+                    schedule,
+                    calibration,
+                    pair_index + 1,
+                    required_x0=min(allowed_left, x0),
+                    required_x1=max(allowed_right, x1),
+                    maximum_map_displacement_px=(
+                        alignment_settings.maximum_map_displacement_px
+                    ),
+                )
+                compact_map_seconds += time.perf_counter() - compact_started
+                compact_map_build_count += 1
+                compact_map_pixel_count += int(compact_window.valid.size)
+                compact_window_widths.append(
+                    compact_window.canvas_x1 - compact_window.canvas_x0
+                )
+                p0_u = compact_window.source_u
+                p0_v = compact_window.source_v
+                p0_valid = compact_window.valid
+                p0_canvas_x0 = compact_window.canvas_x0
+                p0_full_canvas_width = compact_window.full_canvas_width
+            else:
+                p0_map_started = time.perf_counter()
+                p0_u, p0_v, p0_valid = _base_calibrated_map(
+                    schedule, calibration, pair_index + 1
+                )
+                p0_reference_map_seconds += time.perf_counter() - p0_map_started
+                p0_reference_map_build_count += 1
+                p0_reference_map_pixel_count += (
+                    schedule.canvas_height * schedule.canvas_width
+                )
             base_band = S13ApplicationBand.straight(
                 height=schedule.canvas_height, left_x=allowed_left, right_x=allowed_right
             )
             local_vertical = -np.asarray(vertical.local_row_residuals[pair_index], dtype=np.float64)
             preliminary_started = time.perf_counter()
-            preliminary = estimate_s13_pair_alignment(
-                pair_index=pair_index, pair_frame_ids=frame_ids, non_reference_side="right",
-                p0_source_u=p0_u, p0_source_v=p0_v, p0_valid=p0_valid,
-                source_size=(int(calibration.width), int(calibration.height)),
-                reference_points_xy=reference, non_reference_points_xy=moving,
-                application_band=base_band, accepted_vertical_dy_by_row=local_vertical,
-                alignment_shoulder=(x0, x1),
-                vertical_accepted=bool(np.any(local_vertical != 0.0)),
-            )
+            try:
+                preliminary = estimate_s13_pair_alignment(
+                    pair_index=pair_index, pair_frame_ids=frame_ids,
+                    non_reference_side="right",
+                    p0_source_u=p0_u, p0_source_v=p0_v, p0_valid=p0_valid,
+                    source_size=(int(calibration.width), int(calibration.height)),
+                    reference_points_xy=reference, non_reference_points_xy=moving,
+                    application_band=base_band,
+                    accepted_vertical_dy_by_row=local_vertical,
+                    alignment_shoulder=(x0, x1),
+                    vertical_accepted=bool(np.any(local_vertical != 0.0)),
+                    config=alignment_settings,
+                    p0_canvas_x0=p0_canvas_x0,
+                    full_canvas_width=p0_full_canvas_width,
+                )
+            except S13CompactP0WindowMiss:
+                if p0_map_mode != "compact_exact_window" or not compact_full_reference_fallback:
+                    raise
+                compact_fallback_pair_indices.append(pair_index)
+                compact_fallback_reasons["compact_window_miss"] = (
+                    compact_fallback_reasons.get("compact_window_miss", 0) + 1
+                )
+                p0_map_started = time.perf_counter()
+                p0_u, p0_v, p0_valid = _base_calibrated_map(
+                    schedule, calibration, pair_index + 1
+                )
+                p0_reference_map_seconds += time.perf_counter() - p0_map_started
+                p0_reference_map_build_count += 1
+                p0_reference_map_pixel_count += (
+                    schedule.canvas_height * schedule.canvas_width
+                )
+                p0_canvas_x0 = 0
+                p0_full_canvas_width = None
+                preliminary = estimate_s13_pair_alignment(
+                    pair_index=pair_index, pair_frame_ids=frame_ids,
+                    non_reference_side="right",
+                    p0_source_u=p0_u, p0_source_v=p0_v, p0_valid=p0_valid,
+                    source_size=(int(calibration.width), int(calibration.height)),
+                    reference_points_xy=reference, non_reference_points_xy=moving,
+                    application_band=base_band,
+                    accepted_vertical_dy_by_row=local_vertical,
+                    alignment_shoulder=(x0, x1),
+                    vertical_accepted=bool(np.any(local_vertical != 0.0)),
+                    config=alignment_settings,
+                )
             alignment_preliminary_seconds += time.perf_counter() - preliminary_started
             alignment_preliminary_count += 1
             alignment_candidate_count += len(preliminary.candidates)
@@ -1481,6 +1630,9 @@ def estimate_s13_m5_transactions(
                         accepted_vertical_dy_by_row=local_vertical, alignment_shoulder=(x0, x1),
                         vertical_accepted=bool(np.any(local_vertical != 0.0)),
                         m51_r2_config=successor,
+                        config=alignment_settings,
+                        p0_canvas_x0=p0_canvas_x0,
+                        full_canvas_width=p0_full_canvas_width,
                     )
                     alignment_final_reestimate_seconds += (
                         time.perf_counter() - final_reestimate_started
@@ -2096,15 +2248,24 @@ def estimate_s13_m5_transactions(
             "m5_p0_reference_map_build_count": p0_reference_map_build_count,
             "m5_p0_reference_map_pixel_count": p0_reference_map_pixel_count,
             "m5_p0_reference_map_seconds": p0_reference_map_seconds,
-            "m5_p0_compact_map_build_count": 0,
-            "m5_p0_compact_map_pixel_count": 0,
-            "m5_p0_compact_map_seconds": 0.0,
-            "m5_p0_compact_fallback_count": 0,
-            "m5_p0_compact_fallback_pair_indices": [],
-            "m5_p0_compact_fallback_reasons": {},
-            "m5_p0_compact_window_min_width_px": None,
-            "m5_p0_compact_window_max_width_px": None,
-            "m5_p0_compact_window_mean_width_px": None,
+            "m5_p0_reference_equivalent_pixel_count": (
+                len(pair_domains) * schedule.canvas_height * schedule.canvas_width
+            ),
+            "m5_p0_compact_map_build_count": compact_map_build_count,
+            "m5_p0_compact_map_pixel_count": compact_map_pixel_count,
+            "m5_p0_compact_map_seconds": compact_map_seconds,
+            "m5_p0_compact_fallback_count": len(compact_fallback_pair_indices),
+            "m5_p0_compact_fallback_pair_indices": compact_fallback_pair_indices,
+            "m5_p0_compact_fallback_reasons": compact_fallback_reasons,
+            "m5_p0_compact_window_min_width_px": (
+                min(compact_window_widths) if compact_window_widths else None
+            ),
+            "m5_p0_compact_window_max_width_px": (
+                max(compact_window_widths) if compact_window_widths else None
+            ),
+            "m5_p0_compact_window_mean_width_px": (
+                float(np.mean(compact_window_widths)) if compact_window_widths else None
+            ),
             "m5_alignment_preliminary_count": alignment_preliminary_count,
             "m5_alignment_preliminary_seconds": alignment_preliminary_seconds,
             "m5_alignment_final_reestimate_count": alignment_final_reestimate_count,
@@ -2791,6 +2952,8 @@ def run_s13_m5(
     final_image_composer: Callable[[tuple[int, ...], np.ndarray, dict[str, np.ndarray]], np.ndarray] | None = None,
     execution_mode: Literal["full_reference", "candidate_final_authority"] = "full_reference",
     pair_base_atlas: bool = False,
+    p0_map_mode: Literal["full_reference", "compact_exact_window"] = "full_reference",
+    compact_full_reference_fallback: bool = True,
 ) -> S13M5Result:
     if execution_mode not in {"full_reference", "candidate_final_authority"}:
         raise ValueError(f"unsupported S1.3 M5 execution mode: {execution_mode}")
@@ -2819,6 +2982,8 @@ def run_s13_m5(
         m51_r2_config=m51_r2_config,
         base_profile=pair_base_profile,
         base_atlas=pair_base_atlas,
+        p0_map_mode=p0_map_mode,
+        compact_full_reference_fallback=compact_full_reference_fallback,
     )
     pair_estimation_seconds = time.perf_counter() - pair_estimation_started
     component_chain_audit: dict[str, object] | None = None
@@ -4593,6 +4758,7 @@ def run_s13_m5(
                         "m5_p0_reference_map_build_count",
                         "m5_p0_reference_map_pixel_count",
                         "m5_p0_reference_map_seconds",
+                        "m5_p0_reference_equivalent_pixel_count",
                         "m5_p0_compact_map_build_count",
                         "m5_p0_compact_map_pixel_count",
                         "m5_p0_compact_map_seconds",

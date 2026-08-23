@@ -2933,6 +2933,16 @@ def run_s13_experiment(
                     "enabled", False
                 )
             ),
+            m5_p0_map_mode=str(
+                dict(config.document.get("m5_compact_p0_map", {})).get(
+                    "mode", "full_reference"
+                )
+            ),
+            m5_compact_full_reference_fallback=bool(
+                dict(config.document.get("m5_compact_p0_map", {})).get(
+                    "full_reference_fallback", True
+                )
+            ),
         )
         if config.runtime_backend == "cupy_cuda_structural_equivalent_v3":
             runner_arguments["structural_equivalent_v3"] = True

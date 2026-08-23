@@ -66,6 +66,12 @@
       "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
       "required_output_components": ["s013_m61_p3"]
     },
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_third_round_perf_v10": {
+      "config_sha256": "b3ddfb88ad7fcb442ed08e2bd150acc6fe2d22e62cce4a11d4a16c7b55b52141",
+      "replaces_output_components": [],
+      "required_evidence_components": ["real_rgb_sources", "rgb_motion_telemetry", "s013_m61_threshold_approval"],
+      "required_output_components": ["s013_m61_p3"]
+    },
     "S013_output_first_progressive_dense_central_slit_v5": {
       "config_sha256": "3766a1f322fe3671381b1b617a19c81c45b3c5b91839da47f6db5e21f5bce813",
       "replaces_output_components": [],
@@ -79,6 +85,6 @@
       "required_output_components": ["s013_p2_v6"]
     }
   },
-  "manifest_sha256": "6d0cd5c57bcd264217102f97953fc14a333a8702334d87644c416e24251a4867",
+  "manifest_sha256": "94feee96fb74e9c45351cfb6b1836018c06df31d2d140347b0ce39f06f7e1d8a",
   "schema": "gemini305-video-candidate-manifest/v1"
 }

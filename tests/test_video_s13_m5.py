@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 
+import copy
+from dataclasses import fields
 import cv2
 import numpy as np
 import pytest
@@ -18,11 +20,13 @@ from panorama_demo.video_s13_alignment import (
 )
 from panorama_demo.video_s13_m5 import (
     S13M5EstimationResult,
+    _base_calibrated_map,
     _freeze_m5_pair_input,
     _sample_m5_base_pair,
     _canonicalize_v5_transaction_value,
     _evaluate_s13_runtime_component_candidate,
     build_s13_p2_replay,
+    build_s13_compact_p0_map_window,
     estimate_s13_m5_transactions,
     plan_s13_m5_oracle_domains,
     render_s13_component_roi_from_raw,
@@ -549,6 +553,146 @@ def _m5_inputs():
     images = {0: base, 1: np.roll(base, 1, axis=1), 2: np.roll(base, 2, axis=1)}
     vertical = estimate_s13_vertical(schedule, calibration, images.__getitem__)
     return calibration, schedule, images, vertical
+
+
+@pytest.mark.parametrize("distortion", [(), (0.01, -0.004, 0.0003, -0.0002, 0.0)])
+def test_direct_compact_p0_map_is_exact_full_reference_slice(
+    distortion: tuple[float, ...],
+) -> None:
+    calibration, schedule, _images, _vertical = _m5_inputs()
+    calibration = CameraIntrinsics(
+        calibration.width,
+        calibration.height,
+        calibration.fx,
+        calibration.fy,
+        calibration.cx,
+        calibration.cy,
+        distortion,
+    )
+    full_u, full_v, full_valid = _base_calibrated_map(schedule, calibration, 1)
+    compact = build_s13_compact_p0_map_window(
+        schedule,
+        calibration,
+        1,
+        required_x0=20,
+        required_x1=70,
+        maximum_map_displacement_px=8.0,
+        interpolation_guard_px=2,
+    )
+
+    assert compact.canvas_x0 == 10
+    assert compact.canvas_x1 == min(schedule.canvas_width, 80)
+    np.testing.assert_array_equal(
+        compact.source_u, full_u[:, compact.canvas_x0:compact.canvas_x1]
+    )
+    np.testing.assert_array_equal(
+        compact.source_v, full_v[:, compact.canvas_x0:compact.canvas_x1]
+    )
+    np.testing.assert_array_equal(
+        compact.valid, full_valid[:, compact.canvas_x0:compact.canvas_x1]
+    )
+
+
+def test_compact_p0_transactions_match_full_reference_exactly() -> None:
+    calibration, schedule, images, vertical = _m5_inputs()
+    parent = render_s13_p1_from_raw(
+        schedule, calibration, images.__getitem__, vertical
+    ).image
+    reference = run_s13_m5(
+        schedule,
+        calibration,
+        images.__getitem__,
+        vertical,
+        parent,
+        parent_stage_sha256="6" * 64,
+        execution_mode="candidate_final_authority",
+    )
+    compact = run_s13_m5(
+        schedule,
+        calibration,
+        images.__getitem__,
+        vertical,
+        parent,
+        parent_stage_sha256="6" * 64,
+        execution_mode="candidate_final_authority",
+        p0_map_mode="compact_exact_window",
+    )
+
+    def decision_view(transaction: dict[str, object]) -> dict[str, object]:
+        value = copy.deepcopy(transaction)
+        value.pop("result_stage_sha256", None)
+        for evaluation in value.get("candidate_evaluations", []):
+            evaluation.pop("geometry_input_grid_sha256", None)
+        return value
+
+    assert [decision_view(item.transaction) for item in compact.pairs] == [
+        decision_view(item.transaction) for item in reference.pairs
+    ]
+    for actual, expected in zip(
+        compact.replay_pairs, reference.replay_pairs, strict=True
+    ):
+        for field in fields(actual):
+            actual_value = getattr(actual, field.name)
+            expected_value = getattr(expected, field.name)
+            if isinstance(actual_value, np.ndarray):
+                np.testing.assert_array_equal(actual_value, expected_value)
+            else:
+                assert actual_value == expected_value
+    np.testing.assert_array_equal(compact.final_result.image, reference.final_result.image)
+    for name, expected in reference.final_result.pixel_provenance.items():
+        np.testing.assert_array_equal(
+            compact.final_result.pixel_provenance[name],
+            expected,
+        )
+    profile = compact.performance["m5_runtime_profile"]
+    assert profile["m5_p0_reference_map_build_count"] == 0
+    assert profile["m5_p0_compact_map_build_count"] == len(compact.pairs)
+    assert profile["m5_p0_compact_fallback_count"] == 0
+    assert profile["m5_p0_compact_map_pixel_count"] < (
+        profile["m5_p0_reference_equivalent_pixel_count"]
+    )
+
+
+def test_compact_window_miss_restarts_pair_with_full_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import panorama_demo.video_s13_m5 as m5_module
+
+    calibration, schedule, images, vertical = _m5_inputs()
+    parent = render_s13_p1_from_raw(
+        schedule, calibration, images.__getitem__, vertical
+    ).image
+    original = m5_module.build_s13_compact_p0_map_window
+
+    def undersized(*args, **kwargs):
+        window = original(*args, **kwargs)
+        index = window.valid.shape[1] // 2
+        x0, x1 = window.canvas_x0 + index, window.canvas_x0 + index + 1
+        return S13ImmutableP0MapWindow(
+            x0,
+            x1,
+            window.full_canvas_width,
+            window.source_u[:, index:index + 1].copy(),
+            window.source_v[:, index:index + 1].copy(),
+            window.valid[:, index:index + 1].copy(),
+        )
+
+    monkeypatch.setattr(m5_module, "build_s13_compact_p0_map_window", undersized)
+    result = run_s13_m5(
+        schedule,
+        calibration,
+        images.__getitem__,
+        vertical,
+        parent,
+        parent_stage_sha256="7" * 64,
+        execution_mode="candidate_final_authority",
+        p0_map_mode="compact_exact_window",
+    )
+
+    profile = result.performance["m5_runtime_profile"]
+    assert profile["m5_p0_compact_fallback_count"] == len(result.pairs)
+    assert profile["m5_p0_compact_fallback_pair_indices"] == list(range(len(result.pairs)))
+    assert profile["m5_p0_reference_map_build_count"] == len(result.pairs)
 
 
 def test_transactions_cover_every_pair_and_p2_remaps_each_raw_source_once() -> None:

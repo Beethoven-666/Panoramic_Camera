@@ -68,6 +68,10 @@ S13_SECOND_ROUND_PERF_ALGORITHM_ID = (
 S13_SECOND_ROUND_PERF_IMPLEMENTATION_ID = (
     "s013_m63_deferred_step4_m5_final_authority_base_atlas_v9"
 )
+S13_THIRD_ROUND_PERF_ALGORITHM_ID = (
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_third_round_perf_v10"
+)
+S13_THIRD_ROUND_PERF_IMPLEMENTATION_ID = "s013_m63_compact_p0_map_v10"
 
 _S13_COMPONENT_NAME = "s013_output_first_progressive_dense_central_slit"
 
@@ -142,6 +146,15 @@ _S13_IDENTITY_CONTRACTS = {
     (
         S13_SECOND_ROUND_PERF_ALGORITHM_ID,
         S13_SECOND_ROUND_PERF_IMPLEMENTATION_ID,
+    ): S13IdentityDescriptor(
+        M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
+        True, False, False, False, True, "s013_m61_p3", "P3",
+        ("P0", "P1", "P2", "P3"),
+        "cupy_cuda_m63_robust_v7", True, True, True,
+    ),
+    (
+        S13_THIRD_ROUND_PERF_ALGORITHM_ID,
+        S13_THIRD_ROUND_PERF_IMPLEMENTATION_ID,
     ): S13IdentityDescriptor(
         M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
         True, False, False, False, True, "s013_m61_p3", "P3",
@@ -259,6 +272,24 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
     p2_completion_schema = identity_contract.p2_completion_schema
     requires_m61_bootstrap = identity_contract.requires_m61_bootstrap
     fast_formal = requires_m61_bootstrap
+    compact_p0 = document.get("m5_compact_p0_map")
+    if compact_p0 is not None:
+        compact_p0 = _mapping(compact_p0, "M5 compact P0 map")
+        if (
+            compact_p0.get("enabled") is not True
+            or compact_p0.get("mode") != "compact_exact_window"
+            or compact_p0.get("full_reference_fallback") is not True
+        ):
+            raise ValueError("S1.3 compact P0 map contract is invalid")
+    evidence_sampling = document.get("m62_evidence_sampling")
+    if evidence_sampling is not None:
+        evidence_sampling = _mapping(evidence_sampling, "M6.2 evidence sampling")
+        if (
+            evidence_sampling.get("mode") not in {"pair_reference", "source_packed_cv2"}
+            or evidence_sampling.get("reference_mode_available") is not True
+            or evidence_sampling.get("exact_sample_shadow_in_formal") is not False
+        ):
+            raise ValueError("S1.3 M6.2 evidence sampling contract is invalid")
     if document.get("allow_baseline_fallback") is not False:
         raise ValueError("S1.3 forbids baseline fallback")
     components = _mapping(document.get("components"), "components")

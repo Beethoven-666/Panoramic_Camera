@@ -152,6 +152,8 @@ def run_s13_fast_pipeline(
     motion_execution_policy: Literal["full_reference", "deferred_step4"] = "full_reference",
     m5_execution_mode: Literal["full_reference", "candidate_final_authority"] = "full_reference",
     m5_pair_base_atlas: bool = False,
+    m5_p0_map_mode: Literal["full_reference", "compact_exact_window"] = "full_reference",
+    m5_compact_full_reference_fallback: bool = True,
 ) -> dict[str, Any]:
     """Render P0--P3 once, keeping every parent and decision in memory."""
 
@@ -321,6 +323,8 @@ def run_s13_fast_pipeline(
                 final_image_composer=final_image_composer,
                 execution_mode=m5_execution_mode,
                 pair_base_atlas=m5_pair_base_atlas,
+                p0_map_mode=m5_p0_map_mode,
+                compact_full_reference_fallback=m5_compact_full_reference_fallback,
             )
         finally:
             if resident_m5_batch_token is not None:
