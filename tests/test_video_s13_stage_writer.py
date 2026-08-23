@@ -28,3 +28,25 @@ def test_writer_accepts_owned_immutable_stage_without_snapshot_copy(tmp_path: Pa
 
     assert [path.name for path in paths] == [STAGE_FILENAMES["P0"]]
     assert writer.snapshot_copy_count == 0
+
+
+def test_writer_can_disable_all_stage_outputs(tmp_path: Path) -> None:
+    image = np.zeros((8, 8, 3), dtype=np.uint8)
+    writer = S13StageImageWriter(tmp_path, enabled_stages=())
+    for stage in STAGE_FILENAMES:
+        writer.submit_host_image(stage, image)
+
+    assert writer.close() == ()
+    assert writer.snapshot_copy_count == 0
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_writer_can_publish_only_final_stage(tmp_path: Path) -> None:
+    image = np.zeros((8, 8, 3), dtype=np.uint8)
+    writer = S13StageImageWriter(tmp_path, enabled_stages=("P3",))
+    for stage in STAGE_FILENAMES:
+        writer.submit_host_image(stage, image)
+
+    paths = writer.close()
+    assert [path.name for path in paths] == [STAGE_FILENAMES["P3"]]
+    assert writer.snapshot_copy_count == 1

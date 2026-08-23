@@ -270,11 +270,23 @@ def _walk_keys(value: object, prefix: str = "") -> tuple[str, ...]:
     return tuple(keys)
 
 
-def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Config:
-    if document.get("config_schema") != "gemini305-video-candidate/v1":
-        raise ValueError("S1.3 requires gemini305-video-candidate/v1")
-    if document.get("role") != "candidate":
-        raise ValueError("S1.3 is candidate-only")
+def validate_s13_document(
+    document: Mapping[str, Any],
+    *,
+    path: Path,
+    expected_role: str = "candidate",
+) -> S13Config:
+    if expected_role not in {"candidate", "production"}:
+        raise ValueError("S1.3 role must be candidate or production")
+    expected_schema = (
+        "gemini305-video-candidate/v1"
+        if expected_role == "candidate"
+        else "gemini305-video-algorithm/v1"
+    )
+    if document.get("config_schema") != expected_schema:
+        raise ValueError(f"S1.3 {expected_role} schema is invalid")
+    if document.get("role") != expected_role:
+        raise ValueError(f"S1.3 role must be {expected_role}")
     algorithm_id = document.get("algorithm_id")
     if document.get("candidate_id") != algorithm_id:
         raise ValueError("S1.3 candidate identity is not exact")
@@ -283,6 +295,12 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
     )
     if identity_contract is None:
         raise ValueError("S1.3 implementation identity is not exact")
+    if expected_role == "production" and (
+        algorithm_id != S13_VISUAL_CONTINUITY_ALGORITHM_ID
+        or document.get("implementation_id")
+        != S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID
+    ):
+        raise ValueError("Only exact S013 Visual Continuity V11 may be production")
     contract_schema = identity_contract.contract_schema
     p2_completion_schema = identity_contract.p2_completion_schema
     requires_m61_bootstrap = identity_contract.requires_m61_bootstrap
@@ -404,12 +422,18 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
             "worst_pair_p95_nonreg_relative_tolerance": 0.02,
         }:
             raise ValueError("S1.3 effective M6.2 must retain the M6.1 quality selection gate")
-    if (
-        component.get("diagnostic_only") is not True
-        or component.get("production_eligible") is not False
-        or component.get("production_lock_eligible") is not False
-    ):
-        raise ValueError("S1.3 must remain diagnostic-only and production-ineligible")
+    expected_lifecycle = (
+        (True, False, False)
+        if expected_role == "candidate"
+        else (False, True, True)
+    )
+    observed_lifecycle = (
+        component.get("diagnostic_only"),
+        component.get("production_eligible"),
+        component.get("production_lock_eligible"),
+    )
+    if observed_lifecycle != expected_lifecycle:
+        raise ValueError(f"S1.3 {expected_role} lifecycle flags are invalid")
     truth = _mapping(component.get("truth"), "truth")
     required_truth = {
         "require_real_rgb_source": True,
@@ -440,8 +464,9 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
         ):
             raise ValueError("S1.3 configuration contains a forbidden 2 px direct/local gate")
     output = _mapping(component.get("output"), "output")
-    if output.get("write_production_delivery") is not False:
-        raise ValueError("S1.3 cannot write production delivery")
+    expected_delivery = expected_role == "production"
+    if output.get("write_production_delivery") is not expected_delivery:
+        raise ValueError(f"S1.3 {expected_role} delivery policy is invalid")
     forward = _mapping(component.get("forward_pipeline"), "forward_pipeline")
     expected_stage_order = list(identity_contract.stage_order)
     if list(forward.get("stage_order", ())) != expected_stage_order:
@@ -624,13 +649,23 @@ def validate_s13_document(document: Mapping[str, Any], *, path: Path) -> S13Conf
     )
 
 
-def load_s13_config(path: str | Path) -> S13Config:
+def load_s13_config(path: str | Path, *, expected_role: str = "candidate") -> S13Config:
     resolved = Path(path).expanduser().resolve()
-    return validate_s13_document(load_algorithm_config(resolved), path=resolved)
+    return validate_s13_document(
+        load_algorithm_config(resolved), path=resolved, expected_role=expected_role
+    )
 
 
 def is_s13_identity(*, algorithm_id: str, implementation_id: str, role: str) -> bool:
-    return role == "candidate" and (algorithm_id, implementation_id) in _S13_IDENTITY_CONTRACTS
+    if role == "candidate":
+        return (algorithm_id, implementation_id) in _S13_IDENTITY_CONTRACTS
+    return role == "production" and (
+        algorithm_id,
+        implementation_id,
+    ) == (
+        S13_VISUAL_CONTINUITY_ALGORITHM_ID,
+        S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
+    )
 
 
 def claims_s13_document(document: Mapping[str, Any]) -> bool:

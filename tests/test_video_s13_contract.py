@@ -113,6 +113,39 @@ def test_visual_continuity_successor_freezes_thresholds_and_pair_fallback() -> N
     }
 
 
+def test_only_exact_visual_continuity_v11_accepts_production_lifecycle() -> None:
+    document = copy.deepcopy(
+        yaml.safe_load(VISUAL_CONTINUITY_CONFIG.read_text(encoding="utf-8"))
+    )
+    document["config_schema"] = "gemini305-video-algorithm/v1"
+    document["role"] = "production"
+    component = document["components"][
+        "s013_output_first_progressive_dense_central_slit"
+    ]
+    component["diagnostic_only"] = False
+    component["production_eligible"] = True
+    component["production_lock_eligible"] = True
+    component["output"]["write_production_delivery"] = True
+
+    config = validate_s13_document(
+        document, path=VISUAL_CONTINUITY_CONFIG, expected_role="production"
+    )
+    assert config.identity.runtime_backend == "cupy_cuda_m63_robust_v7"
+    assert is_s13_identity(
+        algorithm_id=S13_VISUAL_CONTINUITY_ALGORITHM_ID,
+        implementation_id=S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
+        role="production",
+    )
+
+    document["algorithm_id"] = S13_THIRD_ROUND_PERF_ALGORITHM_ID
+    document["candidate_id"] = S13_THIRD_ROUND_PERF_ALGORITHM_ID
+    document["implementation_id"] = S13_THIRD_ROUND_PERF_IMPLEMENTATION_ID
+    with pytest.raises(ValueError, match="Only exact"):
+        validate_s13_document(
+            document, path=VISUAL_CONTINUITY_CONFIG, expected_role="production"
+        )
+
+
 def test_s13_config_and_sibling_manifest_are_isolated_and_hash_bound() -> None:
     config = load_s13_config(CONFIG)
     spec = build_algorithm_spec(CONFIG, expected_role="candidate")

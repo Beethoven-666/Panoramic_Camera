@@ -20,6 +20,10 @@ from .paths import PROJECT_ROOT
 from .video_algorithm import VideoAlgorithmSpec, load_algorithm_config
 from .video_algorithm_registry import resolve_video_algorithm
 from .video_model_lock import verify_candidate_models
+from .video_s13_contract import (
+    S13_VISUAL_CONTINUITY_ALGORITHM_ID,
+    S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
+)
 from .video_annotations import load_source_annotations
 from .video_dataset_lock import require_candidate_role_for_diagnostic_session
 from .video_observability import (
@@ -565,13 +569,49 @@ def run_video_algorithm(
         role, baseline_lock=baseline_lock, production_lock=production_lock,
         candidate_config=candidate_config,
     )
+    observe = observability or ObservabilitySpec()
+    output = output.expanduser().resolve()
+    is_s13_v11_claim = (
+        spec.algorithm_id == S13_VISUAL_CONTINUITY_ALGORITHM_ID
+        or spec.implementation_id == S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID
+    )
+    if spec.role == "production" and is_s13_v11_claim:
+        if reuse_online_trajectory or trajectory_cache is not None:
+            raise ValueError("S013 V11 production 2-D uses ignore-pose and rejects ORB trajectory inputs")
+        from .video_s13_production import run_s13_v11_production
+
+        published = run_s13_v11_production(
+            session_path=input_path,
+            output=output,
+            algorithm_spec=spec,
+            config_path=config_path,
+            online_state=online_state,
+            maximum_post_seconds=maximum_post_seconds,
+            observability=observe.as_dict(),
+        )
+        # The production wrapper has already invalidated stale delivery state
+        # as its first output action and atomically published the new 2-D
+        # result.  Observability remains post-publication and read-only.
+        clear_observability_artifacts(output)
+        try:
+            export = write_observability_artifacts(output, observe)
+            if observe.artifact_level == "audit":
+                audit_manifest = write_audit_manifest(output, observe, export)
+                published["audit_manifest"] = str(output / "audit_manifest.json")
+                published["audit_status"] = audit_manifest["status"]
+        except Exception as exc:
+            if observe.artifact_level != "audit":
+                raise
+            audit_manifest = write_audit_manifest(output, observe, {}, error=exc)
+            published["audit_manifest"] = str(output / "audit_manifest.json")
+            published["audit_status"] = audit_manifest["status"]
+            published["audit_error"] = str(exc)
+        return published
     # Candidate models are explicit local evidence.  This check is before any
     # session decoding or publishing, and the public production facade never
     # reaches a mutable candidate declaration.
     if spec.role == "candidate":
         verify_candidate_models(spec.model_sha256)
-    observe = observability or ObservabilitySpec()
-    output = output.expanduser().resolve()
     # The legacy publisher invalidates only its owned primary delivery and
     # central-strip archives.  Clear stale evidence here, before the primary
     # run, so a minimal/provenance rerun cannot inherit an old audit sidecar.

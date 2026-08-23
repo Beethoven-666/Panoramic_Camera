@@ -42,6 +42,8 @@ def _submit_immutable_stage(
 ) -> None:
     """Transfer an immutable stage buffer to the asynchronous PNG writer."""
 
+    if not writer.is_enabled(stage):
+        return
     buffer = np.asarray(image)
     if not buffer.flags.c_contiguous:
         raise ValueError("S1.3 fast stage image must be contiguous before writer transfer")
@@ -129,6 +131,101 @@ def _measure_fast_motion(
     return motion, motion_profile, execution
 
 
+def _build_fast_authority(
+    *, schedule, m5, selected_replay, c2e, owner_only_pairs, provenance, m62,
+) -> dict[str, object]:
+    """Expose the exact in-memory pixel authorities for production comparison.
+
+    Arrays deliberately remain in memory.  The production wrapper decides
+    which summaries belong in JSON and publishes the owner-frame map as pixel
+    provenance without making the candidate runner perform extra I/O.
+    """
+
+    source_frame_ids = tuple(int(item.frame_id) for item in schedule.assignments)
+    owner_source = np.asarray(provenance["owner_source_index"], dtype=np.int32)
+    owner_frame = np.asarray(provenance["owner_frame_id"], dtype=np.int32)
+    unique_sources, source_counts = np.unique(owner_source, return_counts=True)
+    frame_by_source = {
+        int(item.source_index): int(item.frame_id) for item in schedule.assignments
+    }
+    source_pixel_counts = tuple({
+        "source_index": int(source_index),
+        "frame_id": frame_by_source.get(int(source_index), -1),
+        "pixel_count": int(pixel_count),
+    } for source_index, pixel_count in zip(unique_sources, source_counts, strict=True))
+
+    pair_seam_decisions = tuple({
+        "pair_index": int(index),
+        "left_frame_id": int(replay.left_frame_id),
+        "right_frame_id": int(replay.right_frame_id),
+        "corridor_x0": int(replay.corridor_x0),
+        "corridor_x1": int(replay.corridor_x1),
+        "seam_x_by_row": np.asarray(replay.seam_x_by_row, dtype=np.int32),
+        "m5_selected_seam_model": str(
+            pair.transaction.get(
+                "selected_seam_model", pair.transaction.get("seam_model", "")
+            )
+        ),
+        "m5_transaction": dict(pair.transaction),
+        "c2e_decision": str(c2e[index]),
+        "owner_only": index in owner_only_pairs,
+    } for index, (pair, replay) in enumerate(
+        zip(m5.pairs, selected_replay, strict=True)
+    ))
+
+    plan = None if m62 is None else m62.get("plan")
+    if plan is None:
+        selected_photometric_model = None
+        blend_models: tuple[str, ...] = ()
+        quality_cut_pair_indices: tuple[int, ...] = ()
+    else:
+        selected_photometric_model = str(plan.photometric_solution.model_family)
+        blend_models = tuple(str(item.transaction.model) for item in plan.blend_plans)
+        quality_cut_pair_indices = tuple(
+            int(value)
+            for value in (() if plan.m63 is None else plan.m63.quality_cut_pair_indices)
+        )
+
+    assignments = tuple({
+        "assignment_index": int(item.assignment_index),
+        "source_index": int(item.source_index),
+        "frame_id": int(item.frame_id),
+        "center_x": float(item.center_x),
+        "left_x": int(item.left_x),
+        "right_x": int(item.right_x),
+        "zero_width": bool(item.zero_width),
+    } for item in schedule.assignments)
+    return {
+        "source_frame_ids": source_frame_ids,
+        "schedule": {
+            "canvas_shape": (int(schedule.canvas_height), int(schedule.canvas_width)),
+            "canvas_left": int(schedule.canvas_left),
+            "canvas_right": int(schedule.canvas_right),
+            "boundaries": tuple(int(value) for value in schedule.boundaries),
+            "assignments": assignments,
+        },
+        "owner": {
+            "source_index_map": owner_source,
+            "frame_id_map": owner_frame,
+            "summary": {
+                "shape": tuple(int(value) for value in owner_source.shape),
+                "source_pixel_counts": source_pixel_counts,
+                "invalid_pixel_count": int(np.count_nonzero(owner_source < 0)),
+            },
+        },
+        "pair_seam_decisions": pair_seam_decisions,
+        "m6": {
+            "selected_photometric_model": selected_photometric_model,
+            "blend_models": blend_models,
+            "b0_count": int(sum(model == "B0_owner_only" for model in blend_models)),
+            "b1_count": int(sum(model.startswith("B1_") for model in blend_models)),
+            "quality_cut_pair_indices": quality_cut_pair_indices,
+            "c2e_decisions": tuple(str(value) for value in c2e),
+            "c2e_owner_only_pair_indices": tuple(sorted(int(value) for value in owner_only_pairs)),
+        },
+    }
+
+
 def run_s13_fast_pipeline(
     *,
     session: S13Session,
@@ -154,6 +251,7 @@ def run_s13_fast_pipeline(
     m5_pair_base_atlas: bool = False,
     m5_p0_map_mode: Literal["full_reference", "compact_exact_window"] = "full_reference",
     m5_compact_full_reference_fallback: bool = True,
+    stage_output_stages: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Render P0--P3 once, keeping every parent and decision in memory."""
 
@@ -180,7 +278,9 @@ def run_s13_fast_pipeline(
         return frame_store.raw_bgr(frame_by_id[frame_id])
 
     runtime = S13RuntimeContext(uuid.uuid4().hex)
-    writer = S13StageImageWriter(output, max_pending=4)
+    writer = S13StageImageWriter(
+        output, max_pending=4, enabled_stages=stage_output_stages,
+    )
     try:
         tick = time.perf_counter()
         prepared_analysis = frame_store.prefetch_analysis(
@@ -461,6 +561,15 @@ def run_s13_fast_pipeline(
         raise
     timings["writer.close_wait"] = writer.close_wait_seconds
     timings["total"] = time.perf_counter() - started
+    authority = _build_fast_authority(
+        schedule=schedule,
+        m5=m5,
+        selected_replay=selected_replay,
+        c2e=c2e,
+        owner_only_pairs=owner_only_pairs,
+        provenance=provenance,
+        m62=m62,
+    )
     return {
         "run_id": runtime.run_id,
         "paths": tuple(str(path) for path in paths),
@@ -473,7 +582,8 @@ def run_s13_fast_pipeline(
         "m7_call_count": 0,
         "c2e_call_count": len(c2e),
         "sha_call_count": 0,
-        "png_write_count": 4,
+        "png_write_count": len(paths),
+        "stage_output_stages": writer.enabled_stages,
         "jpg_write_count": 0,
         "json_write_count": 0,
         "npz_write_count": 0,
@@ -510,6 +620,7 @@ def run_s13_fast_pipeline(
         ),
         "m62": m62,
         "frame_store": frame_store.report().__dict__,
+        "authority": authority,
     }
 
 

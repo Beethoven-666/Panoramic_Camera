@@ -32,7 +32,8 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
                                m5_execution_mode: Literal["full_reference", "candidate_final_authority"] = "full_reference",
                                m5_pair_base_atlas: bool = False,
                                m5_p0_map_mode: Literal["full_reference", "compact_exact_window"] = "full_reference",
-                               m5_compact_full_reference_fallback: bool = True) -> dict[str, Any]:
+                               m5_compact_full_reference_fallback: bool = True,
+                               stage_output_stages: tuple[str, ...] | None = None) -> dict[str, Any]:
     reset_cuda_audit()
     runtime = S13CudaRuntime()
     try:
@@ -60,6 +61,7 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
             m5_pair_base_atlas=m5_pair_base_atlas,
             m5_p0_map_mode=m5_p0_map_mode,
             m5_compact_full_reference_fallback=m5_compact_full_reference_fallback,
+            stage_output_stages=stage_output_stages,
         )
         for key, value in result["timings"].items():
             runtime.note_stage(str(key), float(value))

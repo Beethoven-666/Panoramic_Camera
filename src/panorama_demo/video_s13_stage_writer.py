@@ -7,6 +7,7 @@ import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from typing import Iterable
 
 import cv2
 import numpy as np
@@ -24,13 +25,26 @@ class S13StageImageWriter:
     """Encode one lossless PNG per stage without competing with compute threads."""
 
     def __init__(
-        self, output_root: Path, *, png_compression: int = 0, max_pending: int = 4,
+        self,
+        output_root: Path,
+        *,
+        png_compression: int = 0,
+        max_pending: int = 4,
+        enabled_stages: Iterable[str] | None = None,
     ) -> None:
         self.output_root = Path(output_root)
         self.png_compression = int(png_compression)
         self.max_pending = int(max_pending)
         if self.max_pending < 1:
             raise ValueError("S1.3 writer max_pending must be positive")
+        requested = tuple(STAGE_FILENAMES) if enabled_stages is None else tuple(enabled_stages)
+        if len(set(requested)) != len(requested):
+            raise ValueError("S1.3 writer enabled stages must be unique")
+        unknown = tuple(stage for stage in requested if stage not in STAGE_FILENAMES)
+        if unknown:
+            raise ValueError(f"Unsupported S1.3 enabled stages: {unknown}")
+        self.enabled_stages = requested
+        self._enabled_stage_set = frozenset(requested)
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="s13-png")
         self._pending: list[Future[Path]] = []
         self._written: list[Path] = []
@@ -39,6 +53,11 @@ class S13StageImageWriter:
         self.submit_blocking_count = 0
         self.pending_peak = 0
         self.snapshot_copy_count = 0
+
+    def is_enabled(self, stage: str) -> bool:
+        if stage not in STAGE_FILENAMES:
+            raise ValueError(f"Unsupported S1.3 stage: {stage}")
+        return stage in self._enabled_stage_set
 
     def _drain_if_full(self) -> None:
         if len(self._pending) < self.max_pending:
@@ -57,6 +76,8 @@ class S13StageImageWriter:
 
     def submit_host_image(self, stage: str, image: np.ndarray) -> None:
         self._validate(stage, image)
+        if not self.is_enabled(stage):
+            return
         # A bounded queue preserves the intended compute/encode overlap without
         # retaining unbounded full-resolution host copies.
         self._drain_if_full()
@@ -73,6 +94,8 @@ class S13StageImageWriter:
         The caller must not mutate the buffer after submission.
         """
         self._validate(stage, image)
+        if not self.is_enabled(stage):
+            return
         if not image.flags.c_contiguous:
             raise ValueError("Owned S1.3 stage image must be contiguous")
         if image.flags.writeable:
