@@ -72,6 +72,12 @@ S13_THIRD_ROUND_PERF_ALGORITHM_ID = (
     "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_third_round_perf_v10"
 )
 S13_THIRD_ROUND_PERF_IMPLEMENTATION_ID = "s013_m63_compact_p0_map_v10"
+S13_VISUAL_CONTINUITY_ALGORITHM_ID = (
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_visual_continuity_v11"
+)
+S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID = (
+    "s013_m5_disjoint_seam_m63_pair_guard_v11"
+)
 
 _S13_COMPONENT_NAME = "s013_output_first_progressive_dense_central_slit"
 
@@ -155,6 +161,15 @@ _S13_IDENTITY_CONTRACTS = {
     (
         S13_THIRD_ROUND_PERF_ALGORITHM_ID,
         S13_THIRD_ROUND_PERF_IMPLEMENTATION_ID,
+    ): S13IdentityDescriptor(
+        M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
+        True, False, False, False, True, "s013_m61_p3", "P3",
+        ("P0", "P1", "P2", "P3"),
+        "cupy_cuda_m63_robust_v7", True, True, True,
+    ),
+    (
+        S13_VISUAL_CONTINUITY_ALGORITHM_ID,
+        S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
     ): S13IdentityDescriptor(
         M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
         True, False, False, False, True, "s013_m61_p3", "P3",

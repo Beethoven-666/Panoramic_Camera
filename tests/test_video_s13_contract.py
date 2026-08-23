@@ -20,6 +20,8 @@ from panorama_demo.video_s13_contract import (
     S13_SECOND_ROUND_PERF_IMPLEMENTATION_ID,
     S13_THIRD_ROUND_PERF_ALGORITHM_ID,
     S13_THIRD_ROUND_PERF_IMPLEMENTATION_ID,
+    S13_VISUAL_CONTINUITY_ALGORITHM_ID,
+    S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
     claims_s13_document,
     is_s13_identity,
     load_s13_config,
@@ -38,6 +40,7 @@ M62_EFFECTIVE_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_p
 FIRST_ROUND_PERF_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_m63_first_round_perf_v8.yaml"
 SECOND_ROUND_PERF_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_m63_second_round_perf_v9.yaml"
 THIRD_ROUND_PERF_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_m63_third_round_perf_v10.yaml"
+VISUAL_CONTINUITY_CONFIG = ROOT / "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_m63_visual_continuity_v11.yaml"
 
 
 def test_first_round_performance_successor_is_distinct_and_hash_bound() -> None:
@@ -89,6 +92,25 @@ def test_third_round_performance_enables_exact_compact_p0_only() -> None:
         "full_reference_fallback": True,
     }
     assert config.document["m62_evidence_sampling"]["mode"] == "pair_reference"
+
+
+def test_visual_continuity_successor_freezes_thresholds_and_pair_fallback() -> None:
+    config = load_s13_config(VISUAL_CONTINUITY_CONFIG)
+    spec = build_algorithm_spec(VISUAL_CONTINUITY_CONFIG, expected_role="candidate")
+
+    assert spec.algorithm_id == S13_VISUAL_CONTINUITY_ALGORITHM_ID
+    assert spec.implementation_id == S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID
+    assert config.document["parent_candidate_id"] == S13_THIRD_ROUND_PERF_ALGORITHM_ID
+    assert config.document["m5_seam_search"] == {
+        "adjacent_domains": "strict_disjoint",
+        "fallback_policy": "pair_identity",
+    }
+    assert config.document["m63_pair_regression_guard"] == {
+        "enabled": True,
+        "scope": "q1r_and_q4c",
+        "policy": "shrink_then_quality_cut_component_refit",
+        "thresholds": "frozen",
+    }
 
 
 def test_s13_config_and_sibling_manifest_are_isolated_and_hash_bound() -> None:
