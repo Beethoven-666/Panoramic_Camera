@@ -275,9 +275,11 @@ def test_malformed_formal_m6_claim_is_recognized_and_rejected() -> None:
 
 def test_s13_does_not_modify_shared_candidate_manifest() -> None:
     shared = ROOT / "configs/video_candidates/candidate_manifest.json"
-    assert hashlib.sha256(shared.read_bytes()).hexdigest() == "0c1460236de1a6afb11fff34df0ebb18bcea237011c6c0d56d24b461363160b6"
+    shared_bytes = shared.read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(shared_bytes).hexdigest() == "0c1460236de1a6afb11fff34df0ebb18bcea237011c6c0d56d24b461363160b6"
     baseline = ROOT / "configs/video_algorithms/baseline_legacy_fast_b07b561.lock.json"
-    assert hashlib.sha256(baseline.read_bytes()).hexdigest() == "0010fb37f67cd4e390e67e3d6cf6192eec3adebd98ceecfafc223b23056e89f9"
+    baseline_bytes = baseline.read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(baseline_bytes).hexdigest() == "0010fb37f67cd4e390e67e3d6cf6192eec3adebd98ceecfafc223b23056e89f9"
     assert not (ROOT / "configs/video_algorithms/production.lock.json").exists()
 
 

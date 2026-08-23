@@ -1,0 +1,74 @@
+{
+  "schema": "gemini305-s013-v11-live-baseline-timings/v1",
+  "measurement": "candidate ignore-pose P0-P3 with all four stage PNG files closed",
+  "three_d_included": false,
+  "orbslam3_executed": false,
+  "modes": {
+    "fast_ignore_pose": {
+      "session": "run_20260804_162340",
+      "warmup": {
+        "total_seconds": 12.35358790000464,
+        "panorama_completion_seconds": 16.09145659999922
+      },
+      "formal": [
+        {
+          "run": 1,
+          "total_seconds": 12.362554100000125,
+          "panorama_completion_seconds": 14.455392699994263,
+          "m0_m3_seconds": 4.094202300002507,
+          "m4_seconds": 2.398259399997187,
+          "m5_seconds": 4.55602980000549,
+          "c2e_seconds": 0.07214920000114944,
+          "m6_seconds": 1.2951647000008961,
+          "writer_close_wait_seconds": 0.018166900001233444
+        },
+        {
+          "run": 2,
+          "total_seconds": 12.178643300001568,
+          "panorama_completion_seconds": 15.705142099999648,
+          "m0_m3_seconds": 4.00961180000013,
+          "m4_seconds": 2.333320300000196,
+          "m5_seconds": 4.494931699999142,
+          "c2e_seconds": 0.07458140000380808,
+          "m6_seconds": 1.3220586000024923,
+          "writer_close_wait_seconds": 0.017943700004252605
+        }
+      ],
+      "formal_total_median_seconds": 12.270598700000846,
+      "formal_total_maximum_seconds": 12.362554100000125
+    },
+    "slow_ignore_pose": {
+      "session": "run_20260806_153033",
+      "warmup": {
+        "total_seconds": 16.73488190000353,
+        "panorama_completion_seconds": 21.09940970000025
+      },
+      "formal": [
+        {
+          "run": 1,
+          "total_seconds": 16.508882100002666,
+          "panorama_completion_seconds": 20.53624920000584,
+          "m0_m3_seconds": 7.597201099997619,
+          "m4_seconds": 2.2793820000006235,
+          "m5_seconds": 4.947867599999881,
+          "c2e_seconds": 0.10357790000125533,
+          "m6_seconds": 1.6612421999961953,
+          "writer_close_wait_seconds": 0.0221871999965515
+        },
+        {
+          "run": 2,
+          "total_seconds": 16.878879399999278,
+          "panorama_completion_seconds": 19.34177689999342,
+          "m0_m3_seconds": 7.840520000005199,
+          "m4_seconds": 2.3057402999984333,
+          "m5_seconds": 4.967864099999133,
+          "c2e_seconds": 0.10982979999971576,
+          "m6_seconds": 1.745756700001948,
+          "writer_close_wait_seconds": 0.01786040000297362
+        }
+      ],
+      "formal_total_median_seconds": 16.69388075000097,
+      "formal_total_maximum_seconds": 16.878879399999278
+    }
+  }
+}

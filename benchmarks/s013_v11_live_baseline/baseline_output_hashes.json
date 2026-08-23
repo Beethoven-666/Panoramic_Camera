@@ -1,0 +1,58 @@
+{
+  "schema": "gemini305-s013-v11-live-baseline-output-hashes/v1",
+  "hash_algorithm": "sha256",
+  "formal_run_byte_stable": true,
+  "modes": {
+    "fast_ignore_pose": {
+      "session": "run_20260804_162340",
+      "stage_sha256": {
+        "P0": "48d999c526fd3ac4513e3160f24a15ff4676c8093f3bc1fa9eab191e5724d463",
+        "P1": "976f0c08ca7a127c56ea5dfb3aae6d0b501ed843c775c223addd3ad5dbd3adbd",
+        "P2": "4fa26a0df5cfa8fc459fa280d8ec1c9b96834213758a00ff7237929a70dc2f46",
+        "P3": "e28826de81a3908f4bec4f6c77f0cfbc389d99ba3f2530597aead36da319ef08"
+      },
+      "warmup_matches_formal": true,
+      "formal_1_matches_formal_2": true,
+      "source_count": 107,
+      "pair_count": 106,
+      "m63_selected_model": "Q4c_quality_cut_component_scalar_gain",
+      "m63_source_fallback_count": 0,
+      "b1_active_pair_count": 68,
+      "b0_reason_counts": {
+        "forced_owner_only": 2,
+        "insufficient_safe_fraction": 8,
+        "no_immediate_benefit": 5,
+        "protected_structure": 20,
+        "quality_cut": 3
+      },
+      "c2e_changed_pair_count": 0,
+      "p3_vs_p2_differing_pixel_count": 517724
+    },
+    "slow_ignore_pose": {
+      "session": "run_20260806_153033",
+      "stage_sha256": {
+        "P0": "871388ca1a5556158aec2997bb0d1be94a9e705f1bede67e29c904ba23149cc7",
+        "P1": "871388ca1a5556158aec2997bb0d1be94a9e705f1bede67e29c904ba23149cc7",
+        "P2": "1834e3b177151b01e2fee3a03714e29a2c9836a176d2a0a0069830143c661eaf",
+        "P3": "47c217637c95b3fb04ed1bc47e6d27d182683a6bbe78f81cc1a20d40e78a4e55"
+      },
+      "warmup_matches_formal": true,
+      "formal_1_matches_formal_2": true,
+      "source_count": 110,
+      "pair_count": 109,
+      "m63_selected_model": "Q4c_quality_cut_component_scalar_gain",
+      "m63_source_fallback_count": 0,
+      "b1_active_pair_count": 61,
+      "b0_reason_counts": {
+        "forced_owner_only": 3,
+        "insufficient_safe_fraction": 3,
+        "no_immediate_benefit": 12,
+        "protected_structure": 27,
+        "quality_cut": 3
+      },
+      "c2e_changed_pair_count": 0,
+      "p3_vs_p2_differing_pixel_count": 412838
+    }
+  },
+  "serialized_evidence_limit": "Current candidate output does not serialize complete source IDs, schedule, owner map or seam authority. R1/R4 must add exact evidence before production equivalence acceptance."
+}

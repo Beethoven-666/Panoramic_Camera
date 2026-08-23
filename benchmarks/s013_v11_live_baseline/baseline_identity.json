@@ -1,0 +1,48 @@
+{
+  "schema": "gemini305-s013-v11-live-baseline-identity/v1",
+  "baseline_commit": "0cc93e7cff231ffc2370847034aa89a727023269",
+  "baseline_branch": "codex/s013-m51-r3-component-local-v6",
+  "implementation_branch": "codex/s013-v11-live-production",
+  "algorithm_id": "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_visual_continuity_v11",
+  "implementation_id": "s013_m5_disjoint_seam_m63_pair_guard_v11",
+  "candidate_path": "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_m63_visual_continuity_v11.yaml",
+  "candidate_config_sha256": "a03f443aaf72463afc1f06507fe2bfc888d9211f4c4a62634bbfb29fa0f2dab0",
+  "candidate_file_sha256_windows_checkout": "8a8fe217ec3de5cf8ce2c21654bc1a45edacd3e29e60938d65864e2d3449b4cd",
+  "candidate_role": "candidate",
+  "candidate_unchanged": true,
+  "cuda": {
+    "policy": "required",
+    "backend": "cupy",
+    "device_name": "NVIDIA GeForce RTX 5060 Laptop GPU",
+    "opencv_cuda_available": false,
+    "cupy_available": true
+  },
+  "datasets": {
+    "fast": {
+      "session": "D:/central_strip_Panoramic_Camera/data/captures/video/run_20260804_162340",
+      "frame_count": 447,
+      "capture_mode": "continuous_rgbd_video_fixed_exposure",
+      "dataset_lock": "benchmarks/run_20260804_162340/dataset_lock.json",
+      "dataset_lock_file_sha256": "42f989f5aa21863963beaa7fe8d6f9cf2df3c5243e766a49259735908c4e6397"
+    },
+    "slow": {
+      "session": "D:/central_strip_Panoramic_Camera/data/captures/video/run_20260806_153033",
+      "frame_count": 849,
+      "capture_mode": "continuous_rgbd_video_fixed_exposure",
+      "dataset_lock": "benchmarks/run_20260806_153033/development_dataset_lock.json",
+      "dataset_lock_file_sha256": "b2f9dff19eba27723f47517cd5e64fddd295b2411c43a7cba1dc52980c7d72cd"
+    }
+  },
+  "baseline_gaps": {
+    "capture_constructs_online_orb_tracker": true,
+    "capture_submits_committed_frames_to_online_orb": true,
+    "video_3d_reads_orb_pose_from_two_d_report": true,
+    "video_3d_runs_in_two_d_process": true,
+    "candidate_cli_serializes_complete_source_schedule_owner_evidence": false,
+    "note": "The current candidate CLI preserves source, schedule and owner authority in memory but does not serialize the complete evidence. The production implementation must add that evidence before live/offline equivalence can pass."
+  },
+  "excluded_exploratory_dataset": {
+    "session": "run_20260807_140140",
+    "reason": "V6 tracking-gate data, not the exact Visual Continuity V11 fast acceptance dataset"
+  }
+}
