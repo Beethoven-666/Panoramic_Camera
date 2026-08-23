@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import math
 import hashlib
+import time
 from dataclasses import dataclass
-from typing import Sequence
+from typing import MutableMapping, Sequence
 
 import cv2
 import numpy as np
@@ -331,7 +332,15 @@ def measure_s13_motion(
     steps: Sequence[int] = (1, 2, 4),
     prepared_analysis: Sequence[tuple[np.ndarray, float]] | None = None,
     prepared_gradients: Sequence[np.ndarray] | None = None,
+    profile: MutableMapping[str, object] | None = None,
 ) -> tuple[S13MotionEdge, ...]:
+    profile_started = time.perf_counter()
+    requested_steps = tuple(int(step) for step in steps)
+    counters = {
+        step: {"edge_count": 0, "total_seconds": 0.0, "lk_seconds": 0.0,
+               "phase_seconds": 0.0, "hypothesis_seconds": 0.0}
+        for step in requested_steps
+    }
     analysis = (
         list(prepared_analysis)
         if prepared_analysis is not None
@@ -354,14 +363,17 @@ def measure_s13_motion(
     edges: list[S13MotionEdge] = []
     for step in steps:
         for index in range(len(frames) - step):
+            edge_started = time.perf_counter()
             left, scale = analysis[index]
             right, right_scale = analysis[index + step]
             if left.shape != right.shape or not np.isclose(scale, right_scale):
                 continue
+            lk_started = time.perf_counter()
             lk_x, lk_y, total_weight, count, observations = _lk(
                 left, right, scale, points=points_by_index[index],
                 gradient=gradients_by_index[index],
             )
+            counters[int(step)]["lk_seconds"] += time.perf_counter() - lk_started
             lo, hi = int(round(left.shape[1] * 0.15)), int(round(left.shape[1] * 0.85))
             phase_shape = (left.shape[0], hi - lo)
             hanning = hanning_by_shape.get(phase_shape)
@@ -370,7 +382,9 @@ def measure_s13_motion(
                     (phase_shape[1], phase_shape[0]), cv2.CV_32F
                 )
                 hanning_by_shape[phase_shape] = hanning
+            phase_started = time.perf_counter()
             phase_x, phase_y, response = _phase(left, right, scale, hanning=hanning)
+            counters[int(step)]["phase_seconds"] += time.perf_counter() - phase_started
             use_lk = lk_x is not None and count >= 8 and total_weight >= 2.0
             selected = lk_x if use_lk else phase_x
             method = "grid_lk" if use_lk else "phase_correlation" if selected is not None else "unavailable"
@@ -382,11 +396,15 @@ def measure_s13_motion(
                 reasons.append("lk_phase_disagreement")
             if response < 0.05:
                 reasons.append("low_phase_response")
+            hypothesis_started = time.perf_counter()
             hypotheses = _extract_hypotheses(
                 observations,
                 selected_advance_px=selected,
                 image_width_px=float(left.shape[1]) * scale,
                 image_height_px=float(left.shape[0]) * scale,
+            )
+            counters[int(step)]["hypothesis_seconds"] += (
+                time.perf_counter() - hypothesis_started
             )
             edges.append(S13MotionEdge(
                 source_frame_id=frames[index].frame_id, target_frame_id=frames[index + step].frame_id,
@@ -396,7 +414,36 @@ def measure_s13_motion(
                 risk=bool(reasons), telemetry_only_reasons=tuple(reasons),
                 observations=observations, motion_hypotheses=hypotheses,
             ))
+            counters[int(step)]["edge_count"] += 1
+            counters[int(step)]["total_seconds"] += time.perf_counter() - edge_started
+    if profile is not None:
+        bookkeeping_started = time.perf_counter()
+        profile.clear()
+        for step in (1, 2, 4):
+            row = counters.get(step, {})
+            profile[f"step{step}_edge_count"] = int(row.get("edge_count", 0))
+            for name in ("total_seconds", "lk_seconds", "phase_seconds", "hypothesis_seconds"):
+                profile[f"step{step}_{name}"] = float(row.get(name, 0.0))
+        profile["requested_steps"] = list(requested_steps)
+        profile["profiled_wall_seconds"] = time.perf_counter() - profile_started
+        profile["profiling_bookkeeping_seconds"] = time.perf_counter() - bookkeeping_started
     return tuple(edges)
+
+
+def reliable_step1_direction_evidence(
+    edges: Sequence[S13MotionEdge],
+) -> tuple[float, ...]:
+    """Return the single authoritative reliable step-1 direction evidence."""
+
+    return tuple(
+        float(edge.selected_advance_px)
+        for edge in edges
+        if edge.step == 1
+        and edge.selected_advance_px is not None
+        and math.isfinite(float(edge.selected_advance_px))
+        and abs(float(edge.selected_advance_px)) >= _MIN_SPATIAL_ADVANCE_PX
+        and not edge.risk
+    )
 
 
 def _finite_selected_advance(edge: S13MotionEdge | None) -> float | None:
@@ -526,5 +573,6 @@ def descriptive_delta_risk(delta_px: float) -> dict[str, object]:
 
 
 __all__ = [
-    "S13MotionEdge", "S13Progress", "build_basic_s13_progress", "descriptive_delta_risk", "measure_s13_motion",
+    "S13MotionEdge", "S13Progress", "build_basic_s13_progress", "descriptive_delta_risk",
+    "measure_s13_motion", "reliable_step1_direction_evidence",
 ]

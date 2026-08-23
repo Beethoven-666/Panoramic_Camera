@@ -2916,6 +2916,23 @@ def run_s13_experiment(
             } if config.m62_equivalence else None,
             post_p2_fixture=post_p2_fixture,
             validated_rgb_handoff=session_bundle.validated_rgb_handoff,
+            motion_execution_policy=str(
+                dict(config.document.get("motion_execution", {})).get(
+                    "policy", "full_reference"
+                )
+            ).replace(
+                "deferred_step4_unless_direction_fallback_required", "deferred_step4"
+            ),
+            m5_execution_mode=str(
+                dict(config.document.get("m5_execution", {})).get(
+                    "mode", "full_reference"
+                )
+            ),
+            m5_pair_base_atlas=bool(
+                dict(config.document.get("m5_pair_base_atlas", {})).get(
+                    "enabled", False
+                )
+            ),
         )
         if config.runtime_backend == "cupy_cuda_structural_equivalent_v3":
             runner_arguments["structural_equivalent_v3"] = True
@@ -2966,6 +2983,10 @@ def run_s13_experiment(
                     "gpu_b1_shadow": 0.0, "cpu_srgb": 0.0, "gpu_srgb_shadow": 0.0, "hard_audit": 0.0,
                 },
                 "m5_performance": dict(fast.get("m5_performance") or {}),
+                "motion_profile": dict(fast.get("motion_profile") or {}),
+                "motion_execution_policy": dict(
+                    fast.get("motion_execution_policy") or {}
+                ),
                 "frame_store": dict(fast.get("frame_store") or {}),
                 "input": {
                     **dict(session_bundle.performance),

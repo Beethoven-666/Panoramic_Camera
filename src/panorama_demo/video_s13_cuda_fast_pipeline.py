@@ -8,7 +8,7 @@ never leave stage images behind.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .cuda_backend import reset_cuda_audit
 from .video_s13_cuda_runtime import S13CudaRuntime
@@ -27,7 +27,10 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
                                m62_equivalence: bool = False,
                                m62_options: dict[str, object] | None = None,
                                post_p2_fixture: Path | None = None,
-                               validated_rgb_handoff: S13ValidatedRgbHandoff | None = None) -> dict[str, Any]:
+                               validated_rgb_handoff: S13ValidatedRgbHandoff | None = None,
+                               motion_execution_policy: Literal["full_reference", "deferred_step4"] = "full_reference",
+                               m5_execution_mode: Literal["full_reference", "candidate_final_authority"] = "full_reference",
+                               m5_pair_base_atlas: bool = False) -> dict[str, Any]:
     reset_cuda_audit()
     runtime = S13CudaRuntime()
     try:
@@ -50,6 +53,9 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
             m62_options=m62_options,
             post_p2_fixture=post_p2_fixture,
             validated_rgb_handoff=validated_rgb_handoff,
+            motion_execution_policy=motion_execution_policy,
+            m5_execution_mode=m5_execution_mode,
+            m5_pair_base_atlas=m5_pair_base_atlas,
         )
         for key, value in result["timings"].items():
             runtime.note_stage(str(key), float(value))

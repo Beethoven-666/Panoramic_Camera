@@ -62,6 +62,12 @@ S13_FIRST_ROUND_PERF_ALGORITHM_ID = (
 S13_FIRST_ROUND_PERF_IMPLEMENTATION_ID = (
     "s013_m63_preflight_rgb_handoff_v8"
 )
+S13_SECOND_ROUND_PERF_ALGORITHM_ID = (
+    "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_second_round_perf_v9"
+)
+S13_SECOND_ROUND_PERF_IMPLEMENTATION_ID = (
+    "s013_m63_deferred_step4_m5_final_authority_base_atlas_v9"
+)
 
 _S13_COMPONENT_NAME = "s013_output_first_progressive_dense_central_slit"
 
@@ -127,6 +133,15 @@ _S13_IDENTITY_CONTRACTS = {
     (
         S13_FIRST_ROUND_PERF_ALGORITHM_ID,
         S13_FIRST_ROUND_PERF_IMPLEMENTATION_ID,
+    ): S13IdentityDescriptor(
+        M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
+        True, False, False, False, True, "s013_m61_p3", "P3",
+        ("P0", "P1", "P2", "P3"),
+        "cupy_cuda_m63_robust_v7", True, True, True,
+    ),
+    (
+        S13_SECOND_ROUND_PERF_ALGORITHM_ID,
+        S13_SECOND_ROUND_PERF_IMPLEMENTATION_ID,
     ): S13IdentityDescriptor(
         M61_CONTRACT_SCHEMA, M61_P2_COMPLETION_SCHEMA, False,
         True, False, False, False, True, "s013_m61_p3", "P3",

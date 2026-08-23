@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 import numpy as np
 
@@ -22,7 +22,7 @@ from .video_s13_m5 import (
     set_s13_m5_runtime_unsealed,
 )
 from .video_s13_m6 import run_s13_m6, run_s13_m6_cuda_v2, run_s13_m6_cuda_v3
-from .video_s13_motion import measure_s13_motion
+from .video_s13_motion import measure_s13_motion, reliable_step1_direction_evidence
 from .video_s13_frame_store import S13FrameStore
 from .video_s13_progress import build_s13_m3_layout
 from .video_s13_replay import S13VerifiedP2
@@ -49,6 +49,86 @@ def _submit_immutable_stage(
     writer.submit_owned_host_image(stage, buffer)
 
 
+def _measure_fast_motion(
+    frames,
+    *,
+    analysis_width_px: int,
+    prepared_analysis,
+    prepared_gradients,
+    policy: Literal["full_reference", "deferred_step4"],
+):
+    motion_profile: dict[str, object] = {}
+    if policy == "full_reference":
+        motion = measure_s13_motion(
+            frames, analysis_width_px=analysis_width_px,
+            prepared_analysis=prepared_analysis,
+            prepared_gradients=prepared_gradients, profile=motion_profile,
+        )
+        direction_evidence = reliable_step1_direction_evidence(motion)
+        step4_required = True
+        step4_reason = "full_reference"
+    elif policy == "deferred_step4":
+        primary_profile: dict[str, object] = {}
+        primary_motion = measure_s13_motion(
+            frames, analysis_width_px=analysis_width_px, steps=(1, 2),
+            prepared_analysis=prepared_analysis,
+            prepared_gradients=prepared_gradients, profile=primary_profile,
+        )
+        direction_evidence = reliable_step1_direction_evidence(primary_motion)
+        step4_required = not direction_evidence
+        step4_reason = (
+            "no_reliable_step1_direction"
+            if step4_required else "reliable_step1_direction_available"
+        )
+        if step4_required:
+            step4_profile: dict[str, object] = {}
+            step4_motion = measure_s13_motion(
+                frames, analysis_width_px=analysis_width_px, steps=(4,),
+                prepared_analysis=prepared_analysis,
+                prepared_gradients=prepared_gradients, profile=step4_profile,
+            )
+            motion = (*primary_motion, *step4_motion)
+            motion_profile = {
+                **primary_profile,
+                **{
+                    key: value for key, value in step4_profile.items()
+                    if key.startswith("step4_")
+                },
+                "profiled_wall_seconds": float(primary_profile["profiled_wall_seconds"])
+                + float(step4_profile["profiled_wall_seconds"]),
+                "profiling_bookkeeping_seconds": float(
+                    primary_profile["profiling_bookkeeping_seconds"]
+                ) + float(step4_profile["profiling_bookkeeping_seconds"]),
+                "requested_steps": [1, 2, 4],
+            }
+        else:
+            motion = primary_motion
+            motion_profile = primary_profile
+    else:
+        raise ValueError(f"unsupported S1.3 motion execution policy: {policy}")
+    step4_computed = any(edge.step == 4 for edge in motion)
+    motion_profile.update({
+        "step4_requested": bool(step4_required),
+        "step4_computed": step4_computed,
+        "step4_requirement_reason": step4_reason,
+    })
+    execution = {
+        "schema": "gemini305-video-s13-motion-execution/v1",
+        "policy": (
+            "full_reference" if policy == "full_reference"
+            else "deferred_step4_unless_direction_fallback_required"
+        ),
+        "primary_steps": [1, 2],
+        "fallback_steps": [4],
+        "reliable_step1_direction_count": len(direction_evidence),
+        "step4_required": bool(step4_required),
+        "step4_requirement_reason": step4_reason,
+        "step4_computed": step4_computed,
+        "merged_edge_order": list(dict.fromkeys(edge.step for edge in motion)),
+    }
+    return motion, motion_profile, execution
+
+
 def run_s13_fast_pipeline(
     *,
     session: S13Session,
@@ -69,6 +149,9 @@ def run_s13_fast_pipeline(
     m62_options: Mapping[str, object] | None = None,
     post_p2_fixture: Path | None = None,
     validated_rgb_handoff: S13ValidatedRgbHandoff | None = None,
+    motion_execution_policy: Literal["full_reference", "deferred_step4"] = "full_reference",
+    m5_execution_mode: Literal["full_reference", "candidate_final_authority"] = "full_reference",
+    m5_pair_base_atlas: bool = False,
 ) -> dict[str, Any]:
     """Render P0--P3 once, keeping every parent and decision in memory."""
 
@@ -105,11 +188,11 @@ def run_s13_fast_pipeline(
             frame_store.analysis_gradient(frame, analysis_width_px)
             for frame in session.frames
         )
-        motion = measure_s13_motion(
-            session.frames,
-            analysis_width_px=analysis_width_px,
+        motion, motion_profile, motion_execution = _measure_fast_motion(
+            session.frames, analysis_width_px=analysis_width_px,
             prepared_analysis=prepared_analysis,
             prepared_gradients=prepared_gradients,
+            policy=motion_execution_policy,
         )
         del prepared_analysis, prepared_gradients
         frame_store.release_analysis_arrays()
@@ -236,6 +319,8 @@ def run_s13_fast_pipeline(
                 placement_methods=selection.placement_methods,
                 m51_r2_config=m51_r2_config,
                 final_image_composer=final_image_composer,
+                execution_mode=m5_execution_mode,
+                pair_base_atlas=m5_pair_base_atlas,
             )
         finally:
             if resident_m5_batch_token is not None:
@@ -398,6 +483,8 @@ def run_s13_fast_pipeline(
         "c2e_full_provenance_copy_count": c2e_copy_count,
         "m6_performance": dict(p3_render.performance),
         "m5_performance": dict(m5.performance),
+        "motion_profile": motion_profile,
+        "motion_execution_policy": motion_execution,
         "m4_probe": {
             "mode": "legacy_exact_probe" if vertical_exact_seam_probes else "full_reference",
             "plan_seconds": 0.0,

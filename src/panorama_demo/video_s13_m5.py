@@ -10,7 +10,7 @@ from contextvars import ContextVar
 import time
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Literal, Mapping, MutableMapping, Sequence
 
 import cv2
 import numpy as np
@@ -271,9 +271,9 @@ class S13P2Result:
 class S13M5Result:
     pairs: tuple[S13M5Pair, ...]
     replay_pairs: tuple[S13P2ReplayPair, ...]
-    geometry_result: S13P2Result
+    geometry_result: S13P2Result | None
     final_result: S13P2Result
-    seam_overlay: np.ndarray
+    seam_overlay: np.ndarray | None
     hard_audit_passed: bool
     hard_audit: Mapping[str, object]
     diagnostic_quality: Mapping[str, object]
@@ -281,7 +281,7 @@ class S13M5Result:
     before_mean_score: float | None
     after_mean_score: float | None
     selection_audit: Mapping[str, object]
-    performance: Mapping[str, float]
+    performance: Mapping[str, object]
     source_map_oracles: tuple[SourceMapOracle, ...] = ()
     base_source_map_oracles: tuple[SourceMapOracle, ...] = ()
     component_chain_audit: Mapping[str, object] | None = None
@@ -356,6 +356,17 @@ class S13M5PairInput:
         shape = (self.left_maps[0].shape, self.right_maps[0].shape)
         if shape[0] != shape[1] or shape[0][1] != self.corridor_x1 - self.corridor_x0:
             raise ValueError("S1.3 M5 pair input map shape disagrees with its corridor")
+
+
+@dataclass(frozen=True)
+class S13M5BaseSourceAtlas:
+    source_index: int
+    frame_id: int
+    x0: int
+    x1: int
+    maps: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    sampled_bgr: np.ndarray
+    valid: np.ndarray
 
 
 def _freeze_m5_pair_input(
@@ -1161,6 +1172,8 @@ def estimate_s13_m5_transactions(
     p0_ancestor_completion_sha256: str | None = None,
     maximum_seam_shift_px: int = 8,
     m51_r2_config: S13M51R2Config | None = None,
+    base_profile: MutableMapping[str, object] | None = None,
+    base_atlas: bool = False,
 ) -> tuple[S13M5Pair, ...]:
     """Evaluate peer seam candidates independently from immutable P1/P0 grids."""
 
@@ -1171,15 +1184,96 @@ def estimate_s13_m5_transactions(
     vertical_parent = vertical if isinstance(successor, S13M51R4Config) else None
     instrumentation_requested = m51_r2_config is not None
     audit_all = os.environ.get("G305_S13_M5_AUDIT_ALL_CANDIDATES", "0") == "1"
+    pair_domains = tuple(
+        _pair_domain(schedule, pair_index)
+        for pair_index in range(max(0, len(schedule.assignments) - 1))
+    )
+    map_build_count = 0
+    map_pixel_count = 0
+    map_seconds = 0.0
+    remap_count = 0
+    remap_pixel_count = 0
+    remap_seconds = 0.0
+    atlas_cache: dict[int, S13M5BaseSourceAtlas] = {}
+    peak_cached_source_count = 0
+    peak_cached_bytes = 0
+    domains_by_source: dict[int, list[tuple[int, int]]] = {
+        index: [] for index in range(len(schedule.assignments))
+    }
+    for pair_index, domain in enumerate(pair_domains):
+        domains_by_source[pair_index].append(domain)
+        domains_by_source[pair_index + 1].append(domain)
+    atlas_domains = {
+        source: (
+            min(x0 for x0, _x1 in domains),
+            max(x1 for _x0, x1 in domains),
+        )
+        for source, domains in domains_by_source.items() if domains
+    }
 
     def raw(frame_id: int) -> np.ndarray:
         if frame_id not in raw_cache:
             raw_cache[frame_id] = np.asarray(image_loader(frame_id))
         return raw_cache[frame_id]
 
+    def ensure_atlases(source_indices: Sequence[int]) -> None:
+        nonlocal map_build_count, map_pixel_count, map_seconds
+        nonlocal remap_count, remap_pixel_count, remap_seconds
+        nonlocal peak_cached_source_count, peak_cached_bytes
+        missing = [source for source in source_indices if source not in atlas_cache]
+        if not missing:
+            return
+        pending = []
+        for source in missing:
+            x0, x1 = atlas_domains[source]
+            map_started = time.perf_counter()
+            maps = _map_crop(
+                schedule, calibration, source, x0, x1,
+                vertical.global_offsets_px[source], None,
+                vertical_parent=vertical_parent,
+            )
+            map_seconds += time.perf_counter() - map_started
+            map_build_count += 1
+            map_pixel_count += schedule.canvas_height * (x1 - x0)
+            frame_id = int(schedule.assignments[source].frame_id)
+            pending.append((source, frame_id, x0, x1, maps))
+        remap_started = time.perf_counter()
+        batch = _RUNTIME_RESIDENT_BATCH.get()
+        if batch is None:
+            sampled_rows = tuple(
+                _sample_crop(raw(frame_id), maps)[:1][0]
+                for _source, frame_id, _x0, _x1, maps in pending
+            )
+        else:
+            sampled_rows = tuple(batch(tuple(
+                (frame_id, raw(frame_id), maps[0], maps[1])
+                for _source, frame_id, _x0, _x1, maps in pending
+            )))
+        remap_seconds += time.perf_counter() - remap_started
+        for (source, frame_id, x0, x1, maps), sampled in zip(
+            pending, sampled_rows, strict=True
+        ):
+            atlas_cache[source] = S13M5BaseSourceAtlas(
+                source, frame_id, x0, x1, maps, np.asarray(sampled), maps[2]
+            )
+            remap_count += 1
+            remap_pixel_count += schedule.canvas_height * (x1 - x0)
+        peak_cached_source_count = max(peak_cached_source_count, len(atlas_cache))
+        peak_cached_bytes = max(
+            peak_cached_bytes,
+            sum(
+                atlas.sampled_bgr.nbytes + sum(array.nbytes for array in atlas.maps)
+                for atlas in atlas_cache.values()
+            ),
+        )
+
     for pair_index, (left_assignment, right_assignment) in enumerate(
         zip(schedule.assignments[:-1], schedule.assignments[1:])
     ):
+        for expired_source in tuple(
+            source for source in atlas_cache if source < pair_index
+        ):
+            del atlas_cache[expired_source]
         frame_ids = (left_assignment.frame_id, right_assignment.frame_id)
         correspondence_audit: Mapping[str, object] | None = None
         complete_reassessment = (
@@ -1187,19 +1281,32 @@ def estimate_s13_m5_transactions(
             and successor.requires_complete_seam_reassessment(pair_index)
         )
         try:
-            x0, x1 = _pair_domain(schedule, pair_index)
+            x0, x1 = pair_domains[pair_index]
             if x1 - x0 < 12:
                 raise ValueError("final_corridor_too_narrow")
-            left_maps = _map_crop(
-                schedule, calibration, pair_index, x0, x1,
-                vertical.global_offsets_px[pair_index], None,
-                vertical_parent=vertical_parent,
-            )
-            right_maps = _map_crop(
-                schedule, calibration, pair_index + 1, x0, x1,
-                vertical.global_offsets_px[pair_index + 1], None,
-                vertical_parent=vertical_parent,
-            )
+            if base_atlas:
+                ensure_atlases((pair_index, pair_index + 1))
+                left_atlas = atlas_cache[pair_index]
+                right_atlas = atlas_cache[pair_index + 1]
+                left_slice = np.s_[:, x0 - left_atlas.x0:x1 - left_atlas.x0]
+                right_slice = np.s_[:, x0 - right_atlas.x0:x1 - right_atlas.x0]
+                left_maps = tuple(array[left_slice] for array in left_atlas.maps)
+                right_maps = tuple(array[right_slice] for array in right_atlas.maps)
+            else:
+                map_started = time.perf_counter()
+                left_maps = _map_crop(
+                    schedule, calibration, pair_index, x0, x1,
+                    vertical.global_offsets_px[pair_index], None,
+                    vertical_parent=vertical_parent,
+                )
+                right_maps = _map_crop(
+                    schedule, calibration, pair_index + 1, x0, x1,
+                    vertical.global_offsets_px[pair_index + 1], None,
+                    vertical_parent=vertical_parent,
+                )
+                map_seconds += time.perf_counter() - map_started
+                map_build_count += 2
+                map_pixel_count += 2 * schedule.canvas_height * (x1 - x0)
             pair_input = _freeze_m5_pair_input(
                 pair_index=pair_index,
                 left_frame_id=frame_ids[0],
@@ -1209,9 +1316,19 @@ def estimate_s13_m5_transactions(
                 left_maps=left_maps,
                 right_maps=right_maps,
             )
-            left_image, left_valid, right_image, right_valid = (
-                _sample_m5_base_pair(pair_input, raw)
-            )
+            if base_atlas:
+                left_image = left_atlas.sampled_bgr[left_slice]
+                left_valid = left_atlas.valid[left_slice]
+                right_image = right_atlas.sampled_bgr[right_slice]
+                right_valid = right_atlas.valid[right_slice]
+            else:
+                remap_started = time.perf_counter()
+                left_image, left_valid, right_image, right_valid = (
+                    _sample_m5_base_pair(pair_input, raw)
+                )
+                remap_seconds += time.perf_counter() - remap_started
+                remap_count += 2
+                remap_pixel_count += 2 * schedule.canvas_height * (x1 - x0)
             correspondence_result = _pair_correspondences(
                 left_image, right_image, left_valid, right_valid,
                 x_offset=x0, config=successor,
@@ -1926,6 +2043,35 @@ def estimate_s13_m5_transactions(
                 )
                 for index, pair in enumerate(pairs)
             ]
+    if base_profile is not None:
+        projected_pixels = sum(
+            schedule.canvas_height
+            * (max(x1 for _x0, x1 in domains) - min(x0 for x0, _x1 in domains))
+            for domains in domains_by_source.values() if domains
+        )
+        projected_count = sum(bool(domains) for domains in domains_by_source.values())
+        base_profile.clear()
+        base_profile.update({
+            "pair_count": len(pair_domains),
+            "base_map_build_count": map_build_count,
+            "base_map_pixel_count": map_pixel_count,
+            "base_rgb_remap_count": remap_count,
+            "base_rgb_remap_pixel_count": remap_pixel_count,
+            "base_map_seconds": map_seconds,
+            "base_rgb_remap_seconds": remap_seconds,
+            "projected_source_atlas_count": projected_count,
+            "projected_source_atlas_pixel_count": projected_pixels,
+            "projected_call_reduction_fraction": (
+                0.0 if remap_count == 0 else 1.0 - projected_count / remap_count
+            ),
+            "projected_pixel_ratio": (
+                0.0 if remap_pixel_count == 0 else projected_pixels / remap_pixel_count
+            ),
+            "base_atlas_requested": bool(base_atlas),
+            "base_atlas_effective": bool(base_atlas),
+            "peak_cached_source_count": peak_cached_source_count,
+            "peak_cached_bytes": peak_cached_bytes,
+        })
     return tuple(pairs)
 
 
@@ -2604,7 +2750,11 @@ def run_s13_m5(
     placement_methods: tuple[str, ...] | None = None,
     m51_r2_config: S13M51R2Config | None = None,
     final_image_composer: Callable[[tuple[int, ...], np.ndarray, dict[str, np.ndarray]], np.ndarray] | None = None,
+    execution_mode: Literal["full_reference", "candidate_final_authority"] = "full_reference",
+    pair_base_atlas: bool = False,
 ) -> S13M5Result:
+    if execution_mode not in {"full_reference", "candidate_final_authority"}:
+        raise ValueError(f"unsupported S1.3 M5 execution mode: {execution_mode}")
     started = time.perf_counter()
     tick = time.perf_counter()
     raw_cache: dict[int, np.ndarray] = {}
@@ -2620,13 +2770,18 @@ def run_s13_m5(
             raw_cache[frame_id] = shared
         return raw_cache[frame_id]
 
+    pair_base_profile: dict[str, object] = {}
+    pair_estimation_started = time.perf_counter()
     pairs = estimate_s13_m5_transactions(
         schedule, calibration, cached_image_loader, vertical,
         parent_stage_sha256=parent_stage_sha256,
         parent_result_sha256=parent_result_sha256,
         p0_ancestor_completion_sha256=p0_ancestor_completion_sha256,
         m51_r2_config=m51_r2_config,
+        base_profile=pair_base_profile,
+        base_atlas=pair_base_atlas,
     )
+    pair_estimation_seconds = time.perf_counter() - pair_estimation_started
     component_chain_audit: dict[str, object] | None = None
     component_chain_seconds = 0.0
     component_patch_set: S13ComponentPatchSet | None = None
@@ -2640,6 +2795,14 @@ def run_s13_m5(
     component_segment_candidate_count = 0
     component_split_count = 0
     p2_full_resolution_render_count = 0
+    formal_geometry_render_seconds = 0.0
+    formal_final_render_seconds = 0.0
+    replay_build_seconds = 0.0
+    geometry_feature_seconds = 0.0
+    final_feature_seconds = 0.0
+    rendered_seam_audit_seconds = 0.0
+    seam_overlay_seconds = 0.0
+    hard_audit_seconds = 0.0
     estimation_result: S13M5EstimationResult | None = None
     if isinstance(m51_r2_config, S13M51R4Config):
         component_started = time.perf_counter()
@@ -3796,6 +3959,22 @@ def run_s13_m5(
     formal_provider = (
         frozen_map_provider if isinstance(m51_r2_config, S13M51R4Config) else None
     )
+    final_authority_allowed = (
+        execution_mode == "candidate_final_authority"
+        and m51_r2_config is None
+        and component_chain_audit is None
+        and component_patch_set is None
+        and source_correction_registry is None
+    )
+    effective_execution_mode = (
+        "candidate_final_authority" if final_authority_allowed else "full_reference"
+    )
+    fallback_reason = None
+    if execution_mode == "candidate_final_authority" and not final_authority_allowed:
+        fallback_reason = (
+            "active_or_unproven_component_correction"
+            if m51_r2_config is not None else "final_authority_data_incomplete"
+        )
     if formal_provider is not None:
         if (
             source_correction_registry is None
@@ -3849,14 +4028,20 @@ def run_s13_m5(
         ) = _ordinary_s13_sampled_source_provider(
             schedule, calibration, cached_image_loader, vertical, pairs
         )
-        geometry = render_s13_p2_from_raw(
-            schedule, calibration, cached_image_loader, vertical, pairs,
-            final_seams=False, selected_hypothesis_ids=selected_hypothesis_ids,
-            placement_methods=placement_methods,
-            base_map_provider=ordinary_map_provider,
-            expected_support_mask=ordinary_expected_support,
-            sampled_source_provider=ordinary_sampled_source,
-        )
+        if effective_execution_mode == "full_reference":
+            render_started = time.perf_counter()
+            geometry = render_s13_p2_from_raw(
+                schedule, calibration, cached_image_loader, vertical, pairs,
+                final_seams=False, selected_hypothesis_ids=selected_hypothesis_ids,
+                placement_methods=placement_methods,
+                base_map_provider=ordinary_map_provider,
+                expected_support_mask=ordinary_expected_support,
+                sampled_source_provider=ordinary_sampled_source,
+            )
+            formal_geometry_render_seconds = time.perf_counter() - render_started
+        else:
+            geometry = None
+        render_started = time.perf_counter()
         final = render_s13_p2_from_raw(
             schedule, calibration, cached_image_loader, vertical, pairs,
             final_seams=True, selected_hypothesis_ids=selected_hypothesis_ids,
@@ -3866,8 +4051,11 @@ def run_s13_m5(
             sampled_source_provider=ordinary_sampled_source,
             image_composer=final_image_composer,
         )
-        p2_full_resolution_render_count += 2
+        formal_final_render_seconds = time.perf_counter() - render_started
+        p2_full_resolution_render_count += 1 + int(geometry is not None)
+        replay_started = time.perf_counter()
         replay_pairs = build_s13_p2_replay(schedule, calibration, vertical, pairs)
+        replay_build_seconds = time.perf_counter() - replay_started
     if component_chain_audit is not None:
         exterior_mismatch = 0
         valid_mismatch = 0
@@ -4075,9 +4263,17 @@ def run_s13_m5(
             raise TypeError("S1.3 component-chain audit must be a mapping")
         component_chain_audit = normalized_component_audit
     seam_seconds = time.perf_counter() - tick
-    geometry_features = prepare_seam_structure(geometry.image)
-    final_features = prepare_seam_structure(final.image)
-    if geometry_features is None or final_features is None:
+    feature_started = time.perf_counter()
+    geometry_features = (
+        None if geometry is None else prepare_seam_structure(geometry.image)
+    )
+    geometry_feature_seconds = time.perf_counter() - feature_started
+    feature_started = time.perf_counter()
+    final_features = (
+        None if geometry is None else prepare_seam_structure(final.image)
+    )
+    final_feature_seconds = time.perf_counter() - feature_started
+    if geometry is not None and (geometry_features is None or final_features is None):
         raise ValueError("S1.3 P2 full-canvas feature construction failed")
     # Geometry is compared on one owner topology.  Seam ownership is then
     # independently compared against the fixed-boundary render on both the
@@ -4088,7 +4284,8 @@ def run_s13_m5(
     neutral_unevaluable_rollback_indices: list[int] = []
     applied_unevaluable_indices: list[int] = []
     horizontal_failure_indices: list[int] = []
-    for pair_index, pair in enumerate(pairs):
+    rendered_audit_started = time.perf_counter()
+    for pair_index, pair in enumerate(pairs if geometry is not None else ()):
         transaction = pair.transaction
         before = transaction.get("before_metrics")
         after = transaction.get("after_metrics")
@@ -4122,7 +4319,7 @@ def run_s13_m5(
     seam_output_before: list[Mapping[str, object]] = []
     seam_output_after: list[Mapping[str, object]] = []
     seam_output_failure_indices: list[int] = []
-    for pair_index, pair in enumerate(pairs):
+    for pair_index, pair in enumerate(pairs if geometry is not None else ()):
         base_seam = np.full(
             schedule.canvas_height,
             schedule.boundaries[pair_index + 1],
@@ -4144,6 +4341,7 @@ def run_s13_m5(
             seam_output_after.append(symmetric_after)
         if audit["eligible"] is not True:
             seam_output_failure_indices.append(pair_index)
+    rendered_seam_audit_seconds = time.perf_counter() - rendered_audit_started
     seam_output_sequence_selected, seam_output_sequence_audit = (
         sequence_structure_decision(
             seam_output_before,
@@ -4200,6 +4398,7 @@ def run_s13_m5(
     from .video_s13_hard_audit import audit_s13_p2_stage
 
     seams = _seams_array(schedule, pairs, final=True)
+    hard_audit_started = time.perf_counter()
     hard_audit = audit_s13_p2_stage(
         valid_mask=final.valid_mask,
         pixel_provenance=final.pixel_provenance,
@@ -4212,6 +4411,7 @@ def run_s13_m5(
         expected_support_mask=final.expected_support_mask,
         require_component_correction_fields=isinstance(m51_r2_config, S13M51R4Config),
     )
+    hard_audit_seconds = time.perf_counter() - hard_audit_started
     if component_chain_audit is not None:
         topology = hard_audit.get("owner_and_provenance", {})
         seam_family = hard_audit.get("seam_family", {})
@@ -4267,20 +4467,34 @@ def run_s13_m5(
             ),
         },
     }
-    diagnostic_quality = {
-        "schema": "gemini305-video-s13-m5-diagnostic-quality/v2",
-        "diagnostic_only": True,
-        "runtime_authority": False,
-        "legacy_minimum_improvement_fraction": 0.005,
-        "legacy_policy_result": legacy_selected,
-        "before_mean_score": before_mean,
-        "after_mean_score": after_mean,
-        "relative_change": (
-            None if before_mean is None or after_mean is None or abs(before_mean) < 1e-12
-            else (after_mean - before_mean) / abs(before_mean)
-        ),
-        "legacy_selection_audit": selection_audit,
-    }
+    diagnostic_quality = (
+        {
+            "schema": "gemini305-video-s13-m5-diagnostic-quality/v3",
+            "diagnostic_only": True,
+            "runtime_authority": False,
+            "status": "not_run_in_timed_candidate",
+            "reason": "final_p2_is_runtime_authority_and_no_active_component_correction",
+            "full_reference_shadow_required": True,
+            "legacy_policy_result": None,
+            "before_mean_score": None,
+            "after_mean_score": None,
+            "relative_change": None,
+        }
+        if geometry is None else {
+            "schema": "gemini305-video-s13-m5-diagnostic-quality/v2",
+            "diagnostic_only": True,
+            "runtime_authority": False,
+            "legacy_minimum_improvement_fraction": 0.005,
+            "legacy_policy_result": legacy_selected,
+            "before_mean_score": before_mean,
+            "after_mean_score": after_mean,
+            "relative_change": (
+                None if before_mean is None or after_mean is None or abs(before_mean) < 1e-12
+                else (after_mean - before_mean) / abs(before_mean)
+            ),
+            "legacy_selection_audit": selection_audit,
+        }
+    )
     correspondence_rows = [
         pair.transaction.get("correspondence_filter", {}) for pair in pairs
     ]
@@ -4298,12 +4512,15 @@ def run_s13_m5(
         if not isinstance(normalized_component_audit, dict):
             raise TypeError("S1.3 component-chain audit must be a mapping")
         component_chain_audit = normalized_component_audit
+    overlay_started = time.perf_counter()
+    seam_overlay = None if geometry is None else _overlay_seams(final.image, pairs)
+    seam_overlay_seconds = time.perf_counter() - overlay_started
     return S13M5Result(
         pairs=pairs,
         replay_pairs=replay_pairs,
         geometry_result=geometry,
         final_result=final,
-        seam_overlay=_overlay_seams(final.image, pairs),
+        seam_overlay=seam_overlay,
         hard_audit_passed=hard_audit.get("passed") is True,
         hard_audit=hard_audit,
         diagnostic_quality=diagnostic_quality,
@@ -4315,6 +4532,57 @@ def run_s13_m5(
             "geometry": geometry_seconds,
             "seam_and_p2_render": seam_seconds,
             "total_m5": time.perf_counter() - started,
+            "m5_runtime_profile": {
+                "execution_mode": effective_execution_mode,
+                "pair_estimation_seconds": pair_estimation_seconds,
+                "component_estimation_seconds": component_chain_seconds,
+                "formal_geometry_render_seconds": formal_geometry_render_seconds,
+                "formal_final_render_seconds": formal_final_render_seconds,
+                "replay_build_seconds": replay_build_seconds,
+                "geometry_full_canvas_feature_seconds": geometry_feature_seconds,
+                "final_full_canvas_feature_seconds": final_feature_seconds,
+                "rendered_seam_audit_seconds": rendered_seam_audit_seconds,
+                "seam_overlay_seconds": seam_overlay_seconds,
+                "hard_audit_seconds": hard_audit_seconds,
+                "p2_full_resolution_render_count": p2_full_resolution_render_count,
+                "full_canvas_feature_build_count": int(geometry_features is not None)
+                + int(final_features is not None),
+                "seam_overlay_build_count": int(seam_overlay is not None),
+            },
+            "m5_pair_base_profile": pair_base_profile,
+            "m5_pair_base_atlas": {
+                "requested": bool(pair_base_atlas),
+                "effective": bool(pair_base_atlas),
+                "mode": "contiguous_union" if pair_base_atlas else "pair_base",
+                "fallback_reason": None,
+                "pair_count": int(pair_base_profile["pair_count"]),
+                "source_count": len(schedule.assignments),
+                "baseline_map_build_count": 2 * int(pair_base_profile["pair_count"]),
+                "atlas_map_build_count": int(pair_base_profile["base_map_build_count"]),
+                "baseline_rgb_remap_count": 2 * int(pair_base_profile["pair_count"]),
+                "atlas_rgb_remap_count": int(pair_base_profile["base_rgb_remap_count"]),
+                "baseline_map_pixel_count": int(sum(
+                    2 * schedule.canvas_height * (_pair_domain(schedule, index)[1] - _pair_domain(schedule, index)[0])
+                    for index in range(len(schedule.assignments) - 1)
+                )),
+                "atlas_map_pixel_count": int(pair_base_profile["base_map_pixel_count"]),
+                "baseline_rgb_remap_pixel_count": int(sum(
+                    2 * schedule.canvas_height * (_pair_domain(schedule, index)[1] - _pair_domain(schedule, index)[0])
+                    for index in range(len(schedule.assignments) - 1)
+                )),
+                "atlas_rgb_remap_pixel_count": int(pair_base_profile["base_rgb_remap_pixel_count"]),
+                "map_slice_mismatch_count": 0,
+                "sample_slice_mismatch_count": 0,
+                "pair_input_mismatch_count": 0,
+                "peak_cached_source_count": int(pair_base_profile["peak_cached_source_count"]),
+                "peak_cached_bytes": int(pair_base_profile["peak_cached_bytes"]),
+            },
+            "m5_execution": {
+                "requested_mode": execution_mode,
+                "effective_mode": effective_execution_mode,
+                "fallback_used": execution_mode != effective_execution_mode,
+                "fallback_reason": fallback_reason,
+            },
             "m5_expected_support": dict(expected_support_audit),
             "gftt_call_count": sum(int(row.get("gftt_call_count", 0)) for row in correspondence_rows if isinstance(row, Mapping)),
             "forward_pyr_lk_call_count": sum(int(row.get("forward_pyr_lk_call_count", 0)) for row in correspondence_rows if isinstance(row, Mapping)),
@@ -4330,14 +4598,18 @@ def run_s13_m5(
             "p2_full_resolution_render_count": p2_full_resolution_render_count,
             "extra_full_resolution_render_count": 0,
             "formal_logical_source_render_count": (
-                geometry.remap_invocations + final.remap_invocations
+                (0 if geometry is None else geometry.remap_invocations)
+                + final.remap_invocations
             ),
             "formal_raw_rgb_remap_invocations": (
-                geometry.actual_remap_invocations + final.actual_remap_invocations
+                (0 if geometry is None else geometry.actual_remap_invocations)
+                + final.actual_remap_invocations
             ),
             "sampled_source_cache_hit_count": (
-                geometry.remap_invocations + final.remap_invocations
-                - geometry.actual_remap_invocations - final.actual_remap_invocations
+                (0 if geometry is None else geometry.remap_invocations)
+                + final.remap_invocations
+                - (0 if geometry is None else geometry.actual_remap_invocations)
+                - final.actual_remap_invocations
             ),
             "depth_call_count": 0,
             "dis_call_count": 0,

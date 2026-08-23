@@ -8,7 +8,12 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from .video_s13_motion import S13MotionEdge, S13MotionHypothesis, S13Progress
+from .video_s13_motion import (
+    S13MotionEdge,
+    S13MotionHypothesis,
+    S13Progress,
+    reliable_step1_direction_evidence,
+)
 from .video_s13_session import S13RenderFrame
 from .video_s13_trajectory import S13Trajectory
 
@@ -96,15 +101,7 @@ def _fallback_state(edge: S13MotionEdge | None, session_median: float, canonical
 
 
 def _canonical_scan_direction(edges: Sequence[S13MotionEdge]) -> int:
-    signed = [
-        float(edge.selected_advance_px)
-        for edge in edges
-        if edge.step == 1
-        and edge.selected_advance_px is not None
-        and math.isfinite(float(edge.selected_advance_px))
-        and abs(float(edge.selected_advance_px)) >= 0.25
-        and not edge.risk
-    ]
+    signed = list(reliable_step1_direction_evidence(edges))
     if not signed:
         signed = [
             float(edge.selected_advance_px)

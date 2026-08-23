@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 
+import cv2
 import numpy as np
 import pytest
 
@@ -704,6 +705,113 @@ def test_run_m5_reports_same_seam_sequence_selection_policy() -> None:
     assert result.selection_audit["applied_unevaluable_indices"] == []
     assert "seam_output_sequence_audit" in result.selection_audit
     assert len(result.selection_audit["seam_output_pair_audits"]) == 2
+
+
+def test_final_authority_renders_only_final_p2_and_preserves_runtime_authority() -> None:
+    calibration, schedule, images, vertical = _m5_inputs()
+    parent = render_s13_p1_from_raw(
+        schedule, calibration, images.__getitem__, vertical
+    ).image
+
+    reference = run_s13_m5(
+        schedule, calibration, images.__getitem__, vertical, parent,
+        parent_stage_sha256="d" * 64,
+    )
+    candidate = run_s13_m5(
+        schedule, calibration, images.__getitem__, vertical, parent,
+        parent_stage_sha256="d" * 64,
+        execution_mode="candidate_final_authority",
+    )
+
+    assert candidate.geometry_result is None
+    assert candidate.seam_overlay is None
+    assert candidate.performance["p2_full_resolution_render_count"] == 1
+    assert candidate.performance["full_canvas_feature_build_count"] == 0
+    runtime_profile = candidate.performance["m5_runtime_profile"]
+    assert runtime_profile["seam_overlay_build_count"] == 0
+    assert candidate.diagnostic_quality["status"] == "not_run_in_timed_candidate"
+    assert candidate.hard_audit == reference.hard_audit
+    assert len(candidate.pairs) == len(reference.pairs)
+    for candidate_pair, reference_pair in zip(
+        candidate.pairs, reference.pairs, strict=True
+    ):
+        assert candidate_pair.transaction == reference_pair.transaction
+        assert np.array_equal(candidate_pair.seam_x_by_row, reference_pair.seam_x_by_row)
+    assert len(candidate.replay_pairs) == len(reference.replay_pairs)
+    assert np.array_equal(candidate.final_result.image, reference.final_result.image)
+    assert np.array_equal(
+        candidate.final_result.valid_mask, reference.final_result.valid_mask
+    )
+    assert set(candidate.final_result.pixel_provenance) == set(
+        reference.final_result.pixel_provenance
+    )
+    for key in reference.final_result.pixel_provenance:
+        assert np.array_equal(
+            candidate.final_result.pixel_provenance[key],
+            reference.final_result.pixel_provenance[key],
+            equal_nan=True,
+        )
+
+
+def test_m5_pair_base_profile_reports_projected_source_atlas_qualification() -> None:
+    calibration, schedule, images, vertical = _m5_inputs()
+    profile: dict[str, object] = {}
+
+    pairs = estimate_s13_m5_transactions(
+        schedule, calibration, images.__getitem__, vertical,
+        parent_stage_sha256="e" * 64, base_profile=profile,
+    )
+
+    assert profile["pair_count"] == len(pairs)
+    assert profile["base_map_build_count"] == 2 * len(pairs)
+    assert profile["base_rgb_remap_count"] == 2 * len(pairs)
+    assert 0.0 <= profile["projected_call_reduction_fraction"] <= 1.0
+    assert profile["projected_source_atlas_pixel_count"] > 0
+
+
+@pytest.mark.parametrize("resident_batch", [False, True])
+def test_pair_base_atlas_is_transaction_and_pixel_exact(resident_batch: bool) -> None:
+    calibration, schedule, images, vertical = _m5_inputs()
+    parent = render_s13_p1_from_raw(
+        schedule, calibration, images.__getitem__, vertical
+    ).image
+    token = None
+    if resident_batch:
+        def batch(entries):
+            return tuple(
+                cv2.remap(
+                    raw, map_u, map_v, cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+                )
+                for _frame_id, raw, map_u, map_v in entries
+            )
+        token = set_s13_m5_resident_batch(batch)
+    try:
+        reference = run_s13_m5(
+            schedule, calibration, images.__getitem__, vertical, parent,
+            parent_stage_sha256="9" * 64,
+            execution_mode="candidate_final_authority",
+        )
+        atlas = run_s13_m5(
+            schedule, calibration, images.__getitem__, vertical, parent,
+            parent_stage_sha256="9" * 64,
+            execution_mode="candidate_final_authority", pair_base_atlas=True,
+        )
+    finally:
+        if token is not None:
+            reset_s13_m5_resident_batch(token)
+
+    assert np.array_equal(atlas.final_result.image, reference.final_result.image)
+    assert atlas.hard_audit == reference.hard_audit
+    for atlas_pair, reference_pair in zip(atlas.pairs, reference.pairs, strict=True):
+        assert atlas_pair.transaction == reference_pair.transaction
+        assert np.array_equal(atlas_pair.seam_x_by_row, reference_pair.seam_x_by_row)
+    report = atlas.performance["m5_pair_base_atlas"]
+    assert report["atlas_rgb_remap_count"] < report["baseline_rgb_remap_count"]
+    assert report["atlas_rgb_remap_pixel_count"] <= report["baseline_rgb_remap_pixel_count"]
+    assert report["peak_cached_source_count"] <= 2
+    assert report["map_slice_mismatch_count"] == 0
+    assert report["sample_slice_mismatch_count"] == 0
 
 
 def test_r4_pre_render_estimation_freezes_oracle_domain_and_evidence_context(
