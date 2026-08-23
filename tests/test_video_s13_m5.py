@@ -802,6 +802,19 @@ def test_r4_pre_render_estimation_freezes_oracle_domain_and_evidence_context(
     assert np.array_equal(result.final_result.image, uncached_final.image)
     assert np.array_equal(result.geometry_result.valid_mask, uncached_geometry.valid_mask)
     assert np.array_equal(result.final_result.valid_mask, uncached_final.valid_mask)
+    assert np.array_equal(
+        estimate.expected_support_mask, uncached_geometry.expected_support_mask
+    )
+    assert np.array_equal(
+        estimate.expected_support_mask, uncached_final.expected_support_mask
+    )
+    assert result.geometry_result.expected_support_mask is estimate.expected_support_mask
+    assert result.final_result.expected_support_mask is estimate.expected_support_mask
+    support_audit = result.performance["m5_expected_support"]
+    assert support_audit["build_count"] == 1
+    assert support_audit["provider_call_count"] == len(schedule.assignments)
+    assert support_audit["formal_geometry_rebuild_count"] == 0
+    assert support_audit["formal_final_rebuild_count"] == 0
     assert set(result.geometry_result.pixel_provenance) == set(
         uncached_geometry.pixel_provenance
     )
