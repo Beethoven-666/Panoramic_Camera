@@ -84,6 +84,51 @@ class S13PreparedMotionFrame:
 
 
 @dataclass(frozen=True)
+class S13MotionSnapshot:
+    prepared_frames: tuple[S13PreparedMotionFrame, ...]
+    edges: tuple[S13MotionEdge, ...]
+    step4_computed: bool
+    step4_selected: bool
+
+
+class S13MotionAccumulator:
+    """Lossless ordered step-1/2/4 accumulator for committed frames."""
+
+    def __init__(self) -> None:
+        self._prepared: list[S13PreparedMotionFrame] = []
+        self._edges: list[S13MotionEdge] = []
+
+    def append(self, frame: S13PreparedMotionFrame) -> tuple[S13MotionEdge, ...]:
+        if self._prepared and frame.frame_id <= self._prepared[-1].frame_id:
+            raise ValueError("S1.3 motion accumulator frame ids must be strictly increasing")
+        added: list[S13MotionEdge] = []
+        for step in (1, 2, 4):
+            if len(self._prepared) < step:
+                continue
+            edge = measure_s13_motion_edge(self._prepared[-step], frame, step=step)
+            if edge is not None:
+                self._edges.append(edge)
+                added.append(edge)
+        self._prepared.append(frame)
+        return tuple(added)
+
+    def snapshot(self, *, deferred_step4: bool = True) -> S13MotionSnapshot:
+        step4_computed = any(edge.step == 4 for edge in self._edges)
+        step4_selected = not deferred_step4 or not reliable_step1_direction_evidence(
+            self._edges
+        )
+        edges = tuple(
+            edge for edge in self._edges if edge.step != 4 or step4_selected
+        )
+        return S13MotionSnapshot(
+            prepared_frames=tuple(self._prepared),
+            edges=edges,
+            step4_computed=step4_computed,
+            step4_selected=step4_selected,
+        )
+
+
+@dataclass(frozen=True)
 class S13Progress:
     frame_ids: tuple[int, ...]
     centers_x: tuple[float, ...]
@@ -700,7 +745,8 @@ def descriptive_delta_risk(delta_px: float) -> dict[str, object]:
 
 
 __all__ = [
-    "S13MotionEdge", "S13PreparedMotionFrame", "S13Progress", "build_basic_s13_progress",
+    "S13MotionAccumulator", "S13MotionEdge", "S13MotionSnapshot",
+    "S13PreparedMotionFrame", "S13Progress", "build_basic_s13_progress",
     "descriptive_delta_risk", "measure_s13_motion", "measure_s13_motion_edge",
     "prepare_s13_motion_frame", "reliable_step1_direction_evidence",
 ]

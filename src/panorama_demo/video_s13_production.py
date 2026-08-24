@@ -232,6 +232,36 @@ def _run_s13_v11_authority(**kwargs: object) -> S13V11AuthorityResult:
             raise RuntimeError(f"S013 V11 runner authority lacks in-memory {stage_name} pixels")
         stage_pixel_sha256[stage_name] = _stage_pixel_sha256(stage_image)
     elapsed = time.perf_counter() - started
+    live_handoff = kwargs.get("live_handoff")
+    shadow_equivalence: dict[str, object] | None = None
+    if live_handoff is not None:
+        from .video_s13_online_p0 import semantic_assignments
+
+        shadow = getattr(live_handoff, "online_shadow", None)
+        shadow_failure = getattr(live_handoff, "online_shadow_failure_reason", None)
+        continuation = fast.get("p0_continuation")
+        final_semantic = ()
+        if continuation is not None:
+            final_semantic = semantic_assignments(
+                continuation.schedule,
+                continuation.selection,
+                continuation.selected_hypothesis_ids,
+            )
+        shadow_semantic = () if shadow is None else shadow.semantic_assignments
+        shadow_equivalence = {
+            "mode": "online_m0_m3_shadow_only",
+            "pixel_evidence_reused": False,
+            "shadow_failure_reason": shadow_failure,
+            "online_assignment_count": len(shadow_semantic),
+            "offline_assignment_count": len(final_semantic),
+            "final_schedule_exact": bool(
+                shadow is not None
+                and shadow_failure is None
+                and shadow.frontiers.committed_frame_index + 1
+                == len(getattr(live_handoff, "committed_frames"))
+                and shadow_semantic == final_semantic
+            ),
+        }
     maximum = kwargs.get("maximum_post_seconds")
     within_budget = maximum is None or elapsed <= float(maximum)
     overall = "A" if within_budget else "C"
@@ -274,6 +304,8 @@ def _run_s13_v11_authority(**kwargs: object) -> S13V11AuthorityResult:
             "formal_publication_encodes_p3_once": True,
         },
     }
+    if shadow_equivalence is not None:
+        report["online_shadow_equivalence"] = shadow_equivalence
     return S13V11AuthorityResult(
         panorama=np.asarray(fast["p3"].image),
         owner_frame_id=np.asarray(owner["frame_id_map"]),
@@ -401,6 +433,7 @@ def run_s13_v11_production(
                 "committed_frame_count": len(live_handoff.committed_frames),
                 "motion_edge_count": len(live_handoff.motion_edges),
                 "pixel_evidence_reused": False,
+                "online_shadow_equivalence": report.get("online_shadow_equivalence"),
             }
         published = publish_video_2d(
             destination,

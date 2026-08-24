@@ -25,6 +25,11 @@ from .video_s13_contract import (
     S13_VISUAL_CONTINUITY_ALGORITHM_ID,
     S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
 )
+from .video_s13_online_p0 import (
+    S13OnlineP0Engine,
+    S13OnlineShadowSnapshot,
+    calibration_from_live_document,
+)
 
 
 LIVE_PREVIEW_SCHEMA = "gemini305-s013-v11-live-preview/v1"
@@ -47,6 +52,7 @@ class CommittedFrameIdentity:
     aligned_depth_path: Path
     color_sha256: str
     aligned_depth_sha256: str
+    timestamp_us: int
     frames_csv_row_index: int
     commit_monotonic_ns: int
 
@@ -60,6 +66,8 @@ class S13V11LiveHandoff:
     committed_frames: tuple[CommittedFrameIdentity, ...]
     analysis_gray: Mapping[int, np.ndarray]
     motion_edges: tuple[S13LiveMotionEdge, ...]
+    online_shadow: S13OnlineShadowSnapshot | None
+    online_shadow_failure_reason: str | None
     capture_started_monotonic_ns: int
     capture_stopped_monotonic_ns: int
     capture_metrics: Mapping[str, object]
@@ -130,6 +138,7 @@ class S13V11LiveObserver:
         self._analysis_queue: queue.Queue[LiveFramePacket | None] = queue.Queue(maxsize=64)
         self._preview_queue: queue.Queue[tuple[int, int, np.ndarray] | None] = queue.Queue(maxsize=1)
         self._lock = threading.Lock()
+        self._committed_condition = threading.Condition(self._lock)
         self._session: LiveSessionInfo | None = None
         self._capture_result: CaptureResult | None = None
         self._accepting = True
@@ -143,6 +152,11 @@ class S13V11LiveObserver:
         self._preview_latencies_ms: list[float] = []
         self._last_preview_request_ns = 0
         self._committed: list[CommittedFrameIdentity] = []
+        self._shadow_engine: S13OnlineP0Engine | None = None
+        self._shadow_snapshot: S13OnlineShadowSnapshot | None = None
+        self._shadow_failure_reason: str | None = None
+        self._shadow_next_index = 0
+        self._shadow_stop = False
         self._analysis_gray: dict[int, np.ndarray] = {}
         self._motion_edges: list[S13LiveMotionEdge] = []
         self._stable_edges: list[S13LiveMotionEdge] = []
@@ -157,12 +171,29 @@ class S13V11LiveObserver:
         self._preview_thread = threading.Thread(
             target=self._preview_loop, name="s013-live-preview", daemon=False
         )
+        self._shadow_thread = threading.Thread(
+            target=self._shadow_loop, name="s013-live-committed-shadow", daemon=True
+        )
         self._analysis_thread.start()
         self._preview_thread.start()
+        self._shadow_thread.start()
 
     def on_session_ready(self, session: LiveSessionInfo) -> None:
+        shadow: S13OnlineP0Engine | None = None
+        failure: str | None = None
+        try:
+            shadow = S13OnlineP0Engine(
+                session_root=session.root,
+                calibration=calibration_from_live_document(session.calibration),
+                analysis_width_px=self.analysis_width_px,
+            )
+        except Exception as exc:
+            failure = f"{type(exc).__name__}: {exc}"
         with self._lock:
             self._session = session
+            self._shadow_engine = shadow
+            self._shadow_failure_reason = failure
+            self._committed_condition.notify_all()
         if self.preview_output is not None:
             self.preview_output.mkdir(parents=True, exist_ok=True)
 
@@ -191,18 +222,25 @@ class S13V11LiveObserver:
             aligned_depth_path=frame.aligned_depth_path,
             color_sha256=frame.color_sha256,
             aligned_depth_sha256=frame.aligned_depth_sha256,
+            timestamp_us=frame.timestamp_us,
             frames_csv_row_index=frame.frames_csv_row_index,
             commit_monotonic_ns=frame.commit_monotonic_ns,
         )
         with self._lock:
             self._committed.append(identity)
+            self._committed_condition.notify()
 
     def on_capture_stopping(self) -> None:
+        stop_shadow = False
         with self._lock:
             if self._stopped:
                 return
             self._accepting = False
             self._stopped = True
+            if self._session is None:
+                self._shadow_stop = True
+                stop_shadow = True
+                self._committed_condition.notify_all()
         while True:
             try:
                 self._analysis_queue.get_nowait()
@@ -219,12 +257,54 @@ class S13V11LiveObserver:
         self._preview_queue.put(None)
         self._analysis_thread.join()
         self._preview_thread.join()
+        if stop_shadow:
+            self._shadow_thread.join()
         self._write_stopped_state()
 
     def on_capture_closed(self, result: CaptureResult) -> None:
         self.on_capture_stopping()
         with self._lock:
             self._capture_result = result
+            self._shadow_stop = True
+            self._committed_condition.notify_all()
+        self._shadow_thread.join()
+
+    def _shadow_loop(self) -> None:
+        while True:
+            with self._committed_condition:
+                self._committed_condition.wait_for(
+                    lambda: (
+                        self._shadow_stop
+                        or self._shadow_failure_reason is not None
+                        or (
+                            self._shadow_engine is not None
+                            and self._shadow_next_index < len(self._committed)
+                        )
+                    )
+                )
+                if self._shadow_failure_reason is not None:
+                    if self._shadow_stop:
+                        return
+                    self._committed_condition.wait()
+                    continue
+                if self._shadow_next_index >= len(self._committed):
+                    if self._shadow_stop:
+                        return
+                    continue
+                identity = self._committed[self._shadow_next_index]
+                engine = self._shadow_engine
+            assert engine is not None
+            try:
+                shadow_snapshot = engine.append_committed(identity)
+            except Exception as exc:
+                with self._committed_condition:
+                    self._shadow_failure_reason = f"{type(exc).__name__}: {exc}"
+                    self._committed_condition.notify_all()
+            else:
+                with self._committed_condition:
+                    self._shadow_snapshot = shadow_snapshot
+                    self._shadow_next_index += 1
+                    self._committed_condition.notify_all()
 
     def _analysis_image(self, color: np.ndarray) -> np.ndarray:
         height = max(1, round(color.shape[0] * self.analysis_width_px / color.shape[1]))
@@ -516,6 +596,8 @@ class S13V11LiveObserver:
                 committed_frames=committed,
                 analysis_gray=MappingProxyType(dict(self._analysis_gray)),
                 motion_edges=tuple(self._motion_edges),
+                online_shadow=self._shadow_snapshot,
+                online_shadow_failure_reason=self._shadow_failure_reason,
                 capture_started_monotonic_ns=self._capture_result.capture_started_monotonic_ns,
                 capture_stopped_monotonic_ns=self._capture_result.capture_stopped_monotonic_ns,
                 capture_metrics=MappingProxyType({
@@ -541,6 +623,13 @@ class S13V11LiveObserver:
                     "preview_failures": snapshot.preview_failures,
                     "pair_evidence_reused_count": 0,
                     "reuse_level": "validated_inputs_only",
+                    "shadow_processed_committed_frames": self._shadow_next_index,
+                    "shadow_failure_reason": self._shadow_failure_reason,
+                    "shadow_final_selected_source_count": (
+                        0
+                        if self._shadow_snapshot is None
+                        else self._shadow_snapshot.frontiers.selected_source_count
+                    ),
                 }),
             )
 
