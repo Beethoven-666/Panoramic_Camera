@@ -28,9 +28,11 @@
 
 ```text
 连续 RGB-D 采集
-  → 424 px 增量 RGB 运动分析与非正式二维预览（采集期不运行 ORB/Open3D/三维）
-  → 停止预览并关闭采集、写盘资源
-  → 锁定的 S013 Visual Continuity V11 在内存完整执行 P0 → P1 → P2 → P3
+  → writer 提交帧驱动正式兼容的 S013 M0–M3/P0，实时显示 current P0
+     （采集期不运行 ORB-SLAM3、Open3D、TSDF 或三维进程）
+  → 停止并 join UI 预览、drain writer、追平 committed backlog
+  → 闭合 M3 并冻结在线 P0，只重绘尚未定型的尾部
+  → 从 frozen P0 直接继续 P1 → P2 → P3
   → 只发布正式 P3、provenance、report、timing
   → video_delivery.json 最后原子发布
   → 二维资源释放后，按需启动独立三维子进程运行 ORB-SLAM3 与 Open3D TSDF
@@ -241,19 +243,31 @@ TSDF 或任何三维进程，也不会把二维运动冒充为 SE(3) pose。
   --panorama-output 'D:\central_strip_Panoramic_Camera\outputs\video_live'
 ```
 
-在线状态是增量维护的，不会循环调用整段 `run_s13_fast_pipeline`。默认只有当前稳定运动段同时
-满足以下条件后才开始预览：持续 `0.8 s`、累计前进 `32` 个 424 宽分析像素、方向一致率
-`≥0.85`、可靠运动占比 `≥0.75`、至少 5 个源候选、writer queue `≤25%` 且无丢帧。
-方向反转、不可靠运动或超过 `0.4 s` 的帧间隔会重置稳定段。预览通过 latest-only 队列发布
-`live_preview.jpg` 和 `live_preview_state.json`，明确标记为
-`non_authoritative_live_preview`。采集窗口上方持续显示实时 RGB 与 aligned depth，下方直接显示
-同一份最新增量二维全景；运动门槛尚未满足时，下方显示等待单向稳定运动的提示。预览失败只写
-`live_preview_failure.json`，不终止采集或正式二维。
+在线状态按 writer 已成功提交的帧增量维护，不会循环调用整段 `run_s13_fast_pipeline`。writer
+回调只追加包含 frame id、`frames.csv` 行号和已写文件身份的 committed ledger，并通知独立的
+online P0 worker；运动估计、source selection、layout 和渲染都不在相机或 writer 回调中执行。
+worker 从写盘后的 JPEG 构建与离线 V11 共用的 motion、assignment 和 P0，维护 sealed prefix 与
+mutable tail，并把完整 current P0 缩放一次供 UI 显示。它不再使用固定的最后 24 个源或固定中央
+窄带，因此长扫描预览会保留已经封存的起始区域。
 
-停采时程序立即停止并 join 预览线程，随后等待 writer drain。正式 handoff 当前只复用经过验证
-的输入与 committed ledger（`reuse_level=validated_inputs_only`）；在线 pair/M6 evidence 不会注入
-正式 authority。正式 V11 会从同一已提交会话重新计算完整 P0–P3，正常 production 模式不写
-P0/P1/P2 stage PNG，只从内存 P3 发布：
+默认只有当前稳定运动段同时满足以下条件后才发布 UI 预览：持续 `0.8 s`、累计前进 `32` 个
+424 宽分析像素、方向一致率 `≥0.85`、可靠运动占比 `≥0.75`、至少 5 个源候选、writer queue
+`≤25%` 且无丢帧。方向反转、不可靠运动或超过 `0.4 s` 的帧间隔会重置稳定段。
+`live_preview.jpg` 和 `live_preview_state.json` 使用 latest-only 队列并标记
+`non_authoritative_live_preview`；UI 快照可以为保持采集流畅而丢弃，但 committed ledger、motion
+状态和 P0 backlog 不会因此丢失。采集窗口上方显示实时 RGB 与 aligned depth，下方显示同一份
+current P0。预览失败只写 `live_preview_failure.json`、禁用后续 UI 预览，不终止采集或正式二维。
+
+停采时程序先停止并 join UI 预览，再 drain writer；online P0 worker 继续处理 committed backlog，
+追平后才闭合最终 M3。`S13FrozenP0Authority` 绑定 production identity、会话文件、连续 committed
+ledger、P0 像素与 owner provenance。正常路径只重绘未定型尾部，handoff 使用
+`reuse_level=frozen_p0_authority_v1`，production 通过 `run_s13_from_p0()` 直接继续 P1/P2/P3，
+不会重新计算完整 M0–M3/P0。在线 pair/M6 evidence 仍不会注入正式 authority。
+
+sealed assignment 由语义、图像 ROI 和 valid ROI checkpoint 链保护。最终 schedule 与在线前缀
+不一致时，程序回退到最后一致 checkpoint、重绘其后的尾部并记录原因；不会静默复用错误前缀。
+如果在线 worker 或冻结校验失败，则显式降为 `validated_inputs_only` 并完整重算，失败原因保留在
+handoff/timing 中。正常 production 模式不写 P0/P1/P2 stage PNG，只从内存 P3 发布：
 
 ```text
 video_panorama.jpg
@@ -265,7 +279,19 @@ video_delivery.json          # 最后原子发布
 ```
 
 同一会话、同一锁定配置下，live 与 offline 必须由同一 publisher 生成字节一致的
-`video_panorama.png`；P0–P3 内存像素 SHA-256 逐阶段比较，首个不一致阶段即 fail-closed。
+`video_panorama.png`；P0–P3 内存像素 SHA-256 逐阶段比较，首个不一致阶段即 fail-closed。预览
+像素不会直接发布为正式结果。`video_report.json.live_handoff` 和
+`video_timing.json.online_2d` 会记录 P0 前缀复用比例、sealed/mutable/tail source 数、committed
+追平与尾部闭合时间、checkpoint 回退及原因、是否完整重算 M0–M3，以及 writer drops/errors。
+
+当前回放验收报告位于
+`benchmarks/s013_online_p0_final_acceptance/final_acceptance.json`。它使用现有 `video_live` 与
+`video_live1` 真实 RGB-D 录制会话，按设备时间戳节奏各执行 1 次 warm-up 和 2 次正式计时；这不是
+一次新的物理相机采集。4 次正式运行的停采到 P3 发布合并 median/p95 为 `10.922/11.344 s`，
+尾部闭合 median/p95 为 `0.0634/0.0736 s`，writer drops/errors 均为 0，采集期 ORB-SLAM3、
+二维发布前 Open3D/TSDF/三维进程调用均为 0，最终 P0–P3 SHA 全部与离线基线一致。正常运行尾部
+为 4 个 source；一次最终 schedule 变化显式记录 `final_schedule_changed`，回退后一致前缀复用率
+为 `93.46%`、尾部为 7 个 source，最终像素仍与离线基线一致。
 
 `g305-video-panorama` 默认在二维发布和资源释放后启动独立 post-3D 子进程；使用
 `--defer-3d` 可只生成二维。`g305-video-live` 默认延后三维，只有显式传 `--post-3d` 才启动：
@@ -799,8 +825,9 @@ Trigger Out 边沿的延时。它们分别写入并分别回读，不会用一�
 | 照片 TSDF | 必需、只读、不得反馈 RGB 全景 |
 | 视频正式 2-D identity | 精确 S013 Visual Continuity V11 production lock；无 baseline fallback |
 | 视频正式 2-D pose | `ignore_pose`；采集和二维均不运行 ORB/Open3D/三维 |
-| 视频在线分析 | 424 px 增量 RGB motion；默认 `0.8 s + 32 px` 后允许非正式预览 |
-| 视频正式 stage | 内存完整 P0–P3；正常首图只落盘正式 P3，不写 P0/P1/P2 stage PNG |
+| 视频在线分析 | writer committed ledger 驱动的 424 px 增量 M0–M3/P0；默认 `0.8 s + 32 px` 后显示 current P0 |
+| 视频停采收敛 | drain writer 和 P0 backlog 后冻结 P0；正常只闭合 mutable tail，失配回退到最后一致 checkpoint |
+| 视频正式 stage | 从 `S13FrozenP0Authority` 继续 P1–P3；冻结失败才完整重算；正常首图只落盘正式 P3 |
 | 视频 post-3D ORB | 二维交付与资源释放后，在独立进程选择约 `8 FPS` 真实帧运行 |
 | 视频 3-D 输出 | 全部位于二维输出的 `3d/`；失败不得撤销二维 |
 
@@ -829,7 +856,7 @@ git diff --check
 | Unified RGB | `test_calibrated_rgb_pushbroom.py`、`test_geometry_assisted_local_warp.py`、`test_handoff_continuity.py` |
 | 发布 | `test_sequence_delivery.py`、`test_sequence_integration.py`、`test_config.py` |
 | TSDF | `test_dense_fusion.py` |
-| 视频正式 V11 | `test_video_s13_v11_promotion.py`、`test_video_s13_v11_production_route.py`、`test_video_s13_live_acceptance.py`、`test_video_live.py`、`test_video_s13_live.py`、`test_video_3d_postprocess.py`、`test_video_delivery.py` |
+| 视频正式 V11 | `test_video_s13_v11_promotion.py`、`test_video_s13_v11_production_route.py`、`test_video_s13_live_acceptance.py`、`test_video_s13_online_p0.py`、`test_video_live.py`、`test_video_s13_live.py`、`test_video_3d_postprocess.py`、`test_video_delivery.py` |
 
 ## 常见问题
 
