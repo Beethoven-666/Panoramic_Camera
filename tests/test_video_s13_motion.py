@@ -4,7 +4,13 @@ from dataclasses import replace
 
 import numpy as np
 
-from panorama_demo.video_s13_motion import S13MotionEdge, build_basic_s13_progress
+from panorama_demo.video_s13_motion import (
+    S13MotionEdge,
+    build_basic_s13_progress,
+    measure_s13_motion,
+    measure_s13_motion_edge,
+    prepare_s13_motion_frame,
+)
 from panorama_demo.video_s13_fast_pipeline import _measure_fast_motion
 from panorama_demo.video_s13_session import S13RenderFrame
 
@@ -150,3 +156,37 @@ def test_fast_deferred_motion_restores_step4_order_without_reliable_step1(
     assert [edge.step for edge in motion] == [1, 2, 4]
     assert profile["step4_computed"] is True
     assert execution["merged_edge_order"] == [1, 2, 4]
+
+
+def test_shared_single_edge_primitive_matches_batch_motion() -> None:
+    import cv2
+
+    frames = (_frame(0), _frame(1))
+    rng = np.random.default_rng(130)
+    left = rng.integers(0, 256, size=(32, 64), dtype=np.uint8)
+    right = np.roll(left, -3, axis=1)
+    prepared_analysis = ((left, 1.0), (right, 1.0))
+    gradients = tuple(
+        cv2.Sobel(image, cv2.CV_32F, 1, 1, ksize=3)
+        for image in (left, right)
+    )
+    batch = measure_s13_motion(
+        frames,
+        analysis_width_px=64,
+        steps=(1,),
+        prepared_analysis=prepared_analysis,
+        prepared_gradients=gradients,
+    )
+    prepared = tuple(
+        prepare_s13_motion_frame(
+            frame,
+            analysis_width_px=64,
+            prepared_analysis=prepared_analysis[index],
+            prepared_gradient=gradients[index],
+            include_source_identity=False,
+        )
+        for index, frame in enumerate(frames)
+    )
+    single = measure_s13_motion_edge(prepared[0], prepared[1], step=1)
+
+    assert single == batch[0]

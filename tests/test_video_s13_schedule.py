@@ -5,7 +5,10 @@ from pathlib import Path
 import numpy as np
 
 from panorama_demo.session import CameraIntrinsics
-from panorama_demo.video_s13_base_renderer import render_s13_p0
+from panorama_demo.video_s13_base_renderer import (
+    render_s13_p0,
+    render_s13_p0_assignment,
+)
 from panorama_demo.video_s13_motion import (
     S13MotionEdge,
     build_basic_s13_progress,
@@ -97,3 +100,35 @@ def test_repeated_fast_frames_do_not_expand_the_same_scene() -> None:
     assert np.array_equal(fast_result.image, slow_result.image)
     assert np.array_equal(fast_result.image, scene)
 
+
+def test_assignment_roi_renderer_matches_batch_p0_pixels_and_provenance() -> None:
+    calibration = CameraIntrinsics(
+        width=64, height=32, fx=50.0, fy=50.0, cx=31.5, cy=15.5, distortion=(),
+    )
+    scene = np.random.default_rng(131).integers(
+        0, 256, size=(32, 88, 3), dtype=np.uint8,
+    )
+    _progress, selection, schedule, batch = _render_scan(
+        scene, (0, 8, 16, 24), calibration
+    )
+    assignment = schedule.assignments[1]
+    source = scene[:, 8:72]
+    roi = render_s13_p0_assignment(
+        assignment,
+        calibration,
+        source,
+        placement_method=selection.placement_methods[1],
+    )
+    columns = np.s_[:, assignment.left_x:assignment.right_x]
+
+    assert np.array_equal(roi.image_roi, batch.image[columns])
+    assert np.array_equal(roi.valid_roi, batch.valid_mask[columns])
+    for name in (
+        "owner_frame_id", "owner_source_index", "assignment_index",
+        "source_u", "source_v", "valid",
+    ):
+        assert np.array_equal(
+            roi.pixel_provenance_roi[name],
+            batch.pixel_provenance[name][columns],
+            equal_nan=True,
+        )

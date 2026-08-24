@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 
 import numpy as np
 
-from .video_s13_base_renderer import render_s13_p0
+from .video_s13_base_renderer import S13P0Result, render_s13_p0
 from .video_s13_c2e import select_s13_fast_c2e
 from .video_s13_m5 import (
     reset_s13_m5_resident_batch, reset_s13_m5_resident_remap, reset_s13_m5_runtime_unsealed,
@@ -36,6 +37,21 @@ from .video_s13_session import S13Session, S13ValidatedRgbHandoff
 from .video_s13_stage_writer import S13StageImageWriter
 from .video_s13_trajectory import S13Trajectory
 from .video_s13_vertical import estimate_s13_vertical, render_s13_p1_from_raw
+
+
+@dataclass(frozen=True)
+class S13P0Continuation:
+    """Complete in-memory authority required to continue at formal P1."""
+
+    p0: S13StageResult
+    p0_render: S13P0Result
+    schedule: Any
+    selection: Any
+    motion: tuple[Any, ...]
+    layout: Any
+    selected_hypothesis_ids: tuple[int, ...]
+    motion_profile: Mapping[str, object]
+    motion_execution: Mapping[str, object]
 
 
 def _submit_immutable_stage(
@@ -250,7 +266,7 @@ def _build_fast_authority(
     }
 
 
-def run_s13_fast_pipeline(
+def _run_s13_pipeline(
     *,
     session: S13Session,
     trajectory: S13Trajectory,
@@ -276,6 +292,7 @@ def run_s13_fast_pipeline(
     m5_p0_map_mode: Literal["full_reference", "compact_exact_window"] = "full_reference",
     m5_compact_full_reference_fallback: bool = True,
     stage_output_stages: tuple[str, ...] | None = None,
+    p0_continuation: S13P0Continuation | None = None,
 ) -> dict[str, Any]:
     """Render P0--P3 once, keeping every parent and decision in memory."""
 
@@ -306,74 +323,105 @@ def run_s13_fast_pipeline(
         output, max_pending=4, enabled_stages=stage_output_stages,
     )
     try:
-        tick = time.perf_counter()
-        prepared_analysis = frame_store.prefetch_analysis(
-            session.frames, analysis_width_px, workers=2
-        )
-        prepared_gradients = tuple(
-            frame_store.analysis_gradient(frame, analysis_width_px)
-            for frame in session.frames
-        )
-        motion, motion_profile, motion_execution = _measure_fast_motion(
-            session.frames, analysis_width_px=analysis_width_px,
-            prepared_analysis=prepared_analysis,
-            prepared_gradients=prepared_gradients,
-            policy=motion_execution_policy,
-        )
-        del prepared_analysis, prepared_gradients
-        frame_store.release_analysis_arrays()
-        layout = build_s13_m3_layout(session.frames, motion, trajectory)
-        if not layout.progress.spatial:
-            raise ValueError("S1.3 fast pipeline has no spatial scan segment")
-        schedule_plan = plan_s13_m3_schedule(
-            layout.progress,
-            motion,
-            session.calibration,
-            normal_target_advance_px=normal_target_advance_px,
-            risky_target_advance_px=risky_target_advance_px,
-            segment_break_pairs=layout.segment_break_pairs,
-            canonical_scan_direction=layout.canonical_scan_direction,
-        )
-        if len(schedule_plan.schedules) != 1:
-            raise ValueError("S1.3 fast pipeline does not publish panel sets")
-        selection, schedule = schedule_plan.selections[0], schedule_plan.schedules[0]
-        frame_store.retain_raw({
-            assignment.frame_id
-            for assignment in schedule.assignments
-            if not assignment.zero_width
-        })
-        timings["m0_m3.motion_and_layout"] = time.perf_counter() - tick
-        preload_tick = time.perf_counter()
-        if resident_runtime is not None:
-            resident_runtime.preload_sources({
-                assignment.frame_id: image_loader(assignment.frame_id)
-                for assignment in schedule.assignments if not assignment.zero_width
+        if p0_continuation is None:
+            tick = time.perf_counter()
+            prepared_analysis = frame_store.prefetch_analysis(
+                session.frames, analysis_width_px, workers=2
+            )
+            prepared_gradients = tuple(
+                frame_store.analysis_gradient(frame, analysis_width_px)
+                for frame in session.frames
+            )
+            motion, motion_profile, motion_execution = _measure_fast_motion(
+                session.frames, analysis_width_px=analysis_width_px,
+                prepared_analysis=prepared_analysis,
+                prepared_gradients=prepared_gradients,
+                policy=motion_execution_policy,
+            )
+            del prepared_analysis, prepared_gradients
+            frame_store.release_analysis_arrays()
+            layout = build_s13_m3_layout(session.frames, motion, trajectory)
+            if not layout.progress.spatial:
+                raise ValueError("S1.3 fast pipeline has no spatial scan segment")
+            schedule_plan = plan_s13_m3_schedule(
+                layout.progress,
+                motion,
+                session.calibration,
+                normal_target_advance_px=normal_target_advance_px,
+                risky_target_advance_px=risky_target_advance_px,
+                segment_break_pairs=layout.segment_break_pairs,
+                canonical_scan_direction=layout.canonical_scan_direction,
+            )
+            if len(schedule_plan.schedules) != 1:
+                raise ValueError("S1.3 fast pipeline does not publish panel sets")
+            selection, schedule = schedule_plan.selections[0], schedule_plan.schedules[0]
+            frame_store.retain_raw({
+                assignment.frame_id
+                for assignment in schedule.assignments
+                if not assignment.zero_width
             })
-        timings["m0_m3.preload"] = time.perf_counter() - preload_tick
-        selected_hypothesis_ids = selected_hypothesis_ids_for_spatial_sources(
-            layout, selection.frame_ids
-        )
-        render_tick = time.perf_counter()
-        p0_render = render_s13_p0(
-            schedule,
-            session.calibration,
-            image_loader,
-            placement_methods=selection.placement_methods,
-            selected_hypothesis_ids=selected_hypothesis_ids,
-            resident_remap=p0_resident_remap,
-            resident_device_remap=p0_resident_device_remap,
-            resident_stage=resident_runtime if p0_resident_device_remap is not None else None,
-        )
-        timings["p0.render"] = time.perf_counter() - render_tick
-        p0 = runtime.initialize_p0(S13StageResult(
-            runtime.run_id, S13Stage.P0, 0, None, p0_render.image,
-            p0_render.valid_mask, {"schedule": schedule, "selection": selection,
-                                   "motion": motion, "layout": layout},
-        ))
-        submit_tick = time.perf_counter()
-        _submit_immutable_stage(writer, "P0", p0.image)
-        timings["p0.submit"] = time.perf_counter() - submit_tick
-        timings["m0_m3"] = time.perf_counter() - tick
+            timings["m0_m3.motion_and_layout"] = time.perf_counter() - tick
+            preload_tick = time.perf_counter()
+            if resident_runtime is not None:
+                resident_runtime.preload_sources({
+                    assignment.frame_id: image_loader(assignment.frame_id)
+                    for assignment in schedule.assignments if not assignment.zero_width
+                })
+            timings["m0_m3.preload"] = time.perf_counter() - preload_tick
+            selected_hypothesis_ids = selected_hypothesis_ids_for_spatial_sources(
+                layout, selection.frame_ids
+            )
+            render_tick = time.perf_counter()
+            p0_render = render_s13_p0(
+                schedule,
+                session.calibration,
+                image_loader,
+                placement_methods=selection.placement_methods,
+                selected_hypothesis_ids=selected_hypothesis_ids,
+                resident_remap=p0_resident_remap,
+                resident_device_remap=p0_resident_device_remap,
+                resident_stage=resident_runtime if p0_resident_device_remap is not None else None,
+            )
+            timings["p0.render"] = time.perf_counter() - render_tick
+            p0 = runtime.initialize_p0(S13StageResult(
+                runtime.run_id, S13Stage.P0, 0, None, p0_render.image,
+                p0_render.valid_mask, {"schedule": schedule, "selection": selection,
+                                       "motion": motion, "layout": layout},
+            ))
+            submit_tick = time.perf_counter()
+            _submit_immutable_stage(writer, "P0", p0.image)
+            timings["p0.submit"] = time.perf_counter() - submit_tick
+            timings["m0_m3"] = time.perf_counter() - tick
+        else:
+            schedule = p0_continuation.schedule
+            selection = p0_continuation.selection
+            motion = p0_continuation.motion
+            layout = p0_continuation.layout
+            selected_hypothesis_ids = p0_continuation.selected_hypothesis_ids
+            motion_profile = dict(p0_continuation.motion_profile)
+            motion_execution = dict(p0_continuation.motion_execution)
+            p0_render = p0_continuation.p0_render
+            frame_store.retain_raw({
+                assignment.frame_id
+                for assignment in schedule.assignments
+                if not assignment.zero_width
+            })
+            preload_tick = time.perf_counter()
+            if resident_runtime is not None:
+                resident_runtime.preload_sources({
+                    assignment.frame_id: image_loader(assignment.frame_id)
+                    for assignment in schedule.assignments if not assignment.zero_width
+                })
+            timings["resume_from_p0.preload"] = time.perf_counter() - preload_tick
+            p0 = runtime.initialize_p0(S13StageResult(
+                runtime.run_id, S13Stage.P0, 0, None,
+                np.asarray(p0_continuation.p0.image),
+                np.asarray(p0_continuation.p0.valid),
+                {"schedule": schedule, "selection": selection,
+                 "motion": motion, "layout": layout},
+            ))
+            timings["m0_m3"] = 0.0
+            timings["p0.render"] = 0.0
 
         tick = time.perf_counter()
         estimate_tick = time.perf_counter()
@@ -643,7 +691,32 @@ def run_s13_fast_pipeline(
         "m62": m62,
         "frame_store": frame_store.report().__dict__,
         "authority": authority,
+        "p0_continuation": S13P0Continuation(
+            p0=p0,
+            p0_render=p0_render,
+            schedule=schedule,
+            selection=selection,
+            motion=tuple(motion),
+            layout=layout,
+            selected_hypothesis_ids=tuple(selected_hypothesis_ids),
+            motion_profile=dict(motion_profile),
+            motion_execution=dict(motion_execution),
+        ),
     }
 
 
-__all__ = ["run_s13_fast_pipeline"]
+def run_s13_fast_pipeline(**kwargs: Any) -> dict[str, Any]:
+    """Run the complete offline M0--M6/P0--P3 authority."""
+
+    return _run_s13_pipeline(**kwargs, p0_continuation=None)
+
+
+def run_s13_from_p0(
+    *, p0_continuation: S13P0Continuation, **kwargs: Any
+) -> dict[str, Any]:
+    """Continue the exact formal pipeline at P1 without recomputing M0--M3/P0."""
+
+    return _run_s13_pipeline(**kwargs, p0_continuation=p0_continuation)
+
+
+__all__ = ["S13P0Continuation", "run_s13_fast_pipeline", "run_s13_from_p0"]

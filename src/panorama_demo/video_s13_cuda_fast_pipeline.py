@@ -12,7 +12,11 @@ from typing import Any, Literal
 
 from .cuda_backend import reset_cuda_audit
 from .video_s13_cuda_runtime import S13CudaRuntime
-from .video_s13_fast_pipeline import run_s13_fast_pipeline
+from .video_s13_fast_pipeline import (
+    S13P0Continuation,
+    run_s13_fast_pipeline,
+    run_s13_from_p0,
+)
 from .video_s13_session import S13Session, S13ValidatedRgbHandoff
 from .video_s13_trajectory import S13Trajectory
 
@@ -33,11 +37,13 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
                                m5_pair_base_atlas: bool = False,
                                m5_p0_map_mode: Literal["full_reference", "compact_exact_window"] = "full_reference",
                                m5_compact_full_reference_fallback: bool = True,
-                               stage_output_stages: tuple[str, ...] | None = None) -> dict[str, Any]:
+                               stage_output_stages: tuple[str, ...] | None = None,
+                               p0_continuation: S13P0Continuation | None = None) -> dict[str, Any]:
     reset_cuda_audit()
     runtime = S13CudaRuntime()
     try:
-        result = run_s13_fast_pipeline(
+        runner = run_s13_fast_pipeline if p0_continuation is None else run_s13_from_p0
+        result = runner(
             session=session, trajectory=trajectory, output=output,
             analysis_width_px=analysis_width_px,
             normal_target_advance_px=normal_target_advance_px,
@@ -62,6 +68,7 @@ def run_s13_cuda_fast_pipeline(*, session: S13Session, trajectory: S13Trajectory
             m5_p0_map_mode=m5_p0_map_mode,
             m5_compact_full_reference_fallback=m5_compact_full_reference_fallback,
             stage_output_stages=stage_output_stages,
+            **({} if p0_continuation is None else {"p0_continuation": p0_continuation}),
         )
         for key, value in result["timings"].items():
             runtime.note_stage(str(key), float(value))

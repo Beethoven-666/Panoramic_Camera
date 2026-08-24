@@ -70,6 +70,20 @@ class S13MotionEdge:
 
 
 @dataclass(frozen=True)
+class S13PreparedMotionFrame:
+    """One exact M0 input shared by batch and committed-ledger execution."""
+
+    frame_id: int
+    source_jpeg_sha256: str
+    decoded_pixel_sha256: str
+    gray_424: np.ndarray
+    output_scale: float
+    gradient_424: np.ndarray
+    grid_points: np.ndarray
+    preprocessing_fingerprint: str
+
+
+@dataclass(frozen=True)
 class S13Progress:
     frame_ids: tuple[int, ...]
     centers_x: tuple[float, ...]
@@ -92,6 +106,66 @@ def _analysis_gray(frame: S13RenderFrame, width: int) -> tuple[np.ndarray, float
     if scale < 1.0:
         image = cv2.resize(image, (max(1, int(round(image.shape[1] * scale))), max(1, int(round(image.shape[0] * scale)))), interpolation=cv2.INTER_AREA)
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), 1.0 / scale
+
+
+def _array_sha256(value: np.ndarray) -> str:
+    array = np.ascontiguousarray(value)
+    digest = hashlib.sha256()
+    digest.update(array.dtype.str.encode("ascii"))
+    digest.update(str(tuple(int(item) for item in array.shape)).encode("ascii"))
+    digest.update(memoryview(array).cast("B"))
+    return digest.hexdigest()
+
+
+def prepare_s13_motion_frame(
+    frame: S13RenderFrame,
+    *,
+    analysis_width_px: int = 424,
+    prepared_analysis: tuple[np.ndarray, float] | None = None,
+    prepared_gradient: np.ndarray | None = None,
+    include_source_identity: bool = True,
+) -> S13PreparedMotionFrame:
+    """Prepare a frame once for the exact LK/phase primitive.
+
+    ``prepared_analysis`` is the batch frame-store handoff.  The committed
+    online path omits it and therefore decodes the exact JPEG through the same
+    ``read_s13_rgb`` implementation.
+    """
+
+    gray, output_scale = (
+        _analysis_gray(frame, analysis_width_px)
+        if prepared_analysis is None else prepared_analysis
+    )
+    gray = np.asarray(gray)
+    gradient = np.asarray(
+        cv2.Sobel(gray, cv2.CV_32F, 1, 1, ksize=3)
+        if prepared_gradient is None else prepared_gradient
+    )
+    points = _grid_points(gray)
+    source_sha = ""
+    if include_source_identity:
+        source_sha = hashlib.sha256(frame.color_path.read_bytes()).hexdigest()
+    decoded_sha = _array_sha256(gray) if include_source_identity else ""
+    fingerprint = (
+        hashlib.sha256(
+            (
+                f"s013-m0/v1|width={int(analysis_width_px)}|scale={float(output_scale):.17g}|"
+                f"gray={decoded_sha}|gradient={_array_sha256(gradient)}|"
+                f"points={_array_sha256(points)}"
+            ).encode("ascii")
+        ).hexdigest()
+        if include_source_identity else ""
+    )
+    return S13PreparedMotionFrame(
+        frame_id=int(frame.frame_id),
+        source_jpeg_sha256=source_sha,
+        decoded_pixel_sha256=decoded_sha,
+        gray_424=gray,
+        output_scale=float(output_scale),
+        gradient_424=gradient,
+        grid_points=points,
+        preprocessing_fingerprint=fingerprint,
+    )
 
 
 def _grid_points(gray: np.ndarray, *, cell_px: int = 28, per_cell: int = 4) -> np.ndarray:
@@ -327,6 +401,91 @@ def _extract_hypotheses(
     )
 
 
+def measure_s13_motion_edge(
+    source: S13PreparedMotionFrame,
+    target: S13PreparedMotionFrame,
+    *,
+    step: int,
+    profile: MutableMapping[str, float] | None = None,
+    hanning: np.ndarray | None = None,
+) -> S13MotionEdge | None:
+    """Measure one exact step-1/2/4 edge from shared prepared inputs."""
+
+    edge_started = time.perf_counter()
+    left, right = source.gray_424, target.gray_424
+    if left.shape != right.shape or not np.isclose(source.output_scale, target.output_scale):
+        return None
+    lk_started = time.perf_counter()
+    lk_x, lk_y, total_weight, count, observations = _lk(
+        left,
+        right,
+        source.output_scale,
+        points=source.grid_points,
+        gradient=source.gradient_424,
+    )
+    lk_seconds = time.perf_counter() - lk_started
+    lo, hi = int(round(left.shape[1] * 0.15)), int(round(left.shape[1] * 0.85))
+    if hanning is None:
+        hanning = cv2.createHanningWindow((hi - lo, left.shape[0]), cv2.CV_32F)
+    phase_started = time.perf_counter()
+    phase_x, phase_y, response = _phase(
+        left, right, source.output_scale, hanning=hanning
+    )
+    phase_seconds = time.perf_counter() - phase_started
+    use_lk = lk_x is not None and count >= 8 and total_weight >= 2.0
+    selected = lk_x if use_lk else phase_x
+    method = (
+        "grid_lk" if use_lk
+        else "phase_correlation" if selected is not None
+        else "unavailable"
+    )
+    disagreement = (
+        lk_x is not None
+        and phase_x is not None
+        and abs(lk_x - phase_x) > max(3.0, 0.5 * max(abs(lk_x), abs(phase_x)))
+    )
+    reasons = []
+    if count < 8 or total_weight < 2.0:
+        reasons.append("low_lk_support")
+    if disagreement:
+        reasons.append("lk_phase_disagreement")
+    if response < 0.05:
+        reasons.append("low_phase_response")
+    hypothesis_started = time.perf_counter()
+    hypotheses = _extract_hypotheses(
+        observations,
+        selected_advance_px=selected,
+        image_width_px=float(left.shape[1]) * source.output_scale,
+        image_height_px=float(left.shape[0]) * source.output_scale,
+    )
+    hypothesis_seconds = time.perf_counter() - hypothesis_started
+    if profile is not None:
+        profile.update({
+            "total_seconds": time.perf_counter() - edge_started,
+            "lk_seconds": lk_seconds,
+            "phase_seconds": phase_seconds,
+            "hypothesis_seconds": hypothesis_seconds,
+        })
+    return S13MotionEdge(
+        source_frame_id=source.frame_id,
+        target_frame_id=target.frame_id,
+        step=int(step),
+        lk_advance_px=lk_x,
+        lk_vertical_px=lk_y,
+        lk_total_weight=total_weight,
+        lk_observation_count=count,
+        phase_advance_px=phase_x,
+        phase_vertical_px=phase_y,
+        phase_response=response,
+        selected_advance_px=selected,
+        selected_method=method,
+        risk=bool(reasons),
+        telemetry_only_reasons=tuple(reasons),
+        observations=observations,
+        motion_hypotheses=hypotheses,
+    )
+
+
 def measure_s13_motion(
     frames: Sequence[S13RenderFrame], *, analysis_width_px: int = 424,
     steps: Sequence[int] = (1, 2, 4),
@@ -341,81 +500,49 @@ def measure_s13_motion(
                "phase_seconds": 0.0, "hypothesis_seconds": 0.0}
         for step in requested_steps
     }
-    analysis = (
-        list(prepared_analysis)
-        if prepared_analysis is not None
-        else [_analysis_gray(frame, analysis_width_px) for frame in frames]
-    )
-    if len(analysis) != len(frames):
+    analysis = list(prepared_analysis) if prepared_analysis is not None else None
+    if analysis is not None and len(analysis) != len(frames):
         raise ValueError("S1.3 prepared analysis count disagrees with frames")
     # Every source frame participates in up to three step hypotheses.  Feature
     # detection and Sobel are source properties, not pair properties; caching
     # them leaves each LK and phase invocation unchanged.
-    points_by_index = [_grid_points(gray) for gray, _scale in analysis]
-    gradients_by_index = (
-        list(prepared_gradients)
-        if prepared_gradients is not None
-        else [cv2.Sobel(gray, cv2.CV_32F, 1, 1, ksize=3) for gray, _scale in analysis]
-    )
-    if len(gradients_by_index) != len(frames):
+    gradients = list(prepared_gradients) if prepared_gradients is not None else None
+    if gradients is not None and len(gradients) != len(frames):
         raise ValueError("S1.3 prepared gradient count disagrees with frames")
-    hanning_by_shape: dict[tuple[int, int], np.ndarray] = {}
+    prepared = tuple(
+        prepare_s13_motion_frame(
+            frame,
+            analysis_width_px=analysis_width_px,
+            prepared_analysis=None if analysis is None else analysis[index],
+            prepared_gradient=None if gradients is None else gradients[index],
+            include_source_identity=False,
+        )
+        for index, frame in enumerate(frames)
+    )
     edges: list[S13MotionEdge] = []
+    hanning_by_shape: dict[tuple[int, int], np.ndarray] = {}
     for step in steps:
         for index in range(len(frames) - step):
-            edge_started = time.perf_counter()
-            left, scale = analysis[index]
-            right, right_scale = analysis[index + step]
-            if left.shape != right.shape or not np.isclose(scale, right_scale):
-                continue
-            lk_started = time.perf_counter()
-            lk_x, lk_y, total_weight, count, observations = _lk(
-                left, right, scale, points=points_by_index[index],
-                gradient=gradients_by_index[index],
-            )
-            counters[int(step)]["lk_seconds"] += time.perf_counter() - lk_started
-            lo, hi = int(round(left.shape[1] * 0.15)), int(round(left.shape[1] * 0.85))
-            phase_shape = (left.shape[0], hi - lo)
+            edge_profile: dict[str, float] = {}
+            left_shape = prepared[index].gray_424.shape
+            lo, hi = int(round(left_shape[1] * 0.15)), int(round(left_shape[1] * 0.85))
+            phase_shape = (left_shape[0], hi - lo)
             hanning = hanning_by_shape.get(phase_shape)
             if hanning is None:
                 hanning = cv2.createHanningWindow(
                     (phase_shape[1], phase_shape[0]), cv2.CV_32F
                 )
                 hanning_by_shape[phase_shape] = hanning
-            phase_started = time.perf_counter()
-            phase_x, phase_y, response = _phase(left, right, scale, hanning=hanning)
-            counters[int(step)]["phase_seconds"] += time.perf_counter() - phase_started
-            use_lk = lk_x is not None and count >= 8 and total_weight >= 2.0
-            selected = lk_x if use_lk else phase_x
-            method = "grid_lk" if use_lk else "phase_correlation" if selected is not None else "unavailable"
-            disagreement = lk_x is not None and phase_x is not None and abs(lk_x - phase_x) > max(3.0, 0.5 * max(abs(lk_x), abs(phase_x)))
-            reasons = []
-            if count < 8 or total_weight < 2.0:
-                reasons.append("low_lk_support")
-            if disagreement:
-                reasons.append("lk_phase_disagreement")
-            if response < 0.05:
-                reasons.append("low_phase_response")
-            hypothesis_started = time.perf_counter()
-            hypotheses = _extract_hypotheses(
-                observations,
-                selected_advance_px=selected,
-                image_width_px=float(left.shape[1]) * scale,
-                image_height_px=float(left.shape[0]) * scale,
+            edge = measure_s13_motion_edge(
+                prepared[index], prepared[index + step], step=int(step),
+                profile=edge_profile, hanning=hanning,
             )
-            counters[int(step)]["hypothesis_seconds"] += (
-                time.perf_counter() - hypothesis_started
-            )
-            edges.append(S13MotionEdge(
-                source_frame_id=frames[index].frame_id, target_frame_id=frames[index + step].frame_id,
-                step=step, lk_advance_px=lk_x, lk_vertical_px=lk_y, lk_total_weight=total_weight,
-                lk_observation_count=count, phase_advance_px=phase_x, phase_vertical_px=phase_y,
-                phase_response=response, selected_advance_px=selected, selected_method=method,
-                risk=bool(reasons), telemetry_only_reasons=tuple(reasons),
-                observations=observations, motion_hypotheses=hypotheses,
-            ))
+            if edge is None:
+                continue
+            edges.append(edge)
             counters[int(step)]["edge_count"] += 1
-            counters[int(step)]["total_seconds"] += time.perf_counter() - edge_started
+            for name in ("total_seconds", "lk_seconds", "phase_seconds", "hypothesis_seconds"):
+                counters[int(step)][name] += edge_profile[name]
     if profile is not None:
         bookkeeping_started = time.perf_counter()
         profile.clear()
@@ -573,6 +700,7 @@ def descriptive_delta_risk(delta_px: float) -> dict[str, object]:
 
 
 __all__ = [
-    "S13MotionEdge", "S13Progress", "build_basic_s13_progress", "descriptive_delta_risk",
-    "measure_s13_motion", "reliable_step1_direction_evidence",
+    "S13MotionEdge", "S13PreparedMotionFrame", "S13Progress", "build_basic_s13_progress",
+    "descriptive_delta_risk", "measure_s13_motion", "measure_s13_motion_edge",
+    "prepare_s13_motion_frame", "reliable_step1_direction_evidence",
 ]
