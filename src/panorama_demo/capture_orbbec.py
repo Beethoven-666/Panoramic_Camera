@@ -1655,6 +1655,34 @@ def run_capture(args: argparse.Namespace) -> Path:
     return run_video_capture(args)
 
 
+def _discover_video_device(
+    sdk: Any,
+    *,
+    wait_for_camera: bool,
+    poll_interval_seconds: float = 0.5,
+) -> tuple[Any, Any]:
+    """Return the first camera, optionally waiting for USB hot-plug."""
+
+    context = sdk.Context()
+    waiting = False
+    while True:
+        device_list = context.query_devices()
+        if device_list.get_count() > 0:
+            if waiting:
+                print("Orbbec camera detected; starting live capture.", flush=True)
+            return context, device_list.get_device_by_index(0)
+        if not wait_for_camera:
+            raise RuntimeError("No Orbbec camera found")
+        if not waiting:
+            print(
+                "No Orbbec camera found; waiting for connection "
+                "(press Ctrl+C to cancel)...",
+                flush=True,
+            )
+            waiting = True
+        time.sleep(poll_interval_seconds)
+
+
 def run_video_capture(
     args: argparse.Namespace,
     *,
@@ -1746,6 +1774,14 @@ def run_video_capture(
             "pyorbbecsdk2 is not installed. Run: python -m pip install pyorbbecsdk2"
         ) from exc
 
+    wait_for_camera = bool(getattr(args, "wait_for_camera", False))
+    _device_context: Any | None = None
+    device: Any | None = None
+    if wait_for_camera:
+        # Do not create an empty session directory while a live command is
+        # merely waiting for the camera to be connected.
+        _device_context, device = _discover_video_device(sdk, wait_for_camera=True)
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session_root = (args.output / f"run_{timestamp}").resolve()
     session_root.mkdir(parents=True, exist_ok=False)
@@ -1762,11 +1798,8 @@ def run_video_capture(
     }
     _write_manifest(session_root, manifest)
 
-    context = sdk.Context()
-    device_list = context.query_devices()
-    if device_list.get_count() == 0:
-        raise RuntimeError("No Orbbec camera found")
-    device = device_list.get_device_by_index(0)
+    if device is None:
+        _device_context, device = _discover_video_device(sdk, wait_for_camera=False)
     manifest["device"] = _device_info(device)
     try:
         manifest["sdk_version"] = sdk.get_version()

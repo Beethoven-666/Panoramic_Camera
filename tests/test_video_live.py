@@ -119,6 +119,50 @@ def test_live_command_rejects_photo_mode() -> None:
         video_live.run(args)
 
 
+def test_live_command_waits_for_camera_by_default() -> None:
+    parser = video_live.build_parser()
+
+    assert parser.parse_args([]).wait_for_camera is True
+    assert parser.parse_args(["--no-wait-for-camera"]).wait_for_camera is False
+
+
+def test_live_command_closes_observer_when_camera_wait_is_cancelled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _spec(tmp_path)
+    stopped: list[bool] = []
+
+    class FakeObserver:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def on_capture_stopping(self) -> None:
+            stopped.append(True)
+
+    monkeypatch.setattr(
+        video_live,
+        "_lock_paths",
+        lambda _path: ({}, tmp_path / "base", tmp_path / "prod"),
+    )
+    monkeypatch.setattr(
+        video_live,
+        "resolve_video_algorithm",
+        lambda *_args, **_kwargs: spec,
+    )
+    monkeypatch.setattr(video_live, "S13V11LiveObserver", FakeObserver)
+    monkeypatch.setattr(
+        video_live,
+        "run_video_capture",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        video_live.run(video_live.build_parser().parse_args([]))
+
+    assert stopped == [True]
+
+
 @pytest.mark.parametrize("name", video_live._CAPTURE_ZERO_COUNTERS)
 def test_live_capture_heavy_processing_counters_are_fail_closed(name: str) -> None:
     audit = {key: 0 for key in video_live._CAPTURE_ZERO_COUNTERS}

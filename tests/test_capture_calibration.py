@@ -986,6 +986,30 @@ def test_diagnostic_capture_manifest_is_marked_before_camera_discovery(
     assert manifest["capture_options"]["diagnostic_unrestricted_auto_exposure"] is False
 
 
+def test_video_device_discovery_waits_for_hotplug(monkeypatch, capsys) -> None:
+    device = object()
+    query_counts = iter((0, 0, 1))
+    device_list = SimpleNamespace(
+        get_count=lambda: next(query_counts),
+        get_device_by_index=lambda _index: device,
+    )
+    context = SimpleNamespace(query_devices=lambda: device_list)
+    sleeps: list[float] = []
+    monkeypatch.setattr(capture.time, "sleep", sleeps.append)
+
+    selected_context, selected_device = capture._discover_video_device(
+        SimpleNamespace(Context=lambda: context),
+        wait_for_camera=True,
+    )
+
+    assert selected_context is context
+    assert selected_device is device
+    assert sleeps == [0.5, 0.5]
+    output = capsys.readouterr().out
+    assert "waiting for connection" in output
+    assert "camera detected" in output
+
+
 def test_video_cli_fps_and_delay_overrides_reach_capture_options(
     tmp_path, monkeypatch
 ) -> None:

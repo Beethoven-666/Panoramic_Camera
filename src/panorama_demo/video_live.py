@@ -44,6 +44,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Spawn isolated ORB-SLAM3/TSDF processing after the 2-D delivery",
     )
+    parser.add_argument(
+        "--no-wait-for-camera",
+        dest="wait_for_camera",
+        action="store_false",
+        help="Fail immediately instead of waiting for an Orbbec camera",
+    )
+    parser.set_defaults(wait_for_camera=True)
     return parser
 
 
@@ -90,7 +97,14 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         production_config_sha256=spec.config_sha256,
         preview_output=args.panorama_output,
     )
-    session_root = run_video_capture(args, observer=observer)
+    try:
+        session_root = run_video_capture(args, observer=observer)
+    except BaseException:
+        # Device discovery happens after the observer starts its worker
+        # threads. Ensure Ctrl+C or an early SDK failure cannot leave those
+        # non-daemon threads keeping the live command alive.
+        observer.on_capture_stopping()
+        raise
     handoff = observer.freeze_handoff()
     snapshot = observer.snapshot()
     manifest = json.loads((session_root / "manifest.json").read_text(encoding="utf-8"))
@@ -154,6 +168,9 @@ def main() -> None:
     args = build_parser().parse_args()
     try:
         run(args)
+    except KeyboardInterrupt:
+        print("Live video cancelled while waiting for camera.", file=sys.stderr)
+        raise SystemExit(130) from None
     except Exception as exc:
         print(f"Live video failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
