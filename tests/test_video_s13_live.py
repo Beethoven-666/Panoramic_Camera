@@ -12,6 +12,7 @@ from panorama_demo.capture_orbbec import (
     LiveFramePacket,
     LiveSessionInfo,
     WrittenRGBDFrame,
+    _compose_capture_preview,
     build_parser,
 )
 from panorama_demo.video_s13_contract import (
@@ -82,6 +83,11 @@ def test_preview_waits_for_both_08_seconds_and_32_analysis_pixels(tmp_path: Path
     assert after.reliable_motion_fraction == 1.0
     assert after.preview_queue_peak == 1
     assert (tmp_path / "live_preview.jpg").is_file()
+    panorama = observer.capture_preview_image()
+    assert panorama is not None
+    assert panorama.dtype == np.uint8
+    assert panorama.ndim == 3 and panorama.shape[2] == 3
+    assert panorama.flags.writeable is False
     state = json.loads((tmp_path / "live_preview_state.json").read_text(encoding="utf-8"))
     assert {
         "schema", "authority", "algorithm_id", "preview_generation",
@@ -104,6 +110,28 @@ def test_preview_waits_for_both_08_seconds_and_32_analysis_pixels(tmp_path: Path
     stopped = json.loads((tmp_path / "live_preview_state.json").read_text(encoding="utf-8"))
     assert stopped["capture_active"] is False
     assert stopped["mutable_source_count"] == 0
+
+
+def test_capture_window_places_live_panorama_below_rgbd_preview() -> None:
+    color = np.full((120, 212, 3), 40, dtype=np.uint8)
+    depth = np.full((120, 212), 500, dtype=np.uint16)
+    panorama = np.full((60, 180, 3), (10, 80, 160), dtype=np.uint8)
+
+    display = _compose_capture_preview(color, depth, 1.0, panorama)
+
+    assert display.shape == (240, 424, 3)
+    panorama_region = display[120:]
+    assert np.any(np.all(panorama_region == (10, 80, 160), axis=2))
+
+
+def test_capture_window_shows_waiting_panel_before_panorama_is_ready() -> None:
+    color = np.zeros((120, 212, 3), dtype=np.uint8)
+    depth = np.full((120, 212), 500, dtype=np.uint16)
+
+    display = _compose_capture_preview(color, depth, 1.0)
+
+    assert display.shape == (240, 424, 3)
+    assert np.any(display[120:] > 0)
 
 
 def test_direction_change_resets_stable_motion_start(tmp_path: Path) -> None:

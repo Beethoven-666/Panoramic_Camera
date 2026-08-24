@@ -63,6 +63,8 @@ def test_fast_authority_exposes_exact_in_memory_decisions() -> None:
     )
 
     assert authority["source_frame_ids"] == (10, 20)
+    assert authority["schedule"]["canonical_scan_direction"] == 1
+    assert authority["schedule"]["spatial_source_frame_ids"] == (10, 20)
     assert authority["schedule"]["canvas_shape"] == (2, 4)
     assert authority["owner"]["source_index_map"] is owner_source
     assert authority["owner"]["frame_id_map"] is owner_frame

@@ -150,6 +150,7 @@ class S13V11LiveObserver:
         self._last_motion_ns: int | None = None
         self._latest_frame_id: int | None = None
         self._preview_sources: list[np.ndarray] = []
+        self._latest_panorama_preview: np.ndarray | None = None
         self._analysis_thread = threading.Thread(
             target=self._analysis_loop, name="s013-live-analysis", daemon=False
         )
@@ -278,6 +279,9 @@ class S13V11LiveObserver:
             return
         self._last_preview_request_ns = now
         preview = self._incremental_preview()
+        preview.setflags(write=False)
+        with self._lock:
+            self._latest_panorama_preview = preview
         item = (packet.frame_id, packet.accepted_monotonic_ns, preview)
         try:
             self._preview_queue.put_nowait(item)
@@ -292,6 +296,12 @@ class S13V11LiveObserver:
                 self._preview_skipped += 1
         with self._lock:
             self._preview_queue_peak = max(self._preview_queue_peak, self._preview_queue.qsize())
+
+    def capture_preview_image(self) -> np.ndarray | None:
+        """Return the latest immutable panorama for the shared capture window."""
+
+        with self._lock:
+            return self._latest_panorama_preview
 
     def _analysis_loop(self) -> None:
         previous: tuple[int, int, np.ndarray] | None = None

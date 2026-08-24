@@ -24,7 +24,10 @@ from .video_s13_m5 import (
 from .video_s13_m6 import run_s13_m6, run_s13_m6_cuda_v2, run_s13_m6_cuda_v3
 from .video_s13_motion import measure_s13_motion, reliable_step1_direction_evidence
 from .video_s13_frame_store import S13FrameStore
-from .video_s13_progress import build_s13_m3_layout
+from .video_s13_progress import (
+    build_s13_m3_layout,
+    selected_hypothesis_ids_for_spatial_sources,
+)
 from .video_s13_replay import S13VerifiedP2
 from .video_s13_runtime_state import S13RuntimeContext, S13Stage, S13StageResult
 from .video_s13_schedule import plan_s13_m3_schedule
@@ -133,6 +136,7 @@ def _measure_fast_motion(
 
 def _build_fast_authority(
     *, schedule, m5, selected_replay, c2e, owner_only_pairs, provenance, m62,
+    canonical_scan_direction: int = 1,
 ) -> dict[str, object]:
     """Expose the exact in-memory pixel authorities for production comparison.
 
@@ -141,7 +145,17 @@ def _build_fast_authority(
     provenance without making the candidate runner perform extra I/O.
     """
 
-    source_frame_ids = tuple(int(item.frame_id) for item in schedule.assignments)
+    spatial_source_frame_ids = tuple(
+        int(item.frame_id) for item in schedule.assignments
+    )
+    if canonical_scan_direction not in {-1, 1}:
+        raise RuntimeError("S1.3 authority has an invalid canonical scan direction")
+    spatial_steps = np.diff(np.asarray(spatial_source_frame_ids, dtype=np.int64))
+    if canonical_scan_direction > 0 and np.any(spatial_steps <= 0):
+        raise RuntimeError("S1.3 positive scan sources are not canvas-ordered")
+    if canonical_scan_direction < 0 and np.any(spatial_steps >= 0):
+        raise RuntimeError("S1.3 negative scan sources were not reversed before P0")
+    source_frame_ids = tuple(sorted(spatial_source_frame_ids))
     owner_source = np.asarray(provenance["owner_source_index"], dtype=np.int32)
     owner_frame = np.asarray(provenance["owner_frame_id"], dtype=np.int32)
     unique_sources, source_counts = np.unique(owner_source, return_counts=True)
@@ -204,6 +218,8 @@ def _build_fast_authority(
     return {
         "source_frame_ids": source_frame_ids,
         "schedule": {
+            "canonical_scan_direction": int(canonical_scan_direction),
+            "spatial_source_frame_ids": spatial_source_frame_ids,
             "canvas_shape": (int(schedule.canvas_height), int(schedule.canvas_width)),
             "canvas_left": int(schedule.canvas_left),
             "canvas_right": int(schedule.canvas_right),
@@ -316,6 +332,7 @@ def run_s13_fast_pipeline(
             normal_target_advance_px=normal_target_advance_px,
             risky_target_advance_px=risky_target_advance_px,
             segment_break_pairs=layout.segment_break_pairs,
+            canonical_scan_direction=layout.canonical_scan_direction,
         )
         if len(schedule_plan.schedules) != 1:
             raise ValueError("S1.3 fast pipeline does not publish panel sets")
@@ -333,18 +350,16 @@ def run_s13_fast_pipeline(
                 for assignment in schedule.assignments if not assignment.zero_width
             })
         timings["m0_m3.preload"] = time.perf_counter() - preload_tick
-        hypothesis_by_frame = {
-            step.target_frame_id: step.selected_hypothesis_id for step in layout.lineage
-        }
+        selected_hypothesis_ids = selected_hypothesis_ids_for_spatial_sources(
+            layout, selection.frame_ids
+        )
         render_tick = time.perf_counter()
         p0_render = render_s13_p0(
             schedule,
             session.calibration,
             image_loader,
             placement_methods=selection.placement_methods,
-            selected_hypothesis_ids=tuple(
-                hypothesis_by_frame.get(frame_id, -1) for frame_id in selection.frame_ids
-            ),
+            selected_hypothesis_ids=selected_hypothesis_ids,
             resident_remap=p0_resident_remap,
             resident_device_remap=p0_resident_device_remap,
             resident_stage=resident_runtime if p0_resident_device_remap is not None else None,
@@ -423,9 +438,7 @@ def run_s13_fast_pipeline(
                 schedule, session.calibration, image_loader, vertical_selection.solution, p1.image,
                 parent_stage_sha256="in-memory-p1", parent_result_sha256="in-memory-p1",
                 p0_ancestor_completion_sha256="in-memory-p0",
-                selected_hypothesis_ids=tuple(
-                    hypothesis_by_frame.get(frame_id, -1) for frame_id in selection.frame_ids
-                ),
+                selected_hypothesis_ids=selected_hypothesis_ids,
                 placement_methods=selection.placement_methods,
                 m51_r2_config=m51_r2_config,
                 final_image_composer=final_image_composer,
@@ -577,6 +590,7 @@ def run_s13_fast_pipeline(
         owner_only_pairs=owner_only_pairs,
         provenance=provenance,
         m62=m62,
+        canonical_scan_direction=layout.canonical_scan_direction,
     )
     return {
         "run_id": runtime.run_id,

@@ -428,4 +428,31 @@ def build_s13_m3_layout(
     )
 
 
-__all__ = ["S13LineageStep", "S13M3Layout", "build_s13_m3_layout"]
+def selected_hypothesis_ids_for_spatial_sources(
+    layout: S13M3Layout,
+    frame_ids: Sequence[int],
+) -> tuple[int, ...]:
+    """Map temporal M3 edge hypotheses onto canvas-spatial source order."""
+
+    ids = tuple(int(frame_id) for frame_id in frame_ids)
+    if not ids:
+        return ()
+    by_temporal_target = {
+        int(step.target_frame_id): int(step.selected_hypothesis_id)
+        for step in layout.lineage
+    }
+    if layout.canonical_scan_direction > 0:
+        return tuple(by_temporal_target.get(frame_id, -1) for frame_id in ids)
+    return (
+        -1,
+        *(
+            by_temporal_target.get(previous_spatial_id, -1)
+            for previous_spatial_id in ids[:-1]
+        ),
+    )
+
+
+__all__ = [
+    "S13LineageStep", "S13M3Layout", "build_s13_m3_layout",
+    "selected_hypothesis_ids_for_spatial_sources",
+]

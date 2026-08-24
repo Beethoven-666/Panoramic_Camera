@@ -62,7 +62,11 @@ from .video_s13_replay import (
     load_verified_s13_p2_for_m6,
     replay_pair_arrays,
 )
-from .video_s13_progress import S13M3Layout, build_s13_m3_layout
+from .video_s13_progress import (
+    S13M3Layout,
+    build_s13_m3_layout,
+    selected_hypothesis_ids_for_spatial_sources,
+)
 from .video_s13_schedule import S13SchedulePlan, plan_s13_m3_schedule
 from .video_s13_session import (
     S13Session,
@@ -3138,6 +3142,7 @@ def run_s13_experiment(
             normal_target_advance_px=config.normal_target_advance_px,
             risky_target_advance_px=config.risky_target_advance_px,
             segment_break_pairs=m3_layout.segment_break_pairs,
+            canonical_scan_direction=m3_layout.canonical_scan_direction,
         )
         selection = schedule_plan.selections[0]
         schedule = schedule_plan.schedules[0]
@@ -3145,7 +3150,6 @@ def run_s13_experiment(
         p0.mkdir()
         by_id = session.frame_by_id
         tick = time.perf_counter()
-        hypothesis_by_frame = {step.target_frame_id: step.selected_hypothesis_id for step in m3_layout.lineage}
         panel_results = []
         panel_images = []
         for panel_index, (panel_selection, panel_schedule) in enumerate(
@@ -3154,8 +3158,8 @@ def run_s13_experiment(
             panel_result = render_s13_p0(
                 panel_schedule, session.calibration, lambda frame_id: read_s13_rgb(by_id[frame_id]),
                 placement_methods=panel_selection.placement_methods,
-                selected_hypothesis_ids=tuple(
-                    hypothesis_by_frame.get(frame_id, -1) for frame_id in panel_selection.frame_ids
+                selected_hypothesis_ids=selected_hypothesis_ids_for_spatial_sources(
+                    m3_layout, panel_selection.frame_ids
                 ),
             )
             panel_results.append(panel_result)
@@ -3368,8 +3372,8 @@ def run_s13_experiment(
                 m5 = _run_m5(
                     generation, root, generation_id, schedule, session.calibration,
                     lambda frame_id: read_s13_rgb(by_id[frame_id]), result.image,
-                    selected_hypothesis_ids=tuple(
-                        hypothesis_by_frame.get(frame_id, -1) for frame_id in selection.frame_ids
+                    selected_hypothesis_ids=selected_hypothesis_ids_for_spatial_sources(
+                        m3_layout, selection.frame_ids
                     ),
                     placement_methods=selection.placement_methods,
                     p2_completion_schema=(

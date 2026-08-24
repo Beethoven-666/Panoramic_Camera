@@ -1476,7 +1476,12 @@ def _device_info(device: Any) -> dict[str, Any]:
     return result
 
 
-def _preview(color: np.ndarray, depth: np.ndarray, scale: float) -> int:
+def _compose_capture_preview(
+    color: np.ndarray,
+    depth: np.ndarray,
+    scale: float,
+    panorama: np.ndarray | None = None,
+) -> np.ndarray:
     depth_mm = depth.astype(np.float32) * scale
     valid = (depth_mm >= 50.0) & (depth_mm <= 1000.0)
     depth_u8 = np.zeros(depth.shape, dtype=np.uint8)
@@ -1484,11 +1489,67 @@ def _preview(color: np.ndarray, depth: np.ndarray, scale: float) -> int:
     colored = cv2.applyColorMap(depth_u8, cv2.COLORMAP_TURBO)
     if colored.shape[:2] != color.shape[:2]:
         colored = cv2.resize(colored, (color.shape[1], color.shape[0]), interpolation=cv2.INTER_NEAREST)
-    display = np.hstack((color, colored))
-    max_width = 1600
-    if display.shape[1] > max_width:
-        factor = max_width / display.shape[1]
+    capture_row = np.hstack((color, colored))
+    cv2.putText(
+        capture_row, "LIVE RGB", (12, 28), cv2.FONT_HERSHEY_SIMPLEX,
+        0.7, (255, 255, 255), 2, cv2.LINE_AA,
+    )
+    cv2.putText(
+        capture_row, "ALIGNED DEPTH", (color.shape[1] + 12, 28),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA,
+    )
+
+    panorama_height = max(120, color.shape[0] // 2)
+    panorama_panel = np.zeros((panorama_height, capture_row.shape[1], 3), dtype=np.uint8)
+    if panorama is None:
+        message = "LIVE PANORAMA: waiting for stable one-way motion"
+        text_size, _ = cv2.getTextSize(message, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
+        origin = (
+            max(12, (panorama_panel.shape[1] - text_size[0]) // 2),
+            max(32, (panorama_panel.shape[0] + text_size[1]) // 2),
+        )
+        cv2.putText(
+            panorama_panel, message, origin, cv2.FONT_HERSHEY_SIMPLEX,
+            0.65, (180, 180, 180), 2, cv2.LINE_AA,
+        )
+    else:
+        if panorama.dtype != np.uint8 or panorama.ndim != 3 or panorama.shape[2] != 3:
+            raise ValueError("Live panorama preview must be an HxWx3 uint8 image")
+        factor = min(
+            panorama_panel.shape[1] / panorama.shape[1],
+            panorama_panel.shape[0] / panorama.shape[0],
+        )
+        preview = (
+            panorama
+            if abs(factor - 1.0) < 1e-9
+            else cv2.resize(
+                panorama, None, fx=factor, fy=factor,
+                interpolation=cv2.INTER_AREA if factor < 1.0 else cv2.INTER_LINEAR,
+            )
+        )
+        top = (panorama_panel.shape[0] - preview.shape[0]) // 2
+        left = (panorama_panel.shape[1] - preview.shape[1]) // 2
+        panorama_panel[top:top + preview.shape[0], left:left + preview.shape[1]] = preview
+        cv2.putText(
+            panorama_panel, "LIVE PANORAMA (NON-AUTHORITATIVE)", (12, 28),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA,
+        )
+
+    display = np.vstack((capture_row, panorama_panel))
+    max_width, max_height = 1600, 900
+    factor = min(max_width / display.shape[1], max_height / display.shape[0], 1.0)
+    if factor < 1.0:
         display = cv2.resize(display, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
+    return display
+
+
+def _preview(
+    color: np.ndarray,
+    depth: np.ndarray,
+    scale: float,
+    panorama: np.ndarray | None = None,
+) -> int:
+    display = _compose_capture_preview(color, depth, scale, panorama)
     cv2.imshow("Gemini 305 RGB-D capture | Q or ESC to stop", display)
     return cv2.waitKey(1) & 0xFF
 
@@ -2127,7 +2188,17 @@ def run_video_capture(
                 external_sync_output["per_frame_readback_verified_frames"] += 1
 
             if options["preview"]:
-                key = _preview(color_image, aligned_depth, depth_scale)
+                panorama_preview = None
+                if observer is not None:
+                    preview_provider = getattr(observer, "capture_preview_image", None)
+                    if callable(preview_provider):
+                        panorama_preview = preview_provider()
+                key = _preview(
+                    color_image,
+                    aligned_depth,
+                    depth_scale,
+                    panorama_preview,
+                )
                 if key in (ord("q"), ord("Q"), 27):
                     break
             elif _console_key() in (ord("q"), ord("Q"), 27):

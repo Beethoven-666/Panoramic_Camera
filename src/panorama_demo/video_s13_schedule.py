@@ -80,6 +80,48 @@ def _unsafe_internal(schedule: S012Schedule, cap: int) -> tuple[int, ...]:
                  if assignment.width > cap)
 
 
+def _orient_selection_for_canvas(
+    selection: S13SourceSelection,
+    calibration: CameraIntrinsics,
+    canonical_scan_direction: int,
+) -> S13SourceSelection:
+    """Order real sources from canvas-left to canvas-right.
+
+    M3 keeps temporal frame order while it estimates one coherent signed
+    lineage.  A negative lineage therefore has increasing *canonical*
+    progress but decreasing physical image-space position.  The fixed owner
+    schedule is spatial, so negative scans must reverse the real-source order
+    before P0 instead of silently laying temporal order left-to-right.
+    """
+
+    if canonical_scan_direction not in {-1, 1}:
+        raise ValueError("S1.3 canonical scan direction must be -1 or +1")
+    if canonical_scan_direction > 0 or len(selection.frame_ids) <= 1:
+        return selection
+
+    cx = float(calibration.cx)
+    rightmost = float(selection.centers_x[-1])
+    spatial_centers = tuple(
+        cx + rightmost - float(center)
+        for center in reversed(selection.centers_x)
+    )
+    spatial_frame_ids = tuple(reversed(selection.frame_ids))
+    edge_methods = tuple(reversed(selection.placement_methods[1:]))
+    spatial_risk = {spatial_frame_ids[0]: False}
+    spatial_risk.update({
+        frame_id: bool(selection.risk_by_frame_id.get(previous_spatial_id, False))
+        for previous_spatial_id, frame_id in zip(
+            spatial_frame_ids[:-1], spatial_frame_ids[1:], strict=True
+        )
+    })
+    return S13SourceSelection(
+        frame_ids=spatial_frame_ids,
+        centers_x=spatial_centers,
+        placement_methods=("origin", *edge_methods),
+        risk_by_frame_id=spatial_risk,
+    )
+
+
 def plan_s13_m3_schedule(
     progress: S13Progress,
     edges: Sequence[S13MotionEdge],
@@ -89,8 +131,12 @@ def plan_s13_m3_schedule(
     risky_target_advance_px: float = 5.0,
     source_u_fraction_cap: float = 0.20,
     segment_break_pairs: Sequence[tuple[int, int]] = (),
+    canonical_scan_direction: int = 1,
 ) -> S13SchedulePlan:
     """Rescue real frames, reduce canvas density, then split panels if needed."""
+
+    if canonical_scan_direction not in {-1, 1}:
+        raise ValueError("S1.3 canonical scan direction must be -1 or +1")
 
     base = select_dense_s13_sources(
         progress, edges, calibration,
@@ -156,7 +202,14 @@ def plan_s13_m3_schedule(
         })
     )
     if not unsafe and not forced_split_indices:
-        return S13SchedulePlan((selection,), (schedule,), tuple(sorted(rescued)), density_scale, cap, (), True)
+        spatial = _orient_selection_for_canvas(
+            selection, calibration, canonical_scan_direction
+        )
+        spatial_schedule = build_s13_midpoint_schedule(spatial, calibration)
+        return S13SchedulePlan(
+            (spatial,), (spatial_schedule,), tuple(sorted(rescued)),
+            density_scale, cap, (), True,
+        )
 
     split_indices = tuple(sorted(set(unsafe) | set(forced_split_indices)))
     boundaries = (0, *split_indices, len(selection.frame_ids))
@@ -177,6 +230,16 @@ def plan_s13_m3_schedule(
         panel_schedules.append(build_s13_midpoint_schedule(panel, calibration))
         if stop < len(selection.frame_ids):
             gaps.append((selection.frame_ids[stop - 1], selection.frame_ids[stop]))
+    if canonical_scan_direction < 0:
+        panel_selections = [
+            _orient_selection_for_canvas(panel, calibration, canonical_scan_direction)
+            for panel in reversed(panel_selections)
+        ]
+        panel_schedules = [
+            build_s13_midpoint_schedule(panel, calibration)
+            for panel in panel_selections
+        ]
+        gaps = [(right, left) for left, right in reversed(gaps)]
     return S13SchedulePlan(tuple(panel_selections), tuple(panel_schedules), tuple(sorted(rescued)), density_scale,
                            cap, tuple(gaps), True)
 

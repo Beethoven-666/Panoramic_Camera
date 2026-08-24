@@ -246,7 +246,9 @@ TSDF 或任何三维进程，也不会把二维运动冒充为 SE(3) pose。
 `≥0.85`、可靠运动占比 `≥0.75`、至少 5 个源候选、writer queue `≤25%` 且无丢帧。
 方向反转、不可靠运动或超过 `0.4 s` 的帧间隔会重置稳定段。预览通过 latest-only 队列发布
 `live_preview.jpg` 和 `live_preview_state.json`，明确标记为
-`non_authoritative_live_preview`；预览失败只写 `live_preview_failure.json`，不终止采集或正式二维。
+`non_authoritative_live_preview`。采集窗口上方持续显示实时 RGB 与 aligned depth，下方直接显示
+同一份最新增量二维全景；运动门槛尚未满足时，下方显示等待单向稳定运动的提示。预览失败只写
+`live_preview_failure.json`，不终止采集或正式二维。
 
 停采时程序立即停止并 join 预览线程，随后等待 writer drain。正式 handoff 当前只复用经过验证
 的输入与 committed ledger（`reuse_level=validated_inputs_only`）；在线 pair/M6 evidence 不会注入

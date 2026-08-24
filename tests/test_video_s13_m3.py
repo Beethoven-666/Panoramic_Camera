@@ -12,7 +12,10 @@ from panorama_demo.video_s13_motion import (
     S13Progress,
     _extract_hypotheses,
 )
-from panorama_demo.video_s13_progress import build_s13_m3_layout
+from panorama_demo.video_s13_progress import (
+    build_s13_m3_layout,
+    selected_hypothesis_ids_for_spatial_sources,
+)
 from panorama_demo.video_s13_schedule import plan_s13_m3_schedule
 from panorama_demo.video_s13_session import S13RenderFrame
 from panorama_demo.video_s13_trajectory import S13Trajectory, _islands
@@ -133,6 +136,43 @@ def test_signed_reverse_run_creates_panel_segment_break() -> None:
         segment_break_pairs=layout.segment_break_pairs,
     )
     assert len(plan.schedules) == 2
+
+
+def test_negative_scan_orders_real_sources_right_to_left_before_p0() -> None:
+    frames = tuple(_frame(index) for index in range(4))
+    edges = tuple(
+        S13MotionEdge(
+            index, index + 1, 1, -8.0, 0.0, 12.0, 20, -8.0, 0.0, 1.0,
+            -8.0, "grid_lk", False, (),
+            motion_hypotheses=(_hypothesis(index, -8.0, "a"),),
+        )
+        for index in range(3)
+    )
+    layout = build_s13_m3_layout(
+        frames, edges, S13Trajectory("ignore_pose", None, {}, {}, (), {})
+    )
+    assert layout.canonical_scan_direction == -1
+    assert layout.progress.frame_ids == (0, 1, 2, 3)
+    assert layout.progress.centers_x == (0.0, 8.0, 16.0, 24.0)
+
+    calibration = CameraIntrinsics(100, 40, 80.0, 80.0, 49.5, 19.5, ())
+    plan = plan_s13_m3_schedule(
+        layout.progress,
+        edges,
+        calibration,
+        normal_target_advance_px=1.0,
+        risky_target_advance_px=1.0,
+        canonical_scan_direction=layout.canonical_scan_direction,
+    )
+    selection = plan.selections[0]
+    schedule = plan.schedules[0]
+    assert selection.frame_ids == (3, 2, 1, 0)
+    assert tuple(item.frame_id for item in schedule.assignments) == (3, 2, 1, 0)
+    assert tuple(item.center_x for item in schedule.assignments) == (49.5, 57.5, 65.5, 73.5)
+    assert selection.risk_by_frame_id == {3: False, 2: False, 1: False, 0: False}
+    assert selected_hypothesis_ids_for_spatial_sources(
+        layout, selection.frame_ids
+    ) == (-1, 2, 1, 0)
 
 
 def test_sparse_direct_pose_uses_cumulative_rgb_between_endpoints() -> None:
