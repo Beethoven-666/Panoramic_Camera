@@ -1,10 +1,10 @@
 # Gemini 305 RGB-D 移动侧扫全景
 
-这是一个面向奥比中光 Gemini 305 的 fail-closed RGB-D 侧扫全景程序。项目主要使用**照片模式驱动的低帧率同步 RGB-D 序列**采集输入，再以完整 ORB-SLAM3 RGB-D 真实轨迹、相邻 Open3D RGB-D 几何验证和统一中央窄条 RGB renderer 生成正式全景。
+这是一个面向奥比中光 Gemini 305 的 fail-closed RGB-D 侧扫全景程序。项目有两条互相隔离的正式路径：照片产品使用低帧率同步 RGB-D 照片序列、完整 ORB-SLAM3 轨迹和 unified renderer；连续视频产品使用锁定的 **S013 Visual Continuity V11** 先完成实时分析、非正式二维预览和正式二维 P3，再在二维交付后启动独立的 ORB-SLAM3/Open3D 三维进程。
 
-正式输出的每个颜色像素都来自原始 RGB 的一次标定 inverse remap。aligned depth 只在相邻风险走廊中帮助判断可见性、遮挡和受限局部采样，不生成颜色、不补洞、不修改 pose。TSDF 只生成独立的三维浏览附件，不参与全景构图或质量等级。
+照片正式输出的每个颜色像素都来自原始 RGB 的一次标定 inverse remap。aligned depth 只在照片路径的相邻风险走廊中帮助判断可见性、遮挡和受限局部采样，不生成颜色、不补洞、不修改 pose。两种产品的 TSDF 都只生成独立三维浏览附件，不参与二维全景构图或质量等级。
 
-## 正式程序概览
+## 照片正式程序概览
 
 ```text
 照片模式驱动的低帧率同步 RGB-D 会话
@@ -23,6 +23,18 @@
 ```
 
 默认工况是相机连续单向水平侧移、场景基本静止、最近物体约 `0.5 m`、最高速度约 `1.5 m/s`。普通用户不需要调整曝光、位姿、条带、接缝、融合或裁剪参数。
+
+连续视频正式路径固定为：
+
+```text
+连续 RGB-D 采集
+  → 424 px 增量 RGB 运动分析与非正式二维预览（采集期不运行 ORB/Open3D/三维）
+  → 停止预览并关闭采集、写盘资源
+  → 锁定的 S013 Visual Continuity V11 在内存完整执行 P0 → P1 → P2 → P3
+  → 只发布正式 P3、provenance、report、timing
+  → video_delivery.json 最后原子发布
+  → 二维资源释放后，按需启动独立三维子进程运行 ORB-SLAM3 与 Open3D TSDF
+```
 
 ## 快速开始
 
@@ -129,8 +141,10 @@ data/captures/run_YYYYMMDD_HHMMSS/
 ```
 
 此模式与照片全景隔离：它不能传给 `g305-panorama`，但可以传给独立的
-`g305-video-panorama`。默认始终启用相机自动曝光（快门时间随 AE 自动调节）、自动增益和自动白平衡；不会在预热后锁定控制值。需要固定视频曝光时使用
-`--video-exposure-us 800`（不能与 `--photo-mode` 同用）；此时仍保持自动增益和自动白平衡。
+`g305-video-panorama`。默认在预热期间启用相机自动曝光、自动增益和自动白平衡；预热结束后
+只锁定当时的白平衡，曝光与增益继续自动。需要固定视频曝光时使用
+`--video-exposure-us 800`（不能与 `--photo-mode` 同用）；此时曝光固定、增益继续自动，
+白平衡同样在预热后锁定。
 
 默认视频同步配置将图像延时设为 `8000 µs`，并像 `D:\Flash` 一样同时写入
 `depth_delay_us`、`color_delay_us` 和 `trigger_to_image_delay_us`；`trigger_out_delay_us`
@@ -143,6 +157,10 @@ RGB-D 帧进入写盘前再次回读完整同步配置。任一帧读到的模�
 `continuous_rgbd_video_fixed_exposure`，并保留 `diagnostic_only=true`、
 `formal_stitch_allowed=false` 以拒绝照片流程。v2 会话在安全关闭且没有写盘错误时还会写入
 `product_eligibility={"photo_panorama": false, "video_panorama": true}`。
+
+普通 `g305-capture` 默认不构造在线 ORB tracker；manifest 将 ORB-SLAM3 标记为延后到二维
+发布之后。`--diagnostic-online-orbslam3` 只保留给隔离诊断，正式 `g305-video-live` 会明确拒绝
+该选项。
 
 ### 2.2 Gemini 305 SDK 格式、分辨率与帧率
 
@@ -190,9 +208,21 @@ RGB-D 帧进入写盘前再次回读完整同步配置。任一帧读到的模�
 
 ### 2.3 生成独立视频全景与三维附件
 
-视频入口只运行已冻结的 `production` 算法。它会选择最长连续单向扫描段，分析全部真实
-连续帧，并只从具有真实 ORB-SLAM3 pose 的帧中选择渲染源。所有实际渲染源都必须经过相邻
-Open3D RGB-D 边审计；程序不会插值 pose，也不会使用 Open3D 或二维运动代替缺失 ORB pose。
+正式二维入口只运行锁定的 S013 Visual Continuity V11：
+
+- `algorithm_id=S013_output_first_progressive_dense_central_slit_v4_cuda_m63_visual_continuity_v11`
+- `implementation_id=s013_m5_disjoint_seam_m63_pair_guard_v11`
+- production config：`configs/video_algorithms/s013_visual_continuity_v11_production.yaml`
+- production lock：`configs/video_algorithms/s013_visual_continuity_v11_production.lock.json`
+- production config canonical SHA-256：`3a49f8cbaa622592eff41b2a9e34cb518c6067d74d15574cf01faeea0cc8fafc`
+- 晋级来源 candidate canonical SHA-256：`a03f443aaf72463afc1f06507fe2bfc888d9211f4c4a62634bbfb29fa0f2dab0`
+
+公共入口在旧 video renderer 之前直接路由到 `s013_v11_production_cuda`，固定
+`allow_baseline_fallback=false`，不会经过 legacy production renderer，也不会回退到 baseline。
+二维使用真实 RGB 源和 RGB motion 的 ignore-pose 路径；二维阶段不运行 ORB-SLAM3、Open3D
+TSDF 或任何三维进程，也不会把二维运动冒充为 SE(3) pose。
+
+处理已有连续 RGB-D 会话：
 
 ```powershell
 & 'D:\Panoramic_Camera\.conda\Scripts\g305-video-panorama.exe' `
@@ -201,53 +231,60 @@ Open3D RGB-D 边审计；程序不会插值 pose，也不会使用 Open3D 或二
   --output 'D:\central_strip_Panoramic_Camera\outputs\video_sequence'
 ```
 
-生产锁规定其运行参数、模型哈希和允许的 fallback。研发使用独立的
-`g305-video-experiment`（baseline/candidate）与 `g305-video-benchmark`；审计通过
-`--report-level full --artifact-level audit` 生成，且不会改变全景或 owner map。研发复现只能
-复用由已发布 v2 报告原子冻结的真实完整 ORB-SLAM3 链；冻结器会校验 session 的
-manifest、calibration 与 frames.csv 哈希、真实帧顺序和刚性 `camera_to_world`，不能把普通
-报告 JSON 当作 trajectory cache：
+一次命令完成连续采集、在线分析、非正式预览和正式二维：
 
 ```powershell
-& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-freeze-trajectory.exe' SESSION `
-  --report PREVIOUS_PUBLISHED_OUTPUT `
-  --output trajectory.lock.json
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-live.exe' `
+  --duration 10 `
+  --video-exposure-us 800 `
+  --output 'D:\central_strip_Panoramic_Camera\data\captures\video' `
+  --panorama-output 'D:\central_strip_Panoramic_Camera\outputs\video_live'
 ```
 
-然后才可复用该锁：
+在线状态是增量维护的，不会循环调用整段 `run_s13_fast_pipeline`。默认只有当前稳定运动段同时
+满足以下条件后才开始预览：持续 `0.8 s`、累计前进 `32` 个 424 宽分析像素、方向一致率
+`≥0.85`、可靠运动占比 `≥0.75`、至少 5 个源候选、writer queue `≤25%` 且无丢帧。
+方向反转、不可靠运动或超过 `0.4 s` 的帧间隔会重置稳定段。预览通过 latest-only 队列发布
+`live_preview.jpg` 和 `live_preview_state.json`，明确标记为
+`non_authoritative_live_preview`；预览失败只写 `live_preview_failure.json`，不终止采集或正式二维。
+
+停采时程序立即停止并 join 预览线程，随后等待 writer drain。正式 handoff 当前只复用经过验证
+的输入与 committed ledger（`reuse_level=validated_inputs_only`）；在线 pair/M6 evidence 不会注入
+正式 authority。正式 V11 会从同一已提交会话重新计算完整 P0–P3，正常 production 模式不写
+P0/P1/P2 stage PNG，只从内存 P3 发布：
+
+```text
+video_panorama.jpg
+video_panorama.png
+video_pixel_provenance.npz
+video_report.json
+video_timing.json
+video_delivery.json          # 最后原子发布
+```
+
+同一会话、同一锁定配置下，live 与 offline 必须由同一 publisher 生成字节一致的
+`video_panorama.png`；P0–P3 内存像素 SHA-256 逐阶段比较，首个不一致阶段即 fail-closed。
+
+`g305-video-panorama` 默认在二维发布和资源释放后启动独立 post-3D 子进程；使用
+`--defer-3d` 可只生成二维。`g305-video-live` 默认延后三维，只有显式传 `--post-3d` 才启动：
 
 ```powershell
-& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-panorama.exe' SESSION `
-  --trajectory-cache trajectory.lock.json `
-  --defer-3d `
-  --output OUTPUT
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-live.exe' `
+  --duration 10 --output CAPTURE_ROOT --panorama-output OUTPUT --post-3d
 ```
 
-`video_report.json` v2 records the selected source IDs, algorithm lock,
-observability level, three quality grades and per-stage post-capture time. An
-over-budget result is published as C with manual review required; it is never
-silently labelled as an SLA success.
-
-连续采集成功时会在会话目录写入 `online_video_state.json`。视频命令会自动发现它（也可用
-`--online-state PATH` 指定），并在 manifest、calibration、`frames.csv` 及每个 RGB/depth
-文件的 SHA-256 全部匹配时复用采集期的严格帧校验、质量、运动与扫描段分析。可使用
-`--reuse-online-trajectory` 复用同目录中具有采集期 provenance 的完整 online ORB 轨迹；
-复用前同样会校验控制文件和每个源文件哈希。
-
-默认在 2-D 发布后生成 GLB；若要延后：
+延后后可独立运行完整后期三维：
 
 ```powershell
-& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-panorama.exe' SESSION --output OUTPUT --defer-3d
-& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-3d.exe' OUTPUT --input SESSION
+& 'D:\Panoramic_Camera\.conda\Scripts\g305-video-post-3d.exe' SESSION `
+  --two-d-output OUTPUT `
+  --output 'OUTPUT\3d'
 ```
 
-自动曝光、超过 `1200 µs` 的曝光、严格质量未过或超过 post-capture SLA 但结构完整的视频会
-发布为 C 级：`video_delivery.json` 的 `delivery_state` 为 `published_degraded`，并要求人工
-复核。2-D 主交付包含 `video_panorama.jpg/png`、`video_pixel_provenance.npz`、
-`video_report.json` 和最后写入的 `video_delivery.json`。研发中的 `artifact-level=audit` 才额外
-包含 `central_strips/` 和 `central_strips_owner_only/`；它不改变主图算法。三维发布是独立的：`video_tsdf_mesh.glb`、mobile GLB、离线
-`video_tsdf_mesh_viewer.html` 及 `video_3d_delivery.json`；3-D 失败只写
-`video_3d_failure.json`，不会撤销已经发布的 2-D 交付。
+该子进程才会从连续会话选择约 8 FPS 的真实帧、运行完整 ORB-SLAM3、校验轨迹并执行
+Open3D TSDF；三维不生成预览。轨迹、lock、desktop/mobile GLB、离线 Viewer、timing 和
+delivery 全部位于 `OUTPUT\3d\`。任何 ORB、TSDF、cleanup 或 GLB 失败只在该目录写
+`video_3d_failure.json`，不得修改、删除或撤销已经发布的二维结果。
 
 ### 2.4 隔离的 S01 纵向对齐实验
 
@@ -287,7 +324,7 @@ v2 固定输出 nominal midpoint、handoff-only 和 final 三阶段主图，并�
 声明 owner 有效性、最终真实帧 owner 和最终 valid 四个 provenance 数组。`minimal` 模式保留主图、
 provenance、报告、性能和最差 crop；`audit` 模式另外保存完整 pair 证据。
 
-### 3. 验证 CUDA Open3D 与 ORB-SLAM3
+### 3. 验证照片产品的 CUDA Open3D 与 ORB-SLAM3
 
 正式并行位姿前端要求 Open3D 相邻边实际使用 `open3d_tensor_cuda_rgbd`。先执行：
 
@@ -325,7 +362,7 @@ wsl.exe -e cmake -S ~/Projects/ORB_SLAM3_WS/ORB_SLAM3 -B ~/Projects/ORB_SLAM3_WS
 wsl.exe -e cmake --build ~/Projects/ORB_SLAM3_WS/ORB_SLAM3/build --target rgbd_tum_headless --parallel 4
 ```
 
-### 4. 运行正式全景
+### 4. 运行照片产品正式全景
 
 ```powershell
 $env:G305_CUDA = 'required'
@@ -357,7 +394,7 @@ $env:G305_CUDA = 'required'
 D:\Panoramic_Camera\.conda\Scripts\g305-panorama.exe
 ```
 
-### 5. 检查发布结果
+### 5. 检查照片产品发布结果
 
 正式 A/B/C 交付目录包含：
 
@@ -445,7 +482,7 @@ formal_stitch_allowed=false
 
 设备 `color_exposure` metadata 固定按 `100 µs/单位` 解释。照片模式正式上限为 `800 µs`，正式输入绝对拒绝上限为 `1200 µs`。缺 manifest、标定、aligned depth、单位、对齐 provenance、时间戳或曝光属于结构失败，`--diagnostic-force` 也不能绕过。
 
-## 位姿前端
+## 照片产品位姿前端
 
 默认 `pose_backend=hybrid_orbslam3_rgbd`：
 
@@ -480,7 +517,7 @@ ORB-SLAM3 未安装、进程失败或未跟踪全部正式帧时，程序失败�
 
 输出 schema 为 `gemini305-orbslam3-trajectory/v2`，每条记录显式包含时间戳、`pose_status`、`pose_kind=direct_orbslam3`、统一 `pose_origin`、tracking state 和 `camera_to_world`。命令同时保存 stdout、stderr 与 trajectory audit（输入/跟踪数量、未跟踪帧、trajectory/config/log SHA-256）；它不读取历史 pose sidecar，也不以 Open3D 替代缺失 ORB-SLAM3 pose。
 
-## Unified calibrated central-strip renderer
+## 照片产品 Unified calibrated central-strip renderer
 
 当前正式 renderer 是：
 
@@ -505,7 +542,7 @@ unified_calibrated_central_strip/v1
 
 `metric_mosaic` 和 `inspection_multiview` 模块目前仍保留配置兼容验证、历史测试和隔离实现，但在 `unified_content_mode=true` 的正式路径中不会生成第二张 RGB 主图、后渲染 overlay 或失败回退。
 
-## RGB-D 风险走廊、owner 与融合
+## 照片产品 RGB-D 风险走廊、owner 与融合
 
 RGB Lab/梯度风险先决定 owner 和禁止融合区域。只有跨名义 seam 的结构性 raw seed、明显边缘残差或整高 hard cut 指向几何问题时，程序才读取相邻风险走廊的 aligned depth。
 
@@ -547,7 +584,7 @@ clamp(floor(0.20 × 较窄 owner 宽度), 2, 8)
 
 最多 3 层。程序不回退到 feather、平均、全局金字塔、全图模糊或补洞。
 
-## A/B/C/F 发布语义
+## 照片产品 A/B/C/F 发布语义
 
 结构安全和严格质量分开表达：
 
@@ -584,7 +621,7 @@ handoff_fallback_policy:
 - `quality_grade`；
 - `manual_review_required`。
 
-## TSDF 三维浏览附件
+## 照片产品 TSDF 三维浏览附件
 
 正式 A/B/C 都必须发布：
 
@@ -746,9 +783,9 @@ Trigger Out 边沿的延时。它们分别写入并分别回读，不会用一�
 | 触发到图像采集延时 | 照片/视频默认 `8000 µs`，可用 CLI 覆盖并逐帧回读确认 |
 | Trigger Out 延时 | 照片/视频默认 `7000 µs`，可用 CLI 覆盖并逐帧回读确认 |
 | 照片预热触发 | 最多 8 次，gate-off |
-| 全局 pose | 完整 ORB-SLAM3 RGB-D |
-| 相邻边 | Open3D Tensor CUDA RGB-D |
-| 正式 renderer | `unified_calibrated_central_strip/v1` |
+| 照片全局 pose | 完整 ORB-SLAM3 RGB-D |
+| 照片相邻边 | Open3D Tensor CUDA RGB-D |
+| 照片正式 renderer | `unified_calibrated_central_strip/v1` |
 | 中间中央条带 | 输入宽度 `≤20%` |
 | 风险走廊 | `96–160 px` |
 | 局部位移 | `≤8 px` |
@@ -757,11 +794,13 @@ Trigger Out 边沿的延时。它们分别写入并分别回读，不会用一�
 | pose nodes | 不设固定数量上限；保留全部真实节点，仍受 `200 MP` 资源上限约束 |
 | 常驻 RGB 条带 | 2–5 |
 | `local_apap_flow` | 默认关闭 |
-| TSDF | 必需、只读、不得反馈 RGB 全景 |
-| 视频 fast ORB tracking | 约 `8 FPS` 的真实时间间隔帧；末帧始终保留 |
-| 视频 fast ORB 暂存 | `424 px`、JPEG 质量 `95`、`1000` features、4 workers |
-| 视频 fast Open3D 审计 | `384 px`、`[16, 8, 4]`；仍为实际 CUDA RGB-D estimator |
-| 视频 fast 审计归档 | 默认不发布；`audit` preset 或显式配置才发布条带目录 |
+| 照片 TSDF | 必需、只读、不得反馈 RGB 全景 |
+| 视频正式 2-D identity | 精确 S013 Visual Continuity V11 production lock；无 baseline fallback |
+| 视频正式 2-D pose | `ignore_pose`；采集和二维均不运行 ORB/Open3D/三维 |
+| 视频在线分析 | 424 px 增量 RGB motion；默认 `0.8 s + 32 px` 后允许非正式预览 |
+| 视频正式 stage | 内存完整 P0–P3；正常首图只落盘正式 P3，不写 P0/P1/P2 stage PNG |
+| 视频 post-3D ORB | 二维交付与资源释放后，在独立进程选择约 `8 FPS` 真实帧运行 |
+| 视频 3-D 输出 | 全部位于二维输出的 `3d/`；失败不得撤销二维 |
 
 采集 FPS 和同步延时允许使用上述 CLI 显式选择，但必须通过 SDK 精确 profile、帧周期和逐帧
 回读检查；彩色格式使用固定优先级自动选择，深度固定为 `Y16`。算法质量阈值仍只能等于或
@@ -788,7 +827,7 @@ git diff --check
 | Unified RGB | `test_calibrated_rgb_pushbroom.py`、`test_geometry_assisted_local_warp.py`、`test_handoff_continuity.py` |
 | 发布 | `test_sequence_delivery.py`、`test_sequence_integration.py`、`test_config.py` |
 | TSDF | `test_dense_fusion.py` |
-| 视频 | `test_video_session.py`、`test_video_scan_segment.py`、`test_video_motion_resampler.py`、`test_video_online_state.py`、`test_video_visual_renderer.py`、`test_video_delivery.py` |
+| 视频正式 V11 | `test_video_s13_v11_promotion.py`、`test_video_s13_v11_production_route.py`、`test_video_s13_live_acceptance.py`、`test_video_live.py`、`test_video_s13_live.py`、`test_video_3d_postprocess.py`、`test_video_delivery.py` |
 
 ## 常见问题
 
@@ -855,9 +894,15 @@ model purity while exposing feature loss separately; it does not bypass the
 `minimum_inlier_count=16` and `minimum_inlier_ratio=0.45` keys are retained only
 as fixed compatibility/audit aliases and are not additional reliability gates.
 
-## S1.3 output-first M0–M6 diagnostic candidate
+## S1.3 output-first M0–M6 lineage
 
-`S013_output_first_progressive_dense_central_slit_v4` remains the canonical S013
+精确的 Visual Continuity V11 已从原始 candidate 以 pixel-contract 等价校验晋级为上述正式
+production 路径。production 保持 candidate 的 algorithm/implementation identity，关闭
+baseline fallback，并由独立 production config 与 lock 固定；原始 candidate 文件不原地修改。
+本节以下内容描述 V11 以前或与其并列的研发 lineage，不代表这些旧版本已经获得 production
+资格。
+
+`S013_output_first_progressive_dense_central_slit_v4` remains the historical canonical S013
 M0–M6 route selected through `g305-video-experiment --algorithm candidate`; its
 implementation identity is `s013_output_first_progressive_dense_central_slit_m61_v2`.
 Here, canonical/formal means the single supported S013 diagnostic chain with

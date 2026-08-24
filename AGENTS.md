@@ -70,70 +70,80 @@
 ### 1.2 独立连续视频全景产品
 
 照片模式的 `g305-panorama` 契约保持不变。连续 RGB-D 视频通过独立入口
-`g305-video-panorama` 处理，绝不能传给 `g305-panorama`，也不能复用照片的
-`delivery.json`。公共入口只能读取冻结的 `production.lock.json`；研发只能经
-`g305-video-experiment` 的 `baseline` 或 `candidate` 角色进行。算法审计由
-`report-level` / `artifact-level` 控制，绝不能改变渲染源、pose、owner 或像素输出。
-视频路径始终使用真实源帧和真实 ORB-SLAM3 `camera_to_world` pose，所有渲染源相邻边仍须
-经 Open3D 审计；不得插值、伪造或以二维运动替代缺失 pose。
+`g305-video-panorama` 或 `g305-video-live` 处理，绝不能传给 `g305-panorama`，也不能复用
+照片的 `delivery.json`。公共入口只能读取
+`configs/video_algorithms/s013_visual_continuity_v11_production.lock.json`，正式身份固定为：
 
-唯一的研发期例外是候选实验的 audited dense real-frame pose prior：它只能为一个已落盘的
-真实 RGB-D 中间帧提供由两端直接 ORB 锚点严格 bracketed 的 SE(3) prior；两端锚点各不得
-超过 150 ms，且必须同时通过 dense image forward/backward P95 和 RGB-D residual P95
-审计（均不大于 1.5 px）。该 prior 必须标记
-`direct_orb_anchor`、`interpolated_se3_prior` 或 `refined_dense_prior`，禁止外推；
-refinement 只能在固定界限内且不得反写 ORB 轨迹。它不属于 `g305-video-panorama`、
-production lock、像素 owner 或正式交付，未通过审计即不可用于候选。
+- `algorithm_id=S013_output_first_progressive_dense_central_slit_v4_cuda_m63_visual_continuity_v11`
+- `implementation_id=s013_m5_disjoint_seam_m63_pair_guard_v11`
+- 原始 candidate canonical SHA-256 为
+  `a03f443aaf72463afc1f06507fe2bfc888d9211f4c4a62634bbfb29fa0f2dab0`
+- production config canonical SHA-256 为
+  `3a49f8cbaa622592eff41b2a9e34cb518c6067d74d15574cf01faeea0cc8fafc`
+- `role=production`、`allow_baseline_fallback=false`、
+  `execution_backend=s013_v11_production_cuda`
+
+原始 candidate 不得原地修改。production config/lock 必须保留精确 algorithm 与
+implementation identity，记录晋级 provenance，并通过 pixel contract 等价校验。公共二维入口
+必须在 legacy renderer 之前直接路由到该 V11；半匹配身份、错误 config SHA、允许 fallback、
+ORB trajectory 参数或任何试图进入旧 production renderer 的 V11 请求都必须 fail-closed。
+
+正式连续视频路径如下：
+
+```text
+连续 RGB-D 采集
+  → 424 px 增量 RGB 运动分析与非正式预览
+  → 停采时停止预览、drain writer、冻结 committed ledger handoff
+  → S013 V11 ignore-pose authority 在内存完整执行 P0 → P1 → P2 → P3
+  → 只发布正式 P3、provenance、report、timing
+  → video_delivery.json 最后原子发布
+  → 二维资源释放后，才可启动独立 post-3D 子进程
+  → 子进程内运行 ORB-SLAM3、Open3D TSDF、GLB 与离线 Viewer
+```
 
 - 只接受 `continuous_rgbd_video_auto` 与
-  `continuous_rgbd_video_fixed_exposure`，并接受旧的 v1 auto 会话用于 C 级兼容。
-  v2 会话还必须有 `product_eligibility.photo_panorama=false` 和
-  `product_eligibility.video_panorama=true`。
-- 默认运行时 tracking FPS 为 `8.0`；未进入 tracking chain 的连续会话帧只用于
-  运动/风险分析，绝不可渲染、拥有像素、形成 pose 或被插值。冻结算法可使用 `424 px`、JPEG
-  质量 `95`、`1000` 个特征和最多 4 个 staging workers 向 ORB-SLAM3 提供经过标定的
-  pinhole RGB-D 暂存帧；这只加速 ORB 输入，不改变正式 RGB 的一次全分辨率 remap。
-  视频也不得插值、伪造或用 Open3D/二维运动替代任一渲染源缺失的 ORB pose；所有渲染源
-  必须有真实 ORB pose，所有相邻渲染源边必须经 Open3D 审计。冻结算法以同一 CUDA RGB-D
-  estimator 的 `384 px`、`[16, 8, 4]` 迭代计划审计这些边。
-- 运行时默认以 4 个 workers 并行严格帧文件验证、scan 分析和 Open3D 输入准备；每个 worker
-  只处理独立、只读的真实 RGB-D 文件。最终 Open3D 边估计仍在单一实际 CUDA backend 上执行。
-- 自动曝光、曝光超过 `1200 µs` 或严格质量未过的结构完整视频发布为 C：
-  `video_delivery.json` 的 `delivery_state=published_degraded`，且必须人工复核。
+  `continuous_rgbd_video_fixed_exposure`；v2 会话必须有
+  `product_eligibility.photo_panorama=false`、`video_panorama=true` 和干净关闭证据。
+- 正式采集和二维期间 `OnlineORBTracker` 构造、ORB-SLAM3 进程、ORB frame submit、Open3D
+  import、TSDF 调用和三维进程调用次数必须全部为 0。普通连续采集默认也不构造在线 ORB；
+  `--diagnostic-online-orbslam3` 只属于诊断，并被 `g305-video-live` 拒绝。
+- 在线分析必须维护增量状态，不得循环调用整段 `run_s13_fast_pipeline`。预览默认门槛为同一
+  稳定运动段持续 `0.8 s`、累计前进 `32` 个 424 宽分析像素、方向一致率 `≥0.85`、可靠运动
+  占比 `≥0.75`、至少 5 个源候选、writer queue `≤25%` 且 0 drops。方向反转、不可靠运动或
+  超过 `0.4 s` 的 gap 重置稳定段。
+- `live_preview.jpg` / `live_preview_state.json` 必须标记
+  `non_authoritative_live_preview`。预览使用 latest-only 队列；预览失败只写
+  `live_preview_failure.json` 并禁用后续预览，不得终止采集或正式二维。
+- 停采必须先停止并 join 预览，再完成 writer drain。live handoff 当前只允许
+  `reuse_level=validated_inputs_only`，`pair_evidence_reused_count=0`；在线 gray/motion、pair 或
+  M6 evidence 不得冒充最终 authority。正式二维仍从 committed 会话重新计算完整 V11。
+- 正式 production 必须执行完整 P0–P3 像素链，但正常首图模式不得落盘 P0/P1/P2 stage PNG。
+  live 与 offline 对同一会话及锁定配置的 `video_panorama.png` 必须字节一致；P0–P3 内存像素
+  evidence 逐阶段比较，首个差异即停止扩大复用范围并定位该阶段。
 - 2-D 主交付为 `video_panorama.jpg`、`video_panorama.png`、
-  `video_pixel_provenance.npz`、`video_report.json` 和最后写入的
-  `video_delivery.json`。只有 `artifact-level=audit` 才额外发布 `central_strips/`
-  （每个真实源的已标定、已光度校正 BGRA 条带及 manifest）与
-  `central_strips_owner_only/`（最终全景中 owner-only 的 BGRA 条带及 manifest）；这些
-  审计归档不得改变 2-D 算法结果。3-D 文件为 `video_tsdf_mesh.glb`、
-  `video_tsdf_mesh_mobile.glb`、`video_tsdf_mesh_viewer.html` 和
-  `video_3d_delivery.json`；3-D 失败只写 `video_3d_failure.json`，不得撤销已发布的
-  2-D 交付。
-- 视频 Viewer 必须离线可用，不得依赖 CDN。GLB 的节点已将 Open3D `+Y-down` 转为
-  glTF `+Y-up`；自定义 Viewer 必须同样应用 180° X 轴转换，不得将上下显示颠倒。
+  `video_pixel_provenance.npz`、`video_report.json`、`video_timing.json` 和最后原子写入的
+  `video_delivery.json`。只有 delivery 已发布且二维资源释放后，才可创建三维进程。
+- post-3D 从连续会话选择约 8 FPS 的真实 RGB-D 帧，只在独立子进程中运行 ORB-SLAM3；三维
+  不做预览。所有输出位于二维目录下的 `3d/`：trajectory、trajectory lock、desktop/mobile
+  GLB、离线 Viewer、timing 和 `video_3d_delivery.json`。任何 ORB、TSDF、cleanup 或 GLB
+  失败只写 `3d/video_3d_failure.json`，不得修改、删除或撤销二维结果。
+- 视频 Viewer 必须离线可用，不得依赖 CDN。GLB 的节点将 Open3D `+Y-down` 转为 glTF
+  `+Y-up`；自定义 Viewer 必须同样应用 180° X 轴转换。
 
 ### 1.3 视频视觉 renderer（用户授权的正式例外）
 
-本节只适用于独立的 `g305-video-panorama`；照片 `g305-panorama` 及其 unified
-renderer 继续受 1.1 与第 7 节的全部限制。为实现视频候选/生产产品，允许一个
-独立的风险分级视频视觉 renderer 使用下列操作，但仍不得生成、插值或替代真实源帧和
-真实 ORB pose：
+本节只适用于独立的 `g305-video-panorama` 和 `g305-video-live`；照片 `g305-panorama` 及其 unified
+renderer 继续受 1.1 与第 7 节的全部限制。当前正式视频 renderer 只有锁定的 S013 V11，
+其二维 authority 明确使用 RGB motion/ignore-pose；不得运行或消费 ORB pose，也不得把二维
+motion 写成 SE(3)。它按冻结配置执行真实 RGB source selection、P0 hard owner、P1 vertical、
+P2 geometry/seam transaction 和 P3 M6.3 photometric/blend/repair。每个有效像素必须保持可追溯
+owner，禁止虚拟 RGB source、外部补色、全景级 flow、全局单应或从三维向二维回传结果。
 
-- 相邻真实渲染源的低成本 DIS optical flow；仅在 RGB/深度风险走廊允许局部、受限的
-  forward/backward-flow 审计和深度分层 mesh。任何未通过一致性、边界、正 Jacobian、
-  尺度或遮挡保护审计的 cell 必须回退为单一 hard owner。
-- 相邻真实源的二维可弯曲 seam / graph-cut 或等价的单调 label 优化；有效像素必须恰有
-  一个 provenance owner，前景与深度边缘保持 owner-only，禁止全景级 flow、全局单应
-  或把 flow 用作 pose。
-- 只由共同可见、安全背景样本估计的全局线性 RGB gain/bias；必须记录训练/held-out
-  误差，超过配置界限则回退单位校正。
-- 安全背景可用局部 MultiBand；风险、遮挡、深度边缘、对象锁定区不参与融合。候选算法
-  可使用块化 CPU/OpenCV 实现；仅在实际被调用时才能报告 CUDA。
-
-视频报告必须逐 pair 记录风险、flow/mesh、owner、seam、photometric 与退化原因。
-`video_panorama` 的主结果按 `maximum_post_seconds=60` 记录 SLA 审计并原子发布；超时仍可
-结构化发布，但必须降为 C 并人工复核。central-strip 审计导出可在主结果发布后异步或按
-artifact-level=audit 生成。
+正式报告必须包含 source、schedule、owner、逐 pair seam/M5 transaction、C2E、M6.3、
+photometric candidate audit、B0/B1 和各阶段 pixel evidence。主结果按
+`maximum_post_seconds=60` 记录停采到 P3 memory/发布的 SLA；超时可以结构化发布，但必须如实
+降级并要求人工复核。candidate/audit 模式可以落盘 P0–P3 用于等价验证，但不得改变正式首图
+输出策略。
 
 ## 2. 开始工作
 
@@ -172,9 +182,13 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 | `handoff_continuity.py` / `local_apap_flow.py` | handoff 标量审计及默认关闭的 APAP/flow 候选 |
 | `dense_fusion.py` | 交付后只读 TSDF、GLB 和 Viewer；不得向 RGB renderer 回传结果 |
 | `stitch_sequence.py` | 正式编排、v12-r1 判定、失败清理和原子发布 |
-| `video_session.py` / `video_scan_segment.py` / `video_source_selection.py` / `video_motion_resampler.py` | 隔离的视频会话资格、连续单向段分析、真实 ORB tracking 帧和真实渲染源选择 |
-| `video_online_state.py` / `video_online_orb.py` / `video_performance.py` | 采集期 scan/轨迹状态的完整性绑定与复用、视频 SLA 审计 |
-| `video_panorama.py` / `video_visual_renderer.py` / `video_delivery.py` / `video_3d.py` | 独立视频 2-D 编排与原子发布、风险分级视觉接缝、独立可重试 TSDF/GLB/离线 Viewer 发布 |
+| `video_session.py` / `video_scan_segment.py` / `video_source_selection.py` / `video_motion_resampler.py` | 连续视频会话资格、RGB motion、扫描段与真实源选择基础设施 |
+| `video_live.py` / `video_s13_live.py` | 正式连续采集编排、424 px 增量分析、非正式 latest-only 预览、停采 handoff |
+| `video_s13_contract.py` / `video_s13_promotion.py` / `video_s13_production.py` | 精确 V11 身份与晋级校验、production ignore-pose authority、P3 正式发布 |
+| `video_pipeline.py` / `video_delivery.py` / `video_performance.py` | V11 优先路由、二维原子发布与停采到 P3 SLA 审计 |
+| `video_online_state.py` / `video_online_orb.py` | 旧在线状态兼容与诊断 ORB；不得进入正式 live 采集或 V11 二维 authority |
+| `video_3d_launcher.py` / `video_3d_postprocess.py` / `video_3d.py` | 二维交付后独立进程启动、真实 ORB 轨迹、TSDF/GLB/离线 Viewer 与失败隔离 |
+| `video_panorama.py` / `video_visual_renderer.py` | 公共视频 CLI 编排与 legacy/研发 renderer；精确 V11 production 不得经过 legacy renderer |
 | `metric_mosaic.py` / `inspection_multiview.py` | 兼容验证、历史/诊断实现；不是 unified 正式 RGB 输出 |
 | `*_diagnostic.py`、`central_strip.py`、`rgbd_projection.py` | 隔离诊断或历史回归 |
 | `tests/` | 采集、会话、轨迹、渲染、发布、CUDA 与集成回归 |
@@ -200,7 +214,8 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 - 正式彩色曝光固定不超过 `800 µs`，设备 metadata 单位为 `100 µs/单位`。
 - 会话打开期间 `formal_stitch_allowed=false`。只有相机/写盘资源安全关闭、无采集或写盘错误时，最终 manifest 才可写 `clean_shutdown=true`、`formal_stitch_allowed=true`。
 
-连续流采集与照片模式隔离：默认使用自动曝光、自动增益和自动白平衡，写入
+连续流采集与照片模式隔离：预热期间使用自动曝光、自动增益和自动白平衡，预热后只锁定
+白平衡，曝光与增益继续自动；会话写入
 `capture_mode=continuous_rgbd_video_auto`、`diagnostic_only=true` 与
 `formal_stitch_allowed=false`。可用 `--video-exposure-us` 采集固定曝光视频，写入
 `continuous_rgbd_video_fixed_exposure`；二者都不能用作 `g305-panorama` 输入。安全关闭且
@@ -209,6 +224,9 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 `8000 µs`，Trigger Out 延时默认 `7000 µs`，也可从命令行覆盖。视频彩色格式按固定优先级
 自动选择，深度固定为 `Y16`，FPS 可由命令行覆盖并做 SDK 精确共同 profile 匹配；启动时和每个完整对齐 RGB-D 帧
 写盘前都必须回读同步配置，任一帧回读不符都使会话失败。
+普通连续采集默认不得构造 `OnlineORBTracker`，manifest 应将 ORB 标记为
+`deferred` / `post_2d_publication_only`。只有显式诊断入口可延迟 import 在线 ORB；
+`g305-video-live` 必须拒绝 `--photo-mode` 和 `--diagnostic-online-orbslam3`。
 
 ## 5. 严格 RGB-D 会话
 
@@ -225,7 +243,10 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 
 输入移动曝光绝对拒绝上限是 `1200 µs`；照片模式正式采集上限是 `800 µs`。无限 AE 会话必须标为 diagnostic-only，不能发布正式 `delivery.json`。
 
-## 6. 位姿与正式 RGB 渲染
+## 6. 照片产品的位姿与正式 RGB 渲染
+
+本节仅约束照片 `g305-panorama`。视频 S013 V11 二维路径遵循 1.2/1.3 的 ignore-pose
+契约；视频 ORB-SLAM3/Open3D 只在二维交付后的独立 post-3D 进程中运行。
 
 - 正式 `pose_backend=hybrid_orbslam3_rgbd`。每条 Open3D 边记录 source-to-reference SE(3)、收敛、fitness、RMSE、正定 `6×6` information matrix、深度有效率和失败原因。
 - 正式并行前端要求每条 Open3D 边实际使用 `open3d_tensor_cuda_rgbd`。若观察到 `open3d_rgbd`，说明 CUDA Open3D 未生效，必须失败，不能静默接受 CPU legacy edge。
@@ -236,7 +257,7 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 - 布局比例来自相邻 RGB 局部运动与真实 SE(3) 相机中心位移的稳健标量。它仅决定条带 x 布局，不是二维轨迹、单应矩阵、深度平面或 pose 修正。
 - 画布和 aggregate working set 均不超过 `200 MP`；常驻 RGB 条带为 2–5 个。序列长度不由固定 pose-node 数量限制，但必须受上述资源上限约束。
 
-## 7. 风险走廊、局部几何与 owner
+## 7. 照片产品的风险走廊、局部几何与 owner
 
 RGB Lab/梯度风险先约束 owner 和 MultiBand。只有跨 seam 的结构性 raw seed、显著边缘残差或整高 hard cut 指向几何问题时，才允许读取相邻走廊 aligned depth。
 
@@ -259,7 +280,7 @@ GraphCut 只允许相邻真实源在互斥 corridor 中竞争，形成单调 own
 
 `foreground_deformation_experiment` 默认关闭且仅限独立诊断；不得进入正式 A/B/C/F、`report.json` 或 `delivery.json`。
 
-## 8. A/B/C/F 与原子交付
+## 8. 照片产品的 A/B/C/F 与原子交付
 
 结构检查先于质量分级：
 
@@ -302,10 +323,12 @@ delivery.json
 | CLI | 用途 |
 | --- | --- |
 | `g305-capture --photo-mode` | 正式主采集：软件触发同步 RGB-D 照片序列；可选 FPS 和两种同步延时，格式自动决定 |
-| `g305-capture` | 连续 RGB-D 视频采集：可选 FPS 和两种同步延时，格式自动决定；`--video-exposure-us` 可固定曝光；仅作为独立视频产品输入 |
+| `g305-capture` | 连续 RGB-D 视频采集；默认不运行 ORB；`--diagnostic-online-orbslam3` 仅供隔离诊断 |
 | `g305-panorama` | 正式 unified RGB-D 全景 |
-| `g305-video-panorama` | 独立视频 2-D 全景；默认随后生成独立 3-D，`--defer-3d` 可延后 |
-| `g305-video-3d` | 为已发布的视频 2-D 交付独立重试 TSDF/GLB；需 `--input` 原始会话 |
+| `g305-video-live` | 连续 RGB-D 采集、S013 V11 增量非正式预览与正式 P3；默认 defer 3-D，`--post-3d` 显式启动独立三维 |
+| `g305-video-panorama` | 对已有连续会话执行锁定的 S013 V11 正式二维；默认在发布后 spawn 独立 3-D，`--defer-3d` 可延后 |
+| `g305-video-post-3d` | 面向普通使用者的独立后期三维：从会话运行 ORB-SLAM3，再发布 `3d/` TSDF/GLB/Viewer |
+| `g305-video-3d` | 低层三维发布器；要求显式 `--trajectory`、`--source-frame-id`、`--two-d-output` 与 `--input` |
 | `g305-orbslam3-trajectory` | 独立重新运行完整 ORB-SLAM3 并导出真实轨迹 |
 | `g305-central-strip-diagnostic` | 隔离中央条带诊断 |
 | `g305-geometry-pair-diagnostic` | 隔离相邻 geometry A/B 诊断 |
@@ -322,6 +345,7 @@ delivery.json
 - unified renderer：`test_calibrated_rgb_pushbroom.py`、`test_geometry_assisted_local_warp.py`、`test_handoff_continuity.py`
 - 发布：`test_sequence_delivery.py`、`test_sequence_integration.py`、`test_config.py`
 - TSDF：`test_dense_fusion.py`
-- 视频：`test_video_session.py`、`test_video_scan_segment.py`、`test_video_motion_resampler.py`、`test_video_online_state.py`、`test_video_visual_renderer.py`、`test_video_delivery.py`
+- 视频正式 V11：`test_video_s13_v11_promotion.py`、`test_video_s13_v11_production_route.py`、`test_video_s13_live_acceptance.py`、`test_video_live.py`、`test_video_s13_live.py`、`test_video_delivery.py`
+- 视频后期三维：`test_video_3d_postprocess.py`
 
 合成测试不等于实机验收。涉及相机、Open3D、CUDA、ORB-SLAM3 或性能的改动，交付说明必须分别注明单元/合成测试、真实 Open3D 边、真实完整 ORB-SLAM3、历史失败数据和现场速度验收状态。历史输出和旧 schema 不能作为当前 v12-r1 正式验收。
