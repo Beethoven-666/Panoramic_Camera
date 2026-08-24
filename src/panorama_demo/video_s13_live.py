@@ -163,7 +163,6 @@ class S13V11LiveObserver:
         self._stable_segment_started_ns: int | None = None
         self._last_motion_ns: int | None = None
         self._latest_frame_id: int | None = None
-        self._preview_sources: list[np.ndarray] = []
         self._latest_panorama_preview: np.ndarray | None = None
         self._analysis_thread = threading.Thread(
             target=self._analysis_loop, name="s013-live-analysis", daemon=False
@@ -342,23 +341,29 @@ class S13V11LiveObserver:
         )
         return passed, stable_seconds, forward, consistency, reliable_fraction
 
-    def _incremental_preview(self) -> np.ndarray:
-        strips = []
-        for image in self._preview_sources[-24:]:
-            width = max(8, min(32, image.shape[1] // 8))
-            center = image.shape[1] // 2
-            strips.append(image[:, center - width // 2:center + (width + 1) // 2])
-        return np.ascontiguousarray(np.concatenate(strips, axis=1))
-
     def _request_preview(self, packet: LiveFramePacket) -> None:
         with self._lock:
             if self._preview_disabled or self._stopped:
                 return
+            shadow = self._shadow_snapshot
+        if shadow is None or shadow.current_p0 is None:
+            return
         now = time.monotonic_ns()
         if self._last_preview_request_ns and now - self._last_preview_request_ns < self.preview_interval_ns:
             return
         self._last_preview_request_ns = now
-        preview = self._incremental_preview()
+        current = np.asarray(shadow.current_p0.image)
+        scale = min(1.0, 1600.0 / max(1, current.shape[1]))
+        preview = (
+            current.copy()
+            if scale == 1.0
+            else cv2.resize(
+                current,
+                (1600, max(1, int(round(current.shape[0] * scale)))),
+                interpolation=cv2.INTER_AREA,
+            )
+        )
+        preview = np.ascontiguousarray(preview)
         preview.setflags(write=False)
         with self._lock:
             self._latest_panorama_preview = preview
@@ -391,15 +396,8 @@ class S13V11LiveObserver:
                 if packet is None:
                     return
                 gray = self._analysis_image(packet.color_bgr)
-                preview_height = max(1, round(packet.color_bgr.shape[0] * 424 / packet.color_bgr.shape[1]))
-                preview_source = cv2.resize(
-                    packet.color_bgr, (424, preview_height), interpolation=cv2.INTER_AREA
-                )
                 with self._lock:
                     self._analysis_gray[packet.frame_id] = gray
-                    self._preview_sources.append(preview_source)
-                    if len(self._preview_sources) > 24:
-                        self._preview_sources.pop(0)
                     self._analysed += 1
                     self._latest_frame_id = packet.frame_id
                 if previous is not None:
@@ -460,6 +458,7 @@ class S13V11LiveObserver:
                     session = self._session
                     stopped = self._stopped
                     disabled = self._preview_disabled
+                    shadow = self._shadow_snapshot
                 if session is None or stopped or disabled:
                     continue
                 ok, encoded = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -480,9 +479,17 @@ class S13V11LiveObserver:
                     "algorithm_id": S13_VISUAL_CONTINUITY_ALGORITHM_ID,
                     "preview_generation": self._preview_generation + 1,
                     "latest_frame_id": frame_id,
-                    "stable_source_count": len(self._stable_edges) + 1,
-                    "mutable_source_count": min(2, len(self._preview_sources)),
-                    "stage_visualization": "incremental_p0_owner_preview",
+                    "stable_source_count": (
+                        0 if shadow is None else shadow.frontiers.sealed_source_count
+                    ),
+                    "mutable_source_count": (
+                        0 if shadow is None else (
+                            shadow.frontiers.selected_source_count
+                            - shadow.frontiers.sealed_source_count
+                        )
+                    ),
+                    "current_p0_width": 0 if preview is None else int(preview.shape[1]),
+                    "stage_visualization": "s013_online_p0_current/v1",
                     "capture_active": True,
                     "published_monotonic_ns": published_ns,
                 }
@@ -533,9 +540,13 @@ class S13V11LiveObserver:
                 "algorithm_id": S13_VISUAL_CONTINUITY_ALGORITHM_ID,
                 "preview_generation": self._preview_generation,
                 "latest_frame_id": self._latest_frame_id,
-                "stable_source_count": len(self._stable_edges) + (1 if self._stable_edges else 0),
+                "stable_source_count": (
+                    0
+                    if self._shadow_snapshot is None
+                    else self._shadow_snapshot.frontiers.sealed_source_count
+                ),
                 "mutable_source_count": 0,
-                "stage_visualization": "incremental_p0_owner_preview",
+                "stage_visualization": "s013_online_p0_current/v1",
                 "capture_active": False,
             }
         preview_root = self._preview_root(session)
@@ -629,6 +640,25 @@ class S13V11LiveObserver:
                         0
                         if self._shadow_snapshot is None
                         else self._shadow_snapshot.frontiers.selected_source_count
+                    ),
+                    "p0_current_width": (
+                        0
+                        if self._shadow_snapshot is None
+                        or self._shadow_snapshot.current_p0 is None
+                        else int(self._shadow_snapshot.current_p0.image.shape[1])
+                    ),
+                    "p0_sealed_source_count": (
+                        0
+                        if self._shadow_snapshot is None
+                        else self._shadow_snapshot.frontiers.sealed_source_count
+                    ),
+                    "p0_mutable_tail_source_count": (
+                        0
+                        if self._shadow_snapshot is None
+                        else (
+                            self._shadow_snapshot.frontiers.selected_source_count
+                            - self._shadow_snapshot.frontiers.sealed_source_count
+                        )
                     ),
                 }),
             )

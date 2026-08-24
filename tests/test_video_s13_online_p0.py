@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from panorama_demo.session import CameraIntrinsics
+from panorama_demo.video_s13_base_renderer import render_s13_p0
 from panorama_demo.video_s13_fast_pipeline import _measure_fast_motion
 from panorama_demo.video_s13_online_p0 import (
     S13OnlineP0Engine,
@@ -18,7 +19,7 @@ from panorama_demo.video_s13_progress import (
     selected_hypothesis_ids_for_spatial_sources,
 )
 from panorama_demo.video_s13_schedule import plan_s13_m3_schedule
-from panorama_demo.video_s13_session import S13RenderFrame
+from panorama_demo.video_s13_session import S13RenderFrame, read_s13_rgb
 from panorama_demo.video_s13_trajectory import S13Trajectory
 
 
@@ -84,3 +85,22 @@ def test_online_committed_shadow_final_schedule_matches_batch(tmp_path: Path) ->
     assert online.semantic_assignments == semantic_assignments(
         schedule, selection, hypothesis_ids
     )
+    batch_p0 = render_s13_p0(
+        schedule,
+        calibration,
+        lambda frame_id: read_s13_rgb(frames[frame_id]),
+        placement_methods=selection.placement_methods,
+        selected_hypothesis_ids=hypothesis_ids,
+    )
+    assert online.current_p0 is not None
+    assert np.array_equal(online.current_p0.image, batch_p0.image)
+    assert np.array_equal(online.current_p0.valid_mask, batch_p0.valid_mask)
+    for name in (
+        "owner_frame_id", "owner_source_index", "assignment_index",
+        "source_u", "source_v", "selected_motion_hypothesis_id",
+    ):
+        assert np.array_equal(
+            online.current_p0.pixel_provenance[name],
+            batch_p0.pixel_provenance[name],
+            equal_nan=True,
+        )

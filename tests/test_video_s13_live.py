@@ -4,6 +4,7 @@ import json
 import time
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -58,7 +59,21 @@ def _observer(tmp_path: Path) -> S13V11LiveObserver:
         capture_started_monotonic_ns=1,
         calibration={},
     ))
+    _inject_current_p0(observer)
     return observer
+
+
+def _inject_current_p0(observer: S13V11LiveObserver) -> None:
+    with observer._lock:
+        observer._shadow_snapshot = SimpleNamespace(
+            current_p0=SimpleNamespace(
+                image=np.full((120, 560, 3), 70, dtype=np.uint8)
+            ),
+            frontiers=SimpleNamespace(
+                sealed_source_count=1,
+                selected_source_count=5,
+            ),
+        )
 
 
 def test_preview_waits_for_both_08_seconds_and_32_analysis_pixels(tmp_path: Path) -> None:
@@ -101,9 +116,9 @@ def test_preview_waits_for_both_08_seconds_and_32_analysis_pixels(tmp_path: Path
         "algorithm_id": S13_VISUAL_CONTINUITY_ALGORITHM_ID,
         "preview_generation": 1,
         "latest_frame_id": 4,
-        "stable_source_count": 5,
-        "mutable_source_count": 2,
-        "stage_visualization": "incremental_p0_owner_preview",
+        "stable_source_count": 1,
+        "mutable_source_count": 4,
+        "stage_visualization": "s013_online_p0_current/v1",
         "capture_active": True,
     }
     observer.on_capture_stopping()
@@ -142,6 +157,7 @@ def test_direction_change_resets_stable_motion_start(tmp_path: Path) -> None:
         motion_estimator=lambda _left, _right: (motions.popleft(), True),
     )
     observer.on_session_ready(LiveSessionInfo(tmp_path, 1, {}))
+    _inject_current_p0(observer)
     base = time.monotonic_ns()
     for frame_id in range(6):
         observer.on_frame_accepted(_packet(frame_id, base + frame_id * 200_000_000))
