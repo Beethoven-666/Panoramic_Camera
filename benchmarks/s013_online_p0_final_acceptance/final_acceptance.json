@@ -1,0 +1,84 @@
+{
+  "schema": "gemini305-s013-online-p0-final-acceptance/v1",
+  "branch": "codex/s013-v11-live-production",
+  "algorithm_id": "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_visual_continuity_v11",
+  "implementation_id": "s013_m5_disjoint_seam_m63_pair_guard_v11",
+  "production_config_sha256": "3a49f8cbaa622592eff41b2a9e34cb518c6067d74d15574cf01faeea0cc8fafc",
+  "acceptance_method": {
+    "input_kind": "recorded_real_continuous_rgbd_video",
+    "physical_camera_capture_executed": false,
+    "cadence": "recorded_device_timestamp_cadence",
+    "runs_per_session": "one_warmup_plus_two_formal",
+    "artifact_root": "artifacts/s013_online_p0_final_v3"
+  },
+  "sessions": {
+    "video_live": {
+      "session": "data/captures/video/run_20260804_162340",
+      "frame_count": 447,
+      "selected_source_count": 107,
+      "stage_pixel_sha256": {
+        "P0": "fd14d87cf33ea25976b21c32e4815cfa3df1e276e19aeb44b1b2ab4bd9745423",
+        "P1": "d457a3549ec0649ac5a74477a9cefc4a4b3a82a0a094aa5160d61ed4cdfda05e",
+        "P2": "b01a883bc2d3f6d99dbba3b61bba83b3b24fa392fad50009bfa555d73a86b98c",
+        "P3": "bb35bfdb6f211a288cf64643b95fab134f5dbfafb46435e705b5bc67780bb8a1"
+      },
+      "formal_post_stop_p3_published_seconds": [10.500, 10.328],
+      "formal_post_stop_median_seconds": 10.414,
+      "formal_post_stop_p95_seconds": 10.4914,
+      "formal_committed_catchup_seconds": [0.016, 0.078],
+      "formal_p0_prefix_reused_fraction": [0.9345794392523364, 0.9626168224299065],
+      "formal_tail_source_count": [7, 4],
+      "formal_tail_closure_seconds": [0.0626488, 0.0549659],
+      "formal_rollback_reasons": [["final_schedule_changed"], []],
+      "baseline_post_stop_median_seconds": 16.0315,
+      "median_reduction_percent": 35.0404
+    },
+    "video_live1": {
+      "session": "data/captures/video/run_20260806_153033",
+      "frame_count": 849,
+      "selected_source_count": 110,
+      "stage_pixel_sha256": {
+        "P0": "3f24574cf02314f64573895167738b3f2f5a679d498a26e52e66218548a5fc2a",
+        "P1": "3f24574cf02314f64573895167738b3f2f5a679d498a26e52e66218548a5fc2a",
+        "P2": "95d4ca05fa67c7713d5baae7f0a8ad1eba8424e1b7187a78304368b71aefadd7",
+        "P3": "6df1b159a2b0babf042b279e030c25e87799fd5cece8b8cb36a034490a0adee1"
+      },
+      "formal_post_stop_p3_published_seconds": [11.344, 11.344],
+      "formal_post_stop_median_seconds": 11.344,
+      "formal_post_stop_p95_seconds": 11.344,
+      "formal_committed_catchup_seconds": [0.094, 0.094],
+      "formal_p0_prefix_reused_fraction": [0.9636363636363636, 0.9636363636363636],
+      "formal_tail_source_count": [4, 4],
+      "formal_tail_closure_seconds": [0.0752944, 0.0642259],
+      "formal_rollback_reasons": [[], []],
+      "baseline_post_stop_median_seconds": 19.836,
+      "median_reduction_percent": 42.8111
+    }
+  },
+  "combined_formal": {
+    "post_stop_median_seconds": 10.922,
+    "post_stop_p95_seconds": 11.344,
+    "tail_closure_median_seconds": 0.06343735,
+    "tail_closure_p95_seconds": 0.073634125,
+    "committed_catchup_median_seconds": 0.086,
+    "committed_catchup_p95_seconds": 0.094,
+    "baseline_post_stop_median_seconds": 17.586,
+    "median_reduction_percent": 37.8938,
+    "writer_queue_drops": 0,
+    "writer_write_errors": 0,
+    "capture_orbslam3_call_count": 0,
+    "pre_2d_open3d_call_count": 0,
+    "pre_2d_tsdf_call_count": 0,
+    "pre_2d_3d_process_count": 0,
+    "full_m0_m3_recomputed": false,
+    "all_final_stage_sha_match_offline_baseline": true
+  },
+  "targets": {
+    "p0_prefix_reused_fraction_at_least_0_90": true,
+    "tail_closure_p95_at_most_1_5_seconds": true,
+    "post_stop_median_reduction_at_least_20_percent": true,
+    "writer_drop_and_error_zero": true,
+    "normal_tail_source_count_at_most_4": true,
+    "abnormal_schedule_mismatch_rolled_back_and_reported": true
+  }
+}

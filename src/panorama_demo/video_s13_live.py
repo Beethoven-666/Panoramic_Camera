@@ -26,6 +26,7 @@ from .video_s13_contract import (
     S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
 )
 from .video_s13_online_p0 import (
+    S13FrozenP0Authority,
     S13OnlineP0Engine,
     S13OnlineShadowSnapshot,
     calibration_from_live_document,
@@ -68,6 +69,7 @@ class S13V11LiveHandoff:
     motion_edges: tuple[S13LiveMotionEdge, ...]
     online_shadow: S13OnlineShadowSnapshot | None
     online_shadow_failure_reason: str | None
+    frozen_p0_authority: S13FrozenP0Authority | None
     capture_started_monotonic_ns: int
     capture_stopped_monotonic_ns: int
     capture_metrics: Mapping[str, object]
@@ -157,6 +159,8 @@ class S13V11LiveObserver:
         self._shadow_failure_reason: str | None = None
         self._shadow_next_index = 0
         self._shadow_stop = False
+        self._shadow_post_stop_started_ns: int | None = None
+        self._shadow_catchup_seconds = 0.0
         self._analysis_gray: dict[int, np.ndarray] = {}
         self._motion_edges: list[S13LiveMotionEdge] = []
         self._stable_edges: list[S13LiveMotionEdge] = []
@@ -236,6 +240,7 @@ class S13V11LiveObserver:
                 return
             self._accepting = False
             self._stopped = True
+            self._shadow_post_stop_started_ns = time.monotonic_ns()
             if self._session is None:
                 self._shadow_stop = True
                 stop_shadow = True
@@ -267,6 +272,10 @@ class S13V11LiveObserver:
             self._shadow_stop = True
             self._committed_condition.notify_all()
         self._shadow_thread.join()
+        if self._shadow_post_stop_started_ns is not None:
+            self._shadow_catchup_seconds = (
+                time.monotonic_ns() - self._shadow_post_stop_started_ns
+            ) / 1_000_000_000.0
 
     def _shadow_loop(self) -> None:
         while True:
@@ -292,9 +301,15 @@ class S13V11LiveObserver:
                     continue
                 identity = self._committed[self._shadow_next_index]
                 engine = self._shadow_engine
+                force_layout = bool(
+                    self._shadow_stop
+                    and self._shadow_next_index == len(self._committed) - 1
+                )
             assert engine is not None
             try:
-                shadow_snapshot = engine.append_committed(identity)
+                shadow_snapshot = engine.append_committed(
+                    identity, force_layout=force_layout
+                )
             except Exception as exc:
                 with self._committed_condition:
                     self._shadow_failure_reason = f"{type(exc).__name__}: {exc}"
@@ -599,6 +614,26 @@ class S13V11LiveObserver:
                 self._capture_result.capture_stopped_monotonic_ns
                 - self._capture_result.capture_started_monotonic_ns
             ) / 1_000_000_000.0
+            frozen: S13FrozenP0Authority | None = None
+            freeze_failure = self._shadow_failure_reason
+            if (
+                freeze_failure is None
+                and self._shadow_engine is not None
+                and self._capture_result.queue_drops == 0
+                and self._capture_result.write_errors == 0
+            ):
+                try:
+                    frozen = self._shadow_engine.freeze(
+                        committed_frames=committed,
+                        production_config_sha256=self.production_config_sha256,
+                    )
+                    self._shadow_snapshot = self._shadow_engine.snapshot()
+                except Exception as exc:
+                    freeze_failure = f"{type(exc).__name__}: {exc}"
+            reuse_level = (
+                "frozen_p0_authority_v1"
+                if frozen is not None else "validated_inputs_only"
+            )
             return S13V11LiveHandoff(
                 algorithm_id=S13_VISUAL_CONTINUITY_ALGORITHM_ID,
                 implementation_id=S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
@@ -608,7 +643,8 @@ class S13V11LiveObserver:
                 analysis_gray=MappingProxyType(dict(self._analysis_gray)),
                 motion_edges=tuple(self._motion_edges),
                 online_shadow=self._shadow_snapshot,
-                online_shadow_failure_reason=self._shadow_failure_reason,
+                online_shadow_failure_reason=freeze_failure,
+                frozen_p0_authority=frozen,
                 capture_started_monotonic_ns=self._capture_result.capture_started_monotonic_ns,
                 capture_stopped_monotonic_ns=self._capture_result.capture_stopped_monotonic_ns,
                 capture_metrics=MappingProxyType({
@@ -633,7 +669,7 @@ class S13V11LiveObserver:
                     "preview_skipped_due_to_load": snapshot.preview_skipped_due_to_load,
                     "preview_failures": snapshot.preview_failures,
                     "pair_evidence_reused_count": 0,
-                    "reuse_level": "validated_inputs_only",
+                    "reuse_level": reuse_level,
                     "shadow_processed_committed_frames": self._shadow_next_index,
                     "shadow_failure_reason": self._shadow_failure_reason,
                     "shadow_final_selected_source_count": (
@@ -660,7 +696,28 @@ class S13V11LiveObserver:
                             - self._shadow_snapshot.frontiers.sealed_source_count
                         )
                     ),
+                    "p0_prefix_reused_fraction": (
+                        0.0 if frozen is None else frozen.p0_prefix_reused_fraction
+                    ),
+                    "tail_finalize_source_count": (
+                        0 if frozen is None else frozen.finalized_tail_source_count
+                    ),
+                    "final_metadata_closure_seconds": (
+                        None if frozen is None else frozen.final_metadata_closure_seconds
+                    ),
+                    "tail_finalize_seconds": (
+                        None if frozen is None else frozen.tail_finalize_seconds
+                    ),
+                    "rollback_checkpoint_used": (
+                        False if frozen is None else frozen.rollback_checkpoint_used
+                    ),
+                    "rollback_reasons": (
+                        [] if frozen is None else list(frozen.rollback_reasons)
+                    ),
+                    "full_m0_m3_recomputed": frozen is None,
+                    "committed_catchup_seconds": self._shadow_catchup_seconds,
                 }),
+                reuse_level=reuse_level,
             )
 
 

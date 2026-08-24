@@ -180,6 +180,11 @@ def _run_s13_v11_authority(**kwargs: object) -> S13V11AuthorityResult:
     )
     output = Path(kwargs.get("output", session_path.parent / ".s013-v11-production"))
     component = config.component
+    live_handoff = kwargs.get("live_handoff")
+    frozen_p0 = (
+        None if live_handoff is None
+        else getattr(live_handoff, "frozen_p0_authority", None)
+    )
     fast = run_s13_cuda_fast_pipeline(
         session=session,
         trajectory=trajectory,
@@ -217,6 +222,7 @@ def _run_s13_v11_authority(**kwargs: object) -> S13V11AuthorityResult:
             )
         ),
         stage_output_stages=(),
+        p0_continuation=(None if frozen_p0 is None else frozen_p0.continuation),
     )
     authority = fast.get("authority")
     if not isinstance(authority, Mapping):
@@ -232,7 +238,6 @@ def _run_s13_v11_authority(**kwargs: object) -> S13V11AuthorityResult:
             raise RuntimeError(f"S013 V11 runner authority lacks in-memory {stage_name} pixels")
         stage_pixel_sha256[stage_name] = _stage_pixel_sha256(stage_image)
     elapsed = time.perf_counter() - started
-    live_handoff = kwargs.get("live_handoff")
     shadow_equivalence: dict[str, object] | None = None
     if live_handoff is not None:
         from .video_s13_online_p0 import semantic_assignments
@@ -368,7 +373,9 @@ def _validate_live_handoff(
         raise ValueError("S013 V11 live handoff identity does not match production lock")
     if handoff.session_root.resolve() != session_path.resolve():
         raise ValueError("S013 V11 live handoff belongs to a different session")
-    if handoff.reuse_level != "validated_inputs_only":
+    if handoff.reuse_level not in {
+        "validated_inputs_only", "frozen_p0_authority_v1",
+    }:
         raise ValueError("S013 V11 live handoff requests an unvalidated reuse level")
     ids = [item.frame_id for item in handoff.committed_frames]
     rows = [item.frames_csv_row_index for item in handoff.committed_frames]
@@ -376,6 +383,45 @@ def _validate_live_handoff(
         raise ValueError("S013 V11 live handoff committed ledger is incomplete")
     if rows != list(range(len(rows))):
         raise ValueError("S013 V11 live handoff CSV ledger is not contiguous")
+    if handoff.reuse_level == "frozen_p0_authority_v1":
+        from .video_s13_online_checkpoint import array_sha256
+
+        frozen = getattr(handoff, "frozen_p0_authority", None)
+        if frozen is None or frozen.reuse_level != handoff.reuse_level:
+            raise ValueError("S013 V11 frozen P0 handoff lacks its authority bundle")
+        if (
+            frozen.algorithm_id != spec.algorithm_id
+            or frozen.implementation_id != spec.implementation_id
+            or frozen.production_config_sha256 != spec.config_sha256
+            or frozen.session_root.resolve() != session_path.resolve()
+        ):
+            raise ValueError("S013 V11 frozen P0 authority identity changed")
+        expected_files = {
+            "manifest_sha256": session_path / "manifest.json",
+            "calibration_sha256": session_path / "calibration.json",
+            "frames_csv_sha256": session_path / "frames.csv",
+        }
+        for attribute, path in expected_files.items():
+            if getattr(frozen, attribute) != _sha256(path):
+                raise ValueError(f"S013 V11 frozen P0 {attribute} changed")
+        if tuple(frozen.committed_frames) != tuple(handoff.committed_frames):
+            raise ValueError("S013 V11 frozen P0 committed ledger changed")
+        p0 = frozen.continuation.p0_render
+        image = np.asarray(p0.image)
+        valid = np.asarray(p0.valid_mask)
+        owner = np.asarray(p0.pixel_provenance.get("owner_frame_id"))
+        if (
+            image.dtype != np.uint8
+            or valid.dtype != np.bool_
+            or image.shape[:2] != valid.shape
+            or owner.shape != valid.shape
+            or not np.array_equal(valid, owner >= 0)
+        ):
+            raise ValueError("S013 V11 frozen P0 pixel provenance is invalid")
+        if frozen.p0_pixel_sha256 != array_sha256(
+            image, schema="s013-stage-pixels/v1"
+        ):
+            raise ValueError("S013 V11 frozen P0 pixels changed")
 
 
 def run_s13_v11_production(
@@ -428,11 +474,36 @@ def run_s13_v11_production(
             observability=observe,
         )
         if live_handoff is not None:
+            frozen = getattr(live_handoff, "frozen_p0_authority", None)
             report["live_handoff"] = {
                 "reuse_level": live_handoff.reuse_level,
                 "committed_frame_count": len(live_handoff.committed_frames),
                 "motion_edge_count": len(live_handoff.motion_edges),
-                "pixel_evidence_reused": False,
+                "pixel_evidence_reused": frozen is not None,
+                "p0_reused": frozen is not None,
+                "p0_prefix_reused_fraction": (
+                    0.0 if frozen is None else frozen.p0_prefix_reused_fraction
+                ),
+                "sealed_source_count": (
+                    0 if frozen is None else frozen.sealed_prefix_source_count
+                ),
+                "tail_finalized_source_count": (
+                    0 if frozen is None else frozen.finalized_tail_source_count
+                ),
+                "full_m0_m3_recomputed": frozen is None,
+                "rollback_checkpoint_used": (
+                    False if frozen is None else frozen.rollback_checkpoint_used
+                ),
+                "rollback_reasons": (
+                    [] if frozen is None else list(frozen.rollback_reasons)
+                ),
+                "final_metadata_closure_seconds": (
+                    None if frozen is None else frozen.final_metadata_closure_seconds
+                ),
+                "tail_finalize_seconds": (
+                    None if frozen is None else frozen.tail_finalize_seconds
+                ),
+                "preview_pixels_directly_published": False,
                 "online_shadow_equivalence": report.get("online_shadow_equivalence"),
             }
         published = publish_video_2d(

@@ -102,10 +102,18 @@ class S13MotionAccumulator:
         if self._prepared and frame.frame_id <= self._prepared[-1].frame_id:
             raise ValueError("S1.3 motion accumulator frame ids must be strictly increasing")
         added: list[S13MotionEdge] = []
-        for step in (1, 2, 4):
+        for step in (1, 2):
             if len(self._prepared) < step:
                 continue
             edge = measure_s13_motion_edge(self._prepared[-step], frame, step=step)
+            if edge is not None:
+                self._edges.append(edge)
+                added.append(edge)
+        if (
+            len(self._prepared) >= 4
+            and not reliable_step1_direction_evidence(self._edges)
+        ):
+            edge = measure_s13_motion_edge(self._prepared[-4], frame, step=4)
             if edge is not None:
                 self._edges.append(edge)
                 added.append(edge)
