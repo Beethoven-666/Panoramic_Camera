@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import panorama_demo.capture_orbbec as capture_orbbec
 from panorama_demo.capture_orbbec import FramePacket, SessionWriter
 from panorama_demo.session import RGBDFrame
 from panorama_demo.synthetic import generate_sequence
@@ -152,3 +153,73 @@ def test_capture_time_accumulator_uses_writer_byte_hashes_without_rereading_sour
     assert state.origin == "capture"
     assert state.certifies_strict_frame_files
     assert state.segment == segment
+
+
+def test_session_writer_latches_first_disk_failure_and_stops_accepting_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    encode_calls = 0
+
+    def fail_on_depth(path, _extension, _image, _params, *, durable=True):
+        nonlocal encode_calls
+        del durable
+        encode_calls += 1
+        path.write_bytes(b"partial frame")
+        if encode_calls == 2:
+            raise OSError(28, "No space left on device")
+        return "digest"
+
+    monkeypatch.setattr(capture_orbbec, "_atomic_encode", fail_on_depth)
+    writer = SessionWriter(
+        tmp_path,
+        queue_size=4,
+        jpeg_quality=98,
+        depth_png_compression=0,
+        save_raw_depth=False,
+    )
+    packet = FramePacket(
+        0,
+        np.zeros((4, 4, 3), dtype=np.uint8),
+        np.ones((4, 4), dtype=np.uint16),
+        None,
+        {"depth_scale_mm_per_unit": 1.0},
+    )
+
+    assert writer.submit(packet)
+    assert writer._failed.wait(timeout=2)
+    with pytest.raises(capture_orbbec.SessionWriterError, match="No space left"):
+        writer.submit(packet)
+    writer.close()
+
+    assert writer.stats.write_errors == 1
+    assert len(writer.stats.errors) == 1
+    assert writer.stats.written == 0
+    assert not (tmp_path / "color" / "00000000.jpg").exists()
+    assert not (tmp_path / "depth_aligned" / "00000000.png").exists()
+
+
+def test_session_writer_reports_frames_csv_initialization_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_open = Path.open
+
+    def fail_frames_csv(path: Path, *args, **kwargs):
+        if path.name == "frames.csv":
+            raise OSError(28, "No space left on device")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_frames_csv)
+    writer = SessionWriter(
+        tmp_path,
+        queue_size=1,
+        jpeg_quality=98,
+        depth_png_compression=0,
+        save_raw_depth=False,
+    )
+    assert writer._failed.wait(timeout=2)
+    writer.close()
+
+    assert writer.stats.write_errors == 1
+    assert writer.stats.errors == [
+        "frames.csv initialization: [Errno 28] No space left on device"
+    ]

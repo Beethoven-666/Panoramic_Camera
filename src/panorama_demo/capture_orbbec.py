@@ -124,6 +124,10 @@ class WriterStats:
     errors: list[str] = field(default_factory=list)
 
 
+class SessionWriterError(RuntimeError):
+    """Raised in the capture thread after the disk writer has failed."""
+
+
 def _atomic_encode(
     path: Path,
     extension: str,
@@ -228,10 +232,12 @@ class SessionWriter:
         self.queue: queue.Queue[FramePacket | None] = queue.Queue(maxsize=queue_size)
         self.stats = WriterStats()
         self.written_rgbd_frames: list[WrittenRGBDFrame] = []
+        self._failed = threading.Event()
         self._thread = threading.Thread(target=self._run, name="rgbd-writer", daemon=False)
         self._thread.start()
 
     def submit(self, packet: FramePacket) -> bool:
+        self.raise_if_failed()
         self.stats.submitted += 1
         try:
             self.queue.put_nowait(packet)
@@ -242,24 +248,64 @@ class SessionWriter:
         return True
 
     def close(self) -> None:
-        self.queue.put(None)
+        if self._thread.is_alive():
+            self.queue.put(None)
         self._thread.join()
+
+    def raise_if_failed(self) -> None:
+        if self._failed.is_set():
+            detail = self.stats.errors[0] if self.stats.errors else "unknown writer failure"
+            raise SessionWriterError(f"RGB-D session writer failed: {detail}")
+
+    def _record_failure(self, message: str) -> None:
+        if self._failed.is_set():
+            return
+        self.stats.write_errors += 1
+        self.stats.errors.append(message)
+        self._failed.set()
+        print(f"\nWriter error: {message}", file=sys.stderr)
+
+    @staticmethod
+    def _discard_incomplete_frame(paths: tuple[Path, ...]) -> None:
+        for path in paths:
+            for candidate in (path, path.with_suffix(path.suffix + ".partial")):
+                try:
+                    candidate.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _run(self) -> None:
         csv_path = self.root / "frames.csv"
-        with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        try:
+            handle = csv_path.open("w", encoding="utf-8", newline="")
+        except Exception as exc:
+            self._record_failure(f"frames.csv initialization: {exc}")
+            return
+        with handle:
             writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
-            writer.writeheader()
+            try:
+                writer.writeheader()
+            except Exception as exc:
+                self._record_failure(f"frames.csv initialization: {exc}")
+                return
             while True:
                 packet = self.queue.get()
                 if packet is None:
                     self.queue.task_done()
                     break
+                if self._failed.is_set():
+                    self.queue.task_done()
+                    continue
                 try:
                     stem = f"{packet.frame_id:08d}"
                     color_relative = Path("color") / f"{stem}.jpg"
                     aligned_relative = Path("depth_aligned") / f"{stem}.png"
                     raw_relative = Path("depth_raw") / f"{stem}.png"
+                    frame_paths = (
+                        self.root / color_relative,
+                        self.root / aligned_relative,
+                        self.root / raw_relative,
+                    )
                     color_sha256 = _atomic_encode(
                         self.root / color_relative,
                         ".jpg",
@@ -315,16 +361,17 @@ class SessionWriter:
                     if self.on_written is not None:
                         self.on_written(written_frame)
                     self.stats.written += 1
-                except Exception as exc:  # keep capture alive, but report every failure
-                    self.stats.write_errors += 1
-                    message = f"frame {packet.frame_id}: {exc}"
-                    self.stats.errors.append(message)
-                    print(f"\nWriter error: {message}", file=sys.stderr)
+                except Exception as exc:
+                    self._discard_incomplete_frame(frame_paths)
+                    self._record_failure(f"frame {packet.frame_id}: {exc}")
                 finally:
                     self.queue.task_done()
-            handle.flush()
-            if self.durable_per_frame:
-                os.fsync(handle.fileno())
+            try:
+                handle.flush()
+                if self.durable_per_frame:
+                    os.fsync(handle.fileno())
+            except Exception as exc:
+                self._record_failure(f"frames.csv finalization: {exc}")
 
 
 def _frame_to_bgr(frame: Any, sdk: Any) -> np.ndarray:
@@ -2061,6 +2108,7 @@ def run_video_capture(
             }
 
         while True:
+            writer.raise_if_failed()
             frames = pipeline.wait_for_frames(1000)
             if frames is None:
                 if time.monotonic() - last_frame_monotonic >= float(
@@ -2181,6 +2229,11 @@ def run_video_capture(
             accepted_for_write = writer.submit(
                 FramePacket(received, color_image, aligned_depth, raw_depth_array, packet_metadata)
             )
+            if not accepted_for_write:
+                raise RuntimeError(
+                    "RGB-D session writer queue is full; capture stopped before "
+                    "the session could lose additional frames"
+                )
             if accepted_for_write and observer is not None:
                 try:
                     observer.on_frame_accepted(LiveFramePacket(
@@ -2261,6 +2314,11 @@ def run_video_capture(
         if pipeline_started:
             pipeline.stop()
         writer.close()
+        if capture_exception is None:
+            try:
+                writer.raise_if_failed()
+            except SessionWriterError as exc:
+                capture_exception = exc
         online_orb_result = online_orb_tracker.close() if online_orb_tracker is not None else None
         cv2.destroyAllWindows()
         print()
@@ -2268,7 +2326,12 @@ def run_video_capture(
     manifest.update(
         {
             "ended_utc": datetime.now(timezone.utc).isoformat(),
-            "clean_shutdown": capture_exception is None,
+            "clean_shutdown": (
+                capture_exception is None
+                and writer.stats.write_errors == 0
+                and writer.stats.queue_drops == 0
+                and writer.stats.written == received
+            ),
             "received_frames": received,
             "written_frames": writer.stats.written,
             "queue_drops": writer.stats.queue_drops,
@@ -2288,6 +2351,8 @@ def run_video_capture(
             and manifest["clean_shutdown"] is True
             and writer.stats.write_errors == 0
             and writer.stats.errors == []
+            and writer.stats.queue_drops == 0
+            and writer.stats.written == received
         ),
     }
     if online_orb_tracker is not None:

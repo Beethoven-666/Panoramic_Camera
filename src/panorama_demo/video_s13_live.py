@@ -27,9 +27,7 @@ from .video_s13_contract import (
 )
 from .video_s13_online_p0 import (
     S13FrozenP0Authority,
-    S13OnlineP0Engine,
     S13OnlineShadowSnapshot,
-    calibration_from_live_document,
 )
 
 
@@ -140,7 +138,6 @@ class S13V11LiveObserver:
         self._analysis_queue: queue.Queue[LiveFramePacket | None] = queue.Queue(maxsize=64)
         self._preview_queue: queue.Queue[tuple[int, int, np.ndarray] | None] = queue.Queue(maxsize=1)
         self._lock = threading.Lock()
-        self._committed_condition = threading.Condition(self._lock)
         self._session: LiveSessionInfo | None = None
         self._capture_result: CaptureResult | None = None
         self._accepting = True
@@ -154,13 +151,8 @@ class S13V11LiveObserver:
         self._preview_latencies_ms: list[float] = []
         self._last_preview_request_ns = 0
         self._committed: list[CommittedFrameIdentity] = []
-        self._shadow_engine: S13OnlineP0Engine | None = None
         self._shadow_snapshot: S13OnlineShadowSnapshot | None = None
-        self._shadow_failure_reason: str | None = None
-        self._shadow_next_index = 0
-        self._shadow_stop = False
-        self._shadow_post_stop_started_ns: int | None = None
-        self._shadow_catchup_seconds = 0.0
+        self._shadow_failure_reason: str | None = "disabled_during_capture"
         self._analysis_gray: dict[int, np.ndarray] = {}
         self._motion_edges: list[S13LiveMotionEdge] = []
         self._stable_edges: list[S13LiveMotionEdge] = []
@@ -168,35 +160,19 @@ class S13V11LiveObserver:
         self._last_motion_ns: int | None = None
         self._latest_frame_id: int | None = None
         self._latest_panorama_preview: np.ndarray | None = None
+        self._preview_sources: tuple[tuple[float, np.ndarray], ...] = ()
         self._analysis_thread = threading.Thread(
             target=self._analysis_loop, name="s013-live-analysis", daemon=False
         )
         self._preview_thread = threading.Thread(
             target=self._preview_loop, name="s013-live-preview", daemon=False
         )
-        self._shadow_thread = threading.Thread(
-            target=self._shadow_loop, name="s013-live-committed-shadow", daemon=True
-        )
         self._analysis_thread.start()
         self._preview_thread.start()
-        self._shadow_thread.start()
 
     def on_session_ready(self, session: LiveSessionInfo) -> None:
-        shadow: S13OnlineP0Engine | None = None
-        failure: str | None = None
-        try:
-            shadow = S13OnlineP0Engine(
-                session_root=session.root,
-                calibration=calibration_from_live_document(session.calibration),
-                analysis_width_px=self.analysis_width_px,
-            )
-        except Exception as exc:
-            failure = f"{type(exc).__name__}: {exc}"
         with self._lock:
             self._session = session
-            self._shadow_engine = shadow
-            self._shadow_failure_reason = failure
-            self._committed_condition.notify_all()
         if self.preview_output is not None:
             self.preview_output.mkdir(parents=True, exist_ok=True)
 
@@ -231,20 +207,13 @@ class S13V11LiveObserver:
         )
         with self._lock:
             self._committed.append(identity)
-            self._committed_condition.notify()
 
     def on_capture_stopping(self) -> None:
-        stop_shadow = False
         with self._lock:
             if self._stopped:
                 return
             self._accepting = False
             self._stopped = True
-            self._shadow_post_stop_started_ns = time.monotonic_ns()
-            if self._session is None:
-                self._shadow_stop = True
-                stop_shadow = True
-                self._committed_condition.notify_all()
         while True:
             try:
                 self._analysis_queue.get_nowait()
@@ -261,69 +230,81 @@ class S13V11LiveObserver:
         self._preview_queue.put(None)
         self._analysis_thread.join()
         self._preview_thread.join()
-        if stop_shadow:
-            self._shadow_thread.join()
         self._write_stopped_state()
 
     def on_capture_closed(self, result: CaptureResult) -> None:
         self.on_capture_stopping()
         with self._lock:
             self._capture_result = result
-            self._shadow_stop = True
-            self._committed_condition.notify_all()
-        self._shadow_thread.join()
-        if self._shadow_post_stop_started_ns is not None:
-            self._shadow_catchup_seconds = (
-                time.monotonic_ns() - self._shadow_post_stop_started_ns
-            ) / 1_000_000_000.0
 
-    def _shadow_loop(self) -> None:
-        while True:
-            with self._committed_condition:
-                self._committed_condition.wait_for(
-                    lambda: (
-                        self._shadow_stop
-                        or self._shadow_failure_reason is not None
-                        or (
-                            self._shadow_engine is not None
-                            and self._shadow_next_index < len(self._committed)
-                        )
-                    )
-                )
-                if self._shadow_failure_reason is not None:
-                    if self._shadow_stop:
-                        return
-                    self._committed_condition.wait()
-                    continue
-                if self._shadow_next_index >= len(self._committed):
-                    if self._shadow_stop:
-                        return
-                    continue
-                identity = self._committed[self._shadow_next_index]
-                engine = self._shadow_engine
-                force_layout = bool(
-                    self._shadow_stop
-                    and self._shadow_next_index == len(self._committed) - 1
-                )
-            assert engine is not None
-            try:
-                shadow_snapshot = engine.append_committed(
-                    identity, force_layout=force_layout
-                )
-            except Exception as exc:
-                with self._committed_condition:
-                    self._shadow_failure_reason = f"{type(exc).__name__}: {exc}"
-                    self._committed_condition.notify_all()
-            else:
-                with self._committed_condition:
-                    self._shadow_snapshot = shadow_snapshot
-                    self._shadow_next_index += 1
-                    self._committed_condition.notify_all()
-
-    def _analysis_image(self, color: np.ndarray) -> np.ndarray:
+    def _analysis_images(self, color: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         height = max(1, round(color.shape[0] * self.analysis_width_px / color.shape[1]))
         resized = cv2.resize(color, (self.analysis_width_px, height), interpolation=cv2.INTER_AREA)
-        return cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        return resized, cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+
+    @staticmethod
+    def _render_motion_preview(
+        sources: tuple[tuple[float, np.ndarray], ...],
+    ) -> np.ndarray:
+        """Render a bounded low-resolution hard-owner panorama in world-x order."""
+
+        if not sources:
+            raise ValueError("Live preview requires at least one motion source")
+        ordered = sorted(sources, key=lambda item: item[0])
+        centers = np.asarray([item[0] for item in ordered], dtype=np.float64)
+        images = [np.asarray(item[1]) for item in ordered]
+        height, width = images[0].shape[:2]
+        if any(
+            image.dtype != np.uint8 or image.shape != (height, width, 3)
+            for image in images
+        ):
+            raise ValueError("Live preview sources must share one HxWx3 uint8 shape")
+
+        canvas_left = float(centers[0] - width / 2.0)
+        canvas_right = float(centers[-1] + width / 2.0)
+        canvas_width = max(1.0, canvas_right - canvas_left)
+        scale = min(1.0, 1600.0 / canvas_width)
+        output_width = max(1, int(round(canvas_width * scale)))
+        output_height = max(1, int(round(height * scale)))
+        world_x = canvas_left + (np.arange(output_width, dtype=np.float64) + 0.5) / scale
+        boundaries = (centers[:-1] + centers[1:]) * 0.5
+        owner = np.searchsorted(boundaries, world_x, side="right")
+        source_u = np.floor(
+            world_x - (centers[owner] - width / 2.0)
+        ).astype(np.int32)
+        source_u = np.clip(source_u, 0, width - 1)
+        source_y = np.floor(
+            (np.arange(output_height, dtype=np.float64) + 0.5) / scale
+        ).astype(np.int32)
+        source_y = np.clip(source_y, 0, height - 1)
+
+        preview = np.empty((output_height, output_width, 3), dtype=np.uint8)
+        for source_index, image in enumerate(images):
+            columns = np.flatnonzero(owner == source_index)
+            if columns.size:
+                preview[:, columns] = image[
+                    source_y[:, None], source_u[columns][None, :]
+                ]
+        return np.ascontiguousarray(preview)
+
+    @staticmethod
+    def _fit_capture_panel(
+        preview: np.ndarray, *, panel_width: int, panel_height: int
+    ) -> np.ndarray:
+        scale = min(panel_width / preview.shape[1], panel_height / preview.shape[0])
+        resized = cv2.resize(
+            preview,
+            (
+                max(1, int(round(preview.shape[1] * scale))),
+                max(1, int(round(preview.shape[0] * scale))),
+            ),
+            interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR,
+        )
+        panel = np.zeros((panel_height, panel_width, 3), dtype=np.uint8)
+        top = (panel_height - resized.shape[0]) // 2
+        left = (panel_width - resized.shape[1]) // 2
+        panel[top:top + resized.shape[0], left:left + resized.shape[1]] = resized
+        return np.ascontiguousarray(panel)
 
     def _gate(self, packet: LiveFramePacket | SimplePacket) -> tuple[bool, float, float, float, float]:
         reliable = [
@@ -360,28 +341,24 @@ class S13V11LiveObserver:
         with self._lock:
             if self._preview_disabled or self._stopped:
                 return
-            shadow = self._shadow_snapshot
-        if shadow is None or shadow.current_p0 is None:
+            preview_sources = self._preview_sources
+        if not preview_sources:
             return
         now = time.monotonic_ns()
         if self._last_preview_request_ns and now - self._last_preview_request_ns < self.preview_interval_ns:
             return
         self._last_preview_request_ns = now
-        current = np.asarray(shadow.current_p0.image)
-        scale = min(1.0, 1600.0 / max(1, current.shape[1]))
-        preview = (
-            current.copy()
-            if scale == 1.0
-            else cv2.resize(
-                current,
-                (1600, max(1, int(round(current.shape[0] * scale)))),
-                interpolation=cv2.INTER_AREA,
-            )
+        preview = self._render_motion_preview(preview_sources)
+        capture_panel = self._fit_capture_panel(
+            preview,
+            panel_width=packet.color_bgr.shape[1] * 2,
+            panel_height=max(120, packet.color_bgr.shape[0] // 2),
         )
         preview = np.ascontiguousarray(preview)
         preview.setflags(write=False)
+        capture_panel.setflags(write=False)
         with self._lock:
-            self._latest_panorama_preview = preview
+            self._latest_panorama_preview = capture_panel
         item = (packet.frame_id, packet.accepted_monotonic_ns, preview)
         try:
             self._preview_queue.put_nowait(item)
@@ -404,13 +381,16 @@ class S13V11LiveObserver:
             return self._latest_panorama_preview
 
     def _analysis_loop(self) -> None:
-        previous: tuple[int, int, np.ndarray] | None = None
+        previous: tuple[int, int, np.ndarray, np.ndarray] | None = None
+        preview_anchors: list[tuple[float, np.ndarray]] = []
+        preview_latest: tuple[float, np.ndarray] | None = None
+        preview_center_x = 0.0
         while True:
             packet = self._analysis_queue.get()
             try:
                 if packet is None:
                     return
-                gray = self._analysis_image(packet.color_bgr)
+                color_424, gray = self._analysis_images(packet.color_bgr)
                 with self._lock:
                     self._analysis_gray[packet.frame_id] = gray
                     self._analysed += 1
@@ -424,6 +404,8 @@ class S13V11LiveObserver:
                         reliable=bool(reliable),
                         accepted_monotonic_ns=packet.accepted_monotonic_ns,
                     )
+                    extend_preview = False
+                    reset_preview = False
                     with self._lock:
                         self._motion_edges.append(edge)
                         previous_direction = (
@@ -444,6 +426,7 @@ class S13V11LiveObserver:
                             or gap_reset
                             or (previous_direction != 0.0 and direction != previous_direction)
                         )
+                        reset_preview = reset
                         if reset:
                             self._stable_edges.clear()
                             self._stable_segment_started_ns = None
@@ -451,11 +434,34 @@ class S13V11LiveObserver:
                             if not self._stable_edges:
                                 self._stable_segment_started_ns = previous[1]
                             self._stable_edges.append(edge)
+                            extend_preview = True
                         self._last_motion_ns = edge.accepted_monotonic_ns
                         passed, *_ = self._gate(packet)
+                    if reset_preview and not extend_preview:
+                        preview_anchors.clear()
+                        preview_latest = None
+                        preview_center_x = 0.0
+                        with self._lock:
+                            self._preview_sources = ()
+                    if extend_preview:
+                        # Phase motion is scene motion in image coordinates;
+                        # the panorama camera/world advance has the opposite sign.
+                        camera_advance = -float(edge.dx_424_px)
+                        if reset_preview or not preview_anchors:
+                            preview_center_x = 0.0
+                            preview_anchors = [(0.0, previous[3])]
+                        preview_center_x += camera_advance
+                        preview_latest = (preview_center_x, color_424)
+                        if abs(preview_center_x - preview_anchors[-1][0]) >= 5.0:
+                            preview_anchors.append(preview_latest)
+                        preview_sources = list(preview_anchors)
+                        if preview_latest[0] != preview_sources[-1][0]:
+                            preview_sources.append(preview_latest)
+                        with self._lock:
+                            self._preview_sources = tuple(preview_sources)
                     if passed:
                         self._request_preview(packet)
-                previous = (packet.frame_id, packet.accepted_monotonic_ns, gray)
+                previous = (packet.frame_id, packet.accepted_monotonic_ns, gray, color_424)
             except Exception:
                 with self._lock:
                     self._preview_failures += 1
@@ -473,7 +479,9 @@ class S13V11LiveObserver:
                     session = self._session
                     stopped = self._stopped
                     disabled = self._preview_disabled
-                    shadow = self._shadow_snapshot
+                    stable_source_count = (
+                        0 if not self._stable_edges else len(self._stable_edges) + 1
+                    )
                 if session is None or stopped or disabled:
                     continue
                 ok, encoded = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -494,17 +502,10 @@ class S13V11LiveObserver:
                     "algorithm_id": S13_VISUAL_CONTINUITY_ALGORITHM_ID,
                     "preview_generation": self._preview_generation + 1,
                     "latest_frame_id": frame_id,
-                    "stable_source_count": (
-                        0 if shadow is None else shadow.frontiers.sealed_source_count
-                    ),
-                    "mutable_source_count": (
-                        0 if shadow is None else (
-                            shadow.frontiers.selected_source_count
-                            - shadow.frontiers.sealed_source_count
-                        )
-                    ),
+                    "stable_source_count": stable_source_count,
+                    "mutable_source_count": 0,
                     "current_p0_width": 0 if preview is None else int(preview.shape[1]),
-                    "stage_visualization": "s013_online_p0_current/v1",
+                    "stage_visualization": "s013_incremental_hard_owner_preview/v1",
                     "capture_active": True,
                     "published_monotonic_ns": published_ns,
                 }
@@ -556,12 +557,10 @@ class S13V11LiveObserver:
                 "preview_generation": self._preview_generation,
                 "latest_frame_id": self._latest_frame_id,
                 "stable_source_count": (
-                    0
-                    if self._shadow_snapshot is None
-                    else self._shadow_snapshot.frontiers.sealed_source_count
+                    0 if not self._stable_edges else len(self._stable_edges) + 1
                 ),
                 "mutable_source_count": 0,
-                "stage_visualization": "s013_online_p0_current/v1",
+                "stage_visualization": "s013_incremental_hard_owner_preview/v1",
                 "capture_active": False,
             }
         preview_root = self._preview_root(session)
@@ -616,24 +615,7 @@ class S13V11LiveObserver:
             ) / 1_000_000_000.0
             frozen: S13FrozenP0Authority | None = None
             freeze_failure = self._shadow_failure_reason
-            if (
-                freeze_failure is None
-                and self._shadow_engine is not None
-                and self._capture_result.queue_drops == 0
-                and self._capture_result.write_errors == 0
-            ):
-                try:
-                    frozen = self._shadow_engine.freeze(
-                        committed_frames=committed,
-                        production_config_sha256=self.production_config_sha256,
-                    )
-                    self._shadow_snapshot = self._shadow_engine.snapshot()
-                except Exception as exc:
-                    freeze_failure = f"{type(exc).__name__}: {exc}"
-            reuse_level = (
-                "frozen_p0_authority_v1"
-                if frozen is not None else "validated_inputs_only"
-            )
+            reuse_level = "validated_inputs_only"
             return S13V11LiveHandoff(
                 algorithm_id=S13_VISUAL_CONTINUITY_ALGORITHM_ID,
                 implementation_id=S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
@@ -670,7 +652,7 @@ class S13V11LiveObserver:
                     "preview_failures": snapshot.preview_failures,
                     "pair_evidence_reused_count": 0,
                     "reuse_level": reuse_level,
-                    "shadow_processed_committed_frames": self._shadow_next_index,
+                    "shadow_processed_committed_frames": 0,
                     "shadow_failure_reason": self._shadow_failure_reason,
                     "shadow_final_selected_source_count": (
                         0
@@ -715,7 +697,7 @@ class S13V11LiveObserver:
                         [] if frozen is None else list(frozen.rollback_reasons)
                     ),
                     "full_m0_m3_recomputed": frozen is None,
-                    "committed_catchup_seconds": self._shadow_catchup_seconds,
+                    "committed_catchup_seconds": 0.0,
                 }),
                 reuse_level=reuse_level,
             )

@@ -4,9 +4,9 @@ import json
 import time
 from collections import deque
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
+import cv2
 
 from panorama_demo.capture_orbbec import (
     CaptureResult,
@@ -59,21 +59,7 @@ def _observer(tmp_path: Path) -> S13V11LiveObserver:
         capture_started_monotonic_ns=1,
         calibration={},
     ))
-    _inject_current_p0(observer)
     return observer
-
-
-def _inject_current_p0(observer: S13V11LiveObserver) -> None:
-    with observer._lock:
-        observer._shadow_snapshot = SimpleNamespace(
-            current_p0=SimpleNamespace(
-                image=np.full((120, 560, 3), 70, dtype=np.uint8)
-            ),
-            frontiers=SimpleNamespace(
-                sealed_source_count=1,
-                selected_source_count=5,
-            ),
-        )
 
 
 def test_preview_waits_for_both_08_seconds_and_32_analysis_pixels(tmp_path: Path) -> None:
@@ -102,7 +88,12 @@ def test_preview_waits_for_both_08_seconds_and_32_analysis_pixels(tmp_path: Path
     assert panorama is not None
     assert panorama.dtype == np.uint8
     assert panorama.ndim == 3 and panorama.shape[2] == 3
+    assert panorama.shape == (120, 424, 3)
     assert panorama.flags.writeable is False
+    saved = cv2.imread(str(tmp_path / "live_preview.jpg"), cv2.IMREAD_COLOR)
+    assert saved is not None
+    assert saved.shape[1] > saved.shape[0]
+    assert np.all(saved > 0)
     state = json.loads((tmp_path / "live_preview_state.json").read_text(encoding="utf-8"))
     assert {
         "schema", "authority", "algorithm_id", "preview_generation",
@@ -116,9 +107,9 @@ def test_preview_waits_for_both_08_seconds_and_32_analysis_pixels(tmp_path: Path
         "algorithm_id": S13_VISUAL_CONTINUITY_ALGORITHM_ID,
         "preview_generation": 1,
         "latest_frame_id": 4,
-        "stable_source_count": 1,
-        "mutable_source_count": 4,
-        "stage_visualization": "s013_online_p0_current/v1",
+        "stable_source_count": 5,
+        "mutable_source_count": 0,
+        "stage_visualization": "s013_incremental_hard_owner_preview/v1",
         "capture_active": True,
     }
     observer.on_capture_stopping()
@@ -139,6 +130,27 @@ def test_capture_window_places_live_panorama_below_rgbd_preview() -> None:
     assert np.any(np.all(panorama_region == (10, 80, 160), axis=2))
 
 
+def test_motion_preview_normalizes_both_scan_directions_to_world_left_to_right() -> None:
+    physical_left = np.full((12, 24, 3), (10, 20, 30), dtype=np.uint8)
+    physical_middle = np.full((12, 24, 3), (40, 50, 60), dtype=np.uint8)
+    physical_right = np.full((12, 24, 3), (70, 80, 90), dtype=np.uint8)
+
+    left_to_right = S13V11LiveObserver._render_motion_preview((
+        (0.0, physical_left),
+        (8.0, physical_middle),
+        (16.0, physical_right),
+    ))
+    right_to_left = S13V11LiveObserver._render_motion_preview((
+        (0.0, physical_right),
+        (-8.0, physical_middle),
+        (-16.0, physical_left),
+    ))
+
+    assert np.array_equal(left_to_right, right_to_left)
+    assert np.array_equal(left_to_right[:, 0], physical_left[:, 0])
+    assert np.array_equal(left_to_right[:, -1], physical_right[:, -1])
+
+
 def test_capture_window_shows_waiting_panel_before_panorama_is_ready() -> None:
     color = np.zeros((120, 212, 3), dtype=np.uint8)
     depth = np.full((120, 212), 500, dtype=np.uint16)
@@ -157,7 +169,6 @@ def test_direction_change_resets_stable_motion_start(tmp_path: Path) -> None:
         motion_estimator=lambda _left, _right: (motions.popleft(), True),
     )
     observer.on_session_ready(LiveSessionInfo(tmp_path, 1, {}))
-    _inject_current_p0(observer)
     base = time.monotonic_ns()
     for frame_id in range(6):
         observer.on_frame_accepted(_packet(frame_id, base + frame_id * 200_000_000))
@@ -270,6 +281,11 @@ def test_closed_capture_freezes_complete_validated_inputs_only_handoff(tmp_path:
     assert handoff.implementation_id == S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID
     assert handoff.production_config_sha256 == "a" * 64
     assert handoff.reuse_level == "validated_inputs_only"
+    assert handoff.online_shadow is None
+    assert handoff.frozen_p0_authority is None
+    assert not hasattr(observer, "_shadow_thread")
+    assert handoff.online_2d_metrics["shadow_processed_committed_frames"] == 0
+    assert handoff.online_2d_metrics["full_m0_m3_recomputed"] is True
     assert [item.frame_id for item in handoff.committed_frames] == [0, 1]
     assert handoff.capture_stopped_monotonic_ns > handoff.capture_started_monotonic_ns
 
