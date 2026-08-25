@@ -26,7 +26,7 @@ from .video_s13_m6 import run_s13_m6, run_s13_m6_cuda_v2, run_s13_m6_cuda_v3
 from .video_s13_motion import measure_s13_motion, reliable_step1_direction_evidence
 from .video_s13_frame_store import S13FrameStore
 from .video_s13_progress import (
-    build_s13_m3_layout,
+    select_s13_m3_primary_scan,
     selected_hypothesis_ids_for_spatial_sources,
 )
 from .video_s13_replay import S13VerifiedP2
@@ -340,7 +340,17 @@ def _run_s13_pipeline(
             )
             del prepared_analysis, prepared_gradients
             frame_store.release_analysis_arrays()
-            layout = build_s13_m3_layout(session.frames, motion, trajectory)
+            scan = select_s13_m3_primary_scan(
+                session.frames,
+                motion,
+                trajectory,
+                image_width=session.calibration.width,
+            )
+            layout = scan.layout
+            motion = scan.edges
+            primary_scan_segment = dict(scan.audit)
+            motion_execution = dict(motion_execution)
+            motion_execution["primary_scan_segment"] = primary_scan_segment
             if not layout.progress.spatial:
                 raise ValueError("S1.3 fast pipeline has no spatial scan segment")
             schedule_plan = plan_s13_m3_schedule(
@@ -400,6 +410,9 @@ def _run_s13_pipeline(
             selected_hypothesis_ids = p0_continuation.selected_hypothesis_ids
             motion_profile = dict(p0_continuation.motion_profile)
             motion_execution = dict(p0_continuation.motion_execution)
+            primary_scan_segment = dict(
+                motion_execution.get("primary_scan_segment", {})
+            )
             p0_render = p0_continuation.p0_render
             frame_store.retain_raw({
                 assignment.frame_id
@@ -669,6 +682,7 @@ def _run_s13_pipeline(
         "m5_performance": dict(m5.performance),
         "motion_profile": motion_profile,
         "motion_execution_policy": motion_execution,
+        "primary_scan_segment": primary_scan_segment,
         "m4_probe": {
             "mode": "legacy_exact_probe" if vertical_exact_seam_probes else "full_reference",
             "plan_seconds": 0.0,

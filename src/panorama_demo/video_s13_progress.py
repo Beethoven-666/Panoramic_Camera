@@ -8,6 +8,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from .quality import MotionEstimate, select_primary_scan_segment
 from .video_s13_motion import (
     S13MotionEdge,
     S13MotionHypothesis,
@@ -44,6 +45,16 @@ class S13M3Layout:
     canonical_scan_direction: int
     segment_break_pairs: tuple[tuple[int, int], ...]
     audit: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class S13M3ScanSelection:
+    """One auditable M3 input range selected from the complete session."""
+
+    layout: S13M3Layout
+    frames: tuple[S13RenderFrame, ...]
+    edges: tuple[S13MotionEdge, ...]
+    audit: Mapping[str, object]
 
 
 @dataclass(frozen=True)
@@ -428,6 +439,161 @@ def build_s13_m3_layout(
     )
 
 
+def select_s13_m3_primary_scan(
+    frames: Sequence[S13RenderFrame],
+    edges: Sequence[S13MotionEdge],
+    trajectory: S13Trajectory,
+    *,
+    image_width: int,
+) -> S13M3ScanSelection:
+    """Use the full session when coherent, otherwise trim only proven stops.
+
+    The historical M3 majority gate remains the first authority so already
+    publishable sessions keep identical source selection and pixels. A full
+    session which fails that gate may recover only through the established
+    continuous one-way scan selector; static input remains non-spatial.
+    """
+
+    complete_frames = tuple(frames)
+    complete_edges = tuple(edges)
+    complete_layout = build_s13_m3_layout(
+        complete_frames, complete_edges, trajectory
+    )
+
+    def audit(
+        *,
+        mode: str,
+        start_index: int,
+        end_index: int,
+        displacement_px: float,
+        reliable_fraction: float,
+        candidate_count: int,
+        scan_direction: int,
+    ) -> dict[str, object]:
+        return {
+            "schema": "gemini305-video-s13-primary-scan-segment/v1",
+            "mode": mode,
+            "recovery_trigger": (
+                None
+                if mode == "full_session"
+                else "full_session_rgb_coherence_failed"
+            ),
+            "input_frame_count": len(complete_frames),
+            "start_index": start_index,
+            "end_index": end_index,
+            "first_frame_id": int(complete_frames[start_index].frame_id),
+            "last_frame_id": int(complete_frames[end_index].frame_id),
+            "selected_frame_count": end_index - start_index + 1,
+            "leading_discarded_frame_count": start_index,
+            "trailing_discarded_frame_count": len(complete_frames) - end_index - 1,
+            "scan_direction": scan_direction,
+            "displacement_px": displacement_px,
+            "reliable_fraction": reliable_fraction,
+            "candidate_count": candidate_count,
+            "full_session_layout_level": complete_layout.layout_level,
+            "full_session_spatial": complete_layout.progress.spatial,
+            "full_session_coherent_rgb_motion": (
+                complete_layout.progress.coherent_rgb_motion
+            ),
+        }
+
+    if complete_layout.progress.spatial or len(complete_frames) < 2:
+        return S13M3ScanSelection(
+            layout=complete_layout,
+            frames=complete_frames,
+            edges=complete_edges,
+            audit=audit(
+                mode="full_session",
+                start_index=0,
+                end_index=max(0, len(complete_frames) - 1),
+                displacement_px=(
+                    0.0
+                    if not complete_layout.progress.centers_x
+                    else float(complete_layout.progress.centers_x[-1])
+                ),
+                reliable_fraction=1.0,
+                candidate_count=1,
+                scan_direction=complete_layout.canonical_scan_direction,
+            ),
+        )
+
+    adjacent = {
+        (edge.source_frame_id, edge.target_frame_id): edge
+        for edge in complete_edges
+        if edge.step == 1
+    }
+    estimates: list[MotionEstimate] = []
+    for left, right in zip(complete_frames[:-1], complete_frames[1:], strict=True):
+        edge = adjacent.get((left.frame_id, right.frame_id))
+        selected = None if edge is None else edge.selected_advance_px
+        finite = selected is not None and math.isfinite(float(selected))
+        reliable = bool(finite and edge is not None and not edge.risk)
+        vertical = 0.0
+        if edge is not None:
+            candidate_vertical = (
+                edge.lk_vertical_px
+                if edge.selected_method == "grid_lk"
+                else edge.phase_vertical_px
+            )
+            if candidate_vertical is not None and math.isfinite(float(candidate_vertical)):
+                vertical = float(candidate_vertical)
+        estimates.append(
+            MotionEstimate(
+                dx=float(selected) if finite else 0.0,
+                dy=vertical,
+                matches=0,
+                inlier_ratio=1.0 if reliable else 0.0,
+                grid_coverage=0.0,
+                method="phase",
+            )
+        )
+
+    try:
+        segment = select_primary_scan_segment(
+            estimates,
+            image_width=image_width,
+        )
+    except RuntimeError:
+        return S13M3ScanSelection(
+            layout=complete_layout,
+            frames=complete_frames,
+            edges=complete_edges,
+            audit=audit(
+                mode="full_session_no_recoverable_segment",
+                start_index=0,
+                end_index=len(complete_frames) - 1,
+                displacement_px=0.0,
+                reliable_fraction=0.0,
+                candidate_count=0,
+                scan_direction=complete_layout.canonical_scan_direction,
+            ),
+        )
+
+    start, end = int(segment.start_index), int(segment.end_index)
+    scan_frames = complete_frames[start : end + 1]
+    scan_ids = {frame.frame_id for frame in scan_frames}
+    scan_edges = tuple(
+        edge
+        for edge in complete_edges
+        if edge.source_frame_id in scan_ids and edge.target_frame_id in scan_ids
+    )
+    scan_layout = build_s13_m3_layout(scan_frames, scan_edges, trajectory)
+    return S13M3ScanSelection(
+        layout=scan_layout,
+        frames=scan_frames,
+        edges=scan_edges,
+        audit=audit(
+            mode="trimmed_primary_one_way",
+            start_index=start,
+            end_index=end,
+            displacement_px=float(segment.displacement),
+            reliable_fraction=float(segment.reliable_fraction),
+            candidate_count=int(segment.candidate_count),
+            scan_direction=int(segment.scan_direction),
+        ),
+    )
+
+
 def selected_hypothesis_ids_for_spatial_sources(
     layout: S13M3Layout,
     frame_ids: Sequence[int],
@@ -453,6 +619,7 @@ def selected_hypothesis_ids_for_spatial_sources(
 
 
 __all__ = [
-    "S13LineageStep", "S13M3Layout", "build_s13_m3_layout",
+    "S13LineageStep", "S13M3Layout", "S13M3ScanSelection",
+    "build_s13_m3_layout", "select_s13_m3_primary_scan",
     "selected_hypothesis_ids_for_spatial_sources",
 ]

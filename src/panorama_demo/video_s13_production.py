@@ -290,6 +290,9 @@ def _run_s13_v11_authority(**kwargs: object) -> S13V11AuthorityResult:
             )
         },
         "source_frame_ids": _json_value(authority.get("source_frame_ids", ())),
+        "primary_scan_segment": _json_value(
+            fast.get("primary_scan_segment", {})
+        ),
         "schedule": _json_value(authority.get("schedule", {})),
         "owner_summary": _json_value(owner.get("summary", {})),
         "pair_seam_decisions": _json_value(authority.get("pair_seam_decisions", ())),

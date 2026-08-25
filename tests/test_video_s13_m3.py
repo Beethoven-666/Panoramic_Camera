@@ -14,6 +14,7 @@ from panorama_demo.video_s13_motion import (
 )
 from panorama_demo.video_s13_progress import (
     build_s13_m3_layout,
+    select_s13_m3_primary_scan,
     selected_hypothesis_ids_for_spatial_sources,
 )
 from panorama_demo.video_s13_schedule import plan_s13_m3_schedule
@@ -115,6 +116,92 @@ def test_l3_temporal_slit_is_nonspatial() -> None:
     assert layout.progress.spatial is False
     assert set(layout.progress.centers_x) == {0.0}
     assert all(method == "F7_temporal_order" for method in layout.progress.placement_methods[1:])
+
+
+def test_primary_scan_trims_stationary_lead_and_tail_after_full_session_gate_fails() -> None:
+    frames = tuple(_frame(index) for index in range(14))
+    values = (0.0,) * 5 + (8.0,) * 4 + (0.0,) * 4
+    edges = tuple(
+        S13MotionEdge(
+            index,
+            index + 1,
+            1,
+            value,
+            0.0,
+            12.0,
+            20,
+            value,
+            0.0,
+            1.0,
+            value,
+            "grid_lk",
+            False,
+            (),
+            motion_hypotheses=(
+                () if abs(value) < 0.25 else (_hypothesis(index, value, "a"),)
+            ),
+        )
+        for index, value in enumerate(values)
+    )
+
+    selected = select_s13_m3_primary_scan(
+        frames,
+        edges,
+        S13Trajectory("ignore_pose", None, {}, {}, (), {}),
+        image_width=100,
+    )
+
+    assert selected.layout.progress.spatial is True
+    assert tuple(frame.frame_id for frame in selected.frames) == (5, 6, 7, 8, 9)
+    assert selected.audit["mode"] == "trimmed_primary_one_way"
+    assert selected.audit["leading_discarded_frame_count"] == 5
+    assert selected.audit["trailing_discarded_frame_count"] == 4
+    assert selected.audit["displacement_px"] == 32.0
+
+
+def test_primary_scan_does_not_recover_static_session() -> None:
+    frames = tuple(_frame(index) for index in range(8))
+    edges = tuple(
+        S13MotionEdge(
+            index, index + 1, 1, 0.0, 0.0, 12.0, 20, 0.0, 0.0, 1.0,
+            0.0, "grid_lk", False, (),
+        )
+        for index in range(7)
+    )
+
+    selected = select_s13_m3_primary_scan(
+        frames,
+        edges,
+        S13Trajectory("ignore_pose", None, {}, {}, (), {}),
+        image_width=100,
+    )
+
+    assert selected.layout.progress.spatial is False
+    assert selected.audit["mode"] == "full_session_no_recoverable_segment"
+
+
+def test_primary_scan_keeps_an_already_spatial_full_session_unchanged() -> None:
+    frames = tuple(_frame(index) for index in range(5))
+    edges = tuple(
+        _edge(index, index + 1, (_hypothesis(index, 8.0, "a"),))
+        for index in range(4)
+    )
+    trajectory = S13Trajectory("ignore_pose", None, {}, {}, (), {})
+    expected = build_s13_m3_layout(frames, edges, trajectory)
+
+    selected = select_s13_m3_primary_scan(
+        frames,
+        edges,
+        trajectory,
+        image_width=100,
+    )
+
+    assert selected.frames == frames
+    assert selected.edges == edges
+    assert selected.layout.progress == expected.progress
+    assert selected.audit["mode"] == "full_session"
+    assert selected.audit["leading_discarded_frame_count"] == 0
+    assert selected.audit["trailing_discarded_frame_count"] == 0
 
 
 def test_signed_reverse_run_creates_panel_segment_break() -> None:

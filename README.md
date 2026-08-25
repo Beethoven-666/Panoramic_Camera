@@ -233,14 +233,15 @@ TSDF 或任何三维进程，也不会把二维运动冒充为 SE(3) pose。
   --output 'D:\central_strip_Panoramic_Camera\outputs\video_sequence'
 ```
 
-一次命令完成连续采集、在线分析、非正式预览和正式二维：
+一次命令完成连续采集、在线分析、非正式预览、正式二维和三维：
 
 ```powershell
 & 'D:\Panoramic_Camera\.conda\Scripts\g305-video-live.exe' `
   --duration 10 `
-  --video-exposure-us 800 `
+  --video-exposure-us 100 `
   --output 'D:\central_strip_Panoramic_Camera\data\captures\video' `
-  --panorama-output 'D:\central_strip_Panoramic_Camera\outputs\video_live'
+  --panorama-output 'D:\central_strip_Panoramic_Camera\outputs\video_live' `
+  --post-3d
 ```
 
 在线状态按 writer 已成功提交的帧增量维护，不会循环调用整段 `run_s13_fast_pipeline`。writer
