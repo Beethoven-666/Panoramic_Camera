@@ -119,6 +119,55 @@ def test_exact_formal_live_offline_publications_pass(tmp_path: Path) -> None:
     assert all(report["checks"].values())
 
 
+def test_quality_cut_q0_without_q1r_audit_is_comparable(tmp_path: Path) -> None:
+    offline, live = tmp_path / "offline", tmp_path / "live"
+    _publish(offline)
+    _publish(live)
+    for root in (offline, live):
+        report_path = root / "video_report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        decisions = report["m6_decisions"]
+        decisions["selected_photometric_model"] = "Q0_identity"
+        decisions["quality_cut_pair_indices"] = [0]
+        decisions["m63_audit"] = {
+            "selected_model": "Q0_identity",
+            "quality_cut_pair_indices": [0],
+        }
+        decisions["photometric_candidate_audits"] = [
+            {"model": "Q0_identity", "selected": True},
+            {"model": "Q4c_quality_cut_component_scalar_gain", "selected": False},
+        ]
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    report = require_s13_v11_live_offline_equivalence(offline, live)
+
+    assert report["equivalent"] is True
+    assert report["checks"]["m6_decisions"] is True
+
+
+def test_absent_q1r_without_quality_cut_is_rejected(tmp_path: Path) -> None:
+    offline, live = tmp_path / "offline", tmp_path / "live"
+    _publish(offline)
+    _publish(live)
+    for root in (offline, live):
+        report_path = root / "video_report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        decisions = report["m6_decisions"]
+        decisions["selected_photometric_model"] = "Q0_identity"
+        decisions["m63_audit"] = {
+            "selected_model": "Q0_identity",
+            "quality_cut_pair_indices": [],
+        }
+        decisions["photometric_candidate_audits"] = [
+            {"model": "Q0_identity", "selected": True},
+            {"model": "Q4c_quality_cut_component_scalar_gain", "selected": False},
+        ]
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cannot explain the absent Q1R decision"):
+        compare_s13_v11_live_offline(offline, live)
+
+
 def test_owner_difference_stops_at_p2(tmp_path: Path) -> None:
     offline, live = tmp_path / "offline", tmp_path / "live"
     _publish(offline)

@@ -142,15 +142,32 @@ def _m6_contract(report: Mapping[str, object]) -> dict[str, object]:
     canonical = {str(key): decisions[key] for key in decisions}
     if _Q1R_MODEL not in models:
         m63 = decisions["m63_audit"]
+        quality_cuts = (
+            m63.get("quality_cut_pair_indices") if isinstance(m63, Mapping) else None
+        )
+        selected_model = m63.get("selected_model") if isinstance(m63, Mapping) else None
+        q4c_audit = next(
+            (
+                item
+                for item in audits
+                if isinstance(item, Mapping) and item.get("model") == _Q4C_MODEL
+            ),
+            None,
+        )
         if (
             not isinstance(m63, Mapping)
-            or m63.get("selected_model") != _Q4C_MODEL
-            or not isinstance(m63.get("quality_cut_pair_indices"), (tuple, list))
+            or selected_model not in ("Q0_identity", _Q4C_MODEL)
+            or not isinstance(quality_cuts, (tuple, list))
+            or not quality_cuts
+            or not isinstance(q4c_audit, Mapping)
+            or q4c_audit.get("selected") is (selected_model != _Q4C_MODEL)
         ):
             raise ValueError("S013 V11 report cannot explain the absent Q1R decision")
         canonical["q1r_quality_cut_outcome"] = {
-            "status": "not_evaluated_under_q4c_quality_cut_authority",
-            "quality_cut_pair_indices": list(m63["quality_cut_pair_indices"]),
+            "status": "not_evaluated_under_quality_cut_split",
+            "quality_cut_pair_indices": list(quality_cuts),
+            "selected_model": selected_model,
+            "q4c_selected": bool(q4c_audit["selected"]),
         }
     return canonical
 
