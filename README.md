@@ -32,7 +32,7 @@
      （采集期不运行 ORB-SLAM3、Open3D、TSDF 或三维进程）
   → 停止并 join UI 预览、drain writer、追平 committed backlog
   → 闭合 M3 并冻结在线 P0，只重绘尚未定型的尾部
-  → 从 frozen P0 直接继续 P1 → P2 → P3
+  → validated-inputs-only handoff 后重新执行完整 P0 → P1 → P2 → P3
   → 只发布正式 P3、provenance、report、timing
   → video_delivery.json 最后原子发布
   → 二维资源释放后，按需启动独立三维子进程运行 ORB-SLAM3 与 Open3D TSDF
@@ -268,16 +268,11 @@ mutable tail，并把完整 current P0 缩放一次供 UI 显示。它不再使�
 状态和 P0 backlog 不会因此丢失。采集窗口上方显示实时 RGB 与 aligned depth，下方显示同一份
 current P0。预览失败只写 `live_preview_failure.json`、禁用后续 UI 预览，不终止采集或正式二维。
 
-停采时程序先停止并 join UI 预览，再 drain writer；online P0 worker 继续处理 committed backlog，
-追平后才闭合最终 M3。`S13FrozenP0Authority` 绑定 production identity、会话文件、连续 committed
-ledger、P0 像素与 owner provenance。正常路径只重绘未定型尾部，handoff 使用
-`reuse_level=frozen_p0_authority_v1`，production 通过 `run_s13_from_p0()` 直接继续 P1/P2/P3，
-不会重新计算完整 M0–M3/P0。在线 pair/M6 evidence 仍不会注入正式 authority。
-
-sealed assignment 由语义、图像 ROI 和 valid ROI checkpoint 链保护。最终 schedule 与在线前缀
-不一致时，程序回退到最后一致 checkpoint、重绘其后的尾部并记录原因；不会静默复用错误前缀。
-如果在线 worker 或冻结校验失败，则显式降为 `validated_inputs_only` 并完整重算，失败原因保留在
-handoff/timing 中。正常 production 模式不写 P0/P1/P2 stage PNG，只从内存 P3 发布：
+停采时程序先停止并 join UI 预览，再 drain writer 并冻结连续 committed ledger。handoff 固定使用
+`reuse_level=validated_inputs_only`、`pair_evidence_reused_count=0`；production 从 committed 会话
+重新执行完整 M0–M3 与 P0/P1/P2/P3。在线 gray/motion、Preview P0、pair 或 M6 evidence 都不进入
+最终 authority。handoff 校验失败会显式失败并保留原因，不会把在线证据冒充正式证据。
+正常 production 模式不写 P0/P1/P2 stage PNG，只从内存 P3 发布：
 
 ```text
 video_panorama.jpg
