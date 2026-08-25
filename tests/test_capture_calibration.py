@@ -1761,6 +1761,69 @@ def test_trigger_shutdown_failure_becomes_error_after_successful_capture() -> No
     assert "readback remained enabled" in str(result)
 
 
+def _clean_writer_stats() -> SimpleNamespace:
+    return SimpleNamespace(write_errors=0, errors=[], queue_drops=0, written=3)
+
+
+def test_verified_trigger_shutdown_allows_clean_capture() -> None:
+    external_sync = {
+        "enabled": True,
+        "shutdown": {
+            "completed": True,
+            "state": "verified_off",
+            "after": {"trigger_out_enable": False},
+        },
+    }
+    assert capture._video_capture_clean_shutdown(
+        None, _clean_writer_stats(), 3, external_sync
+    )
+
+
+def test_trigger_shutdown_failure_marks_clean_shutdown_false() -> None:
+    external_sync = {
+        "enabled": True,
+        "shutdown": {
+            "completed": False,
+            "state": "failed",
+            "after": {"trigger_out_enable": True},
+        },
+    }
+    assert not capture._video_capture_clean_shutdown(
+        None, _clean_writer_stats(), 3, external_sync
+    )
+
+
+def test_unrequested_trigger_shutdown_does_not_block_clean_capture() -> None:
+    external_sync = {
+        "enabled": False,
+        "shutdown": {"completed": True, "state": "not_requested"},
+    }
+    assert capture._video_capture_clean_shutdown(
+        None, _clean_writer_stats(), 3, external_sync
+    )
+
+
+@pytest.mark.parametrize(
+    "stats,received",
+    [
+        (SimpleNamespace(write_errors=1, errors=[], queue_drops=0, written=3), 3),
+        (SimpleNamespace(write_errors=0, errors=["disk"], queue_drops=0, written=3), 3),
+        (SimpleNamespace(write_errors=0, errors=[], queue_drops=1, written=3), 3),
+        (SimpleNamespace(write_errors=0, errors=[], queue_drops=0, written=2), 3),
+    ],
+)
+def test_writer_integrity_failure_marks_clean_shutdown_false(
+    stats: SimpleNamespace, received: int
+) -> None:
+    external_sync = {
+        "enabled": False,
+        "shutdown": {"completed": True, "state": "not_requested"},
+    }
+    assert not capture._video_capture_clean_shutdown(
+        None, stats, received, external_sync
+    )
+
+
 def test_external_sync_failure_is_recorded_before_stream_start(
     tmp_path, monkeypatch
 ) -> None:

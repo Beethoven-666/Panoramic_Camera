@@ -1787,6 +1787,33 @@ def _capture_exception_after_shutdown(
     )
 
 
+def _video_capture_clean_shutdown(
+    capture_exception: Exception | None,
+    writer_stats: Any,
+    received_frames: int,
+    external_sync_output: dict[str, Any],
+) -> bool:
+    """Return eligibility-grade capture shutdown state, including Trigger Out."""
+
+    shutdown = external_sync_output.get("shutdown", {})
+    if external_sync_output.get("enabled") is True:
+        sync_shutdown_ok = (
+            shutdown.get("completed") is True
+            and shutdown.get("state") == "verified_off"
+            and shutdown.get("after", {}).get("trigger_out_enable") is False
+        )
+    else:
+        sync_shutdown_ok = shutdown.get("state") == "not_requested"
+    return bool(
+        capture_exception is None
+        and int(writer_stats.write_errors) == 0
+        and list(writer_stats.errors) == []
+        and int(writer_stats.queue_drops) == 0
+        and int(writer_stats.written) == int(received_frames)
+        and sync_shutdown_ok
+    )
+
+
 def _device_info(device: Any) -> dict[str, Any]:
     info = device.get_device_info()
     result: dict[str, Any] = {}
@@ -2661,25 +2688,13 @@ def run_video_capture(
         )
         print()
 
-    sync_shutdown = external_sync_output.get("shutdown", {})
-    sync_shutdown_ok = (
-        sync_shutdown.get("state") == "not_requested"
-        or (
-            sync_shutdown.get("completed") is True
-            and sync_shutdown.get("state") == "verified_off"
-            and sync_shutdown.get("after", {}).get("trigger_out_enable") is False
-        )
+    clean_shutdown = _video_capture_clean_shutdown(
+        capture_exception, writer.stats, received, external_sync_output
     )
     manifest.update(
         {
             "ended_utc": datetime.now(timezone.utc).isoformat(),
-            "clean_shutdown": (
-                capture_exception is None
-                and writer.stats.write_errors == 0
-                and writer.stats.queue_drops == 0
-                and writer.stats.written == received
-                and sync_shutdown_ok
-            ),
+            "clean_shutdown": clean_shutdown,
             "received_frames": received,
             "written_frames": writer.stats.written,
             "queue_drops": writer.stats.queue_drops,
