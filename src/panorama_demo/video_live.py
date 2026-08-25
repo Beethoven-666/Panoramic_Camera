@@ -44,12 +44,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Spawn isolated ORB-SLAM3/TSDF processing after the 2-D delivery",
     )
-    parser.add_argument(
-        "--no-wait-for-camera",
-        dest="wait_for_camera",
-        action="store_false",
-        help="Fail immediately instead of waiting for an Orbbec camera",
-    )
     parser.set_defaults(wait_for_camera=True)
     return parser
 

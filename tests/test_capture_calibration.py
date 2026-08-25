@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -2014,3 +2015,26 @@ def test_color_exposure_rejects_contradictory_modes_before_device_write(
 
     assert boolean_calls == []
     assert integer_calls == []
+
+
+def test_capture_waits_for_camera_by_default_with_immediate_failure_opt_out() -> None:
+    parser = capture.build_parser()
+
+    assert parser.parse_args([]).wait_for_camera is True
+    assert parser.parse_args(["--no-wait-for-camera"]).wait_for_camera is False
+
+
+def test_device_discovery_can_be_cancelled_before_sdk_polling() -> None:
+    class SDK:
+        class Context:
+            def query_devices(self) -> object:
+                raise AssertionError("cancelled discovery polled the SDK")
+
+    cancelled = threading.Event()
+    cancelled.set()
+    with pytest.raises(capture.CaptureCancelledError, match="cancelled"):
+        capture._discover_video_device(
+            SDK,
+            wait_for_camera=True,
+            cancel_event=cancelled,
+        )

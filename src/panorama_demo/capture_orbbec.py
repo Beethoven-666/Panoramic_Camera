@@ -36,6 +36,10 @@ GEMINI305_COLOR_FORMAT_PRIORITY = ("RGB", "BGR", "YUYV", "MJPG")
 GEMINI305_FRAME_RATES = (5, 10, 15, 20, 30, 60)
 
 
+class CaptureCancelledError(RuntimeError):
+    """A caller cancelled camera discovery or an active continuous capture."""
+
+
 CSV_FIELDS = [
     "frame_id",
     "color_index",
@@ -2045,12 +2049,15 @@ def _discover_video_device(
     *,
     wait_for_camera: bool,
     poll_interval_seconds: float = 0.5,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[Any, Any]:
     """Return the first camera, optionally waiting for USB hot-plug."""
 
     context = sdk.Context()
     waiting = False
     while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise CaptureCancelledError("Camera discovery was cancelled")
         device_list = context.query_devices()
         if device_list.get_count() > 0:
             if waiting:
@@ -2065,7 +2072,11 @@ def _discover_video_device(
                 flush=True,
             )
             waiting = True
-        time.sleep(poll_interval_seconds)
+        if cancel_event is not None:
+            if cancel_event.wait(poll_interval_seconds):
+                raise CaptureCancelledError("Camera discovery was cancelled")
+        else:
+            time.sleep(poll_interval_seconds)
 
 
 def run_video_capture(
@@ -2162,12 +2173,19 @@ def run_video_capture(
         ) from exc
 
     wait_for_camera = bool(getattr(args, "wait_for_camera", False))
+    cancel_event = getattr(args, "cancel_event", None)
+    if cancel_event is not None and not isinstance(cancel_event, threading.Event):
+        raise ValueError("cancel_event must be a threading.Event")
     _device_context: Any | None = None
     device: Any | None = None
     if wait_for_camera:
         # Do not create an empty session directory while a live command is
         # merely waiting for the camera to be connected.
-        _device_context, device = _discover_video_device(sdk, wait_for_camera=True)
+        _device_context, device = _discover_video_device(
+            sdk,
+            wait_for_camera=True,
+            cancel_event=cancel_event,
+        )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session_root = (args.output / f"run_{timestamp}").resolve()
@@ -2186,7 +2204,11 @@ def run_video_capture(
     _write_manifest(session_root, manifest)
 
     if device is None:
-        _device_context, device = _discover_video_device(sdk, wait_for_camera=False)
+        _device_context, device = _discover_video_device(
+            sdk,
+            wait_for_camera=False,
+            cancel_event=cancel_event,
+        )
     manifest["device"] = _device_info(device)
     try:
         manifest["sdk_version"] = sdk.get_version()
@@ -2454,6 +2476,8 @@ def run_video_capture(
             }
 
         while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise CaptureCancelledError("Video capture was cancelled")
             writer.raise_if_failed()
             frames = pipeline.wait_for_frames(1000)
             if frames is None:
@@ -2519,9 +2543,15 @@ def run_video_capture(
                 }
                 metadata_checked = True
                 if not any(manifest["metadata_support"].values()):
+                    platform_hint = (
+                        "verify the Orbbec SDK metadata registration on Windows"
+                        if os.name == "nt"
+                        else "verify the installed Orbbec SDK and non-root udev rules"
+                    )
                     print(
                         "Metadata warning: no tested frame metadata is available; "
-                        "run the Orbbec Windows metadata registration script.",
+                        + platform_hint
+                        + ".",
                         file=sys.stderr,
                     )
 
@@ -2698,16 +2728,17 @@ def run_video_capture(
                         "message": str(exc),
                     }
                 )
-        try:
-            cv2.destroyAllWindows()
-        except Exception as exc:
-            shutdown_errors.append(
-                {
-                    "step": "cv2.destroyAllWindows",
-                    "type": type(exc).__name__,
-                    "message": str(exc),
-                }
-            )
+        if options["preview"]:
+            try:
+                cv2.destroyAllWindows()
+            except Exception as exc:
+                shutdown_errors.append(
+                    {
+                        "step": "cv2.destroyAllWindows",
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                )
         capture_exception = _capture_exception_after_shutdown(
             capture_exception, shutdown_errors
         )
@@ -2965,6 +2996,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-frames", type=int)
     parser.add_argument("--no-preview", action="store_true")
     parser.add_argument(
+        "--no-wait-for-camera",
+        dest="wait_for_camera",
+        action="store_false",
+        help="Fail immediately instead of polling until an Orbbec camera is connected",
+    )
+    parser.add_argument(
         "--diagnostic-online-orbslam3",
         action="store_true",
         help="Diagnostic-only capture-time ORB-SLAM3; forbidden by g305-video-live",
@@ -2982,7 +3019,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Save aligned depth only (the default demo mode)",
     )
-    parser.set_defaults(raw_depth=None)
+    parser.set_defaults(raw_depth=None, wait_for_camera=True)
     return parser
 
 

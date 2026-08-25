@@ -1,0 +1,13 @@
+# WSL/native Linux L0 Runtime constraints. Open3D is installed from the
+# separately built CUDA wheel produced by scripts/build_open3d_cuda_linux.sh.
+numpy>=1.26,<3
+opencv-python-headless>=4.8,<5
+OpenEXR>=3.3,<4
+PyYAML>=6.0,<7
+xatlas>=0.0.11
+cupy-cuda13x>=14.1,<15
+pyorbbecsdk2>=2.1.1,<3
+psutil>=5.9,<8
+build>=1.2,<2
+pytest>=8,<9
+ruff>=0.12,<1
