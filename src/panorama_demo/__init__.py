@@ -13,6 +13,15 @@ from .sdk import (
     get_sdk_version,
 )
 from .version import __version__
+from .sdk_doctor import SDKDoctorReport
+from .video_sdk import (
+    Gemini305VideoSDK,
+    VideoJobState,
+    VideoPanoramaResult,
+    VideoProcessingJob,
+    VideoSDKConfig,
+    VideoThreeDResult,
+)
 
 __all__ = [
     "CudaMode",
@@ -24,6 +33,13 @@ __all__ = [
     "SDKConfigurationError",
     "SDKInputError",
     "SessionSummary",
+    "Gemini305VideoSDK",
+    "SDKDoctorReport",
+    "VideoJobState",
+    "VideoPanoramaResult",
+    "VideoProcessingJob",
+    "VideoSDKConfig",
+    "VideoThreeDResult",
     "__version__",
     "get_sdk_version",
 ]

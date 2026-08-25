@@ -1,0 +1,42 @@
+from __future__ import annotations
+
+import hashlib
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
+
+from panorama_demo.paths import PROJECT_ROOT
+
+
+RUNTIME_RESOURCES = (
+    "configs/demo.yaml",
+    "configs/video_algorithms/s013_visual_continuity_v11_production.yaml",
+    "configs/video_algorithms/s013_visual_continuity_v11_production.lock.json",
+    "configs/video_algorithms/baseline_legacy_fast_b07b561.yaml",
+    "configs/video_algorithms/baseline_legacy_fast_b07b561.lock.json",
+    "configs/video_candidates/s013/quality_thresholds_m61_v2.json",
+    "artifacts/S013_M6_1_metrics_baseline_v2/threshold_approval.json",
+)
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def test_wheel_contains_exact_runtime_resource_bytes(tmp_path: Path) -> None:
+    subprocess.run(
+        [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "--no-build-isolation",
+         "--wheel-dir", str(tmp_path)],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    wheels = list(tmp_path.glob("gemini305_rgbd_panorama-*.whl"))
+    assert len(wheels) == 1
+    with zipfile.ZipFile(wheels[0]) as archive:
+        for relative in RUNTIME_RESOURCES:
+            packaged = archive.read(f"panorama_demo/_runtime/{relative}")
+            source = (PROJECT_ROOT / relative).read_bytes()
+            assert _sha256(packaged) == _sha256(source), relative

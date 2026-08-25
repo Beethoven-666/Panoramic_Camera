@@ -1,0 +1,9 @@
+The Gemini 305 ORB-SLAM3 headless runner patch is licensed under the GNU
+General Public License, version 3 or (at your option) any later version, as a
+derived work of ORB-SLAM3.
+
+The pinned build script retrieves the complete upstream ORB-SLAM3 LICENSE and
+copies it to the external Runtime install root as COPYING. The Python wheel
+does not contain ORB-SLAM3 source, binaries, Vocabulary, or this derived
+runner. The GPLv3 license text is also available from
+https://www.gnu.org/licenses/gpl-3.0.txt.
