@@ -87,6 +87,67 @@ def test_default_orbslam3_runner_is_headless(
     assert prepared.staged.command[4].endswith("rgbd_tum_headless")
 
 
+def test_native_linux_command_is_direct_and_has_no_wsl_conversion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _session(tmp_path)
+    runtime = tmp_path / "runtime"
+    executable = runtime / "Examples" / "RGB-D" / "rgbd_tum_headless"
+    vocabulary = runtime / "Vocabulary" / "ORBvoc.txt"
+    executable.parent.mkdir(parents=True)
+    vocabulary.parent.mkdir(parents=True)
+    executable.write_bytes(b"runner")
+    vocabulary.write_text("vocabulary", encoding="utf-8")
+    monkeypatch.setattr(bridge.sys, "platform", "linux")
+    monkeypatch.setattr(bridge.os, "access", lambda *_args: True)
+    monkeypatch.setattr(
+        bridge,
+        "_windows_path_to_wsl",
+        lambda *_args: pytest.fail("native Linux attempted Windows path conversion"),
+    )
+
+    prepared = bridge.prepare_orbslam3_rgbd(
+        session.frames,
+        session.calibration,
+        tmp_path / "orb-work",
+        config=bridge.ORBSLAM3Config(
+            runtime_kind="native_linux", root=str(runtime)
+        ),
+    )
+
+    command = prepared.staged.command
+    assert command[0] == str(executable.resolve())
+    assert command[1] == str(vocabulary.resolve())
+    assert all("wsl.exe" not in value and "wslpath" not in value for value in command)
+    assert all(not value.startswith("/mnt/") for value in command)
+
+
+def test_native_linux_missing_executable_does_not_fallback_to_legacy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _session(tmp_path)
+    runtime = tmp_path / "runtime"
+    vocabulary = runtime / "Vocabulary" / "ORBvoc.txt"
+    vocabulary.parent.mkdir(parents=True)
+    vocabulary.write_text("vocabulary", encoding="utf-8")
+    monkeypatch.setattr(bridge.sys, "platform", "linux")
+    monkeypatch.setattr(
+        bridge,
+        "_resolve_wsl_path",
+        lambda *_args: pytest.fail("native failure fell back to legacy WSL"),
+    )
+
+    with pytest.raises(bridge.ORBSLAM3Error, match="is not a regular file"):
+        bridge.prepare_orbslam3_rgbd(
+            session.frames,
+            session.calibration,
+            tmp_path / "orb-work",
+            config=bridge.ORBSLAM3Config(
+                runtime_kind="native_linux", root=str(runtime)
+            ),
+        )
+
+
 def test_native_failure_detail_keeps_stdout_and_stderr() -> None:
     completed = subprocess.CompletedProcess(
         ["rgbd_tum_headless"], 139, stdout="last tracked frame", stderr="settings warning"

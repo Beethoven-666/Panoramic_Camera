@@ -18,7 +18,7 @@ import numpy as np
 
 from .cuda_backend import remap as accelerated_remap
 from .online_orbslam3_bridge import start_online_orbslam3_runner
-from .orbslam3_bridge import ORBSLAM3Config, ORBSLAM3Error, _undistortion_maps, _windows_path_to_wsl
+from .orbslam3_bridge import ORBSLAM3Config, ORBSLAM3Error, _runtime_staged_path, _undistortion_maps
 from .session import CameraIntrinsics, RGBDFrame
 
 
@@ -149,8 +149,8 @@ class OnlineORBTracker:
         self._write_png(depth_path, depth)
         runner.submit(
             source.frame,
-            staged_color_path_wsl=_windows_path_to_wsl(self.config, color_path),
-            staged_depth_path_wsl=_windows_path_to_wsl(self.config, depth_path),
+            staged_color_path_wsl=_runtime_staged_path(self.config, color_path),
+            staged_depth_path_wsl=_runtime_staged_path(self.config, depth_path),
         )
 
     def _run(self) -> None:

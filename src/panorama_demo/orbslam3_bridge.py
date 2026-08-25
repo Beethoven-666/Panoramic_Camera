@@ -1,4 +1,4 @@
-"""WSL bridge for using ORB-SLAM3 RGB-D as the global trajectory tracker.
+"""Native-process bridge for ORB-SLAM3 RGB-D global trajectory tracking.
 
 The Gemini capture format is deliberately not passed straight to the TUM
 example: its colour images have a calibrated rational distortion model and
@@ -19,6 +19,7 @@ import math
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -70,9 +71,10 @@ class ORBSLAM3Error(RuntimeError):
 
 @dataclass(frozen=True)
 class ORBSLAM3Config:
-    """Configuration for an externally installed WSL ORB-SLAM3 runtime."""
+    """Configuration for an externally installed ORB-SLAM3 runtime."""
 
     enabled: bool = True
+    runtime_kind: str | None = None
     wsl_executable: str = "wsl.exe"
     root: str = "~/Projects/ORB_SLAM3_WS/ORB_SLAM3"
     # Production runs are non-interactive. The headless runner is built from
@@ -93,6 +95,33 @@ class ORBSLAM3Config:
     staging_color_extension: str = ".png"
     staging_jpeg_quality: int = 98
     staging_width: int = 0
+
+    def __post_init__(self) -> None:
+        runtime_kind = self.runtime_kind
+        if runtime_kind is None:
+            runtime_kind = (
+                "native_linux" if sys.platform.startswith("linux")
+                else "windows_wsl_legacy"
+            )
+            object.__setattr__(self, "runtime_kind", runtime_kind)
+        if runtime_kind not in {"native_linux", "windows_wsl_legacy"}:
+            raise ValueError(
+                "ORB-SLAM3 runtime_kind must be native_linux or windows_wsl_legacy"
+            )
+        if runtime_kind == "native_linux" and not sys.platform.startswith("linux"):
+            raise ORBSLAM3Error("native_linux ORB-SLAM3 requires a Linux process")
+        if runtime_kind == "windows_wsl_legacy" and sys.platform.startswith("linux"):
+            raise ORBSLAM3Error(
+                "Linux ORB-SLAM3 cannot launch the Windows-to-WSL legacy backend"
+            )
+
+    @property
+    def backend_name(self) -> str:
+        return (
+            "orbslam3_rgbd_native_linux"
+            if self.runtime_kind == "native_linux"
+            else "orbslam3_rgbd_windows_wsl_legacy"
+        )
 
     @classmethod
     def from_mapping(
@@ -149,7 +178,7 @@ class ORBSLAM3Trajectory:
 
     def as_dict(self, *, input_frame_count: int) -> dict[str, object]:
         return {
-            "backend": "orbslam3_rgbd_wsl",
+            "backend": self.config.backend_name,
             "input_frame_count": input_frame_count,
             "tracked_frame_count": len(self.tracked_frame_ids),
             "tracked_fraction": len(self.tracked_frame_ids) / max(1, input_frame_count),
@@ -209,7 +238,9 @@ class ORBSLAM3PoseGraphOptimizer:
     """
 
     trajectory: ORBSLAM3Trajectory
-    name: str = "orbslam3_rgbd_wsl"
+    @property
+    def name(self) -> str:
+        return self.trajectory.config.backend_name
 
     def optimize_pose_graph(
         self,
@@ -576,6 +607,35 @@ def _join_wsl_path(root: str, value: str) -> str:
     return root.rstrip("/") + "/" + value.lstrip("/")
 
 
+def _resolve_native_runtime_path(
+    config: ORBSLAM3Config,
+    value: str,
+    *,
+    label: str,
+    executable: bool = False,
+) -> Path:
+    """Resolve and validate one native Linux Runtime file without a shell."""
+
+    root = Path(config.root).expanduser()
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise ORBSLAM3Error(f"ORB-SLAM3 {label} is not a regular file: {resolved}")
+    if executable and not os.access(resolved, os.X_OK):
+        raise ORBSLAM3Error(f"ORB-SLAM3 {label} is not executable: {resolved}")
+    return resolved
+
+
+def _runtime_staged_path(config: ORBSLAM3Config, path: Path) -> str:
+    """Return a path consumable by the selected process Runtime."""
+
+    if config.runtime_kind == "native_linux":
+        return str(path.expanduser().resolve())
+    return _windows_path_to_wsl(config, path)
+
+
 def _quaternion_to_rotation(
     qx: float, qy: float, qz: float, qw: float
 ) -> np.ndarray:
@@ -665,8 +725,8 @@ def _stage_orbslam3_attempt(
     work_dir: Path,
     *,
     config: ORBSLAM3Config,
-    executable_wsl: str,
-    vocabulary_wsl: str,
+    executable_path: str,
+    vocabulary_path: str,
 ) -> _StagedORBSLAM3Attempt:
     """Create a fresh, complete TUM input tree for one native execution.
 
@@ -694,21 +754,30 @@ def _stage_orbslam3_attempt(
     _write_settings(frames, staged_intrinsics, settings_path, config)
     trajectory_path = stage_dir / "CameraTrajectory.txt"
 
-    stage_wsl = _windows_path_to_wsl(config, stage_dir)
-    sequence_wsl = _windows_path_to_wsl(config, sequence_dir)
-    association_wsl = _windows_path_to_wsl(config, association_path)
-    settings_wsl = _windows_path_to_wsl(config, settings_path)
-    command = (
-        config.wsl_executable,
-        "--cd",
-        stage_wsl,
-        "-e",
-        executable_wsl,
-        vocabulary_wsl,
-        settings_wsl,
-        sequence_wsl,
-        association_wsl,
-    )
+    sequence_runtime = _runtime_staged_path(config, sequence_dir)
+    association_runtime = _runtime_staged_path(config, association_path)
+    settings_runtime = _runtime_staged_path(config, settings_path)
+    if config.runtime_kind == "native_linux":
+        command = (
+            executable_path,
+            vocabulary_path,
+            settings_runtime,
+            sequence_runtime,
+            association_runtime,
+        )
+    else:
+        stage_wsl = _windows_path_to_wsl(config, stage_dir)
+        command = (
+            config.wsl_executable,
+            "--cd",
+            stage_wsl,
+            "-e",
+            executable_path,
+            vocabulary_path,
+            settings_runtime,
+            sequence_runtime,
+            association_runtime,
+        )
     return _StagedORBSLAM3Attempt(
         stage_dir=stage_dir,
         sequence_dir=sequence_dir,
@@ -731,7 +800,6 @@ def _run_orbslam3_process(
     # Keep the private staging root explicit at this seam.  It makes it
     # impossible for a test or future launcher change to accidentally reuse a
     # previous attempt's trajectory while reporting a fresh command.
-    del stage_dir
     started = time.perf_counter()
     try:
         completed = subprocess.run(
@@ -743,9 +811,10 @@ def _run_orbslam3_process(
             errors="replace",
             timeout=timeout_seconds,
             env=os.environ.copy(),
+            cwd=stage_dir,
         )
     except FileNotFoundError as exc:
-        raise ORBSLAM3Error("Could not start wsl.exe for ORB-SLAM3") from exc
+        raise ORBSLAM3Error("Could not start the configured ORB-SLAM3 process") from exc
     except subprocess.TimeoutExpired as exc:
         raise ORBSLAM3Error(
             f"ORB-SLAM3 exceeded {timeout_seconds:.0f} seconds"
@@ -811,24 +880,38 @@ def prepare_orbslam3_rgbd(
     if len(frame_ids) != len(set(frame_ids)):
         raise ORBSLAM3Error("ORB-SLAM3 RGB-D input contains duplicate frame ids")
 
-    root_wsl = _resolve_wsl_path(selected_config, selected_config.root)
-    executable_wsl = _resolve_wsl_path(
-        selected_config, _join_wsl_path(root_wsl, selected_config.executable)
-    )
-    vocabulary_wsl = _resolve_wsl_path(
-        selected_config, _join_wsl_path(root_wsl, selected_config.vocabulary)
-    )
-    for candidate, label in ((executable_wsl, "executable"), (vocabulary_wsl, "vocabulary")):
-        _run_checked(
-            [selected_config.wsl_executable, "-e", "test", "-f", candidate],
-            timeout_seconds=20.0,
-            label=f"ORB-SLAM3 {label} check",
+    if selected_config.runtime_kind == "native_linux":
+        executable_path = str(_resolve_native_runtime_path(
+            selected_config,
+            selected_config.executable,
+            label="executable",
+            executable=True,
+        ))
+        vocabulary_path = str(_resolve_native_runtime_path(
+            selected_config, selected_config.vocabulary, label="vocabulary"
+        ))
+    else:
+        root_wsl = _resolve_wsl_path(selected_config, selected_config.root)
+        executable_path = _resolve_wsl_path(
+            selected_config, _join_wsl_path(root_wsl, selected_config.executable)
         )
+        vocabulary_path = _resolve_wsl_path(
+            selected_config, _join_wsl_path(root_wsl, selected_config.vocabulary)
+        )
+        for candidate, label in (
+            (executable_path, "executable"),
+            (vocabulary_path, "vocabulary"),
+        ):
+            _run_checked(
+                [selected_config.wsl_executable, "-e", "test", "-f", candidate],
+                timeout_seconds=20.0,
+                label=f"ORB-SLAM3 {label} check",
+            )
 
     work_root = Path(work_dir).expanduser().resolve()
     staged = _stage_orbslam3_attempt(
         frames, intrinsics, work_root, config=selected_config,
-        executable_wsl=executable_wsl, vocabulary_wsl=vocabulary_wsl,
+        executable_path=executable_path, vocabulary_path=vocabulary_path,
     )
     return PreparedORBSLAM3RGBD(
         frames=tuple(frames), config=selected_config, staged=staged,

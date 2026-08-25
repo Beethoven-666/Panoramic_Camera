@@ -35,7 +35,8 @@ from .orbslam3_bridge import (
     _read_tum_trajectory,
     _resolve_wsl_path,
     _run_checked,
-    _windows_path_to_wsl,
+    _resolve_native_runtime_path,
+    _runtime_staged_path,
 )
 from .session import CameraIntrinsics, RGBDFrame
 
@@ -128,7 +129,7 @@ def prepare_online_orbslam3_runner(
     work_dir: str | Path,
     config: ORBSLAM3Config | Mapping[str, Any] | None = None,
 ) -> OnlineORBSLAM3Launch:
-    """Create private runner files and resolve the persistent WSL command.
+    """Create private runner files and resolve the persistent native command.
 
     This performs no image decode/remap and does not start ORB-SLAM3.  The
     capture owner stages each accepted source frame and submits it afterwards.
@@ -137,19 +138,33 @@ def prepare_online_orbslam3_runner(
     selected_config = (
         config if isinstance(config, ORBSLAM3Config) else ORBSLAM3Config.from_mapping(config)
     )
-    root_wsl = _resolve_wsl_path(selected_config, selected_config.root)
-    executable_wsl = _resolve_wsl_path(
-        selected_config, _join_wsl_path(root_wsl, selected_config.stream_executable)
-    )
-    vocabulary_wsl = _resolve_wsl_path(
-        selected_config, _join_wsl_path(root_wsl, selected_config.vocabulary)
-    )
-    for candidate, label in ((executable_wsl, "stream executable"), (vocabulary_wsl, "vocabulary")):
-        _run_checked(
-            [selected_config.wsl_executable, "-e", "test", "-f", candidate],
-            timeout_seconds=20.0,
-            label=f"ORB-SLAM3 {label} check",
+    if selected_config.runtime_kind == "native_linux":
+        executable_path = str(_resolve_native_runtime_path(
+            selected_config,
+            selected_config.stream_executable,
+            label="stream executable",
+            executable=True,
+        ))
+        vocabulary_path = str(_resolve_native_runtime_path(
+            selected_config, selected_config.vocabulary, label="vocabulary"
+        ))
+    else:
+        root_wsl = _resolve_wsl_path(selected_config, selected_config.root)
+        executable_path = _resolve_wsl_path(
+            selected_config, _join_wsl_path(root_wsl, selected_config.stream_executable)
         )
+        vocabulary_path = _resolve_wsl_path(
+            selected_config, _join_wsl_path(root_wsl, selected_config.vocabulary)
+        )
+        for candidate, label in (
+            (executable_path, "stream executable"),
+            (vocabulary_path, "vocabulary"),
+        ):
+            _run_checked(
+                [selected_config.wsl_executable, "-e", "test", "-f", candidate],
+                timeout_seconds=20.0,
+                label=f"ORB-SLAM3 {label} check",
+            )
 
     root = Path(work_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -164,19 +179,27 @@ def prepare_online_orbslam3_runner(
     )
     trajectory_path = private_dir / "CameraTrajectory.txt"
     protocol_path = private_dir / "stream_protocol.txt"
-    private_wsl = _windows_path_to_wsl(selected_config, private_dir)
-    settings_wsl = _windows_path_to_wsl(selected_config, settings_path)
-    trajectory_wsl = _windows_path_to_wsl(selected_config, trajectory_path)
-    command = (
-        selected_config.wsl_executable,
-        "--cd",
-        private_wsl,
-        "-e",
-        executable_wsl,
-        vocabulary_wsl,
-        settings_wsl,
-        trajectory_wsl,
-    )
+    settings_runtime = _runtime_staged_path(selected_config, settings_path)
+    trajectory_runtime = _runtime_staged_path(selected_config, trajectory_path)
+    if selected_config.runtime_kind == "native_linux":
+        command = (
+            executable_path,
+            vocabulary_path,
+            settings_runtime,
+            trajectory_runtime,
+        )
+    else:
+        private_wsl = _runtime_staged_path(selected_config, private_dir)
+        command = (
+            selected_config.wsl_executable,
+            "--cd",
+            private_wsl,
+            "-e",
+            executable_path,
+            vocabulary_path,
+            settings_runtime,
+            trajectory_runtime,
+        )
     return OnlineORBSLAM3Launch(
         work_dir=private_dir,
         settings_path=settings_path,
@@ -255,10 +278,11 @@ class PersistentORBSLAM3Runner:
                 errors="replace",
                 bufsize=1,
                 env=os.environ.copy(),
+                cwd=self.launch.work_dir,
             )
         except OSError as exc:
             self._state = "failed"
-            raise ORBSLAM3Error("Could not start WSL ORB-SLAM3 stream runner") from exc
+            raise ORBSLAM3Error("Could not start ORB-SLAM3 stream runner") from exc
         if process.stdin is None or process.stdout is None or process.stderr is None:
             process.kill()
             self._state = "failed"

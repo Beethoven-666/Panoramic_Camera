@@ -1,0 +1,191 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 016e743..5239fc8 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -14,12 +14,12 @@ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -march=native")
+ 
+ # Check C++11 or C++0x support
+ include(CheckCXXCompilerFlag)
+-CHECK_CXX_COMPILER_FLAG("-std=c++11" COMPILER_SUPPORTS_CXX11)
++CHECK_CXX_COMPILER_FLAG("-std=c++14" COMPILER_SUPPORTS_CXX11)
+ CHECK_CXX_COMPILER_FLAG("-std=c++0x" COMPILER_SUPPORTS_CXX0X)
+ if(COMPILER_SUPPORTS_CXX11)
+-   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
++   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
+    add_definitions(-DCOMPILEDWITHC11)
+-   message(STATUS "Using flag -std=c++11.")
++   message(STATUS "Using flag -std=c++14.")
+ elseif(COMPILER_SUPPORTS_CXX0X)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x")
+    add_definitions(-DCOMPILEDWITHC0X)
+@@ -145,6 +145,14 @@ add_executable(rgbd_tum
+         Examples/RGB-D/rgbd_tum.cc)
+ target_link_libraries(rgbd_tum ${PROJECT_NAME})
+ 
++add_executable(rgbd_tum_headless
++        Examples/RGB-D/rgbd_tum_headless.cc)
++target_link_libraries(rgbd_tum_headless ${PROJECT_NAME})
++
++add_executable(rgbd_g305_stream_headless
++        Examples/RGB-D/rgbd_g305_stream_headless.cc)
++target_link_libraries(rgbd_g305_stream_headless ${PROJECT_NAME})
++
+ if(realsense2_FOUND)
+     add_executable(rgbd_realsense_D435i
+             Examples/RGB-D/rgbd_realsense_D435i.cc)
+diff --git a/Examples/RGB-D/rgbd_tum_headless.cc b/Examples/RGB-D/rgbd_tum_headless.cc
+new file mode 100644
+index 0000000..de377da
+--- /dev/null
++++ b/Examples/RGB-D/rgbd_tum_headless.cc
+@@ -0,0 +1,77 @@
++#include <algorithm>
++#include <chrono>
++#include <fstream>
++#include <iostream>
++#include <sstream>
++#include <string>
++#include <vector>
++
++#include <opencv2/core/core.hpp>
++#include <System.h>
++
++using namespace std;
++
++void LoadImages(const string &association, vector<string> &rgb,
++                vector<string> &depth, vector<double> &timestamps);
++
++int main(int argc, char **argv)
++{
++    if (argc != 5) {
++        cerr << "Usage: rgbd_tum_headless vocabulary settings sequence association" << endl;
++        return 1;
++    }
++    vector<string> rgb;
++    vector<string> depth;
++    vector<double> timestamps;
++    LoadImages(argv[4], rgb, depth, timestamps);
++    if (rgb.empty() || rgb.size() != depth.size()) {
++        cerr << "Invalid RGB-D association" << endl;
++        return 2;
++    }
++
++    ORB_SLAM3::System slam(argv[1], argv[2], ORB_SLAM3::System::RGBD, false);
++    const float scale = slam.GetImageScale();
++    vector<float> tracking(rgb.size());
++    for (size_t index = 0; index < rgb.size(); ++index) {
++        cv::Mat color = cv::imread(string(argv[3]) + "/" + rgb[index], cv::IMREAD_UNCHANGED);
++        cv::Mat aligned = cv::imread(string(argv[3]) + "/" + depth[index], cv::IMREAD_UNCHANGED);
++        if (color.empty() || aligned.empty() || aligned.type() != CV_16UC1 ||
++            color.rows != aligned.rows || color.cols != aligned.cols) {
++            cerr << "Could not read aligned RGB-D frame " << index << endl;
++            return 3;
++        }
++        if (scale != 1.0f) {
++            cv::resize(color, color, cv::Size(color.cols * scale, color.rows * scale));
++            cv::resize(aligned, aligned, cv::Size(aligned.cols * scale, aligned.rows * scale));
++        }
++        const auto started = chrono::steady_clock::now();
++        slam.TrackRGBD(color, aligned, timestamps[index]);
++        tracking[index] = chrono::duration_cast<chrono::duration<float>>(
++            chrono::steady_clock::now() - started).count();
++    }
++    slam.Shutdown();
++    sort(tracking.begin(), tracking.end());
++    slam.SaveTrajectoryTUM("CameraTrajectory.txt");
++    slam.SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
++    cout << "G305_BATCH_FINALIZED " << rgb.size() << endl;
++    return 0;
++}
++
++void LoadImages(const string &association, vector<string> &rgb,
++                vector<string> &depth, vector<double> &timestamps)
++{
++    ifstream stream(association.c_str());
++    string line;
++    while (getline(stream, line)) {
++        if (line.empty() || line[0] == '#') continue;
++        stringstream fields(line);
++        double rgb_time;
++        double depth_time;
++        string rgb_path;
++        string depth_path;
++        if (!(fields >> rgb_time >> rgb_path >> depth_time >> depth_path)) continue;
++        rgb.push_back(rgb_path);
++        depth.push_back(depth_path);
++        timestamps.push_back(rgb_time);
++    }
++}
+diff --git a/Examples/RGB-D/rgbd_g305_stream_headless.cc b/Examples/RGB-D/rgbd_g305_stream_headless.cc
+new file mode 100644
+index 0000000..161459c
+--- /dev/null
++++ b/Examples/RGB-D/rgbd_g305_stream_headless.cc
+@@ -0,0 +1,67 @@
++#include <iostream>
++#include <sstream>
++#include <string>
++
++#include <opencv2/core/core.hpp>
++#include <System.h>
++
++using namespace std;
++
++int main(int argc, char **argv)
++{
++    if (argc != 4) {
++        cerr << "Usage: rgbd_g305_stream_headless vocabulary settings trajectory" << endl;
++        return 1;
++    }
++    ORB_SLAM3::System slam(argv[1], argv[2], ORB_SLAM3::System::RGBD, false);
++    const float scale = slam.GetImageScale();
++    string line;
++    long long previous_id = -1;
++    double previous_timestamp = -1.0;
++    cout << "G305_STREAM_READY" << endl;
++    cout.flush();
++    while (getline(cin, line)) {
++        istringstream command(line);
++        string kind;
++        command >> kind;
++        if (kind == "FRAME") {
++            long long frame_id;
++            double timestamp;
++            string color_path;
++            string depth_path;
++            if (!(command >> frame_id >> timestamp >> color_path >> depth_path) ||
++                frame_id <= previous_id || timestamp <= previous_timestamp) {
++                cerr << "Invalid non-monotonic FRAME command" << endl;
++                return 2;
++            }
++            cv::Mat color = cv::imread(color_path, cv::IMREAD_UNCHANGED);
++            cv::Mat depth = cv::imread(depth_path, cv::IMREAD_UNCHANGED);
++            if (color.empty() || depth.empty() || depth.type() != CV_16UC1 ||
++                color.rows != depth.rows || color.cols != depth.cols) {
++                cerr << "Could not read aligned RGB-D FRAME" << endl;
++                return 3;
++            }
++            if (scale != 1.0f) {
++                cv::resize(color, color, cv::Size(color.cols * scale, color.rows * scale));
++                cv::resize(depth, depth, cv::Size(depth.cols * scale, depth.rows * scale));
++            }
++            slam.TrackRGBD(color, depth, timestamp);
++            previous_id = frame_id;
++            previous_timestamp = timestamp;
++            cout << "G305_STREAM_ACCEPTED " << frame_id << endl;
++            cout.flush();
++            continue;
++        }
++        if (kind == "FINALIZE") {
++            slam.Shutdown();
++            slam.SaveTrajectoryTUM(argv[3]);
++            cout << "G305_STREAM_FINALIZED " << previous_id << endl;
++            cout.flush();
++            return previous_id >= 0 ? 0 : 4;
++        }
++        cerr << "Unknown command" << endl;
++        return 5;
++    }
++    cerr << "Input ended before FINALIZE" << endl;
++    return 6;
++}

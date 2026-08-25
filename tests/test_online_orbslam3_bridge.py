@@ -187,7 +187,9 @@ def test_prepare_online_runner_selects_stream_executable_and_writes_settings(
     monkeypatch.setattr(
         online, "_resolve_wsl_path", lambda _config, value: "/orb/" + str(value).replace("~", "home")
     )
-    monkeypatch.setattr(online, "_windows_path_to_wsl", lambda _config, path: "/mnt/" + Path(path).name)
+    monkeypatch.setattr(
+        online, "_runtime_staged_path", lambda _config, path: "/mnt/" + Path(path).name
+    )
     monkeypatch.setattr(online, "_run_checked", lambda *_args, **_kwargs: None)
     intrinsics = CameraIntrinsics(848, 480, 500.0, 501.0, 424.0, 240.0, ())
 
