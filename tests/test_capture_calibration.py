@@ -1282,7 +1282,9 @@ def test_diagnostic_capture_manifest_is_marked_before_camera_discovery(
         "pyorbbecsdk",
         SimpleNamespace(Context=lambda: context),
     )
-    args = capture.build_parser().parse_args(["--output", str(output)])
+    args = capture.build_parser().parse_args(
+        ["--output", str(output), "--no-wait-for-camera"]
+    )
 
     with pytest.raises(RuntimeError, match="No Orbbec camera"):
         capture.run_capture(args)
@@ -1348,6 +1350,7 @@ def test_video_cli_fps_and_delay_overrides_reach_capture_options(
             "6000",
             "--trigger-out-delay-us",
             "5000",
+            "--no-wait-for-camera",
         ]
     )
 
