@@ -78,6 +78,17 @@ class _IncompleteMetadataFrameSet:
         return object()
 
 
+class _MissingDepthMetadataFrameSet:
+    def __init__(self, values: dict[str, int]) -> None:
+        self.color = _MetadataFrame(values)
+
+    def get_color_frame(self) -> _MetadataFrame:
+        return self.color
+
+    def get_depth_frame(self) -> None:
+        return None
+
+
 class _PostLockPipeline:
     def __init__(self, frames: list[object]) -> None:
         self.frames = frames
@@ -237,6 +248,7 @@ def test_post_warmup_color_control_lock_freezes_converged_controls() -> None:
         ("int", "white_balance", 4_600),
     ]
     assert audit["warmup_frame_sets"] == 30
+    assert audit["lock_scope"] == "all"
     assert audit["readback_verified"] is True
     assert audit["formal_exposure_cap_us"] == 800
     assert audit["locked_controls"] == {
@@ -313,18 +325,205 @@ def test_warmup_exposure_over_cap_falls_back_to_fixed_800_us() -> None:
             "color_exposure_us": None,
             "color_ae_max_exposure_us": 800,
             "diagnostic_unrestricted_auto_exposure": False,
+            "post_lock_verified_frames": 2,
         },
+        gain_raw=24,
     )
 
     assert device.bool_properties["auto_exposure"] is False
     assert device.int_properties["exposure"] == 8
-    assert fallback == {
+    assert device.int_properties["gain"] == 24
+    assert device.bool_properties["auto_white_balance"] is True
+    assert fallback["lock_scope"] == "exposure_gain"
+    assert fallback["locked_controls"] == {
         "auto_exposure": False,
-        "exposure": 8,
+        "exposure_raw": 8,
         "exposure_us": 800,
-        "fallback_reason": "warmup_metadata_exceeded_auto_exposure_cap",
-        "fallback_cap_us": 800,
+        "gain_raw": 24,
     }
+    assert fallback["gain_source"] == "last_valid_complete_warmup_frame_metadata"
+
+
+def _warmup_options(*, warmup_frames: int = 1) -> dict[str, object]:
+    return {
+        "warmup_frames": warmup_frames,
+        "warmup_timeout_seconds": 15,
+        "frame_timeout_seconds": 5,
+        "color_auto_exposure": True,
+        "color_exposure_us": None,
+        "color_ae_max_exposure_us": 800,
+        "diagnostic_unrestricted_auto_exposure": False,
+        "post_lock_verified_frames": 2,
+    }
+
+
+def test_warmup_fallback_uses_trigger_frame_gain_and_discards_transition() -> None:
+    matching = {"exposure": 8, "gain": 24}
+    pipeline = _PostLockPipeline(
+        [
+            _MetadataFrameSet({"exposure": 10, "gain": 24}),
+            _MetadataFrameSet({"exposure": 10, "gain": 24}),
+            _MetadataFrameSet(matching),
+            _MetadataFrameSet(matching),
+            _MetadataFrameSet(matching),
+        ]
+    )
+    options = _warmup_options()
+
+    result = capture._warm_up_video_controls(
+        _ColorControlDevice(),
+        _color_control_sdk(),
+        pipeline,
+        _color_control_sdk().OBFrameMetadataType,
+        options,
+        clock=lambda: 0.0,
+    )
+
+    fallback = result["warmup_exposure_fallback"]
+    assert fallback["gain"] == 24
+    assert fallback["trigger_exposure_us"] == 1_000
+    assert fallback["post_lock_discarded_frames"] == 3
+    assert fallback["post_lock_metadata_mismatches"] == 1
+    assert result["warmup_frame_sets"] == 1
+
+
+def test_warmup_fallback_uses_previous_valid_gain_when_trigger_gain_missing() -> None:
+    pipeline = _PostLockPipeline(
+        [
+            _MetadataFrameSet({"exposure": 8, "gain": 22}),
+            _MetadataFrameSet({"exposure": 10}),
+            _MetadataFrameSet({"exposure": 8, "gain": 22}),
+            _MetadataFrameSet({"exposure": 8, "gain": 22}),
+            _MetadataFrameSet({"exposure": 8, "gain": 22}),
+        ]
+    )
+
+    result = capture._warm_up_video_controls(
+        _ColorControlDevice(),
+        _color_control_sdk(),
+        pipeline,
+        _color_control_sdk().OBFrameMetadataType,
+        _warmup_options(warmup_frames=2),
+        clock=lambda: 0.0,
+    )
+
+    assert result["warmup_exposure_fallback"]["gain"] == 22
+
+
+def test_warmup_fallback_fails_without_any_valid_gain_metadata() -> None:
+    with pytest.raises(RuntimeError, match="without valid warmup color-gain metadata"):
+        capture._warm_up_video_controls(
+            _ColorControlDevice(),
+            _color_control_sdk(),
+            _PostLockPipeline([_MetadataFrameSet({"exposure": 10})]),
+            _color_control_sdk().OBFrameMetadataType,
+            _warmup_options(),
+            clock=lambda: 0.0,
+        )
+
+
+def test_fallback_rejects_clamped_gain_readback() -> None:
+    device = _ColorControlDevice()
+    device.int_readback_override["gain"] = 23
+    with pytest.raises(RuntimeError, match="color gain=23, expected 24"):
+        capture._fall_back_to_fixed_motion_safe_exposure(
+            device,
+            _color_control_sdk(),
+            _warmup_options(),
+            gain_raw=24,
+        )
+
+
+def test_fallback_then_full_lock_preserves_exposure_and_gain() -> None:
+    device = _ColorControlDevice()
+    options = _warmup_options()
+    capture._fall_back_to_fixed_motion_safe_exposure(
+        device, _color_control_sdk(), options, gain_raw=24
+    )
+
+    audit = capture._lock_color_controls_after_warmup(
+        device,
+        _color_control_sdk(),
+        options,
+        warmup_frame_sets=30,
+    )
+
+    assert audit["lock_scope"] == "all"
+    assert audit["locked_controls"]["exposure_us"] == 800
+    assert audit["locked_controls"]["gain_raw"] == 24
+    assert audit["locked_controls"]["auto_white_balance"] is False
+
+
+@pytest.mark.parametrize(
+    "mismatch", [{"exposure": 9, "gain": 24}, {"exposure": 8, "gain": 23}]
+)
+def test_fallback_transition_resets_consecutive_count_on_mismatch(
+    mismatch: dict[str, int],
+) -> None:
+    audit = capture._fall_back_to_fixed_motion_safe_exposure(
+        _ColorControlDevice(),
+        _color_control_sdk(),
+        _warmup_options(),
+        gain_raw=24,
+    )
+    matching = {"exposure": 8, "gain": 24}
+    capture._discard_and_verify_post_lock_frames(
+        _PostLockPipeline(
+            [
+                _MetadataFrameSet(matching),
+                _MetadataFrameSet(mismatch),
+                _MetadataFrameSet(matching),
+                _MetadataFrameSet(matching),
+            ]
+        ),
+        _color_control_sdk().OBFrameMetadataType,
+        audit,
+        timeout_seconds=1,
+        clock=lambda: 0.0,
+    )
+    assert audit["post_lock_discarded_frames"] == 4
+    assert audit["post_lock_metadata_mismatches"] == 1
+    assert audit["post_lock_verified_frames"] == 2
+
+
+def test_warmup_counts_only_complete_rgbd_framesets() -> None:
+    values = {"exposure": 8, "gain": 16}
+    result = capture._warm_up_video_controls(
+        _ColorControlDevice(),
+        _color_control_sdk(),
+        _PostLockPipeline(
+            [_IncompleteMetadataFrameSet(), _MissingDepthMetadataFrameSet(values), _MetadataFrameSet(values)]
+        ),
+        _color_control_sdk().OBFrameMetadataType,
+        _warmup_options(),
+        clock=lambda: 0.0,
+    )
+    assert result["warmup_frame_sets"] == 1
+    assert result["warmup_incomplete_frame_sets"] == 2
+
+
+def test_warmup_target_frame_at_deadline_succeeds() -> None:
+    result = capture._warm_up_video_controls(
+        _ColorControlDevice(),
+        _color_control_sdk(),
+        _PostLockPipeline([_MetadataFrameSet({"exposure": 8, "gain": 16})]),
+        _color_control_sdk().OBFrameMetadataType,
+        {**_warmup_options(), "warmup_timeout_seconds": 1},
+        clock=_SequenceClock([0.0, 0.999]),
+    )
+    assert result["warmup_frame_sets"] == 1
+
+
+def test_warmup_timeout_reports_complete_frameset_count() -> None:
+    with pytest.raises(RuntimeError, match="receiving 0/1 complete RGB-D"):
+        capture._warm_up_video_controls(
+            _ColorControlDevice(),
+            _color_control_sdk(),
+            _PostLockPipeline([]),
+            _color_control_sdk().OBFrameMetadataType,
+            {**_warmup_options(), "warmup_timeout_seconds": 1},
+            clock=_SequenceClock([0.0, 1.0]),
+        )
 
 
 def test_post_warmup_lock_fails_closed_when_control_is_not_writable() -> None:
@@ -454,6 +653,35 @@ def test_post_lock_verification_deadline_applies_to_incomplete_frame_sets() -> N
 
     assert audit["completed"] is False
     assert audit["post_lock_incomplete_frame_sets"] == 1
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"color_exposure": 9},
+        {"color_gain": 17},
+        {"color_auto_white_balance": 1},
+        {"color_white_balance": 4_700},
+    ],
+)
+def test_formal_frame_rejects_any_locked_color_control_change(
+    changed: dict[str, int],
+) -> None:
+    audit = capture._lock_color_controls_after_warmup(
+        _ColorControlDevice(),
+        _color_control_sdk(),
+        _warmup_options(),
+        warmup_frame_sets=30,
+    )
+    metadata = {
+        "color_exposure": 8,
+        "color_gain": 16,
+        "color_auto_white_balance": 0,
+        "color_white_balance": 4_600,
+        **changed,
+    }
+    with pytest.raises(RuntimeError, match="metadata changed"):
+        capture._require_valid_locked_color_metadata(metadata, audit)
 
 
 def test_color_auto_exposure_is_explicitly_enabled(monkeypatch) -> None:
@@ -786,9 +1014,9 @@ def test_auto_metadata_still_enforces_exposure_cap() -> None:
         "color_ae_max_exposure_us": 800,
     }
 
-    assert capture._color_exposure_metadata_violation(options, 9) is None
+    assert capture._color_exposure_metadata_violation(options, 8) is None
     assert "auto-exposure limit" in str(
-        capture._color_exposure_metadata_violation(options, 10)
+        capture._color_exposure_metadata_violation(options, 9)
     )
 
 
@@ -917,6 +1145,48 @@ def test_diagnostic_unrestricted_cli_resolves_explicit_capture_mode() -> None:
     assert options["color_exposure_us"] is None
     assert options["color_ae_max_exposure_us"] is None
     assert options["diagnostic_replaced_auto_cap_us"] == 800
+
+
+def test_video_config_requires_full_color_control_lock() -> None:
+    capture_config = load_config()["capture"]
+    options = capture._video_capture_options(capture_config)
+    assert options["lock_color_controls_after_warmup"] is True
+    assert options["require_locked_control_metadata"] is True
+    assert options["lock_white_balance_after_warmup"] is False
+    assert options["require_locked_white_balance_metadata"] is False
+
+    legacy = json.loads(json.dumps(capture_config))
+    legacy["video_mode"].update(
+        {
+            "lock_color_controls_after_warmup": False,
+            "require_locked_control_metadata": False,
+            "lock_white_balance_after_warmup": True,
+            "require_locked_white_balance_metadata": True,
+        }
+    )
+    with pytest.raises(ValueError, match="full manual control lock"):
+        capture._video_capture_options(legacy)
+
+
+@pytest.mark.parametrize("warmup_frames", [0, -1])
+def test_video_config_rejects_nonpositive_warmup_frames(warmup_frames: int) -> None:
+    capture_config = json.loads(json.dumps(load_config()["capture"]))
+    capture_config["warmup_frames"] = warmup_frames
+    with pytest.raises(ValueError, match="warmup_frames must be positive"):
+        capture._video_capture_options(capture_config)
+
+
+@pytest.mark.parametrize("warmup_frames", [0, -1])
+def test_video_cli_rejects_nonpositive_warmup_before_session_creation(
+    tmp_path, warmup_frames: int
+) -> None:
+    output = tmp_path / "captures"
+    args = capture.build_parser().parse_args(
+        ["--output", str(output), "--warmup-frames", str(warmup_frames)]
+    )
+    with pytest.raises(ValueError, match="warmup_frames must be positive"):
+        capture.run_capture(args)
+    assert not output.exists()
 
 
 def test_standard_auto_exposure_cli_retains_motion_safe_video_cap() -> None:
@@ -1335,6 +1605,162 @@ def test_external_sync_output_can_be_disabled_without_touching_device() -> None:
     assert result == {"enabled": False}
 
 
+def test_trigger_shutdown_switches_to_standalone_and_preserves_sync_fields() -> None:
+    primary = SimpleNamespace(name="PRIMARY")
+    standalone = SimpleNamespace(name="STANDALONE")
+    config = SimpleNamespace(
+        mode=primary,
+        trigger_out_enable=True,
+        color_delay_us=8_000,
+        depth_delay_us=8_000,
+        trigger_to_image_delay_us=8_000,
+        trigger_out_delay_us=7_000,
+        frames_per_trigger=1,
+    )
+    applied: list[object] = []
+    device = SimpleNamespace(
+        get_multi_device_sync_config=lambda: config,
+        set_multi_device_sync_config=lambda value: applied.append(value),
+    )
+
+    result = capture._disable_external_sync_output_after_capture(
+        device,
+        SimpleNamespace(OBMultiDeviceSyncMode=SimpleNamespace(STANDALONE=standalone)),
+        {"enabled": True},
+    )
+
+    assert applied == [config]
+    assert config.mode is standalone
+    assert config.trigger_out_enable is False
+    assert result["state"] == "verified_off"
+    assert result["before"]["mode"] == "PRIMARY"
+    assert result["after"] == {
+        "mode": "STANDALONE",
+        "trigger_out_enable": False,
+        "color_delay_us": 8_000,
+        "depth_delay_us": 8_000,
+        "trigger_to_image_delay_us": 8_000,
+        "trigger_out_delay_us": 7_000,
+        "frames_per_trigger": 1,
+    }
+
+
+def test_trigger_shutdown_readback_must_confirm_off() -> None:
+    primary = SimpleNamespace(name="PRIMARY")
+    standalone = SimpleNamespace(name="STANDALONE")
+    before = SimpleNamespace(
+        mode=primary,
+        trigger_out_enable=True,
+        color_delay_us=8_000,
+        depth_delay_us=8_000,
+        trigger_to_image_delay_us=8_000,
+        trigger_out_delay_us=7_000,
+        frames_per_trigger=1,
+    )
+    after = SimpleNamespace(
+        mode=standalone,
+        trigger_out_enable=True,
+        color_delay_us=8_000,
+        depth_delay_us=8_000,
+        trigger_to_image_delay_us=8_000,
+        trigger_out_delay_us=7_000,
+        frames_per_trigger=1,
+    )
+    reads = iter((before, after))
+    device = SimpleNamespace(
+        get_multi_device_sync_config=lambda: next(reads),
+        set_multi_device_sync_config=lambda _value: None,
+    )
+    with pytest.raises(RuntimeError, match="trigger_out_enable=true"):
+        capture._disable_external_sync_output_after_capture(
+            device,
+            SimpleNamespace(
+                OBMultiDeviceSyncMode=SimpleNamespace(STANDALONE=standalone)
+            ),
+            {"enabled": True},
+        )
+
+
+def test_trigger_shutdown_not_requested_when_external_sync_is_disabled() -> None:
+    result = capture._disable_external_sync_output_after_capture(
+        object(), object(), {"enabled": False}
+    )
+    assert result == {
+        "requested": False,
+        "attempted": False,
+        "completed": True,
+        "state": "not_requested",
+        "readback_verified": False,
+    }
+
+
+def test_trigger_shutdown_runs_after_pipeline_stop_even_when_stop_fails(
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+
+    def stop() -> None:
+        events.append("pipeline.stop")
+        raise RuntimeError("stop failed")
+
+    def disable(*_args) -> dict[str, object]:
+        events.append("trigger.shutdown")
+        return {"completed": True, "state": "verified_off"}
+
+    monkeypatch.setattr(
+        capture, "_disable_external_sync_output_after_capture", disable
+    )
+    shutdown, errors = capture._shutdown_video_capture_hardware(
+        SimpleNamespace(stop=stop),
+        pipeline_started=True,
+        device=object(),
+        sdk=object(),
+        external_sync_output={"enabled": True},
+    )
+
+    assert events == ["pipeline.stop", "trigger.shutdown"]
+    assert shutdown["state"] == "verified_off"
+    assert errors == [
+        {"step": "pipeline.stop", "type": "RuntimeError", "message": "stop failed"}
+    ]
+
+
+def test_trigger_shutdown_failure_does_not_mask_primary_capture_error(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        capture,
+        "_disable_external_sync_output_after_capture",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("trigger shutdown failed")),
+    )
+    shutdown, errors = capture._shutdown_video_capture_hardware(
+        SimpleNamespace(stop=lambda: None),
+        pipeline_started=True,
+        device=object(),
+        sdk=object(),
+        external_sync_output={"enabled": True},
+    )
+    primary = RuntimeError("capture failed")
+
+    assert capture._capture_exception_after_shutdown(primary, errors) is primary
+    assert shutdown["completed"] is False
+    assert shutdown["state"] == "failed"
+    assert errors[0]["step"] == "external_sync_output.shutdown"
+
+
+def test_trigger_shutdown_failure_becomes_error_after_successful_capture() -> None:
+    errors = [
+        {
+            "step": "external_sync_output.shutdown",
+            "type": "RuntimeError",
+            "message": "readback remained enabled",
+        }
+    ]
+    result = capture._capture_exception_after_shutdown(None, errors)
+    assert isinstance(result, RuntimeError)
+    assert "readback remained enabled" in str(result)
+
+
 def test_external_sync_failure_is_recorded_before_stream_start(
     tmp_path, monkeypatch
 ) -> None:
@@ -1344,10 +1770,37 @@ def test_external_sync_failure_is_recorded_before_stream_start(
         get_device_by_index=lambda _index: device,
     )
     context = SimpleNamespace(query_devices=lambda: device_list)
-    sdk = SimpleNamespace(Context=lambda: context, get_version=lambda: "test")
+    pipeline = SimpleNamespace(
+        get_stream_profile_list=lambda _sensor: object(),
+        enable_frame_sync=lambda: None,
+    )
+    stream_config = SimpleNamespace(
+        enable_stream=lambda _profile: None,
+        set_frame_aggregate_output_mode=lambda _mode: None,
+    )
+    sdk = SimpleNamespace(
+        Context=lambda: context,
+        get_version=lambda: "test",
+        Pipeline=lambda _device: pipeline,
+        Config=lambda: stream_config,
+        OBSensorType=SimpleNamespace(COLOR_SENSOR="color", DEPTH_SENSOR="depth"),
+        OBFormat=SimpleNamespace(RGB="RGB", BGR="BGR", YUYV="YUYV", MJPG="MJPG", Y16="Y16"),
+        OBFrameAggregateOutputMode=SimpleNamespace(FULL_FRAME_REQUIRE="full"),
+        OBFrameMetadataType=_color_control_sdk().OBFrameMetadataType,
+        OBStreamType=SimpleNamespace(COLOR_STREAM="color"),
+        AlignFilter=lambda **_kwargs: object(),
+    )
     monkeypatch.setitem(sys.modules, "pyorbbecsdk", sdk)
     monkeypatch.setattr(capture, "_device_info", lambda _device: {"name": "fake"})
     monkeypatch.setattr(capture.importlib_metadata, "version", lambda _name: "test")
+    profile = SimpleNamespace(
+        get_width=lambda: 848,
+        get_height=lambda: 480,
+        get_fps=lambda: 60,
+        get_format=lambda: "RGB",
+    )
+    monkeypatch.setattr(capture, "_choose_profile", lambda *_args: profile)
+    monkeypatch.setattr(capture, "_available_profiles", lambda _profiles: [])
     monkeypatch.setattr(
         capture,
         "_configure_color",
@@ -1375,7 +1828,9 @@ def test_external_sync_failure_is_recorded_before_stream_start(
         "type": "RuntimeError",
         "message": "external sync readback failed",
     }
-    assert not (sessions[0] / "frames.csv").exists()
+    assert (sessions[0] / "frames.csv").read_text(encoding="utf-8").startswith(
+        "frame_id,"
+    )
 
 
 def test_property_configuration_failure_is_recorded_in_manifest(

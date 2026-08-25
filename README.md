@@ -143,10 +143,17 @@ data/captures/run_YYYYMMDD_HHMMSS/
 ```
 
 此模式与照片全景隔离：它不能传给 `g305-panorama`，但可以传给独立的
-`g305-video-panorama`。默认在预热期间启用相机自动曝光、自动增益和自动白平衡；预热结束后
-只锁定当时的白平衡，曝光与增益继续自动。需要固定视频曝光时使用
-`--video-exposure-us 800`（不能与 `--photo-mode` 同用）；此时曝光固定、增益继续自动，
-白平衡同样在预热后锁定。
+`g305-video-panorama`。连续视频在预热期间使用自动曝光、自动增益和自动白平衡，随后固定并
+逐帧验证曝光、增益和白平衡。自动曝光元数据超过 `800 µs` 时，程序固定回退到 `800 µs`，
+并保留回退前最后一个完整 RGB-D FrameSet 的有效自动增益；回退和全量锁定的过渡帧会被
+丢弃，不写盘，也不进入预览或在线 S013。程序不做亮度质量检查，不搜索曝光或增益，且不会
+在 `800 µs` 回退后再次调整曝光。需要从 Pipeline 启动前固定视频曝光时使用
+`--video-exposure-us 800`（不能与 `--photo-mode` 同用）；增益和白平衡仍自动预热，之后三项
+一起固定。正式 `duration` 从全量锁定验证完成后开始计算。
+
+Trigger Out 在预热、控制过渡和正式采集期间保持开启。采集结束后程序先停止 Pipeline，再将
+同步模式切换为 `STANDALONE`、关闭 Trigger Out 并回读确认；关闭失败会令
+`clean_shutdown=false` 和 `product_eligibility.video_panorama=false`。
 
 默认视频同步配置将图像延时设为 `8000 µs`，并像 `D:\Flash` 一样同时写入
 `depth_delay_us`、`color_delay_us` 和 `trigger_to_image_delay_us`；`trigger_out_delay_us`

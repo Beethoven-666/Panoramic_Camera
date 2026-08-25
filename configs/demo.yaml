@@ -17,10 +17,10 @@ capture:
   save_raw_depth: false
 
   # Continuous video is deliberately isolated from the formal photo sequence.
-  # Exposure (and therefore electronic shutter time) and gain remain
-  # automatic. AWB is allowed to settle only during warmup, then its converged
-  # value is locked and verified on every emitted frame. Auto exposure remains
-  # capped at 800 us for the moving-camera safety contract.
+  # Exposure, gain, and white balance warm up automatically. Their converged
+  # values are then locked and verified on every emitted frame. If frame
+  # metadata exceeds the 800 us motion cap, exposure falls back to 800 us while
+  # preserving the last valid automatic gain from a complete RGB-D frame set.
   video_mode:
     enabled: true
     # Video has its own real-time profile; photo mode retains the root capture
@@ -40,16 +40,17 @@ capture:
     trigger_to_image_delay_us: 8000
     color_auto_exposure: true
     color_exposure_us: null
-    # Moving-camera shutter cap, enforced while auto exposure remains active.
+    # Moving-camera shutter cap; an over-cap warmup frame triggers the fixed
+    # 800 us exposure/preserved-gain transition before formal capture.
     color_ae_max_exposure_us: 800
     diagnostic_unrestricted_auto_exposure: false
     color_gain: null
     color_auto_white_balance: true
     color_white_balance: null
-    lock_color_controls_after_warmup: false
-    require_locked_control_metadata: false
-    lock_white_balance_after_warmup: true
-    require_locked_white_balance_metadata: true
+    lock_color_controls_after_warmup: true
+    require_locked_control_metadata: true
+    lock_white_balance_after_warmup: false
+    require_locked_white_balance_metadata: false
     post_lock_verified_frames: 2
 
   # No-preview, one-trigger-per-frame RGB-D photo sequence used by

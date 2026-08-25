@@ -214,8 +214,9 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 - 正式彩色曝光固定不超过 `800 µs`，设备 metadata 单位为 `100 µs/单位`。
 - 会话打开期间 `formal_stitch_allowed=false`。只有相机/写盘资源安全关闭、无采集或写盘错误时，最终 manifest 才可写 `clean_shutdown=true`、`formal_stitch_allowed=true`。
 
-连续流采集与照片模式隔离：预热期间使用自动曝光、自动增益和自动白平衡，预热后只锁定
-白平衡，曝光与增益继续自动；会话写入
+连续流采集与照片模式隔离：预热期间使用自动曝光、自动增益和自动白平衡，预热后锁定并
+逐帧验证曝光、增益和白平衡；自动曝光元数据超过 `800 µs` 时固定回退到 `800 µs` 并保留
+最后一个完整预热 FrameSet 的有效自动增益，回退和锁定过渡帧不写盘。会话写入
 `capture_mode=continuous_rgbd_video_auto`、`diagnostic_only=true` 与
 `formal_stitch_allowed=false`。可用 `--video-exposure-us` 采集固定曝光视频，写入
 `continuous_rgbd_video_fixed_exposure`；二者都不能用作 `g305-panorama` 输入。安全关闭且
@@ -223,7 +224,9 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 `g305-video-panorama`；RGB-only 截图仍不能替代 RGB-D 会话。视频的图像延时默认
 `8000 µs`，Trigger Out 延时默认 `7000 µs`，也可从命令行覆盖。视频彩色格式按固定优先级
 自动选择，深度固定为 `Y16`，FPS 可由命令行覆盖并做 SDK 精确共同 profile 匹配；启动时和每个完整对齐 RGB-D 帧
-写盘前都必须回读同步配置，任一帧回读不符都使会话失败。
+写盘前都必须回读同步配置，任一帧回读不符都使会话失败。连续视频结束时必须先停止
+Pipeline，再切换为 `STANDALONE`、关闭 Trigger Out 并回读确认；关闭失败使
+`clean_shutdown=false` 且视频产品不可交付。
 普通连续采集默认不得构造 `OnlineORBTracker`，manifest 应将 ORB 标记为
 `deferred` / `post_2d_publication_only`。只有显式诊断入口可延迟 import 在线 ORB；
 `g305-video-live` 必须拒绝 `--photo-mode` 和 `--diagnostic-online-orbslam3`。

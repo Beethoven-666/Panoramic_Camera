@@ -713,6 +713,12 @@ def _lock_color_controls_after_warmup(
                 "Color exposure changed during warmup before the formal lock: "
                 f"read {exposure_raw}, expected {requested_exposure}"
             )
+    requested_gain = options.get("color_gain")
+    if requested_gain is not None and gain_raw != int(requested_gain):
+        raise RuntimeError(
+            "Color gain changed during warmup before the formal lock: "
+            f"read {gain_raw}, expected {int(requested_gain)}"
+        )
 
     # A device that disregards its capped AE setting must not have its
     # overlong exposure frozen into a deliverable scan.  The formal cap is
@@ -747,6 +753,7 @@ def _lock_color_controls_after_warmup(
         "requested": True,
         "completed": False,
         "state": "locked_pending_frame_metadata",
+        "lock_scope": "all",
         "warmup_frame_sets": int(warmup_frame_sets),
         "device_before_lock": {
             "auto_exposure": before_auto_exposure,
@@ -782,15 +789,22 @@ def _locked_color_metadata_status(
     """Return missing and mismatched metadata labels for a locked source frame."""
 
     expected = lock_audit["locked_controls"]
-    expected_values: dict[str, int] = {
-        "color_auto_white_balance": 0,
-        "color_white_balance": int(expected["white_balance_raw"]),
-    }
-    if lock_audit.get("lock_scope") != "white_balance":
+    lock_scope = str(lock_audit.get("lock_scope", "all"))
+    if lock_scope not in {"white_balance", "exposure_gain", "all"}:
+        raise ValueError(f"Unsupported color-control lock scope: {lock_scope!r}")
+    expected_values: dict[str, int] = {}
+    if lock_scope in {"exposure_gain", "all"}:
         expected_values.update(
             {
                 "color_exposure": int(expected["exposure_raw"]),
                 "color_gain": int(expected["gain_raw"]),
+            }
+        )
+    if lock_scope in {"white_balance", "all"}:
+        expected_values.update(
+            {
+                "color_auto_white_balance": 0,
+                "color_white_balance": int(expected["white_balance_raw"]),
             }
         )
     selected_metadata = {name: metadata.get(name) for name in expected_values}
@@ -1056,7 +1070,7 @@ def _color_exposure_metadata_violation(
         if cap_us is None:
             return None
         cap_units = _color_exposure_units(cap_us)
-        if measured_units > cap_units + 1:
+        if measured_units > cap_units:
             return (
                 "Camera exposure exceeded the motion-safe auto-exposure limit; "
                 "add lighting or update camera firmware"
@@ -1075,9 +1089,13 @@ def _color_exposure_metadata_violation(
 
 
 def _fall_back_to_fixed_motion_safe_exposure(
-    device: Any, sdk: Any, options: dict[str, Any]
+    device: Any,
+    sdk: Any,
+    options: dict[str, Any],
+    *,
+    gain_raw: int,
 ) -> dict[str, Any]:
-    """Stop AE and enforce its 800-us safety ceiling before formal video frames."""
+    """Stop AE and lock the safety ceiling plus the last observed auto gain."""
 
     cap_us = _formal_locked_exposure_cap_us(options)
     if cap_us is None:
@@ -1085,25 +1103,163 @@ def _fall_back_to_fixed_motion_safe_exposure(
             "Cannot fall back from uncapped automatic exposure without a safety cap"
         )
     cap_units = _color_exposure_units(cap_us)
-    applied_auto = _set_bool_property(
-        device, sdk, "OB_PROP_COLOR_AUTO_EXPOSURE_BOOL", False
+    auto_exposure = _strict_color_control_property(
+        device,
+        sdk,
+        "OB_PROP_COLOR_AUTO_EXPOSURE_BOOL",
+        "color auto exposure",
     )
-    if applied_auto is not False:
-        raise RuntimeError("The camera did not disable auto exposure for fallback")
-    applied_units = _set_int_property(
-        device, sdk, "OB_PROP_COLOR_EXPOSURE_INT", cap_units
+    exposure = _strict_color_control_property(
+        device, sdk, "OB_PROP_COLOR_EXPOSURE_INT", "color exposure"
     )
-    if applied_units is None or int(applied_units) > cap_units:
-        raise RuntimeError("The camera cannot enforce the 800-us exposure fallback")
+    gain = _strict_color_control_property(
+        device, sdk, "OB_PROP_COLOR_GAIN_INT", "color gain"
+    )
+    _strict_set_bool_property(device, auto_exposure, False, "color auto exposure")
+    _strict_set_int_property(device, exposure, cap_units, "color exposure")
+    _strict_set_int_property(device, gain, int(gain_raw), "color gain")
     options["color_auto_exposure"] = False
     options["color_exposure_us"] = cap_us
+    options["color_gain"] = int(gain_raw)
     options["diagnostic_unrestricted_auto_exposure"] = False
+    requested_verification_frames = int(options.get("post_lock_verified_frames", 2))
+    if requested_verification_frames <= 0:
+        raise ValueError("post_lock_verified_frames must be positive")
     return {
+        "requested": True,
+        "completed": False,
+        "state": "fallback_locked_pending_frame_metadata",
+        "lock_scope": "exposure_gain",
         "auto_exposure": False,
-        "exposure": int(applied_units),
-        "exposure_us": int(applied_units) * COLOR_EXPOSURE_UNIT_US,
+        "exposure": cap_units,
+        "exposure_us": cap_units * COLOR_EXPOSURE_UNIT_US,
+        "gain": int(gain_raw),
+        "gain_source": "last_valid_complete_warmup_frame_metadata",
         "fallback_reason": "warmup_metadata_exceeded_auto_exposure_cap",
         "fallback_cap_us": cap_us,
+        "require_frame_metadata": True,
+        "post_lock_verified_frames_requested": requested_verification_frames,
+        "post_lock_verified_frames": 0,
+        "post_lock_discarded_frames": 0,
+        "post_lock_incomplete_frame_sets": 0,
+        "post_lock_metadata_mismatches": 0,
+        "locked_controls": {
+            "auto_exposure": False,
+            "exposure_raw": cap_units,
+            "exposure_us": cap_units * COLOR_EXPOSURE_UNIT_US,
+            "gain_raw": int(gain_raw),
+        },
+    }
+
+
+def _warm_up_video_controls(
+    device: Any,
+    sdk: Any,
+    pipeline: Any,
+    metadata_types: Any,
+    options: dict[str, Any],
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    on_fallback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Warm up on complete RGB-D sets and stabilize a one-time AE fallback."""
+
+    target = int(options.get("warmup_frames", 30))
+    if target <= 0:
+        raise ValueError("warmup_frames must be positive")
+    timeout_seconds = float(options.get("warmup_timeout_seconds", 15))
+    if timeout_seconds <= 0.0:
+        raise ValueError("warmup_timeout_seconds must be positive")
+    deadline = float(clock()) + timeout_seconds
+    fallback_allowed = _uses_color_auto_exposure(options)
+    received = 0
+    incomplete = 0
+    last_valid_auto_gain_raw: int | None = None
+    fallback_audit: dict[str, Any] | None = None
+
+    while received < target:
+        remaining = deadline - float(clock())
+        if remaining <= 0.0:
+            raise RuntimeError(
+                f"Capture warmup timed out after receiving {received}/{target} "
+                "complete RGB-D frame sets. Try MJPG color, a lower resolution, "
+                "another USB 3 port, or disable other camera applications."
+            )
+        wait_ms = max(1, min(1000, int(np.ceil(remaining * 1000.0))))
+        frames = pipeline.wait_for_frames(wait_ms)
+        if frames is None:
+            continue
+        raw_color = frames.get_color_frame()
+        raw_depth = frames.get_depth_frame()
+        if raw_color is None or raw_depth is None:
+            incomplete += 1
+            continue
+
+        controls = _color_control_metadata(raw_color, metadata_types)
+        if fallback_audit is not None:
+            _require_valid_locked_color_metadata(controls, fallback_audit)
+            received += 1
+            continue
+
+        gain_raw = controls["color_gain"]
+        if gain_raw is not None and int(gain_raw) >= 0:
+            last_valid_auto_gain_raw = int(gain_raw)
+        exposure_raw = controls["color_exposure"]
+        exposure_violation = _color_exposure_metadata_violation(options, exposure_raw)
+        if exposure_violation is None:
+            received += 1
+            continue
+        if not fallback_allowed:
+            raise RuntimeError(exposure_violation)
+        if last_valid_auto_gain_raw is None:
+            raise RuntimeError(
+                "Cannot apply the 800-us fallback without valid warmup "
+                "color-gain metadata"
+            )
+
+        fallback_audit = _fall_back_to_fixed_motion_safe_exposure(
+            device,
+            sdk,
+            options,
+            gain_raw=last_valid_auto_gain_raw,
+        )
+        fallback_audit.update(
+            {
+                "trigger_exposure_raw": (
+                    None if exposure_raw is None else int(exposure_raw)
+                ),
+                "trigger_exposure_us": (
+                    None
+                    if exposure_raw is None
+                    else int(exposure_raw) * COLOR_EXPOSURE_UNIT_US
+                ),
+            }
+        )
+        if on_fallback is not None:
+            on_fallback(fallback_audit)
+        transition_timeout = min(
+            float(options.get("frame_timeout_seconds", 5)),
+            max(0.0, deadline - float(clock())),
+        )
+        if transition_timeout <= 0.0:
+            raise RuntimeError(
+                f"Capture warmup timed out after receiving {received}/{target} "
+                "complete RGB-D frame sets"
+            )
+        _discard_and_verify_post_lock_frames(
+            pipeline,
+            metadata_types,
+            fallback_audit,
+            timeout_seconds=transition_timeout,
+            clock=clock,
+        )
+        if on_fallback is not None:
+            on_fallback(fallback_audit)
+
+    return {
+        "warmup_frame_sets": received,
+        "warmup_incomplete_frame_sets": incomplete,
+        "warmup_exposure_fallback": fallback_audit,
     }
 
 
@@ -1504,6 +1660,133 @@ def _verify_external_sync_output(
     return result
 
 
+def _disable_external_sync_output_after_capture(
+    device: Any,
+    sdk: Any,
+    external_sync_output: dict[str, Any],
+) -> dict[str, Any]:
+    """Switch to STANDALONE and prove that the external Trigger Out is off."""
+
+    if external_sync_output.get("enabled") is not True:
+        return {
+            "requested": False,
+            "attempted": False,
+            "completed": True,
+            "state": "not_requested",
+            "readback_verified": False,
+        }
+    try:
+        standalone_mode = sdk.OBMultiDeviceSyncMode.STANDALONE
+        current = device.get_multi_device_sync_config()
+        before = _sync_config_to_dict(current)
+        current.mode = standalone_mode
+        current.trigger_out_enable = False
+        device.set_multi_device_sync_config(current)
+        applied = device.get_multi_device_sync_config()
+    except Exception as exc:
+        raise RuntimeError(
+            "The camera could not disable external Trigger Out after capture"
+        ) from exc
+
+    after = _sync_config_to_dict(applied)
+    if getattr(applied, "mode", None) != standalone_mode:
+        raise RuntimeError(
+            "External Trigger Out shutdown did not enter STANDALONE mode: "
+            f"applied {after['mode']}"
+        )
+    if bool(getattr(applied, "trigger_out_enable", True)):
+        raise RuntimeError(
+            "External Trigger Out shutdown readback still reports trigger_out_enable=true"
+        )
+    preserved_fields = (
+        "color_delay_us",
+        "depth_delay_us",
+        "trigger_to_image_delay_us",
+        "trigger_out_delay_us",
+        "frames_per_trigger",
+    )
+    changed = [
+        name for name in preserved_fields if after.get(name) != before.get(name)
+    ]
+    if changed:
+        details = ", ".join(
+            f"{name}={after.get(name)!r} (before {before.get(name)!r})"
+            for name in changed
+        )
+        raise RuntimeError(
+            "External Trigger Out shutdown changed preserved sync fields: " + details
+        )
+    return {
+        "requested": True,
+        "attempted": True,
+        "completed": True,
+        "state": "verified_off",
+        "before": before,
+        "after": after,
+        "readback_verified": True,
+    }
+
+
+def _shutdown_video_capture_hardware(
+    pipeline: Any,
+    *,
+    pipeline_started: bool,
+    device: Any,
+    sdk: Any,
+    external_sync_output: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Stop streaming, then disable Trigger Out while retaining both errors."""
+
+    errors: list[dict[str, str]] = []
+    if pipeline_started:
+        try:
+            pipeline.stop()
+        except Exception as exc:
+            errors.append(
+                {
+                    "step": "pipeline.stop",
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+            )
+    try:
+        shutdown = _disable_external_sync_output_after_capture(
+            device, sdk, external_sync_output
+        )
+    except Exception as exc:
+        errors.append(
+            {
+                "step": "external_sync_output.shutdown",
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+        )
+        shutdown = {
+            "requested": external_sync_output.get("enabled") is True,
+            "attempted": True,
+            "completed": False,
+            "state": "failed",
+            "readback_verified": False,
+            "error": {"type": type(exc).__name__, "message": str(exc)},
+            "operator_action": "Check the device sync output or power-cycle the camera",
+        }
+    return shutdown, errors
+
+
+def _capture_exception_after_shutdown(
+    capture_exception: Exception | None,
+    shutdown_errors: list[dict[str, str]],
+) -> Exception | None:
+    """Keep the primary capture error, or promote the first shutdown error."""
+
+    if capture_exception is not None or not shutdown_errors:
+        return capture_exception
+    first = shutdown_errors[0]
+    return RuntimeError(
+        f"{first['step']} failed during capture shutdown: {first['message']}"
+    )
+
+
 def _device_info(device: Any) -> dict[str, Any]:
     info = device.get_device_info()
     result: dict[str, Any] = {}
@@ -1645,15 +1928,16 @@ def _video_capture_options(capture: dict[str, Any]) -> dict[str, Any]:
         "color_gain": None,
         "color_auto_white_balance": True,
         "color_white_balance": None,
-        "lock_color_controls_after_warmup": False,
-        "lock_white_balance_after_warmup": True,
-        "require_locked_white_balance_metadata": True,
+        "lock_color_controls_after_warmup": True,
+        "require_locked_control_metadata": True,
+        "lock_white_balance_after_warmup": False,
+        "require_locked_white_balance_metadata": False,
     }
     for name, expected in required.items():
         if options.get(name) != expected:
             raise ValueError(
-                "Continuous video requires automatic exposure/gain and a "
-                "post-warmup white-balance lock: "
+                "Continuous video requires automatic exposure, gain, and white "
+                "balance warmup followed by a full manual control lock: "
                 f"{name} must be {expected!r}"
             )
     for name in ("trigger_out_delay_us", "trigger_to_image_delay_us"):
@@ -1666,6 +1950,8 @@ def _video_capture_options(capture: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(
                 f"capture.video_mode.{name} must be a non-negative integer"
             )
+    if int(options.get("warmup_frames", 30)) <= 0:
+        raise ValueError("warmup_frames must be positive")
     return options
 
 
@@ -1776,6 +2062,8 @@ def run_video_capture(
         value = options.get(name)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError(f"{name} must be a non-negative integer")
+    if int(options.get("warmup_frames", 30)) <= 0:
+        raise ValueError("warmup_frames must be positive")
     _apply_color_exposure_mode(options, args)
     if args.gain is not None:
         options["color_gain"] = args.gain
@@ -1858,7 +2146,6 @@ def run_video_capture(
         manifest["python_wrapper_version"] = None
     try:
         applied_color_properties = _configure_color(device, sdk, options)
-        external_sync_output = _configure_external_sync_output(device, sdk, options)
     except Exception as exc:
         manifest.update(
             {
@@ -1875,6 +2162,10 @@ def run_video_capture(
     manifest["color_exposure_control"] = _color_exposure_control_summary(
         options, applied_color_properties
     )
+    external_sync_output: dict[str, Any] = {
+        "enabled": bool(options.get("external_sync_output", True)),
+        "state": "not_configured",
+    }
     manifest["external_sync_output"] = external_sync_output
     _write_manifest(session_root, manifest)
 
@@ -1980,11 +2271,12 @@ def run_video_capture(
     capture_stopped_monotonic_ns = 0
     metadata_checked = False
     exposure_violation_run = 0
-    warmup_exposure_fallback = False
+    warmup_exposure_fallback: dict[str, Any] | None = None
     metadata_types: Any | None = None
     color_control_lock: dict[str, Any] | None = None
     pipeline_started = False
     capture_exception: Exception | None = None
+    shutdown_errors: list[dict[str, str]] = []
     try:
         try:
             metadata_types = sdk.OBFrameMetadataType
@@ -1994,50 +2286,52 @@ def run_video_capture(
                     "Post-warmup color-control lock requires the SDK frame metadata API"
                 ) from exc
             raise
+        external_sync_output = _configure_external_sync_output(device, sdk, options)
+        manifest["external_sync_output"] = external_sync_output
+        _write_manifest(session_root, manifest)
         pipeline.start(stream_config)
         pipeline_started = True
-        warmup_received = 0
-        warmup_started = time.monotonic()
-        while warmup_received < int(options["warmup_frames"]):
-            warmup_frames = pipeline.wait_for_frames(1000)
-            if warmup_frames is not None:
-                raw_warmup_color = warmup_frames.get_color_frame()
-                if raw_warmup_color is not None:
-                    warmup_exposure = _metadata(
-                        raw_warmup_color, metadata_types.EXPOSURE
-                    )
-                    warmup_violation = _color_exposure_metadata_violation(
-                        options, warmup_exposure
-                    )
-                    if warmup_exposure_fallback and warmup_violation is not None:
-                        raise RuntimeError(warmup_violation)
-                    if (
-                        not warmup_exposure_fallback
-                        and warmup_violation is not None
-                    ):
-                        fallback = _fall_back_to_fixed_motion_safe_exposure(
-                            device, sdk, options
-                        )
-                        warmup_exposure_fallback = True
-                        manifest["capture_mode"] = (
-                            "continuous_rgbd_video_fixed_exposure"
-                        )
-                        manifest["warmup_exposure_fallback"] = fallback
-                        manifest["applied_color_properties"].update(fallback)
-                        manifest["color_exposure_control"] = (
-                            _color_exposure_control_summary(options, fallback)
-                        )
-                        _write_manifest(session_root, manifest)
-                warmup_received += 1
-            if time.monotonic() - warmup_started >= float(
-                options.get("warmup_timeout_seconds", 15)
-            ):
-                raise RuntimeError(
-                    f"Capture warmup timed out after receiving {warmup_received}/"
-                    f"{options['warmup_frames']} complete RGB-D frame sets. "
-                    "Try MJPG color, a lower resolution, another USB 3 port, or disable "
-                    "other camera applications."
-                )
+
+        warmup_requested_exposure_options = dict(options)
+
+        def record_warmup_fallback(audit: dict[str, Any]) -> None:
+            manifest["capture_mode"] = "continuous_rgbd_video_fixed_exposure"
+            manifest["color_control_policy"] = (
+                "auto_warmup_then_800us_fallback_full_manual_lock"
+            )
+            manifest["warmup_exposure_fallback"] = dict(audit)
+            manifest["applied_color_properties"].update(
+                {
+                    "auto_exposure": audit["auto_exposure"],
+                    "exposure": audit["exposure"],
+                    "exposure_us": audit["exposure_us"],
+                    "gain": audit["gain"],
+                }
+            )
+            manifest["color_exposure_control"] = _color_exposure_control_summary(
+                warmup_requested_exposure_options,
+                manifest["applied_color_properties"],
+            )
+            _write_manifest(session_root, manifest)
+
+        manifest["color_control_policy"] = (
+            "fixed_exposure_auto_gain_awb_warmup_then_full_manual_lock"
+            if fixed_video_exposure is not None
+            else "auto_warmup_then_full_manual_lock"
+        )
+        manifest["warmup_exposure_fallback"] = None
+        warmup_result = _warm_up_video_controls(
+            device,
+            sdk,
+            pipeline,
+            metadata_types,
+            options,
+            on_fallback=record_warmup_fallback,
+        )
+        warmup_received = int(warmup_result["warmup_frame_sets"])
+        warmup_exposure_fallback = warmup_result["warmup_exposure_fallback"]
+        manifest.update(warmup_result)
+        _write_manifest(session_root, manifest)
         if color_control_lock_requested or white_balance_lock_requested:
             manifest["color_control_lock"] = {
                 "requested": True,
@@ -2311,18 +2605,71 @@ def run_video_capture(
                 observer.on_capture_stopping()
             except Exception as exc:
                 observer_error = f"{type(exc).__name__}: {exc}"
-        if pipeline_started:
-            pipeline.stop()
-        writer.close()
-        if capture_exception is None:
-            try:
-                writer.raise_if_failed()
-            except SessionWriterError as exc:
+        hardware_shutdown, hardware_shutdown_errors = _shutdown_video_capture_hardware(
+            pipeline,
+            pipeline_started=pipeline_started,
+            device=device,
+            sdk=sdk,
+            external_sync_output=external_sync_output,
+        )
+        shutdown_errors.extend(hardware_shutdown_errors)
+        external_sync_output["shutdown"] = hardware_shutdown
+        manifest["external_sync_output"] = external_sync_output
+        try:
+            writer.close()
+        except Exception as exc:
+            shutdown_errors.append(
+                {"step": "writer.close", "type": type(exc).__name__, "message": str(exc)}
+            )
+        try:
+            writer.raise_if_failed()
+        except SessionWriterError as exc:
+            if capture_exception is None:
                 capture_exception = exc
-        online_orb_result = online_orb_tracker.close() if online_orb_tracker is not None else None
-        cv2.destroyAllWindows()
+            else:
+                shutdown_errors.append(
+                    {
+                        "step": "writer.raise_if_failed",
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                )
+        online_orb_result = None
+        if online_orb_tracker is not None:
+            try:
+                online_orb_result = online_orb_tracker.close()
+            except Exception as exc:
+                shutdown_errors.append(
+                    {
+                        "step": "online_orb_tracker.close",
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                )
+        try:
+            cv2.destroyAllWindows()
+        except Exception as exc:
+            shutdown_errors.append(
+                {
+                    "step": "cv2.destroyAllWindows",
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+            )
+        capture_exception = _capture_exception_after_shutdown(
+            capture_exception, shutdown_errors
+        )
         print()
 
+    sync_shutdown = external_sync_output.get("shutdown", {})
+    sync_shutdown_ok = (
+        sync_shutdown.get("state") == "not_requested"
+        or (
+            sync_shutdown.get("completed") is True
+            and sync_shutdown.get("state") == "verified_off"
+            and sync_shutdown.get("after", {}).get("trigger_out_enable") is False
+        )
+    )
     manifest.update(
         {
             "ended_utc": datetime.now(timezone.utc).isoformat(),
@@ -2331,6 +2678,7 @@ def run_video_capture(
                 and writer.stats.write_errors == 0
                 and writer.stats.queue_drops == 0
                 and writer.stats.written == received
+                and sync_shutdown_ok
             ),
             "received_frames": received,
             "written_frames": writer.stats.written,
@@ -2342,6 +2690,13 @@ def run_video_capture(
             "capture_runtime_audit": capture_runtime_audit,
         }
     )
+    if capture_exception is not None:
+        manifest["capture_error"] = {
+            "type": type(capture_exception).__name__,
+            "message": str(capture_exception),
+        }
+    if shutdown_errors:
+        manifest["shutdown_errors"] = shutdown_errors
     if observer_error is not None:
         manifest["live_observer_warning"] = observer_error
     manifest["product_eligibility"] = {
@@ -2540,7 +2895,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--video-exposure-us",
         type=int,
-        help="Fixed continuous-video exposure in microseconds; gain remains automatic and white balance locks after warmup",
+        help=(
+            "Fixed continuous-video exposure from startup; gain and white balance "
+            "warm up automatically, then exposure, gain, and white balance are "
+            "locked before formal frames"
+        ),
     )
     exposure.add_argument(
         "--diagnostic-unrestricted-auto-exposure",
