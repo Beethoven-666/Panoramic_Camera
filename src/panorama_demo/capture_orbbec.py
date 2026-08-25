@@ -29,6 +29,7 @@ from .video_online_state import (
 
 COLOR_EXPOSURE_UNIT_US = 100
 MAX_FORMAL_COLOR_EXPOSURE_US = 800
+AUTO_EXPOSURE_STARTUP_TRANSITION_MAX_FRAME_SETS = 8
 DEFAULT_TRIGGER_TO_IMAGE_DELAY_US = 8_000
 DEFAULT_TRIGGER_OUT_DELAY_US = 7_000
 GEMINI305_COLOR_FORMAT_PRIORITY = ("RGB", "BGR", "YUYV", "MJPG")
@@ -1172,6 +1173,11 @@ def _warm_up_video_controls(
         raise ValueError("warmup_timeout_seconds must be positive")
     deadline = float(clock()) + timeout_seconds
     fallback_allowed = _uses_color_auto_exposure(options)
+    startup_transition_limit = (
+        AUTO_EXPOSURE_STARTUP_TRANSITION_MAX_FRAME_SETS if fallback_allowed else 0
+    )
+    startup_transition_discarded = 0
+    startup_transition_active = fallback_allowed
     received = 0
     incomplete = 0
     last_valid_auto_gain_raw: int | None = None
@@ -1207,8 +1213,23 @@ def _warm_up_video_controls(
         exposure_raw = controls["color_exposure"]
         exposure_violation = _color_exposure_metadata_violation(options, exposure_raw)
         if exposure_violation is None:
+            startup_transition_active = False
             received += 1
             continue
+        if (
+            startup_transition_active
+            and exposure_raw is not None
+            and startup_transition_discarded < startup_transition_limit
+        ):
+            # Gemini 305 can emit several complete frames carrying its stale
+            # 3000-us startup exposure before the configured AE ceiling takes
+            # effect.  These frames are neither warmup evidence nor a reason
+            # to disable a correctly converging AE controller.  The bounded
+            # allowance ends at the first compliant frame; later violations
+            # still take the production fallback immediately.
+            startup_transition_discarded += 1
+            continue
+        startup_transition_active = False
         if not fallback_allowed:
             raise RuntimeError(exposure_violation)
         if last_valid_auto_gain_raw is None:
@@ -1259,6 +1280,10 @@ def _warm_up_video_controls(
     return {
         "warmup_frame_sets": received,
         "warmup_incomplete_frame_sets": incomplete,
+        "warmup_auto_exposure_startup_discarded_frame_sets": (
+            startup_transition_discarded
+        ),
+        "warmup_auto_exposure_startup_limit_frame_sets": startup_transition_limit,
         "warmup_exposure_fallback": fallback_audit,
     }
 

@@ -18,9 +18,11 @@ capture:
 
   # Continuous video is deliberately isolated from the formal photo sequence.
   # Exposure, gain, and white balance warm up automatically. Their converged
-  # values are then locked and verified on every emitted frame. If frame
-  # metadata exceeds the 800 us motion cap, exposure falls back to 800 us while
-  # preserving the last valid automatic gain from a complete RGB-D frame set.
+  # values are then locked and verified on every emitted frame. Up to eight
+  # complete over-cap RGB-D frame sets from the Gemini 305 AE startup transition
+  # are discarded before warmup counting. A later violation, or a ninth startup
+  # violation, falls back to 800 us while preserving the last valid automatic
+  # gain from a complete RGB-D frame set.
   video_mode:
     enabled: true
     # Video has its own real-time profile; photo mode retains the root capture
@@ -40,8 +42,9 @@ capture:
     trigger_to_image_delay_us: 8000
     color_auto_exposure: true
     color_exposure_us: null
-    # Moving-camera shutter cap; an over-cap warmup frame triggers the fixed
-    # 800 us exposure/preserved-gain transition before formal capture.
+    # Moving-camera shutter cap; after the bounded AE startup transition, an
+    # over-cap warmup frame triggers the fixed 800 us exposure/preserved-gain
+    # transition before formal capture.
     color_ae_max_exposure_us: 800
     diagnostic_unrestricted_auto_exposure: false
     color_gain: null

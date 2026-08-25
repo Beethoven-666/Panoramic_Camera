@@ -215,7 +215,9 @@ Open3D `0.19` 是正式依赖。Torch/Kornia/torchvision 仅属于 `unistitch-di
 - 会话打开期间 `formal_stitch_allowed=false`。只有相机/写盘资源安全关闭、无采集或写盘错误时，最终 manifest 才可写 `clean_shutdown=true`、`formal_stitch_allowed=true`。
 
 连续流采集与照片模式隔离：预热期间使用自动曝光、自动增益和自动白平衡，预热后锁定并
-逐帧验证曝光、增益和白平衡；自动曝光元数据超过 `800 µs` 时固定回退到 `800 µs` 并保留
+逐帧验证曝光、增益和白平衡；Gemini 305 启流时最多丢弃 8 个曝光超限的完整 RGB-D AE
+启动过渡 FrameSet，第一个合规帧开始原定预热，此后再次超限或连续第 9 个启动帧仍超限时
+固定回退到 `800 µs` 并保留
 最后一个完整预热 FrameSet 的有效自动增益，回退和锁定过渡帧不写盘。会话写入
 `capture_mode=continuous_rgbd_video_auto`、`diagnostic_only=true` 与
 `formal_stitch_allowed=false`。可用 `--video-exposure-us` 采集固定曝光视频，写入

@@ -359,10 +359,16 @@ def _warmup_options(*, warmup_frames: int = 1) -> dict[str, object]:
 
 def test_warmup_fallback_uses_trigger_frame_gain_and_discards_transition() -> None:
     matching = {"exposure": 8, "gain": 24}
+    over_cap = {"exposure": 10, "gain": 24}
     pipeline = _PostLockPipeline(
         [
-            _MetadataFrameSet({"exposure": 10, "gain": 24}),
-            _MetadataFrameSet({"exposure": 10, "gain": 24}),
+            *[
+                _MetadataFrameSet(over_cap)
+                for _ in range(
+                    capture.AUTO_EXPOSURE_STARTUP_TRANSITION_MAX_FRAME_SETS + 1
+                )
+            ],
+            _MetadataFrameSet(over_cap),
             _MetadataFrameSet(matching),
             _MetadataFrameSet(matching),
             _MetadataFrameSet(matching),
@@ -385,6 +391,34 @@ def test_warmup_fallback_uses_trigger_frame_gain_and_discards_transition() -> No
     assert fallback["post_lock_discarded_frames"] == 3
     assert fallback["post_lock_metadata_mismatches"] == 1
     assert result["warmup_frame_sets"] == 1
+    assert result["warmup_auto_exposure_startup_discarded_frame_sets"] == 8
+    assert result["warmup_auto_exposure_startup_limit_frame_sets"] == 8
+
+
+def test_warmup_discards_bounded_auto_exposure_startup_transition() -> None:
+    over_cap = {"exposure": 30, "gain": 16}
+    compliant = {"exposure": 8, "gain": 16}
+
+    result = capture._warm_up_video_controls(
+        _ColorControlDevice(),
+        _color_control_sdk(),
+        _PostLockPipeline(
+            [
+                _MetadataFrameSet(over_cap),
+                _MetadataFrameSet(over_cap),
+                _MetadataFrameSet(over_cap),
+                _MetadataFrameSet(compliant),
+            ]
+        ),
+        _color_control_sdk().OBFrameMetadataType,
+        _warmup_options(),
+        clock=lambda: 0.0,
+    )
+
+    assert result["warmup_frame_sets"] == 1
+    assert result["warmup_auto_exposure_startup_discarded_frame_sets"] == 3
+    assert result["warmup_auto_exposure_startup_limit_frame_sets"] == 8
+    assert result["warmup_exposure_fallback"] is None
 
 
 def test_warmup_fallback_uses_previous_valid_gain_when_trigger_gain_missing() -> None:
@@ -408,6 +442,7 @@ def test_warmup_fallback_uses_previous_valid_gain_when_trigger_gain_missing() ->
     )
 
     assert result["warmup_exposure_fallback"]["gain"] == 22
+    assert result["warmup_auto_exposure_startup_discarded_frame_sets"] == 0
 
 
 def test_warmup_fallback_fails_without_any_valid_gain_metadata() -> None:
@@ -415,7 +450,14 @@ def test_warmup_fallback_fails_without_any_valid_gain_metadata() -> None:
         capture._warm_up_video_controls(
             _ColorControlDevice(),
             _color_control_sdk(),
-            _PostLockPipeline([_MetadataFrameSet({"exposure": 10})]),
+            _PostLockPipeline(
+                [
+                    _MetadataFrameSet({"exposure": 10})
+                    for _ in range(
+                        capture.AUTO_EXPOSURE_STARTUP_TRANSITION_MAX_FRAME_SETS + 1
+                    )
+                ]
+            ),
             _color_control_sdk().OBFrameMetadataType,
             _warmup_options(),
             clock=lambda: 0.0,
