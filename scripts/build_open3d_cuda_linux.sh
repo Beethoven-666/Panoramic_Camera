@@ -49,6 +49,17 @@ git -C "$SOURCE_ROOT" checkout --detach "$OPEN3D_COMMIT"
   exit 1
 }
 
+CMAKE4_PATCH="$SCRIPT_DIR/patches/open3d-0.19-cmake4-policy.patch"
+if git -C "$SOURCE_ROOT" apply --check "$CMAKE4_PATCH"; then
+  git -C "$SOURCE_ROOT" apply "$CMAKE4_PATCH"
+elif ! grep -q 'CMAKE_POLICY_VERSION_MINIMUM=3.5' \
+  "$SOURCE_ROOT/3rdparty/find_dependencies.cmake" || \
+  ! grep -q 'CMAKE_POLICY_VERSION_MINIMUM=3.5' \
+  "$SOURCE_ROOT/3rdparty/vtk/CMakeLists.txt"; then
+  echo "Open3D CMake 4 compatibility patch is neither applicable nor already present" >&2
+  exit 1
+fi
+
 EXTRA_CMAKE_ARGS=()
 if [[ "${G305_OPEN3D_APPLY_CCCL_PATCH:-0}" == 1 ]]; then
   CUDA13_PATCH="$SCRIPT_DIR/patches/open3d-0.19-cuda13-cccl.patch"
@@ -73,6 +84,7 @@ fi
 mkdir -p "$WHEEL_DIR"
 "$CMAKE" -S "$SOURCE_ROOT" -B "$BUILD_ROOT" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_CUDA_COMPILER="$(command -v nvcc)" \
   -DCMAKE_CUDA_ARCHITECTURES=120 \
   -DPython3_EXECUTABLE="$(readlink -f -- "$PYTHON")" \
