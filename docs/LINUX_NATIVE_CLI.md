@@ -14,6 +14,9 @@ bash scripts/build_open3d_cuda_linux.sh
 bash scripts/setup_orbbec_linux.sh   # explicit sudo checkpoint
 ```
 
+Set `G305_BUILD_JOBS=1` or `2` for Open3D. The build script also propagates that limit to nested
+third-party Ninja builds through `CMAKE_BUILD_PARALLEL_LEVEL`.
+
 The ORB build is pinned to commit `4452a3c4ab75b1cde34e5505a36ec3f9edcdc4c4`; the headless
 runner patch is GPL-3.0-or-later and the generated external Runtime is not bundled in the Python
 wheel. Open3D is pinned to `0.19` source commit `1e7b17438687a0b0c1e5a7187321ac7044afe275`, CUDA 12.8,

@@ -22,6 +22,10 @@ while (($#)); do
   esac
 done
 [[ "$JOBS" =~ ^[12]$ ]] || { echo "G305_BUILD_JOBS must be 1 or 2" >&2; exit 2; }
+# ExternalProject build steps launch their own build tools. This environment
+# limit is inherited by those nested Ninja processes; --parallel below only
+# constrains the top-level build.
+export CMAKE_BUILD_PARALLEL_LEVEL="$JOBS"
 command -v nvcc >/dev/null || { echo "CUDA 12.8 nvcc is required" >&2; exit 1; }
 CMAKE=$(command -v cmake)
 NVCC_VERSION=$(nvcc --version | sed -n 's/.*release \([0-9.]*\).*/\1/p' | tail -n1)
