@@ -41,6 +41,7 @@ git clone https://github.com/stevenlovegrove/Pangolin.git "$PANGOLIN_SOURCE"
 git -C "$PANGOLIN_SOURCE" checkout --detach "$PANGOLIN_COMMIT"
 cmake -S "$PANGOLIN_SOURCE" -B "$PANGOLIN_SOURCE/build-g305" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_INSTALL_PREFIX="$PANGOLIN_INSTALL" \
   -DBUILD_EXAMPLES=OFF -DBUILD_TOOLS=OFF -DBUILD_PANGOLIN_GUI_VARS=OFF
 cmake --build "$PANGOLIN_SOURCE/build-g305" --parallel "$JOBS"
@@ -52,13 +53,13 @@ git -C "$ORB_SOURCE" apply --check "$PATCH_PATH"
 git -C "$ORB_SOURCE" apply "$PATCH_PATH"
 
 cmake -S "$ORB_SOURCE/Thirdparty/DBoW2" -B "$ORB_SOURCE/Thirdparty/DBoW2/build-g305" \
-  -G Ninja -DCMAKE_BUILD_TYPE=Release
+  -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build "$ORB_SOURCE/Thirdparty/DBoW2/build-g305" --parallel "$JOBS"
 cmake -S "$ORB_SOURCE/Thirdparty/g2o" -B "$ORB_SOURCE/Thirdparty/g2o/build-g305" \
-  -G Ninja -DCMAKE_BUILD_TYPE=Release
+  -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build "$ORB_SOURCE/Thirdparty/g2o/build-g305" --parallel "$JOBS"
 cmake -S "$ORB_SOURCE/Thirdparty/Sophus" -B "$ORB_SOURCE/Thirdparty/Sophus/build-g305" \
-  -G Ninja -DCMAKE_BUILD_TYPE=Release
+  -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build "$ORB_SOURCE/Thirdparty/Sophus/build-g305" --parallel "$JOBS"
 
 if [[ ! -f "$ORB_SOURCE/Vocabulary/ORBvoc.txt" ]]; then
@@ -69,6 +70,7 @@ mkdir -p "$INSTALL_ROOT/lib" "$INSTALL_ROOT/Thirdparty/DBoW2/lib" \
   "$INSTALL_ROOT/Vocabulary"
 cmake -S "$ORB_SOURCE" -B "$ORB_SOURCE/build-g305" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_PREFIX_PATH="$PANGOLIN_INSTALL" \
   -DCMAKE_BUILD_RPATH="$INSTALL_ROOT/lib;$INSTALL_ROOT/Thirdparty/DBoW2/lib;$INSTALL_ROOT/Thirdparty/g2o/lib;$PANGOLIN_INSTALL/lib"
 cmake --build "$ORB_SOURCE/build-g305" --parallel "$JOBS" \
