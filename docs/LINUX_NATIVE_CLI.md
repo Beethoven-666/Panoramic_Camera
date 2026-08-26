@@ -9,6 +9,7 @@ The pinned build entry points are:
 
 ```bash
 bash scripts/build_orbslam3_linux.sh
+bash scripts/install_linux_python_runtime.sh
 bash scripts/build_open3d_cuda_linux.sh
 bash scripts/setup_orbbec_linux.sh   # explicit sudo checkpoint
 ```

@@ -49,12 +49,21 @@ git -C "$SOURCE_ROOT" checkout --detach "$OPEN3D_COMMIT"
   exit 1
 }
 
-CUDA13_PATCH="$SCRIPT_DIR/patches/open3d-0.19-cuda13-cccl.patch"
-if git -C "$SOURCE_ROOT" apply --check "$CUDA13_PATCH"; then
-  git -C "$SOURCE_ROOT" apply "$CUDA13_PATCH"
-elif ! grep -q OPEN3D_THRUST_INCLUDE_DIR "$SOURCE_ROOT/3rdparty/stdgpu/stdgpu.cmake"; then
-  echo "Open3D CUDA13/CCCL patch is neither applicable nor already present" >&2
-  exit 1
+EXTRA_CMAKE_ARGS=()
+if [[ "${G305_OPEN3D_APPLY_CCCL_PATCH:-0}" == 1 ]]; then
+  CUDA13_PATCH="$SCRIPT_DIR/patches/open3d-0.19-cuda13-cccl.patch"
+  if git -C "$SOURCE_ROOT" apply --check "$CUDA13_PATCH"; then
+    git -C "$SOURCE_ROOT" apply "$CUDA13_PATCH"
+  elif ! grep -q OPEN3D_THRUST_INCLUDE_DIR "$SOURCE_ROOT/3rdparty/stdgpu/stdgpu.cmake"; then
+    echo "Open3D CUDA13/CCCL patch is neither applicable nor already present" >&2
+    exit 1
+  fi
+  EXTRA_CMAKE_ARGS+=(
+    -DOPEN3D_CUDA13_STDGPU_PATCH="$SCRIPT_DIR/patches/stdgpu-cuda13-device-properties.patch"
+  )
+elif [[ "${G305_OPEN3D_APPLY_CCCL_PATCH:-0}" != 0 ]]; then
+  echo "G305_OPEN3D_APPLY_CCCL_PATCH must be 0 or 1" >&2
+  exit 2
 fi
 
 if [[ -e "$BUILD_ROOT" && ! -f "$BUILD_ROOT/CMakeCache.txt" ]]; then
@@ -67,7 +76,6 @@ mkdir -p "$WHEEL_DIR"
   -DCMAKE_CUDA_COMPILER="$(command -v nvcc)" \
   -DCMAKE_CUDA_ARCHITECTURES=120 \
   -DPython3_EXECUTABLE="$(readlink -f -- "$PYTHON")" \
-  -DOPEN3D_CUDA13_STDGPU_PATCH="$SCRIPT_DIR/patches/stdgpu-cuda13-device-properties.patch" \
   -DBUILD_CUDA_MODULE=ON \
   -DBUILD_PYTHON_MODULE=ON \
   -DBUILD_WITH_CUDA_STATIC=ON \
@@ -83,7 +91,8 @@ mkdir -p "$WHEEL_DIR"
   -DBUILD_LIBREALSENSE=OFF \
   -DBUILD_PYTORCH_OPS=OFF \
   -DBUILD_TENSORFLOW_OPS=OFF \
-  -DBUNDLE_OPEN3D_ML=OFF
+  -DBUNDLE_OPEN3D_ML=OFF \
+  "${EXTRA_CMAKE_ARGS[@]}"
 "$CMAKE" --build "$BUILD_ROOT" --target pip-package --parallel "$JOBS"
 
 mapfile -t WHEELS < <(find "$BUILD_ROOT/lib" -type f -name 'open3d-*.whl' -print)
