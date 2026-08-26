@@ -34,6 +34,7 @@ SOURCE_ROOT=$(readlink -m -- "$SOURCE_ROOT")
 BUILD_ROOT=$(readlink -m -- "$BUILD_ROOT")
 WHEEL_DIR=$(readlink -m -- "$WHEEL_DIR")
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+CMAKE4_PATCH="$SCRIPT_DIR/patches/open3d-0.19-cmake4-policy.patch"
 
 if [[ ! -d "$SOURCE_ROOT/.git" ]]; then
   [[ ! -e "$SOURCE_ROOT" ]] || {
@@ -44,12 +45,16 @@ if [[ ! -d "$SOURCE_ROOT/.git" ]]; then
 fi
 git -C "$SOURCE_ROOT" fetch --depth 1 origin "$OPEN3D_COMMIT"
 git -C "$SOURCE_ROOT" checkout --detach "$OPEN3D_COMMIT"
+# Restore only the known compatibility patch before checking cleanliness so an
+# interrupted build can be resumed without accepting unrelated source edits.
+if git -C "$SOURCE_ROOT" apply --reverse --check "$CMAKE4_PATCH" 2>/dev/null; then
+  git -C "$SOURCE_ROOT" apply --reverse "$CMAKE4_PATCH"
+fi
 [[ -z "$(git -C "$SOURCE_ROOT" status --short)" ]] || {
   echo "Open3D source must be clean before applying compatibility patches" >&2
   exit 1
 }
 
-CMAKE4_PATCH="$SCRIPT_DIR/patches/open3d-0.19-cmake4-policy.patch"
 if git -C "$SOURCE_ROOT" apply --check "$CMAKE4_PATCH"; then
   git -C "$SOURCE_ROOT" apply "$CMAKE4_PATCH"
 elif ! grep -q 'CMAKE_POLICY_VERSION_MINIMUM=3.5' \

@@ -16,9 +16,16 @@ bash scripts/setup_orbbec_linux.sh   # explicit sudo checkpoint
 
 The ORB build is pinned to commit `4452a3c4ab75b1cde34e5505a36ec3f9edcdc4c4`; the headless
 runner patch is GPL-3.0-or-later and the generated external Runtime is not bundled in the Python
-wheel. Open3D is pinned to `0.19` source commit `1e7b174589d7d8d3f5b3108c7a78c4f10e170901`, CUDA 12.8,
+wheel. Open3D is pinned to `0.19` source commit `1e7b17438687a0b0c1e5a7187321ac7044afe275`, CUDA 12.8,
 and architecture 120 for the RTX 5060 L1 machine. Change only the CUDA architecture when creating
 a documented native-machine Runtime variant.
+
+The Open3D build also needs the GLFW/X11 development headers even with the GUI disabled:
+
+```bash
+sudo apt-get install -y --no-install-recommends \
+  libxcursor-dev libxinerama-dev libxi-dev libxrandr-dev
+```
 
 `setup_orbbec_linux.sh` verifies the official Orbbec SDK v2.8.6 commit and invokes its official
 udev installer. It deliberately requires an interactive sudo checkpoint. Do not copy ad-hoc udev
