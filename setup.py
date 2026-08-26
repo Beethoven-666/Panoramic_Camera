@@ -14,6 +14,7 @@ RUNTIME_RESOURCES = (
     "configs/video_algorithms/s013_visual_continuity_v11_production.lock.json",
     "configs/video_algorithms/baseline_legacy_fast_b07b561.yaml",
     "configs/video_algorithms/baseline_legacy_fast_b07b561.lock.json",
+    "configs/video_candidates/s013/S013_output_first_progressive_dense_central_slit_v4_cuda_m63_visual_continuity_v11.yaml",
     "configs/video_candidates/s013/quality_thresholds_m61_v2.json",
     "artifacts/S013_M6_1_metrics_baseline_v2/threshold_approval.json",
 )
