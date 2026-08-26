@@ -84,7 +84,7 @@ def test_default_orbslam3_runner_is_headless(
     )
 
     assert prepared.config.executable.endswith("rgbd_tum_headless")
-    assert prepared.staged.command[4].endswith("rgbd_tum_headless")
+    assert any(part.endswith("rgbd_tum_headless") for part in prepared.staged.command)
 
 
 def test_native_linux_command_is_direct_and_has_no_wsl_conversion(

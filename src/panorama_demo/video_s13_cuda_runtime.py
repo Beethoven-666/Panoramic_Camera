@@ -179,20 +179,35 @@ class S13CudaRuntime:
     def _remap_frame_linear_float(
         self, frame_id: int, map_u: np.ndarray, map_v: np.ndarray, u_key: object, v_key: object,
     ) -> Any:
+        if int(cv2.__version__.split(".", 1)[0]) >= 5:
+            return self._remap_frame_linear_continuous(
+                frame_id, map_u, map_v, u_key=u_key, v_key=v_key
+            )
+        return self._remap_frame_linear_exact(
+            frame_id, map_u, map_v, map_key=("semantic", u_key, v_key)
+        )
+
+    def _remap_frame_linear_continuous(
+        self, frame_id: int, map_u: np.ndarray, map_v: np.ndarray, *, u_key: object, v_key: object,
+    ) -> Any:
         source_gpu = self.source(frame_id)
         map_u = np.ascontiguousarray(map_u, dtype=np.float32)
         map_v = np.ascontiguousarray(map_v, dtype=np.float32)
+        if map_u.shape != map_v.shape or map_u.ndim != 2:
+            raise ValueError("S1.3 CUDA remap maps must be equally-shaped 2-D arrays")
         map_u_gpu = self.upload_map_once(u_key, map_u)
         map_v_gpu = self.upload_map_once(v_key, map_v)
         output = self.cp.empty((*map_u.shape, 3), dtype=self.cp.uint8)
         kernel = self._float_exact_linear_kernel()
         count = int(map_u.size)
-        self.compute_stream.wait_event(self._upload_ready)
-        kernel(
-            ((count + 255) // 256,), (256,),
-            (source_gpu, np.int32(source_gpu.shape[0]), np.int32(source_gpu.shape[1]),
-             map_u_gpu, map_v_gpu, np.int32(map_u.shape[0]), np.int32(map_u.shape[1]), output),
-        )
+        with self.compute_stream:
+            self.compute_stream.wait_event(self._upload_ready)
+            kernel(
+                ((count + 255) // 256,), (256,),
+                (source_gpu, np.int32(source_gpu.shape[0]), np.int32(source_gpu.shape[1]),
+                 map_u_gpu, map_v_gpu, np.int32(map_u.shape[0]), np.int32(map_u.shape[1]), output),
+            )
+            self._compute_ready.record(self.compute_stream)
         self._kernels += 1
         return output
 
@@ -213,18 +228,30 @@ class S13CudaRuntime:
         ``cv2.convertMaps`` is intentionally kept on the CPU: it establishes
         OpenCV's fixed-point remap representation. The device kernel then
         applies the same four integer bilinear weights without creating a
-        NumPy image boundary. Callers must opt into this fixed-map semantic;
-        the legacy float-map renderer remains the reference authority.
+        NumPy image boundary.
         """
+        return self._remap_frame_linear_exact(
+            source_frame_id,
+            map_u,
+            map_v,
+            map_key=("host", self._host_array_key(map_u), self._host_array_key(map_v)),
+        )
+
+    def _remap_frame_linear_exact(
+        self, source_frame_id: int, map_u: np.ndarray, map_v: np.ndarray, *, map_key: object,
+    ) -> Any:
         source = self.source(source_frame_id)
         if source.dtype != self.cp.uint8 or source.ndim != 3 or source.shape[2] != 3:
             raise TypeError("S1.3 exact device remap requires HxWx3 uint8 source")
+        map_u = np.ascontiguousarray(map_u, dtype=np.float32)
+        map_v = np.ascontiguousarray(map_v, dtype=np.float32)
+        if map_u.shape != map_v.shape or map_u.ndim != 2:
+            raise ValueError("S1.3 CUDA remap maps must be equally-shaped 2-D arrays")
         fixed, fractions = cv2.convertMaps(
-            np.ascontiguousarray(map_u, dtype=np.float32),
-            np.ascontiguousarray(map_v, dtype=np.float32), cv2.CV_16SC2,
+            map_u, map_v, cv2.CV_16SC2,
         )
-        fixed_gpu = self.upload_map_once(("linear-fixed", source_frame_id, self._host_array_key(fixed)), fixed)
-        fraction_gpu = self.upload_map_once(("linear-frac", source_frame_id, self._host_array_key(fractions)), fractions)
+        fixed_gpu = self.upload_map_once(("linear-fixed", source_frame_id, map_key), fixed)
+        fraction_gpu = self.upload_map_once(("linear-frac", source_frame_id, map_key), fractions)
         output = self.cp.empty((*fractions.shape, 3), dtype=self.cp.uint8)
         kernel = self._exact_linear_kernel()
         count = int(fractions.size)
@@ -240,35 +267,24 @@ class S13CudaRuntime:
         return output
 
     def remap_linear_float(self, source: np.ndarray, map_u: np.ndarray, map_v: np.ndarray) -> Any:
-        """Float-map OpenCV-compatible remap from an already-resident source.
+        """OpenCV-compatible float-map remap from an already-resident source.
 
-        The map upload is cached and the source is resolved by object identity,
-        so a contributor is not uploaded again at each S1.3 stage boundary.
+        OpenCV 4.x quantizes float maps into its 1/32 fixed-point table while
+        OpenCV 5.x applies continuous bilinear interpolation. The CUDA path
+        mirrors the installed authority so Linux and the Windows baseline both
+        remain byte-exact.
         """
         try:
             source_frame_id = self._source_ids[self._host_source_key(source)]
         except KeyError as exc:
             raise ValueError("S1.3 CUDA remap received a non-resident source image") from exc
-        source_gpu = self.source(source_frame_id)
-        map_u = np.ascontiguousarray(map_u, dtype=np.float32)
-        map_v = np.ascontiguousarray(map_v, dtype=np.float32)
-        if map_u.shape != map_v.shape or map_u.ndim != 2:
-            raise ValueError("S1.3 CUDA remap maps must be equally-shaped 2-D arrays")
-        map_u_gpu = self.upload_map_once(("float-u", self._host_array_key(map_u)), map_u)
-        map_v_gpu = self.upload_map_once(("float-v", self._host_array_key(map_v)), map_v)
-        output = self.cp.empty((*map_u.shape, 3), dtype=self.cp.uint8)
-        kernel = self._float_exact_linear_kernel()
-        count = int(map_u.size)
-        with self.compute_stream:
-            self.compute_stream.wait_event(self._upload_ready)
-            kernel(
-                ((count + 255) // 256,), (256,),
-                (source_gpu, np.int32(source_gpu.shape[0]), np.int32(source_gpu.shape[1]),
-                 map_u_gpu, map_v_gpu, np.int32(map_u.shape[0]), np.int32(map_u.shape[1]), output),
-            )
-            self._compute_ready.record(self.compute_stream)
-        self._kernels += 1
-        return output
+        return self._remap_frame_linear_float(
+            source_frame_id,
+            map_u,
+            map_v,
+            ("float-u", self._host_array_key(map_u)),
+            ("float-v", self._host_array_key(map_v)),
+        )
 
     def remap_host_source(
         self, source: np.ndarray, map_u: np.ndarray, map_v: np.ndarray,

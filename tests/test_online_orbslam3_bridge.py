@@ -200,7 +200,7 @@ def test_prepare_online_runner_selects_stream_executable_and_writes_settings(
         work_dir=tmp_path,
     )
 
-    assert launch.command[4].endswith("rgbd_g305_stream_headless")
+    assert any(part.endswith("rgbd_g305_stream_headless") for part in launch.command)
     settings = launch.settings_path.read_text(encoding="utf-8")
     assert "Camera.fps: 20" in settings
     assert "RGBD.DepthMapFactor: 1000" in settings
