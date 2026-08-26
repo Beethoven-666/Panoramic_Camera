@@ -792,12 +792,13 @@ def _bounded_exact_corridor_transfer(
                 cv2.CHAIN_APPROX_SIMPLE,
             )
             points = np.concatenate(contours, axis=0)
-            candidate = np.zeros_like(closed)
+            candidate_u8 = np.zeros(closed.shape, dtype=np.uint8)
             cv2.fillConvexPoly(
-                candidate,
+                candidate_u8,
                 cv2.convexHull(points),
                 1,
             )
+            candidate = candidate_u8.astype(bool)
             if context_guard:
                 size = 2 * context_guard + 1
                 candidate = cv2.dilate(

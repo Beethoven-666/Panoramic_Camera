@@ -492,7 +492,13 @@ def test_formal_m6_v4_writes_stage_snapshots_and_completion_timing(
         "npz_write_count": 0,
             "sha_call_count": 0,
             "m7_call_count": 0,
-            "c2e_call_count": 6,
+            # This historical diagnostic candidate predates the locked V11
+            # route. OpenCV 4.x selects five C2E pairs for its synthetic input;
+            # OpenCV 5.x selects six. Formal V11 cross-platform workload parity
+            # is verified separately against the frozen real session.
+            "c2e_call_count": (
+                6 if int(cv2.__version__.split(".", maxsplit=1)[0]) >= 5 else 5
+            ),
         }
     assert {path.name for path in output.iterdir()} == {
         "P0_base_panorama.png",

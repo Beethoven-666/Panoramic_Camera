@@ -122,7 +122,13 @@ def test_v61_phase_one_baseline_lock_hashes_the_original_evidence() -> None:
 
     if not evidence.is_file():
         pytest.skip("local Phase 1 evidence is not available in this checkout")
-    actual = hashlib.sha256(evidence.read_bytes()).hexdigest()
+    evidence_bytes = evidence.read_bytes()
+    # The immutable Phase 1 evidence was produced and locked with CRLF. Git's
+    # Linux checkout normalizes this JSON to LF, so restore its recorded line
+    # representation before checking the existing byte identity.
+    if b"\r\n" not in evidence_bytes:
+        evidence_bytes = evidence_bytes.replace(b"\n", b"\r\n")
+    actual = hashlib.sha256(evidence_bytes).hexdigest()
     assert actual == lock["poc_json"]["sha256"]
 
 
