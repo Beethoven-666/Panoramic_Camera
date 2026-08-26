@@ -6,6 +6,10 @@ OpenEXR>=3.3,<4
 PyYAML>=6.0,<7
 xatlas>=0.0.11
 cupy-cuda13x>=14.1,<15
+# CuPy's CUDA 13 wheel links cuBLAS dynamically. The WSL host toolkit remains
+# CUDA 12.8 for the pinned Open3D build, so supply the matching CUDA 13 library
+# explicitly instead of relying on an unrelated system toolkit path.
+nvidia-cublas==13.0.2.14
 av>=12.3,<13
 psutil>=5.9,<8
 # The custom CUDA wheel is installed with --no-deps to prevent a PyPI CPU

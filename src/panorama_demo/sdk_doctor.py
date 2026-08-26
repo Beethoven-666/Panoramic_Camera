@@ -149,11 +149,14 @@ def run_sdk_doctor(
         if cupy_count:
             cp.cuda.Device(0).use()
             cp.zeros(1, dtype=cp.uint8).sum().get()
+            probe = cp.eye(2, dtype=cp.float32)
+            cublas_probe = float((probe @ probe).sum().get())
         cupy_ok = cupy_count > 0
         cupy_detail: dict[str, object] = {
             "version": cp.__version__,
             "device_count": cupy_count,
             "runtime_version": int(cp.cuda.runtime.runtimeGetVersion()),
+            "cublas_probe": cublas_probe if cupy_count else None,
         }
     except Exception as exc:
         cupy_ok = False

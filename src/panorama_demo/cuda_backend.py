@@ -313,7 +313,11 @@ def _cupy_remap_kernel(dtype: np.dtype[Any]) -> Any:
         scalar, output, convert = (
             "unsigned char",
             "unsigned char",
-            "out[out_i] = (unsigned char)min(255.0f, max(0.0f, nearbyintf(value)));",
+            (
+                "double rounded = quantized_linear ? floor(value + 0.5) "
+                ": nearbyintf((float)value); "
+                "out[out_i] = (unsigned char)min(255.0, max(0.0, rounded));"
+            ),
         )
     elif np.dtype(dtype) == np.dtype(np.float32):
         scalar, output, convert = "float", "float", "out[out_i] = value;"
@@ -322,8 +326,9 @@ def _cupy_remap_kernel(dtype: np.dtype[Any]) -> Any:
             "unsigned short",
             "unsigned short",
             (
-                "out[out_i] = (unsigned short)min(65535.0f, "
-                "max(0.0f, nearbyintf(value)));"
+                "double rounded = quantized_linear ? floor(value + 0.5) "
+                ": nearbyintf((float)value); "
+                "out[out_i] = (unsigned short)min(65535.0, max(0.0, rounded));"
             ),
         )
     else:
@@ -333,7 +338,8 @@ def _cupy_remap_kernel(dtype: np.dtype[Any]) -> Any:
     void remap(const {scalar}* src, const int src_h, const int src_w,
                const int channels, const float* mx, const float* my,
                const int out_h, const int out_w, const int linear,
-               const int replicate, const float border, {output}* out) {{
+               const int quantized_linear, const int replicate,
+               const float border, {output}* out) {{
         int pixel = blockDim.x * blockIdx.x + threadIdx.x;
         int count = out_h * out_w;
         if (pixel >= count) return;
@@ -353,10 +359,21 @@ def _cupy_remap_kernel(dtype: np.dtype[Any]) -> Any:
                     if (ix >= 0 && ix < src_w && iy >= 0 && iy < src_h)
                         value = (float)src[(iy * src_w + ix) * channels + c];
                 }} else {{
-                    int x0 = (int)floorf(x);
-                    int y0 = (int)floorf(y);
+                    int x0 = (int)floor(x);
+                    int y0 = (int)floor(y);
                     double ax = x - (double)x0;
                     double ay = y - (double)y0;
+                    if (quantized_linear) {{
+                        // OpenCV 4.x quantizes float maps to its 1/32
+                        // interpolation table. OpenCV 5.x samples the original
+                        // fraction, so select the local cv2 contract explicitly.
+                        int qx = __double2int_rn(x * 32.0);
+                        int qy = __double2int_rn(y * 32.0);
+                        x0 = qx >= 0 ? qx / 32 : -((-qx + 31) / 32);
+                        y0 = qy >= 0 ? qy / 32 : -((-qy + 31) / 32);
+                        ax = (double)(qx - x0 * 32) / 32.0;
+                        ay = (double)(qy - y0 * 32) / 32.0;
+                    }}
                     value = 0.0f;
                     for (int dy = 0; dy < 2; ++dy) {{
                         int sy = y0 + dy;
@@ -429,6 +446,7 @@ def _cupy_remap(
             np.int32(mx.shape[0]),
             np.int32(mx.shape[1]),
             np.int32(interpolation == cv2.INTER_LINEAR),
+            np.int32(int(cv2.__version__.split(".", maxsplit=1)[0]) < 5),
             np.int32(border_mode == cv2.BORDER_REPLICATE),
             np.float32(border),
             out_gpu,
