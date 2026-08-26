@@ -8,6 +8,15 @@ xatlas>=0.0.11
 cupy-cuda13x>=14.1,<15
 av>=12.3,<13
 psutil>=5.9,<8
+# The custom CUDA wheel is installed with --no-deps to prevent a PyPI CPU
+# Open3D replacement. Keep its Python runtime imports explicit here; Open3D
+# 0.19 also imports Plotly although its generated wheel metadata omits it.
+configargparse>=1.5,<2
+dash>=2.6,<4
+flask>=3,<4
+nbformat>=5.7,<6
+plotly>=5,<7
+werkzeug>=3,<4
 build>=1.2,<2
 pytest>=8,<9
 ruff>=0.12,<1
