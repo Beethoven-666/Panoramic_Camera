@@ -394,3 +394,21 @@ def test_failure_report_keeps_only_scalar_orb_attempt_audit(tmp_path: Path) -> N
     report = (tmp_path / "output" / "failure.json").read_text(encoding="utf-8")
     assert "orbslam3_execution_attempts" in report
     assert ".orbslam3_rgbd-attempt-" not in report
+
+
+def test_orbslam3_config_uses_frozen_native_linux_runtime(monkeypatch) -> None:
+    monkeypatch.setattr(bridge.sys, "platform", "linux")
+
+    config = bridge.ORBSLAM3Config()
+
+    assert config.runtime_kind == "native_linux"
+    assert config.root == "~/opt/g305-orbslam3"
+
+
+def test_orbslam3_config_preserves_legacy_windows_wsl_runtime(monkeypatch) -> None:
+    monkeypatch.setattr(bridge.sys, "platform", "win32")
+
+    config = bridge.ORBSLAM3Config()
+
+    assert config.runtime_kind == "windows_wsl_legacy"
+    assert config.root == "~/Projects/ORB_SLAM3_WS/ORB_SLAM3"

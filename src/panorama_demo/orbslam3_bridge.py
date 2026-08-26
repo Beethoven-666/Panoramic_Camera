@@ -76,7 +76,7 @@ class ORBSLAM3Config:
     enabled: bool = True
     runtime_kind: str | None = None
     wsl_executable: str = "wsl.exe"
-    root: str = "~/Projects/ORB_SLAM3_WS/ORB_SLAM3"
+    root: str | None = None
     # Production runs are non-interactive. The headless runner is built from
     # the upstream RGB-D example with only bUseViewer=false; it still produces
     # the same real ORB-SLAM3 RGB-D trajectory.
@@ -97,6 +97,13 @@ class ORBSLAM3Config:
     staging_width: int = 0
 
     def __post_init__(self) -> None:
+        if self.root is None:
+            default_root = (
+                "~/opt/g305-orbslam3"
+                if sys.platform.startswith("linux")
+                else "~/Projects/ORB_SLAM3_WS/ORB_SLAM3"
+            )
+            object.__setattr__(self, "root", default_root)
         runtime_kind = self.runtime_kind
         if runtime_kind is None:
             runtime_kind = (
