@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -28,3 +29,14 @@ def runtime_resource(relative_path: str | Path) -> Path:
     if not resolved.is_file():
         raise FileNotFoundError(f"Packaged Runtime resource is missing: {relative}")
     return resolved
+
+
+def runtime_source_commit() -> str:
+    """Read the built source identity, or the current development checkout."""
+    packaged = _PACKAGED_RUNTIME_ROOT / "source_commit.txt"
+    if packaged.is_file():
+        return packaged.read_text(encoding="ascii").strip()
+    if (_SOURCE_ROOT / ".git").exists():
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=_SOURCE_ROOT,
+                                       text=True).strip()
+    return "UNKNOWN"

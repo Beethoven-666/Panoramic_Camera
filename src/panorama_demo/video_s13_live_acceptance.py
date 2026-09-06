@@ -88,6 +88,7 @@ def _load_production(root: Path) -> dict[str, object]:
     try:
         with np.load(provenance_path, allow_pickle=False) as archive:
             owner = np.asarray(archive["owner_frame_id"])
+            provenance = {name: np.asarray(archive[name]) for name in sorted(archive.files)}
     except (FileNotFoundError, KeyError, ValueError) as exc:
         raise ValueError("S013 V11 acceptance cannot load formal owner provenance") from exc
     if owner.shape != panorama.shape[:2] or not np.issubdtype(owner.dtype, np.integer):
@@ -111,6 +112,7 @@ def _load_production(root: Path) -> dict[str, object]:
         "panorama_path": panorama_path,
         "panorama": panorama,
         "owner": owner,
+        "provenance": provenance,
         "timing": timing_values,
     }
 
@@ -222,6 +224,8 @@ def _first_divergent_stage(checks: Mapping[str, bool]) -> str | None:
         ("stage_P1", "P1_pixels"),
         ("pair_seams", "P2_seam_decisions"),
         ("owner_map_exact", "P2_owner_or_C2E"),
+        ("valid_map_exact", "P2_valid"),
+        ("normalized_provenance_exact", "P2_provenance"),
         ("stage_P2", "P2_pixels"),
         ("m6_decisions", "P3_M63_B0_B1_C2E"),
         ("stage_P3", "P3_memory_pixels"),
@@ -325,6 +329,12 @@ def compare_s13_v11_live_offline(
             == _pair_decision_contract(live_seams)
         ),
         "owner_map_exact": np.array_equal(offline["owner"], live["owner"]),
+        "valid_map_exact": np.array_equal(offline["owner"] >= 0, live["owner"] >= 0),
+        "normalized_provenance_exact": (
+            offline["provenance"].keys() == live["provenance"].keys()
+            and all(np.array_equal(value, live["provenance"][name], equal_nan=True)
+                    for name, value in offline["provenance"].items())
+        ),
         "m6_decisions": _m6_contract(offline_report) == _m6_contract(live_report),
         "p3_decoded_exact": same_shape and differing_pixels == 0,
         "p3_png_sha_exact": _sha256(Path(offline["panorama_path"]))

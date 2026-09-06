@@ -132,6 +132,7 @@ def test_live_command_closes_observer_when_camera_wait_is_cancelled(
 ) -> None:
     spec = _spec(tmp_path)
     stopped: list[bool] = []
+    authority_closed: list[bool] = []
 
     class FakeObserver:
         def __init__(self, **_kwargs: object) -> None:
@@ -139,6 +140,9 @@ def test_live_command_closes_observer_when_camera_wait_is_cancelled(
 
         def on_capture_stopping(self) -> None:
             stopped.append(True)
+
+        def close_authority(self) -> None:
+            authority_closed.append(True)
 
     monkeypatch.setattr(
         video_live,
@@ -161,6 +165,7 @@ def test_live_command_closes_observer_when_camera_wait_is_cancelled(
         video_live.run(video_live.build_parser().parse_args([]))
 
     assert stopped == [True]
+    assert authority_closed == [True]
 
 
 @pytest.mark.parametrize("name", video_live._CAPTURE_ZERO_COUNTERS)

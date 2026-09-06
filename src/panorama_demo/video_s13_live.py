@@ -28,7 +28,10 @@ from .video_s13_contract import (
 from .video_s13_online_p0 import (
     S13FrozenP0Authority,
     S13OnlineShadowSnapshot,
+    S13OnlineP0Engine,
+    calibration_from_live_document,
 )
+from .video_s13_committed_ledger import CommittedLedger
 
 
 LIVE_PREVIEW_SCHEMA = "gemini305-s013-v11-live-preview/v1"
@@ -151,6 +154,12 @@ class S13V11LiveObserver:
         self._preview_latencies_ms: list[float] = []
         self._last_preview_request_ns = 0
         self._committed: list[CommittedFrameIdentity] = []
+        self._authority_engine: S13OnlineP0Engine | None = None
+        self._authority_thread: threading.Thread | None = None
+        self._authority_wake = threading.Event()
+        self._authority_closed = threading.Event()
+        self._authority_processed = 0
+        self._committed_catchup_seconds = 0.0
         self._shadow_snapshot: S13OnlineShadowSnapshot | None = None
         self._shadow_failure_reason: str | None = "disabled_during_capture"
         self._analysis_gray: dict[int, np.ndarray] = {}
@@ -173,8 +182,53 @@ class S13V11LiveObserver:
     def on_session_ready(self, session: LiveSessionInfo) -> None:
         with self._lock:
             self._session = session
+            self._committed = CommittedLedger(
+                session.root / "checkpoints/online-committed.jsonl", CommittedFrameIdentity
+            )
+        try:
+            self._authority_engine = S13OnlineP0Engine(
+                session_root=session.root, calibration=calibration_from_live_document(session.calibration),
+                production_config_sha256=self.production_config_sha256,
+            )
+            self._shadow_failure_reason = None
+            self._authority_thread = threading.Thread(
+                target=self._authority_loop, name="s013-committed-authority", daemon=False
+            )
+            self._authority_thread.start()
+        except Exception as exc:
+            self._shadow_failure_reason = f"{type(exc).__name__}: {exc}"
         if self.preview_output is not None:
-            self.preview_output.mkdir(parents=True, exist_ok=True)
+            try:
+                self.preview_output.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self._disable_preview(exc)
+
+    def _authority_loop(self) -> None:
+        try:
+            while True:
+                while self._authority_processed < len(self._committed):
+                    identity = self._committed[self._authority_processed]
+                    snapshot = self._authority_engine.append_committed(identity)
+                    with self._lock:
+                        self._shadow_snapshot = snapshot
+                        self._authority_processed += 1
+                if self._authority_closed.is_set():
+                    return
+                self._authority_wake.wait(0.1)
+                self._authority_wake.clear()
+        except Exception as exc:
+            with self._lock:
+                self._shadow_failure_reason = f"{type(exc).__name__}: {exc}"
+            if self._session is not None:
+                from .sdk_state import atomic_json
+
+                try:
+                    atomic_json(self._session.root / "checkpoints/online_failure.json", {
+                        "reason": self._shadow_failure_reason, "capture_continues": True,
+                        "fallback": "recompute_same_s013_v11",
+                    })
+                except OSError:
+                    pass
 
     def _preview_root(self, session: LiveSessionInfo) -> Path:
         return session.root if self.preview_output is None else self.preview_output
@@ -207,6 +261,7 @@ class S13V11LiveObserver:
         )
         with self._lock:
             self._committed.append(identity)
+        self._authority_wake.set()
 
     def on_capture_stopping(self) -> None:
         with self._lock:
@@ -230,10 +285,22 @@ class S13V11LiveObserver:
         self._preview_queue.put(None)
         self._analysis_thread.join()
         self._preview_thread.join()
-        self._write_stopped_state()
+        try:
+            self._write_stopped_state()
+        except OSError as exc:
+            self._disable_preview(exc)
+
+    def close_authority(self) -> None:
+        started = time.perf_counter()
+        self._authority_closed.set()
+        self._authority_wake.set()
+        if self._authority_thread is not None:
+            self._authority_thread.join()
+        self._committed_catchup_seconds = time.perf_counter() - started
 
     def on_capture_closed(self, result: CaptureResult) -> None:
         self.on_capture_stopping()
+        self.close_authority()
         with self._lock:
             self._capture_result = result
 
@@ -393,6 +460,8 @@ class S13V11LiveObserver:
                 color_424, gray = self._analysis_images(packet.color_bgr)
                 with self._lock:
                     self._analysis_gray[packet.frame_id] = gray
+                    while len(self._analysis_gray) > 8:
+                        del self._analysis_gray[next(iter(self._analysis_gray))]
                     self._analysed += 1
                     self._latest_frame_id = packet.frame_id
                 if previous is not None:
@@ -408,6 +477,7 @@ class S13V11LiveObserver:
                     reset_preview = False
                     with self._lock:
                         self._motion_edges.append(edge)
+                        del self._motion_edges[:-256]
                         previous_direction = (
                             0.0
                             if not self._stable_edges
@@ -434,6 +504,7 @@ class S13V11LiveObserver:
                             if not self._stable_edges:
                                 self._stable_segment_started_ns = previous[1]
                             self._stable_edges.append(edge)
+                            del self._stable_edges[:-256]
                             extend_preview = True
                         self._last_motion_ns = edge.accepted_monotonic_ns
                         passed, *_ = self._gate(packet)
@@ -454,6 +525,9 @@ class S13V11LiveObserver:
                         preview_latest = (preview_center_x, color_424)
                         if abs(preview_center_x - preview_anchors[-1][0]) >= 5.0:
                             preview_anchors.append(preview_latest)
+                            if len(preview_anchors) > 128:
+                                # Preview remains a bounded, non-authoritative overview.
+                                preview_anchors = preview_anchors[::2]
                         preview_sources = list(preview_anchors)
                         if preview_latest[0] != preview_sources[-1][0]:
                             preview_sources.append(preview_latest)
@@ -542,8 +616,17 @@ class S13V11LiveObserver:
         }
         preview_root = self._preview_root(session)
         pending = preview_root / ".live_preview_failure.pending.json"
-        pending.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(pending, preview_root / "live_preview_failure.json")
+        try:
+            pending.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            os.replace(pending, preview_root / "live_preview_failure.json")
+        except OSError:
+            # A read-only preview directory cannot become a capture failure.
+            try:
+                from .sdk_state import atomic_json
+
+                atomic_json(session.root / "live_preview_failure.json", payload)
+            except OSError:
+                pass
 
     def _write_stopped_state(self) -> None:
         with self._lock:
@@ -616,6 +699,16 @@ class S13V11LiveObserver:
             frozen: S13FrozenP0Authority | None = None
             freeze_failure = self._shadow_failure_reason
             reuse_level = "validated_inputs_only"
+            if self._authority_engine is not None and freeze_failure is None:
+                try:
+                    frozen = self._authority_engine.freeze(
+                        committed_frames=committed,
+                        production_config_sha256=self.production_config_sha256,
+                    )
+                    self._shadow_snapshot = self._authority_engine.snapshot()
+                    reuse_level = frozen.reuse_level
+                except Exception as exc:
+                    freeze_failure = f"{type(exc).__name__}: {exc}"
             return S13V11LiveHandoff(
                 algorithm_id=S13_VISUAL_CONTINUITY_ALGORITHM_ID,
                 implementation_id=S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
@@ -652,8 +745,10 @@ class S13V11LiveObserver:
                     "preview_failures": snapshot.preview_failures,
                     "pair_evidence_reused_count": 0,
                     "reuse_level": reuse_level,
-                    "shadow_processed_committed_frames": 0,
+                    "shadow_processed_committed_frames": self._authority_processed,
                     "shadow_failure_reason": self._shadow_failure_reason,
+                    "resident_rgb_sources": 0 if self._authority_engine is None else len(self._authority_engine._raw_by_frame_id),
+                    "resident_prepared_frames": 0 if self._authority_engine is None else len(self._authority_engine._motion._prepared),
                     "shadow_final_selected_source_count": (
                         0
                         if self._shadow_snapshot is None
@@ -697,7 +792,7 @@ class S13V11LiveObserver:
                         [] if frozen is None else list(frozen.rollback_reasons)
                     ),
                     "full_m0_m3_recomputed": frozen is None,
-                    "committed_catchup_seconds": 0.0,
+                    "committed_catchup_seconds": self._committed_catchup_seconds,
                 }),
                 reuse_level=reuse_level,
             )

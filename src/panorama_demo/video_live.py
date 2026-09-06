@@ -98,6 +98,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         # threads. Ensure Ctrl+C or an early SDK failure cannot leave those
         # non-daemon threads keeping the live command alive.
         observer.on_capture_stopping()
+        observer.close_authority()
         raise
     handoff = observer.freeze_handoff()
     snapshot = observer.snapshot()

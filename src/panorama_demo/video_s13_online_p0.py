@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 from pathlib import Path
 import time
@@ -98,6 +98,9 @@ class S13FrozenP0Authority:
     rollback_reasons: tuple[str, ...]
     full_m0_m3_recomputed: bool = False
     reuse_level: str = "frozen_p0_authority_v1"
+    source_commit: str = "UNKNOWN"
+    p0_owner_sha256: str = ""
+    p0_valid_sha256: str = ""
 
 
 def calibration_from_live_document(document: Mapping[str, object]) -> CameraIntrinsics:
@@ -161,12 +164,17 @@ class S13OnlineP0Engine:
         analysis_width_px: int = 424,
         normal_target_advance_px: float = 8.0,
         risky_target_advance_px: float = 5.0,
+        production_config_sha256: str | None = None,
     ) -> None:
         self.session_root = session_root.resolve()
         self.calibration = calibration
         self.analysis_width_px = int(analysis_width_px)
         self.normal_target_advance_px = float(normal_target_advance_px)
         self.risky_target_advance_px = float(risky_target_advance_px)
+        from .paths import runtime_source_commit
+
+        self.source_commit = runtime_source_commit()
+        self.production_config_sha256 = production_config_sha256
         self._frames: list[S13RenderFrame] = []
         self._frame_by_id: dict[int, S13RenderFrame] = {}
         self._raw_by_frame_id: dict[int, np.ndarray] = {}
@@ -180,6 +188,9 @@ class S13OnlineP0Engine:
         self._last_layout_commit_ns = 0
         self._layout_interval_ns = 200_000_000
         self._motion = S13MotionAccumulator()
+        self._p0_generation = 0
+        self._p0_storage = self.session_root / "checkpoints/online-p0"
+        self._p0_storage.mkdir(parents=True, exist_ok=True)
         self._snapshot = S13OnlineShadowSnapshot(
             frontiers=S13OnlineFrontiers(),
             motion=self._motion.snapshot(),
@@ -195,6 +206,8 @@ class S13OnlineP0Engine:
         if image is None:
             image = read_s13_rgb(self._frame_by_id[frame_id])
             self._raw_by_frame_id[frame_id] = image
+            while len(self._raw_by_frame_id) > 8:
+                del self._raw_by_frame_id[next(iter(self._raw_by_frame_id))]
         return image
 
     def _render_current_p0(
@@ -208,7 +221,15 @@ class S13OnlineP0Engine:
         placement_methods = getattr(selection, "placement_methods")
         height = int(getattr(schedule, "canvas_height"))
         width = int(getattr(schedule, "canvas_width"))
-        image = np.zeros((height, width, 3), dtype=np.uint8)
+        self._p0_generation = 1 - self._p0_generation
+
+        def allocate(name: str, shape: tuple[int, ...], dtype: object, fill: object) -> np.ndarray:
+            path = self._p0_storage / f"{self._p0_generation}-{name}.npy"
+            value = np.lib.format.open_memmap(path, mode="w+", dtype=dtype, shape=shape)
+            value[:] = fill
+            return value
+
+        image = allocate("image", (height, width, 3), np.uint8, 0)
         cache: dict[
             tuple[int, S13ScheduleSemanticAssignment], S13P0AssignmentRender
         ] = {}
@@ -247,7 +268,7 @@ class S13OnlineP0Engine:
                 fill = False
             else:
                 fill = -1
-            pixel[name] = np.full(shape, fill, dtype=sample.dtype)
+            pixel[name] = allocate(name, shape, sample.dtype, fill)
         for rendered in renders:
             roi = np.s_[:, rendered.left_x:rendered.right_x]
             for name in spatial_names:
@@ -265,6 +286,21 @@ class S13OnlineP0Engine:
             "valid": np.asarray(getattr(schedule, "column_frame_id")) >= 0,
         }
         valid = np.asarray(pixel["valid"], dtype=bool)
+        # Retain narrow views into disk-backed P0 instead of a second complete
+        # heap copy spread across cached source ROIs.
+        compact_renders = tuple(
+            replace(rendered, image_roi=image[:, rendered.left_x:rendered.right_x],
+                    valid_roi=valid[:, rendered.left_x:rendered.right_x],
+                    pixel_provenance_roi={
+                        **rendered.pixel_provenance_roi,
+                        **{name: pixel[name][:, rendered.left_x:rendered.right_x]
+                           for name in spatial_names},
+                    })
+            for rendered in renders
+        )
+        self._current_renders = compact_renders
+        by_index = {rendered.assignment_index: rendered for rendered in compact_renders}
+        self._assignment_cache = {key: by_index[value.assignment_index] for key, value in cache.items()}
         result = S13P0Result(
             image=np.ascontiguousarray(image),
             valid_mask=valid,
@@ -275,6 +311,26 @@ class S13OnlineP0Engine:
         )
         result.image.setflags(write=False)
         result.valid_mask.setflags(write=False)
+        from .sdk_state import atomic_json
+
+        for value in (image, *pixel.values()):
+            if isinstance(value, np.memmap):
+                value.flush()
+        checkpoint_path = self._p0_storage / "current.json"
+        if checkpoint_path.exists():
+            (self._p0_storage / "previous.json").write_bytes(checkpoint_path.read_bytes())
+        atomic_json(checkpoint_path, {
+            "schema": "gemini305-online-p0-storage/v1", "generation": self._p0_generation,
+            "algorithm_id": S13_VISUAL_CONTINUITY_ALGORITHM_ID,
+            "implementation_id": S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
+            "source_commit": self.source_commit,
+            "production_config_sha256": self.production_config_sha256,
+            "selected_source_count": len(semantic),
+            "pixel_sha256": array_sha256(image, schema="s013-stage-pixels/v1"),
+            "owner_sha256": array_sha256(pixel["owner_frame_id"], schema="s013-owner/v1"),
+            "valid_sha256": array_sha256(valid, schema="s013-valid/v1"),
+            "checkpoint_chain_sha256": self._checkpoint_chain.chain_sha256,
+        })
         return result
 
     def append_committed(
@@ -535,7 +591,7 @@ class S13OnlineP0Engine:
                 "step4_selected": motion.step4_selected,
             },
         )
-        return S13FrozenP0Authority(
+        frozen = S13FrozenP0Authority(
             schema="gemini305-s013-frozen-p0-authority/v1",
             algorithm_id=S13_VISUAL_CONTINUITY_ALGORITHM_ID,
             implementation_id=S13_VISUAL_CONTINUITY_IMPLEMENTATION_ID,
@@ -558,7 +614,21 @@ class S13OnlineP0Engine:
             tail_finalize_seconds=tail_seconds,
             rollback_checkpoint_used=bool(reasons),
             rollback_reasons=tuple(reasons),
+            source_commit=self.source_commit,
+            p0_owner_sha256=array_sha256(final_p0.pixel_provenance["owner_frame_id"], schema="s013-owner/v1"),
+            p0_valid_sha256=array_sha256(final_p0.valid_mask, schema="s013-valid/v1"),
         )
+        from .sdk_state import atomic_json
+
+        atomic_json(self._p0_storage / "frozen-authority.json", {
+            name: getattr(frozen, name) for name in (
+                "schema", "algorithm_id", "implementation_id", "production_config_sha256",
+                "source_commit", "manifest_sha256", "calibration_sha256", "frames_csv_sha256",
+                "p0_pixel_sha256", "p0_owner_sha256", "p0_valid_sha256",
+                "checkpoint_chain_sha256", "sealed_prefix_source_count", "p0_prefix_reused_fraction",
+            )
+        }, durable=True)
+        return frozen
 
 
 __all__ = [

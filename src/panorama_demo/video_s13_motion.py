@@ -6,6 +6,7 @@ import math
 import hashlib
 import time
 from dataclasses import dataclass
+from collections import deque
 from typing import MutableMapping, Sequence
 
 import cv2
@@ -95,7 +96,8 @@ class S13MotionAccumulator:
     """Lossless ordered step-1/2/4 accumulator for committed frames."""
 
     def __init__(self) -> None:
-        self._prepared: list[S13PreparedMotionFrame] = []
+        # Only step-1/2/4 sources are needed after their measured edges exist.
+        self._prepared: deque[S13PreparedMotionFrame] = deque(maxlen=4)
         self._edges: list[S13MotionEdge] = []
 
     def append(self, frame: S13PreparedMotionFrame) -> tuple[S13MotionEdge, ...]:

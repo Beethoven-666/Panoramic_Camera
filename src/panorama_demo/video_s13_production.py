@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 from pathlib import Path
 import time
@@ -425,6 +425,10 @@ def _validate_live_handoff(
             image, schema="s013-stage-pixels/v1"
         ):
             raise ValueError("S013 V11 frozen P0 pixels changed")
+        if frozen.p0_owner_sha256 != array_sha256(owner, schema="s013-owner/v1"):
+            raise ValueError("S013 V11 frozen P0 owner changed")
+        if frozen.p0_valid_sha256 != array_sha256(valid, schema="s013-valid/v1"):
+            raise ValueError("S013 V11 frozen P0 valid mask changed")
 
 
 def run_s13_v11_production(
@@ -447,7 +451,34 @@ def run_s13_v11_production(
     observe = dict(observability or {"report_level": "summary", "artifact_level": "minimal"})
     runner = authority_runner or _run_s13_v11_authority
     if live_handoff is not None:
-        _validate_live_handoff(live_handoff, spec=algorithm_spec, session_path=source)
+        if live_handoff.reuse_level == "frozen_p0_authority_v1":
+            # Validate the session/algorithm contract before considering a
+            # checkpoint rollback. A damaged P0 can only trigger the same V11.
+            fresh_inputs = replace(live_handoff, reuse_level="validated_inputs_only",
+                                   frozen_p0_authority=None)
+            _validate_live_handoff(fresh_inputs, spec=algorithm_spec, session_path=source)
+            try:
+                _validate_live_handoff(live_handoff, spec=algorithm_spec, session_path=source)
+                for frame in live_handoff.committed_frames:
+                    if (_sha256(frame.color_path) != frame.color_sha256
+                            or _sha256(frame.aligned_depth_path) != frame.aligned_depth_sha256):
+                        raise ValueError("Frozen P0 committed source bytes changed")
+            except (ValueError, OSError) as exc:
+                from .sdk_state import atomic_json
+
+                reason = f"checkpoint_invalid: {exc}"
+                atomic_json(destination / "online_checkpoint_rollback.json", {
+                    "reason": reason, "recompute_algorithm_id": algorithm_spec.algorithm_id,
+                    "baseline_fallback": False,
+                })
+                live_handoff = replace(fresh_inputs, online_shadow_failure_reason=reason,
+                    online_2d_metrics={**dict(fresh_inputs.online_2d_metrics),
+                                      "reuse_level": "validated_inputs_only",
+                                      "p0_prefix_reused_fraction": 0.0,
+                                      "full_m0_m3_recomputed": True,
+                                      "rollback_checkpoint_used": True, "rollback_reasons": [reason]})
+        else:
+            _validate_live_handoff(live_handoff, spec=algorithm_spec, session_path=source)
     production_started_monotonic_ns = time.monotonic_ns()
     capture_stop_monotonic_ns = (
         live_handoff.capture_stopped_monotonic_ns
