@@ -40,6 +40,41 @@ class CaptureCancelledError(RuntimeError):
     """A caller cancelled camera discovery or an active continuous capture."""
 
 
+class _VideoCapturePreflightError(RuntimeError):
+    """A video stream failed before any formal frame could be accepted."""
+
+
+class _VideoCameraControlUnavailableError(_VideoCapturePreflightError):
+    """The camera stopped answering control requests before streaming began."""
+
+
+class _VideoWarmupNoFramesError(_VideoCapturePreflightError):
+    """A started video pipeline yielded no complete warmup frames."""
+
+
+def _is_retryable_video_transport_error(exc: BaseException) -> bool:
+    """Identify observed USB/IP camera transport failures, including causes."""
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    messages: list[str] = []
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        messages.append(str(current).lower())
+        current = current.__cause__ or current.__context__
+    detail = " ".join(messages)
+    return any(
+        marker in detail
+        for marker in (
+            "openusbdevice failed",
+            "device is deactivated/disconnected",
+            "setxu failed",
+            "device response size(0)",
+            "connection reset by peer",
+        )
+    )
+
+
 CSV_FIELDS = [
     "frame_id",
     "color_index",
@@ -930,6 +965,7 @@ def _discard_and_verify_post_lock_frames(
     *,
     timeout_seconds: float,
     clock: Any = time.monotonic,
+    cancel_event: threading.Event | None = None,
 ) -> None:
     """Discard the color-control transition and require a stable metadata run."""
 
@@ -941,8 +977,10 @@ def _discard_and_verify_post_lock_frames(
     metadata_verified_frames = 0
 
     def require_time_remaining() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise CaptureCancelledError("Color-control warmup was cancelled")
         if float(clock()) >= deadline:
-            raise RuntimeError(
+            raise _VideoCapturePreflightError(
                 "Post-warmup color-control lock did not receive enough complete "
                 "RGB-D frames for metadata verification"
             )
@@ -1183,6 +1221,7 @@ def _warm_up_video_controls(
     *,
     clock: Callable[[], float] = time.monotonic,
     on_fallback: Callable[[dict[str, Any]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Warm up on complete RGB-D sets and stabilize a one-time AE fallback."""
 
@@ -1205,9 +1244,16 @@ def _warm_up_video_controls(
     fallback_audit: dict[str, Any] | None = None
 
     while received < target:
+        if cancel_event is not None and cancel_event.is_set():
+            raise CaptureCancelledError("Video warmup was cancelled")
         remaining = deadline - float(clock())
         if remaining <= 0.0:
-            raise RuntimeError(
+            error_type = (
+                _VideoWarmupNoFramesError
+                if received == 0
+                else _VideoCapturePreflightError
+            )
+            raise error_type(
                 f"Capture warmup timed out after receiving {received}/{target} "
                 "complete RGB-D frame sets. Try MJPG color, a lower resolution, "
                 "another USB 3 port, or disable other camera applications."
@@ -1284,7 +1330,7 @@ def _warm_up_video_controls(
             max(0.0, deadline - float(clock())),
         )
         if transition_timeout <= 0.0:
-            raise RuntimeError(
+            raise _VideoCapturePreflightError(
                 f"Capture warmup timed out after receiving {received}/{target} "
                 "complete RGB-D frame sets"
             )
@@ -1419,7 +1465,9 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
     )
     applied["auto_exposure"] = applied_auto_exposure
     if applied_auto_exposure is None or applied_auto_exposure != effective_auto_exposure:
-        raise RuntimeError("The camera did not apply the requested color exposure mode")
+        raise _VideoCameraControlUnavailableError(
+            "The camera did not apply the requested color exposure mode"
+        )
     manual_exposure = fallback_exposure_us if fallback_exposure_us is not None else exposure
     if not effective_auto_exposure and manual_exposure is not None:
         exposure_us = int(manual_exposure)
@@ -1433,7 +1481,9 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
             device, sdk, "OB_PROP_COLOR_EXPOSURE_INT", exposure_units
         )
         if applied_units is None:
-            raise RuntimeError("The camera did not apply the requested color exposure")
+            raise _VideoCameraControlUnavailableError(
+                "The camera did not apply the requested color exposure"
+            )
         if fallback_exposure_us is not None and applied_units > exposure_units:
             raise RuntimeError(
                 "The camera cannot enforce the motion-safe color exposure limit"
@@ -1469,7 +1519,7 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
         bool(options.get("lock_color_controls_after_warmup", False))
         and applied["auto_white_balance"] is not auto_white_balance
     ):
-        raise RuntimeError(
+        raise _VideoCameraControlUnavailableError(
             "The camera did not apply the requested color white-balance mode"
         )
     if white_balance is not None:
@@ -2072,14 +2122,31 @@ def _discover_video_device(
 
     context = sdk.Context()
     waiting = False
+    transport_retries = 0
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise CaptureCancelledError("Camera discovery was cancelled")
-        device_list = context.query_devices()
-        if device_list.get_count() > 0:
-            if waiting:
-                print("Orbbec camera detected; starting live capture.", flush=True)
-            return context, device_list.get_device_by_index(0)
+        try:
+            device_list = context.query_devices()
+            if device_list.get_count() > 0:
+                device = device_list.get_device_by_index(0)
+                if waiting:
+                    print("Orbbec camera detected; starting live capture.", flush=True)
+                return context, device
+        except Exception as exc:
+            if not wait_for_camera or not _is_retryable_video_transport_error(exc):
+                raise
+            transport_retries += 1
+            if transport_retries > 8:
+                raise _VideoCapturePreflightError("Camera transport recovery exhausted 8 retries") from exc
+            if not waiting:
+                print(
+                    "Orbbec camera was enumerated but is not ready; waiting for "
+                    "USB transport recovery (press Ctrl+C to cancel)...",
+                    flush=True,
+                )
+                waiting = True
+            context = sdk.Context()
         if not wait_for_camera:
             raise RuntimeError("No Orbbec camera found")
         if not waiting:
@@ -2109,6 +2176,7 @@ def run_video_capture(
 
         disk_guard = DiskGuard(args.output, getattr(args, "panorama_output", args.output))
     disk_guard.preflight()
+    capture_progress = getattr(args, "capture_progress", None)
     config_file = load_config(args.config)
     capture_config = config_file.get("capture", {})
     if not isinstance(capture_config, dict):
@@ -2233,6 +2301,9 @@ def run_video_capture(
             cancel_event=cancel_event,
         )
     manifest["device"] = _device_info(device)
+    if capture_progress is not None:
+        capture_progress("WARMING_UP", session_root=session_root,
+                         camera_serial=manifest["device"].get("serial_number"))
     try:
         manifest["sdk_version"] = sdk.get_version()
     except Exception:
@@ -2427,6 +2498,7 @@ def run_video_capture(
             metadata_types,
             options,
             on_fallback=record_warmup_fallback,
+            cancel_event=cancel_event,
         )
         warmup_received = int(warmup_result["warmup_frame_sets"])
         warmup_exposure_fallback = warmup_result["warmup_exposure_fallback"]
@@ -2455,10 +2527,13 @@ def run_video_capture(
                 metadata_types,
                 color_control_lock,
                 timeout_seconds=float(options.get("frame_timeout_seconds", 5)),
+                cancel_event=cancel_event,
             )
             manifest["color_control_lock"] = color_control_lock
             _write_manifest(session_root, manifest)
         started_monotonic = time.monotonic()
+        if capture_progress is not None:
+            capture_progress("CAPTURING", session_root=session_root)
         capture_started_monotonic_ns = time.monotonic_ns()
         last_frame_monotonic = started_monotonic
         manifest["calibration"] = _calibration_to_dict(pipeline.get_camera_param())
@@ -2714,9 +2789,13 @@ def run_video_capture(
                     flush=True,
                 )
     except KeyboardInterrupt:
-        manifest["stop_reason"] = "keyboard_interrupt"
+        manifest["stop_reason"] = "SIGINT"
     except Exception as exc:
         capture_exception = exc
+        manifest["stop_reason"] = (
+            "WRITER_ERROR" if isinstance(exc, SessionWriterError) else
+            "USB_TRANSPORT_ERROR" if _is_retryable_video_transport_error(exc) else "INTERNAL_ERROR"
+        )
     finally:
         capture_stopped_monotonic_ns = time.monotonic_ns()
         if observer is not None:
@@ -2732,6 +2811,13 @@ def run_video_capture(
             external_sync_output=external_sync_output,
         )
         shutdown_errors.extend(hardware_shutdown_errors)
+        if capture_progress is not None:
+            try:
+                capture_progress("STOPPING", session_root=session_root,
+                                 committed_frames=writer.stats.written,
+                                 stop_reason=manifest.get("stop_reason", "USER_REQUEST"))
+            except Exception as exc:
+                shutdown_errors.append({"step": "job.stop_state", "type": type(exc).__name__, "message": str(exc)})
         external_sync_output["shutdown"] = hardware_shutdown
         manifest["external_sync_output"] = external_sync_output
         try:
@@ -3062,9 +3148,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    from .sdk_signals import cooperative_capture_signals
+
     args = build_parser().parse_args()
     try:
-        run_capture(args)
+        if args.photo_mode:
+            run_capture(args)
+        else:
+            with cooperative_capture_signals(args):
+                run_capture(args)
     except Exception as exc:
         print(f"Capture failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

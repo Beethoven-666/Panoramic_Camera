@@ -59,6 +59,10 @@ class JobState(str, Enum):
     COMPLETED_WITH_WARNINGS = "COMPLETED_WITH_WARNINGS"
     FAILED = "FAILED"
     CANCELLED_NO_DATA = "CANCELLED_NO_DATA"
+    # Existing video SDK names retain their terminal meanings.
+    RUNNING = "CAPTURING"
+    SUCCEEDED = "COMPLETED"
+    CANCELLED = "CANCELLED_NO_DATA"
 
 
 class StopReason(str, Enum):
@@ -74,6 +78,7 @@ class StopReason(str, Enum):
     WRITER_ERROR = "WRITER_ERROR"
     ONLINE_CHECKPOINT_FAILED = "ONLINE_CHECKPOINT_FAILED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
+    TIMESTAMP_REGRESSION = "TIMESTAMP_REGRESSION"
 
 
 class CompletionState(str, Enum):
@@ -99,7 +104,7 @@ _TRANSITIONS = {
     JobState.WARMING_UP: {JobState.CAPTURING, JobState.WAITING_FOR_CAMERA,
                           JobState.STOPPING, JobState.CANCELLED_NO_DATA},
     JobState.CAPTURING: {JobState.STOPPING},
-    JobState.STOPPING: {JobState.FINALIZING_2D, JobState.CANCELLED_NO_DATA},
+    JobState.STOPPING: {JobState.FINALIZING_2D, JobState.CANCELLED_NO_DATA, JobState.WAITING_FOR_CAMERA},
     JobState.FINALIZING_2D: {JobState.PUBLISHED_2D, JobState.COMPLETED_WITH_WARNINGS},
     JobState.PUBLISHED_2D: {JobState.PROCESSING_3D, JobState.COMPLETED,
                            JobState.COMPLETED_WITH_WARNINGS},
@@ -179,6 +184,9 @@ class JobRecord:
         target = JobState(target)
         with self._lock:
             current = self.state
+            if (current is JobState.STOPPING and target is JobState.WAITING_FOR_CAMERA
+                    and self.payload.get("committed_frames", 0) != 0):
+                raise ValueError("Cannot reconnect after a committed frame")
             if current in TERMINAL_STATES or (
                 target not in _TRANSITIONS.get(current, set()) and target != JobState.FAILED
             ):

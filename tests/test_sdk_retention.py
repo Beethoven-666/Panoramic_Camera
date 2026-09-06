@@ -42,6 +42,7 @@ def test_successful_owned_session_cleanup_and_crash_resume(tmp_path, monkeypatch
                               three_d_succeeded=False, output_sha256=outputs)
     assert not session.exists()
     assert session.with_name("run.delete_pending").exists()
+    job.update(warnings=["cleanup_pending: simulated crash after rename"])
     monkeypatch.setattr(sdk_retention.shutil, "rmtree", original)
     assert resume_cleanup(JobRecord.load(job.root))
     assert not session.with_name("run.delete_pending").exists()

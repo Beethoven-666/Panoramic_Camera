@@ -89,8 +89,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
 
     observer = S13V11LiveObserver(
         production_config_sha256=spec.config_sha256,
-        preview_output=args.panorama_output,
+        preview_output=getattr(args, "preview_output", args.panorama_output),
     )
+    if not getattr(args, "sdk_preview_enabled", True):
+        observer.disable_optional_preview()
     try:
         session_root = run_video_capture(args, observer=observer)
     except BaseException:
@@ -147,6 +149,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "handoff_reuse_level": handoff.reuse_level,
     }
     _write_json_atomic(session_root / "live_capture_report.json", capture_report)
+    capture_progress = getattr(args, "capture_progress", None)
+    if capture_progress is not None:
+        capture_progress("FINALIZING_2D", session_root=session_root)
     published = run_video_algorithm(
         input_path=session_root,
         output=args.panorama_output,
@@ -160,9 +165,12 @@ def run(args: argparse.Namespace) -> dict[str, object]:
 
 
 def main() -> None:
+    from .sdk_signals import cooperative_capture_signals
+
     args = build_parser().parse_args()
     try:
-        run(args)
+        with cooperative_capture_signals(args):
+            run(args)
     except KeyboardInterrupt:
         print("Live video cancelled while waiting for camera.", file=sys.stderr)
         raise SystemExit(130) from None

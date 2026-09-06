@@ -44,7 +44,8 @@ def cleanup_owned_session(record: JobRecord, session: Path, *, policy: Retention
 def resume_cleanup(record: JobRecord) -> bool:
     cleanup = record.payload.get("cleanup", {})
     if (cleanup.get("state") not in {"rename_pending", "delete_pending"}
-            or not record.payload.get("owns_session") or record.payload.get("warnings")
+            or not record.payload.get("owns_session")
+            or any(not warning.startswith("cleanup_pending:") for warning in record.payload.get("warnings", []))
             or record.payload.get("failure") or not _verified_outputs(cleanup.get("output_sha256", {}))):
         return False
     original, pending = Path(cleanup["original"]).resolve(), Path(cleanup["pending"]).resolve()

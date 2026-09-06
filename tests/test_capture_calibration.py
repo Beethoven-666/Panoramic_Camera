@@ -558,7 +558,10 @@ def test_warmup_target_frame_at_deadline_succeeds() -> None:
 
 
 def test_warmup_timeout_reports_complete_frameset_count() -> None:
-    with pytest.raises(RuntimeError, match="receiving 0/1 complete RGB-D"):
+    with pytest.raises(
+        capture._VideoWarmupNoFramesError,
+        match="receiving 0/1 complete RGB-D",
+    ):
         capture._warm_up_video_controls(
             _ColorControlDevice(),
             _color_control_sdk(),
@@ -1023,7 +1026,10 @@ def test_fixed_exposure_rejects_missing_device_readback(monkeypatch) -> None:
     monkeypatch.setattr(capture, "_set_bool_property", lambda *_args: False)
     monkeypatch.setattr(capture, "_set_int_property", lambda *_args: None)
 
-    with pytest.raises(RuntimeError, match="did not apply the requested"):
+    with pytest.raises(
+        capture._VideoCameraControlUnavailableError,
+        match="did not apply the requested",
+    ):
         capture._configure_color(
             object(),
             object(),
@@ -1322,6 +1328,48 @@ def test_video_device_discovery_waits_for_hotplug(monkeypatch, capsys) -> None:
     assert sleeps == [0.5, 0.5]
     output = capsys.readouterr().out
     assert "waiting for connection" in output
+    assert "camera detected" in output
+
+
+def test_video_device_discovery_retries_transient_open_failure(
+    monkeypatch, capsys
+) -> None:
+    device = object()
+    attempts = 0
+    contexts: list[object] = []
+
+    class DeviceList:
+        @staticmethod
+        def get_count() -> int:
+            return 1
+
+        @staticmethod
+        def get_device_by_index(_index: int) -> object:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("usbEnumerator openUsbDevice failed!")
+            return device
+
+    def make_context() -> object:
+        context = SimpleNamespace(query_devices=lambda: DeviceList())
+        contexts.append(context)
+        return context
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(capture.time, "sleep", sleeps.append)
+
+    selected_context, selected_device = capture._discover_video_device(
+        SimpleNamespace(Context=make_context),
+        wait_for_camera=True,
+    )
+
+    assert selected_context is contexts[-1]
+    assert selected_device is device
+    assert len(contexts) == 2
+    assert sleeps == [0.5]
+    output = capsys.readouterr().out
+    assert "not ready" in output
     assert "camera detected" in output
 
 
