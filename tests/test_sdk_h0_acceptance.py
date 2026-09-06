@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import pytest
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,6 +42,7 @@ def test_h0_uses_public_sdk_and_keeps_all_five_runs(
 ) -> None:
     module = _module()
     monkeypatch.setattr(module, "native_host", lambda: True)
+    monkeypatch.setattr(module, "audit_2d_process", lambda output: nullcontext())
     monkeypatch.setattr(module, "verify_capture_contracts", lambda paths: None)
     monkeypatch.setattr(module, "verify_3d", lambda *a, **k: None)
     monkeypatch.setattr(

@@ -1,5 +1,8 @@
 import importlib.util
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -27,8 +30,18 @@ def production(root):
     )
     report["trajectory"] = {"direct_pose_count": 0, "pose_supported": False}
     (root / "video_report.json").write_text(json.dumps(report))
-    with acceptance.audit_2d_process(root):
-        pass
+    (root / "process_audit.json").write_text(
+        json.dumps(
+            {
+                "schema": "gemini305-2d-process-audit/v1",
+                "orb_calls": 0,
+                "open3d_imports": 0,
+                "three_d_calls": 0,
+                "online_orb_constructions": 0,
+                "completed": True,
+            }
+        )
+    )
 
 
 def test_canonical_evidence_reads_actual_owner_and_timing(tmp_path):
@@ -78,8 +91,21 @@ def test_doctor_pass_cannot_issue_software_or_h0(tmp_path, monkeypatch):
 
 
 def test_process_audit_detects_heavy_call_and_preserves_failure(tmp_path):
-    with pytest.raises(RuntimeError, match="Open3D"):
-        with acceptance.audit_2d_process(tmp_path):
-            __import__("open3d")
+    # The acceptance guard deliberately requires a fresh process. Other full-suite
+    # tests exercise real Open3D, so verify this boundary in its actual process model.
+    code = """
+import sys
+from pathlib import Path
+from panorama_demo.sdk_acceptance import audit_2d_process
+try:
+    with audit_2d_process(Path(sys.argv[1])):
+        __import__('open3d')
+except RuntimeError as exc:
+    assert 'Open3D' in str(exc)
+else:
+    raise AssertionError('heavy import accepted')
+"""
+    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
+    subprocess.run([sys.executable, "-c", code, str(tmp_path)], env=env, check=True)
     report = acceptance.read(tmp_path / "process_audit.json")
     assert report["open3d_imports"] == 1 and report["completed"] is False
