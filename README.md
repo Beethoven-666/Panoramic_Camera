@@ -256,22 +256,22 @@ TSDF 或任何三维进程，也不会把二维运动冒充为 SE(3) pose。
 在线状态按 writer 已成功提交的帧增量维护，不会循环调用整段 `run_s13_fast_pipeline`。writer
 回调只追加包含 frame id、`frames.csv` 行号和已写文件身份的 committed ledger，并通知独立的
 online P0 worker；运动估计、source selection、layout 和渲染都不在相机或 writer 回调中执行。
-worker 从写盘后的 JPEG 构建与离线 V11 共用的 motion、assignment 和 P0，维护 sealed prefix 与
-mutable tail，并把完整 current P0 缩放一次供 UI 显示。它不再使用固定的最后 24 个源或固定中央
-窄带，因此长扫描预览会保留已经封存的起始区域。
+worker 只从已提交 JPEG 的规范解码构建与离线 V11 共用的 motion、assignment 和 P0，维护
+sealed prefix 与 mutable tail。P0 使用磁盘映射，RGB cache 最多 8 帧，prepared cache 最多 4 帧。
+Preview 使用独立的有界非权威运动分析与显示队列；原始 BGR 不会进入正式 P0 authority。
 
 默认只有当前稳定运动段同时满足以下条件后才发布 UI 预览：持续 `0.8 s`、累计前进 `32` 个
 424 宽分析像素、方向一致率 `≥0.85`、可靠运动占比 `≥0.75`、至少 5 个源候选、writer queue
 `≤25%` 且无丢帧。方向反转、不可靠运动或超过 `0.4 s` 的帧间隔会重置稳定段。
 `live_preview.jpg` 和 `live_preview_state.json` 使用 latest-only 队列并标记
 `non_authoritative_live_preview`；UI 快照可以为保持采集流畅而丢弃，但 committed ledger、motion
-状态和 P0 backlog 不会因此丢失。采集窗口上方显示实时 RGB 与 aligned depth，下方显示同一份
-current P0。预览失败只写 `live_preview_failure.json`、禁用后续 UI 预览，不终止采集或正式二维。
+状态和 P0 backlog 不会因此丢失。预览失败只写 `live_preview_failure.json`、禁用后续 UI
+预览，不终止采集或正式二维。
 
 停采时程序先停止并 join UI 预览，再 drain writer 并冻结连续 committed ledger。handoff 固定使用
-`reuse_level=validated_inputs_only`、`pair_evidence_reused_count=0`；production 从 committed 会话
-重新执行完整 M0–M3 与 P0/P1/P2/P3。在线 gray/motion、Preview P0、pair 或 M6 evidence 都不进入
-最终 authority。handoff 校验失败会显式失败并保留原因，不会把在线证据冒充正式证据。
+`reuse_level=frozen_p0_authority_v1`、`pair_evidence_reused_count=0`；production 复用已验证 P0
+前缀并闭合尾部，再完整执行 P1/P2/P3。Preview、pair 或 M6 evidence 都不复用。
+checkpoint 失效时保留原因并从 committed 会话完整重算相同 V11；算法或会话身份错误仍失败。
 正常 production 模式不写 P0/P1/P2 stage PNG，只从内存 P3 发布：
 
 ```text

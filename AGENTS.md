@@ -115,8 +115,10 @@ ORB trajectory 参数或任何试图进入旧 production renderer 的 V11 请求
   `non_authoritative_live_preview`。预览使用 latest-only 队列；预览失败只写
   `live_preview_failure.json` 并禁用后续预览，不得终止采集或正式二维。
 - 停采必须先停止并 join 预览，再完成 writer drain。live handoff 当前只允许
-  `reuse_level=validated_inputs_only`，`pair_evidence_reused_count=0`；在线 gray/motion、pair 或
-  M6 evidence 不得冒充最终 authority。正式二维仍从 committed 会话重新计算完整 V11。
+  `reuse_level=frozen_p0_authority_v1`，`pair_evidence_reused_count=0`。独立 authority worker
+  只读取已提交 JPEG 的规范解码，冻结 P0 sealed prefix 与可变尾部；Preview 原始 BGR、pair
+  或 M6 evidence 不得冒充 authority。身份、输入或 checkpoint 验证失败时，从 committed
+  会话完整重算相同 V11。复用必须证明 P0–P3、owner、valid、provenance、schedule 与 decision 等价。
 - 正式 production 必须执行完整 P0–P3 像素链，但正常首图模式不得落盘 P0/P1/P2 stage PNG。
   live 与 offline 对同一会话及锁定配置的 `video_panorama.png` 必须字节一致；P0–P3 内存像素
   evidence 逐阶段比较，首个差异即停止扩大复用范围并定位该阶段。

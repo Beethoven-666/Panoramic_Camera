@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import os
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -36,7 +37,15 @@ def runtime_source_commit() -> str:
     packaged = _PACKAGED_RUNTIME_ROOT / "source_commit.txt"
     if packaged.is_file():
         return packaged.read_text(encoding="ascii").strip()
+    supplied = os.environ.get("G305_SOURCE_COMMIT", "")
+    if len(supplied) == 40 and all(c in "0123456789abcdef" for c in supplied):
+        return supplied
     if (_SOURCE_ROOT / ".git").exists():
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=_SOURCE_ROOT,
-                                       text=True).strip()
+        try:
+            return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=_SOURCE_ROOT,
+                                           stderr=subprocess.DEVNULL, text=True).strip()
+        except (OSError, subprocess.CalledProcessError):
+            # A Windows worktree can be imported by WSL while its Git metadata
+            # still names Windows paths. Development runners supply its SHA.
+            return "UNKNOWN"
     return "UNKNOWN"

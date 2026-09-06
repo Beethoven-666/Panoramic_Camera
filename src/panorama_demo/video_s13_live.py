@@ -203,6 +203,11 @@ class S13V11LiveObserver:
             except OSError as exc:
                 self._disable_preview(exc)
 
+    def disable_optional_preview(self) -> None:
+        """Disable only display work; committed JPEG authority continues."""
+        with self._lock:
+            self._preview_disabled = True
+
     def _authority_loop(self) -> None:
         try:
             while True:
@@ -592,6 +597,7 @@ class S13V11LiveObserver:
                     if self._first_preview_ns is None:
                         self._first_preview_ns = published_ns
                     self._preview_latencies_ms.append((published_ns - accepted_ns) / 1_000_000.0)
+                    self._preview_latencies_ms = self._preview_latencies_ms[-4096:]
             except Exception as exc:
                 self._disable_preview(exc)
             finally:

@@ -387,6 +387,7 @@ def _validate_live_handoff(
     if rows != list(range(len(rows))):
         raise ValueError("S013 V11 live handoff CSV ledger is not contiguous")
     if handoff.reuse_level == "frozen_p0_authority_v1":
+        from .paths import runtime_source_commit
         from .video_s13_online_checkpoint import array_sha256
 
         frozen = getattr(handoff, "frozen_p0_authority", None)
@@ -397,6 +398,7 @@ def _validate_live_handoff(
             or frozen.implementation_id != spec.implementation_id
             or frozen.production_config_sha256 != spec.config_sha256
             or frozen.session_root.resolve() != session_path.resolve()
+            or frozen.source_commit != runtime_source_commit()
         ):
             raise ValueError("S013 V11 frozen P0 authority identity changed")
         expected_files = {
