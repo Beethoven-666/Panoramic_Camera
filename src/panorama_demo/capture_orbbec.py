@@ -217,6 +217,7 @@ class SessionWriter:
         durable_per_frame: bool = True,
         csv_flush_interval: int = 1,
         on_written: Callable[[WrittenRGBDFrame], None] | None = None,
+        durable_commits: bool = False,
     ) -> None:
         self.root = root
         self.color_dir = root / "color"
@@ -232,6 +233,11 @@ class SessionWriter:
         self.durable_per_frame = bool(durable_per_frame)
         self.csv_flush_interval = int(csv_flush_interval)
         self.on_written = on_written
+        self.commit_journal = None
+        if durable_commits:
+            from .commit_journal import CommitJournal
+
+            self.commit_journal = CommitJournal(root)
         if self.csv_flush_interval < 1:
             raise ValueError("csv_flush_interval must be positive")
         self.queue: queue.Queue[FramePacket | None] = queue.Queue(maxsize=queue_size)
@@ -280,6 +286,13 @@ class SessionWriter:
                     pass
 
     def _run(self) -> None:
+        try:
+            self._write_loop()
+        finally:
+            if self.commit_journal is not None:
+                self.commit_journal.close()
+
+    def _write_loop(self) -> None:
         csv_path = self.root / "frames.csv"
         try:
             handle = csv_path.open("w", encoding="utf-8", newline="")
@@ -360,6 +373,8 @@ class SessionWriter:
                             commit_monotonic_ns=time.monotonic_ns(),
                         )
                     self.written_rgbd_frames.append(written_frame)
+                    if self.commit_journal is not None:
+                        self.commit_journal.record(written_frame, row, handle)
                     # Keep expensive downstream processing off this writer
                     # thread: the callback is limited to a bounded enqueue of
                     # immutable, already committed source-file facts.
@@ -373,8 +388,10 @@ class SessionWriter:
                     self.queue.task_done()
             try:
                 handle.flush()
-                if self.durable_per_frame:
+                if self.durable_per_frame or self.commit_journal is not None:
                     os.fsync(handle.fileno())
+                if self.commit_journal is not None:
+                    self.commit_journal.checkpoint(handle)
             except Exception as exc:
                 self._record_failure(f"frames.csv finalization: {exc}")
 
@@ -2086,6 +2103,12 @@ def run_video_capture(
 ) -> Path:
     """Capture one continuous RGB-D session with an optional non-blocking observer."""
 
+    disk_guard = getattr(args, "disk_guard", None)
+    if disk_guard is None:
+        from .disk_guard import DiskGuard
+
+        disk_guard = DiskGuard(args.output, getattr(args, "panorama_output", args.output))
+    disk_guard.preflight()
     config_file = load_config(args.config)
     capture_config = config_file.get("capture", {})
     if not isinstance(capture_config, dict):
@@ -2298,6 +2321,8 @@ def run_video_capture(
 
     def _enqueue_online_orb(item: WrittenRGBDFrame) -> None:
         nonlocal observer_error
+        if disk_guard is not None:
+            disk_guard.committed(item.color_path.stat().st_size + item.aligned_depth_path.stat().st_size)
         tracker = online_orb_tracker
         if tracker is not None:
             if online_orb_source_type is None:
@@ -2334,6 +2359,7 @@ def run_video_capture(
         durable_per_frame=False,
         csv_flush_interval=30,
         on_written=_enqueue_online_orb,
+        durable_commits=True,
     )
 
     received = 0
@@ -2477,7 +2503,14 @@ def run_video_capture(
 
         while True:
             if cancel_event is not None and cancel_event.is_set():
-                raise CaptureCancelledError("Video capture was cancelled")
+                if received == 0:
+                    raise CaptureCancelledError("Video capture was cancelled")
+                manifest["stop_reason"] = str(getattr(args, "stop_reason", "USER_REQUEST"))
+                break
+            if disk_guard is not None and not disk_guard.check(writer.stats.written):
+                manifest["stop_reason"] = "LOW_DISK"
+                manifest["disk_guard"] = disk_guard.last_report
+                break
             writer.raise_if_failed()
             frames = pipeline.wait_for_frames(1000)
             if frames is None:
@@ -2497,6 +2530,8 @@ def run_video_capture(
             depth_timestamp = int(raw_depth.get_timestamp_us())
             if previous_color_timestamp is not None and color_timestamp <= previous_color_timestamp:
                 timestamp_regressions += 1
+                manifest["stop_reason"] = "TIMESTAMP_REGRESSION"
+                break
             previous_color_timestamp = color_timestamp
             assert metadata_types is not None
             color_controls = _color_control_metadata(raw_color, metadata_types)
@@ -2666,8 +2701,10 @@ def run_video_capture(
             elif _console_key() in (ord("q"), ord("Q"), 27):
                 break
             if args.max_frames and received >= args.max_frames:
+                manifest["stop_reason"] = "MAX_FRAMES_REACHED"
                 break
             if args.duration and time.monotonic() - started_monotonic >= args.duration:
+                manifest["stop_reason"] = "DURATION_REACHED"
                 break
             if received % 30 == 0:
                 print(
@@ -2779,6 +2816,7 @@ def run_video_capture(
             and writer.stats.errors == []
             and writer.stats.queue_drops == 0
             and writer.stats.written == received
+            and timestamp_regressions == 0
         ),
     }
     if online_orb_tracker is not None:

@@ -64,6 +64,8 @@ def load_video_session(
         eligible = True
     if manifest.get("clean_shutdown") is not True:
         raise ValueError("Video session was not cleanly closed")
+    if int(manifest.get("timestamp_regressions", 0)) != 0:
+        raise ValueError("Video session contains timestamp regressions")
     if int(manifest.get("write_errors", 0)) != 0 or manifest.get("writer_errors", []) != []:
         raise ValueError("Video session contains capture/write errors")
     return VideoSession(rgbd=rgbd, capture_mode=mode, legacy_v1=legacy, product_eligible=eligible)
