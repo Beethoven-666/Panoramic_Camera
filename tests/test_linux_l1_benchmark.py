@@ -30,8 +30,15 @@ def _suite(root: Path, operation: str, entry: str, statuses: list[str]) -> None:
         run = suite / f"run_{index:02d}"
         run.mkdir()
         (run / "sample.json").write_text(
-            json.dumps({"status": status, "reason_code": "X", "wall_seconds": float(index),
-                        "artifacts": {"video_timing.json": {"final_2d": {}}}}), encoding="utf-8"
+            json.dumps(
+                {
+                    "status": status,
+                    "reason_code": "X",
+                    "wall_seconds": float(index),
+                    "artifacts": {"video_timing.json": {"final_2d": {}}},
+                }
+            ),
+            encoding="utf-8",
         )
 
 
@@ -60,16 +67,27 @@ def test_summary_fails_closed_for_missing_required_suite(tmp_path: Path) -> None
     assert "frozen-2d:sdk" in result["missing_required_suites"]
 
 
-def test_summary_keeps_2d_and_3d_suites_separate(tmp_path: Path) -> None:
+def test_summary_keeps_suites_separate_but_rejects_exit_status_only(
+    tmp_path: Path,
+) -> None:
     module = _module("summarize_linux_l1_benchmark")
     windows, linux = tmp_path / "windows", tmp_path / "linux"
     windows.mkdir()
     linux.mkdir()
-    for operation, entry in (("frozen-2d", "cli"), ("frozen-2d", "sdk"), ("post-3d", "sdk")):
+    for operation, entry in (
+        ("frozen-2d", "cli"),
+        ("frozen-2d", "sdk"),
+        ("post-3d", "sdk"),
+    ):
         _suite(linux, operation, entry, ["PASS"] * 5)
     result = module.summarize(windows, linux)
-    assert result["status"] == "PASS"
-    assert set(result["suites"]["linux"]) == {"frozen-2d:cli", "frozen-2d:sdk", "post-3d:sdk"}
+    assert result["status"] == "FAIL"
+    assert result["reason_code"] == "RAW_EVIDENCE_INVALID"
+    assert set(result["suites"]["linux"]) == {
+        "frozen-2d:cli",
+        "frozen-2d:sdk",
+        "post-3d:sdk",
+    }
     assert result["metric_boundaries"]["orb_tsdf_3d_reported_separately"] is True
 
 
@@ -92,7 +110,9 @@ def test_rss_sampler_stops_with_process() -> None:
     process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.25)"])
     stop = threading.Event()
     target = {}
-    thread = threading.Thread(target=module._sample_process, args=(process, stop, target))
+    thread = threading.Thread(
+        target=module._sample_process, args=(process, stop, target)
+    )
     thread.start()
     process.wait()
     stop.set()
