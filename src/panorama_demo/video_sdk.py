@@ -356,6 +356,8 @@ class Gemini305VideoSDK:
             orbslam3_executable=self._config.orbslam3_executable,
             orbslam3_vocabulary=self._config.orbslam3_vocabulary,
             orb_runtime_kind=self._config.orb_runtime_kind,
+            camera_lock_root=self.config.camera_lock_root,
+            probe_addon=not any(job.state not in TERMINAL_STATES for job in self._jobs.values()),
         )
 
     def _site_config(self) -> tuple[Path, tempfile.TemporaryDirectory[str]]:
@@ -481,7 +483,7 @@ class Gemini305VideoSDK:
     def start_capture(self, output_root: str | Path, **options: Any) -> VideoProcessingJob:
         options.setdefault("duration_seconds", 0)
         options.setdefault("wait_for_camera", self.config.wait_for_camera)
-        options.setdefault("preview_window", self.config.preview_enabled)
+        options.setdefault("preview_window", False)
         return self.capture_and_process(output_root, **options)
 
     def get_job(self, job_id: str) -> VideoProcessingJob:

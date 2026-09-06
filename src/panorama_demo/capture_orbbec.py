@@ -2170,6 +2170,13 @@ def run_video_capture(
 ) -> Path:
     """Capture one continuous RGB-D session with an optional non-blocking observer."""
 
+    if not args.no_preview and any(
+        line.strip().startswith("GUI:") and line.split(":", 1)[1].strip() == "NONE"
+        for line in cv2.getBuildInformation().splitlines()
+    ):
+        # Headless Linux still publishes the independent file/UI Preview.
+        # Only the native OpenCV display window is unavailable.
+        args.no_preview = True
     disk_guard = getattr(args, "disk_guard", None)
     if disk_guard is None:
         from .disk_guard import DiskGuard

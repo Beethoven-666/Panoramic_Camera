@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from importlib import metadata
 import os
 import shutil
 import subprocess
@@ -16,7 +17,7 @@ from .video_s13_contract import (
 )
 
 
-_VALID_STATUS = {"PASS", "PASS_WITH_WARNING", "FAIL", "NOT_EXECUTED", "BLOCKED"}
+_VALID_STATUS = {"PASS", "FAIL", "NOT_CHECKED", "BLOCKED"}
 
 
 @dataclass(frozen=True)
@@ -24,8 +25,8 @@ class SDKDoctorCheck:
     status: str
     reason_code: str
     detail: Mapping[str, object]
-    required_for_software_ready: bool
-    required_for_native_final: bool
+    required_for_base: bool
+    required_for_addon: bool
 
     def __post_init__(self) -> None:
         if self.status not in _VALID_STATUS:
@@ -36,10 +37,15 @@ class SDKDoctorCheck:
 class SDKDoctorReport:
     schema: str
     checks: Mapping[str, SDKDoctorCheck]
-    software_ready: bool
-    hardware_qualified: bool
-    release_ready: bool
-    milestone: str | None
+    software_ready: None = None
+    hardware_qualified: None = None
+    release_ready: None = None
+    milestone: None = None
+
+    def __post_init__(self) -> None:
+        if any(value is not None for value in (self.software_ready, self.hardware_qualified,
+                                               self.release_ready, self.milestone)):
+            raise ValueError("Doctor cannot issue qualifications; use acceptance artifacts")
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -49,6 +55,7 @@ class SDKDoctorReport:
             "hardware_qualified": self.hardware_qualified,
             "release_ready": self.release_ready,
             "milestone": self.milestone,
+            "qualification_source": "acceptance_artifact_only",
         }
 
     def __str__(self) -> str:
@@ -72,9 +79,12 @@ def run_sdk_doctor(
     orbslam3_executable: str,
     orbslam3_vocabulary: str,
     orb_runtime_kind: str,
+    camera_lock_root: Path = Path("/var/lock/gemini305-sdk"),
+    probe_camera: bool = False,
+    probe_addon: bool = True,
 ) -> SDKDoctorReport:
     checks: dict[str, SDKDoctorCheck] = {}
-    supported = (3, 10) <= sys.version_info[:2] < (3, 13)
+    supported = sys.version_info[:2] == (3, 10) and sys.implementation.name == "cpython"
     checks["python"] = _check(
         "PASS" if supported else "FAIL",
         "SUPPORTED_PYTHON" if supported else "UNSUPPORTED_PYTHON",
@@ -151,12 +161,16 @@ def run_sdk_doctor(
             cp.zeros(1, dtype=cp.uint8).sum().get()
             probe = cp.eye(2, dtype=cp.float32)
             cublas_probe = float((probe @ probe).sum().get())
-        cupy_ok = cupy_count > 0
+        properties = cp.cuda.runtime.getDeviceProperties(0) if cupy_count else {}
+        architecture = int(properties.get("major", 0)) * 10 + int(properties.get("minor", 0))
+        cupy_ok = cupy_count > 0 and architecture == 120
         cupy_detail: dict[str, object] = {
             "version": cp.__version__,
             "device_count": cupy_count,
             "runtime_version": int(cp.cuda.runtime.runtimeGetVersion()),
             "cublas_probe": cublas_probe if cupy_count else None,
+            "gpu_compute_capability": architecture,
+            "supported_variant": "sm_120",
         }
     except Exception as exc:
         cupy_ok = False
@@ -170,26 +184,25 @@ def run_sdk_doctor(
     )
 
     try:
-        import open3d as o3d
-
-        build = dict(getattr(o3d, "_build_config", {}))
-        open3d_ok = bool(build.get("BUILD_CUDA_MODULE")) and bool(
-            o3d.core.cuda.is_available()
-        )
-        open3d_detail: dict[str, object] = {
-            "version": o3d.__version__,
-            "build_cuda_module": bool(build.get("BUILD_CUDA_MODULE")),
-            "cuda_available": bool(o3d.core.cuda.is_available()),
-            "device_count": int(o3d.core.cuda.device_count()),
-        }
+        installed_version = metadata.version("open3d")
+        if not probe_addon:
+            raise RuntimeError("Addon probe deferred while capture is active")
+        completed = subprocess.run([sys.executable, "-c",
+            "import json,open3d as o; print(json.dumps(dict(version=o.__version__,"
+            "build_cuda_module=bool(o._build_config.get('BUILD_CUDA_MODULE')),"
+            "cuda_available=bool(o.core.cuda.is_available()),device_count=o.core.cuda.device_count())))"],
+            capture_output=True, text=True, timeout=60, check=True)
+        open3d_detail = json.loads(completed.stdout.strip().splitlines()[-1])
+        open3d_ok = (installed_version == "0.19.0+1e7b17438"
+                      and open3d_detail["build_cuda_module"] and open3d_detail["cuda_available"])
     except Exception as exc:
         open3d_ok = False
         open3d_detail = {"error": f"{type(exc).__name__}: {exc}"}
     checks["open3d_cuda"] = _check(
-        "PASS" if open3d_ok else "FAIL",
-        "OPEN3D_CUDA_AVAILABLE" if open3d_ok else "OPEN3D_CUDA_UNAVAILABLE",
+        "PASS" if open3d_ok else "BLOCKED",
+        "OPEN3D_CUDA_AVAILABLE" if open3d_ok else "THREE_D_ADDON_MISSING_OR_UNAVAILABLE",
         open3d_detail,
-        software=True,
+        software=False,
         native=True,
     )
 
@@ -215,18 +228,22 @@ def run_sdk_doctor(
         orb_detail["ldd_returncode"] = completed.returncode
         orb_detail["ldd_missing"] = "not found" in completed.stdout
     checks["orbslam3_external_runtime"] = _check(
-        "PASS" if orb_ok else "FAIL",
-        "NATIVE_ORB_RUNTIME_READY" if orb_ok else "NATIVE_ORB_RUNTIME_MISSING",
+        "PASS" if orb_ok else "BLOCKED",
+        "NATIVE_ORB_RUNTIME_AVAILABLE" if orb_ok else "THREE_D_RUNTIME_MISSING_OR_UNLICENSED",
         orb_detail,
-        software=True,
+        software=False,
         native=True,
     )
 
     try:
         import pyorbbecsdk as ob
 
-        wrapper_ok = True
-        wrapper_detail: dict[str, object] = {"sdk_version": str(ob.get_version())}
+        native_version = str(ob.get_version())
+        wrapper_version = metadata.version("pyorbbecsdk2")
+        wrapper_ok = wrapper_version == "2.1.2+g305.1" and native_version == "2.9.3"
+        wrapper_detail: dict[str, object] = {"sdk_version": native_version,
+            "wrapper_version": wrapper_version, "expected_native_sdk": "2.9.3",
+            "upstream_wrapper": "2.1.2", "metadata_variant": "2.1.2+g305.1"}
     except Exception as exc:
         wrapper_ok = False
         wrapper_detail = {"error": f"{type(exc).__name__}: {exc}"}
@@ -241,15 +258,23 @@ def run_sdk_doctor(
 
     camera_count = 0
     camera_error: str | None = None
-    if ob is not None:
+    camera_info = []
+    if ob is not None and probe_camera:
         try:
-            camera_count = int(ob.Context().query_devices().get_count())
+            from .camera_lease import CameraLease
+            from .capture_orbbec import _device_info
+
+            with CameraLease(camera_lock_root, "discovery", "doctor"):
+                devices = ob.Context().query_devices()
+                camera_count = int(devices.get_count())
+                camera_info = [_device_info(devices.get_device_by_index(index)) for index in range(camera_count)]
         except Exception as exc:
             camera_error = f"{type(exc).__name__}: {exc}"
     checks["camera_device"] = _check(
-        "PASS" if camera_count > 0 else "NOT_EXECUTED",
-        "CAMERA_DETECTED" if camera_count > 0 else "NO_CAMERA",
-        {"device_count": camera_count, "error": camera_error},
+        "PASS" if camera_count > 0 else "BLOCKED" if camera_error else "NOT_CHECKED",
+        "CAMERA_DETECTED" if camera_count > 0 else "CAMERA_NOT_PROBED_OR_UNAVAILABLE",
+        {"device_count": camera_count, "error": camera_error, "devices": camera_info,
+         "supported_firmware": ["1.0.70"], "vid": 11205, "pid": 2112},
         software=False,
         native=True,
     )
@@ -269,33 +294,43 @@ def run_sdk_doctor(
         software=False,
         native=True,
     )
-
-    software_ready = all(
-        value.status in {"PASS", "PASS_WITH_WARNING"}
-        for value in checks.values()
-        if value.required_for_software_ready
-    )
-    hardware_qualified = software_ready and all(
-        value.status in {"PASS", "PASS_WITH_WARNING"}
-        for value in checks.values()
-        if value.required_for_native_final
-        and value is not checks["orb_distribution_license"]
-    )
+    lock_ok = camera_lock_root.is_dir() and os.access(camera_lock_root, os.W_OK)
+    checks["camera_lock_root"] = _check("PASS" if lock_ok else "BLOCKED",
+        "CAMERA_LOCK_ROOT_AVAILABLE" if lock_ok else "CAMERA_LOCK_ROOT_UNAVAILABLE",
+        {"path": str(camera_lock_root), "required_for_capture": True}, software=False, native=False)
     return SDKDoctorReport(
-        schema="gemini305-sdk-doctor/v1",
+        schema="gemini305-sdk-doctor/v2",
         checks=checks,
-        software_ready=software_ready,
-        hardware_qualified=hardware_qualified,
-        release_ready=hardware_qualified
-        and checks["orb_distribution_license"].status == "PASS",
-        milestone=(
-            "SDK_HARDWARE_QUALIFIED"
-            if hardware_qualified
-            else "SDK_SOFTWARE_READY"
-            if software_ready
-            else None
-        ),
     )
+
+
+def main() -> None:
+    import argparse
+    from contextlib import redirect_stdout
+    import io
+
+    parser = argparse.ArgumentParser(description="Report capabilities; never issue SDK qualification")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--orb-runtime-root", type=Path, default=Path.home() / "opt/g305-orbslam3")
+    parser.add_argument("--camera-lock-root", type=Path, default=Path("/var/lock/gemini305-sdk"))
+    parser.add_argument("--probe-camera", action="store_true")
+    args = parser.parse_args()
+    with redirect_stdout(io.StringIO()):
+        report = run_sdk_doctor(orbslam3_root=args.orb_runtime_root,
+            orbslam3_executable="Examples/RGB-D/rgbd_tum_headless", orbslam3_vocabulary="Vocabulary/ORBvoc.txt",
+            orb_runtime_kind="native_linux", camera_lock_root=args.camera_lock_root, probe_camera=args.probe_camera)
+    payload = str(report)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(payload + "\n", encoding="utf-8")
+    print(payload)
+    if any(check.status != "PASS" for check in report.checks.values() if check.required_for_base):
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()
 
 
 __all__ = ["SDKDoctorCheck", "SDKDoctorReport", "run_sdk_doctor"]

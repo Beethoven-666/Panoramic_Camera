@@ -2089,3 +2089,12 @@ def test_device_discovery_can_be_cancelled_before_sdk_polling() -> None:
             wait_for_camera=True,
             cancel_event=cancelled,
         )
+def test_headless_opencv_disables_only_native_capture_window(tmp_path, monkeypatch):
+    from panorama_demo import capture_orbbec
+
+    args = capture_orbbec.build_parser().parse_args(["--output", str(tmp_path)])
+    monkeypatch.setattr(capture_orbbec.cv2, "getBuildInformation", lambda: "  GUI: NONE\n")
+    monkeypatch.setattr(capture_orbbec, "load_config", lambda *_: (_ for _ in ()).throw(RuntimeError("preflight reached")))
+    with pytest.raises(RuntimeError, match="preflight reached"):
+        capture_orbbec.run_video_capture(args)
+    assert args.no_preview is True

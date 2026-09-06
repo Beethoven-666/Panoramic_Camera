@@ -28,6 +28,7 @@ unistitch-diagnostic = [
 ]
 
 [project.scripts]
+g305-sdk-doctor = "panorama_demo.sdk_doctor:main"
 g305-capture = "panorama_demo.capture_orbbec:main"
 g305-panorama = "panorama_demo.stitch_sequence:main"
 g305-video-panorama = "panorama_demo.video_panorama:main"
