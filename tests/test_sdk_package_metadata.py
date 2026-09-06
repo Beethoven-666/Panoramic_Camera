@@ -29,3 +29,15 @@ def test_resource_hook_refuses_dirty_source_before_build(monkeypatch):
     monkeypatch.setattr(module.subprocess, "check_output", lambda *_args, **_kwargs: b" M tracked.py\n")
     with pytest.raises(RuntimeError, match="Dirty SDK builds"):
         module.source_commit()
+
+
+def test_compatibility_shim_loads_hook_without_project_on_sys_path(monkeypatch):
+    from runpy import run_path
+    import setuptools
+
+    seen = {}
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: seen.update(kwargs))
+    monkeypatch.setattr(sys, "path", [path for path in sys.path if path and Path(path).resolve() != ROOT])
+    run_path(str(ROOT / "setup.py"))
+    assert set(seen) == {"cmdclass"}
+    assert seen["cmdclass"]["build_py"].__name__ == "BuildPy"
