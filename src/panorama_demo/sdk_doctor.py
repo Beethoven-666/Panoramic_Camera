@@ -184,16 +184,21 @@ def run_sdk_doctor(
     )
 
     try:
-        installed_version = metadata.version("open3d")
         if not probe_addon:
             raise RuntimeError("Addon probe deferred while capture is active")
-        completed = subprocess.run([sys.executable, "-c",
+        from .sdk_runtime import addon_python
+
+        interpreter = addon_python()
+        if interpreter is None:
+            raise RuntimeError("Open3D addon is not installed")
+        completed = subprocess.run([str(interpreter), "-c",
             "import json,open3d as o; print(json.dumps(dict(version=o.__version__,"
             "build_cuda_module=bool(o._build_config.get('BUILD_CUDA_MODULE')),"
             "cuda_available=bool(o.core.cuda.is_available()),device_count=o.core.cuda.device_count())))"],
             capture_output=True, text=True, timeout=60, check=True)
         open3d_detail = json.loads(completed.stdout.strip().splitlines()[-1])
-        open3d_ok = (installed_version == "0.19.0+1e7b17438"
+        open3d_detail["interpreter"] = str(interpreter)
+        open3d_ok = (open3d_detail["version"] == "0.19.0+1e7b17438"
                       and open3d_detail["build_cuda_module"] and open3d_detail["cuda_available"])
     except Exception as exc:
         open3d_ok = False

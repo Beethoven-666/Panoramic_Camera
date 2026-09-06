@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import signal
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -51,12 +50,18 @@ def supervise_post_3d(*, session: Path, two_d: Path, output: Path,
     process = None
     stage = "process_spawn"
     try:
+        from .sdk_runtime import addon_python
+
+        interpreter = addon_python()
+        if interpreter is None:
+            raise ThreeDProcessingError("Install the Open3D addon and bind an external ORB Runtime",
+                                        error_code="THREE_D_RUNTIME_MISSING_OR_UNLICENSED")
         with (output / f"post-3d-{uuid.uuid4().hex}.log").open("xb") as log:
             # The synchronous 2-D API has returned, releasing its renderer
             # resources. Persist this boundary without changing its delivery.
             released_ns = time.monotonic_ns()
             process = subprocess.Popen([
-                sys.executable, "-m", "panorama_demo.video_3d_postprocess", str(session),
+                str(interpreter), "-m", "panorama_demo.video_3d_postprocess", str(session),
                 "--two-d-output", str(two_d), "--output", str(output),
                 "--config", str(config_path)], stdout=log, stderr=subprocess.STDOUT,
                 start_new_session=os.name == "posix",

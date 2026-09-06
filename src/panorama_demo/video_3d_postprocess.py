@@ -194,6 +194,9 @@ def run_post_capture_3d(
 
 def main() -> None:
     from .config import load_config
+    from .sdk_runtime import addon_python
+    import subprocess
+    import sys
 
     parser = argparse.ArgumentParser(
         description="Run post-capture ORB-SLAM3 and publish final video 3-D artifacts"
@@ -204,6 +207,11 @@ def main() -> None:
     parser.add_argument("--config", type=Path)
     args = parser.parse_args()
     try:
+        interpreter = addon_python()
+        if interpreter is None:
+            raise RuntimeError("THREE_D_RUNTIME_MISSING_OR_UNLICENSED: install the 3-D addon and bind external ORB")
+        if interpreter.absolute() != Path(sys.executable).absolute():
+            raise SystemExit(subprocess.call([str(interpreter), "-m", "panorama_demo.video_3d_postprocess", *sys.argv[1:]]))
         run_post_capture_3d(
             session_path=args.session,
             two_d_output=args.two_d_output,
@@ -211,6 +219,8 @@ def main() -> None:
             config=load_config(args.config),
         )
     except Exception as exc:
+        if not (args.output / "video_3d_failure.json").exists():
+            write_isolated_3d_failure(args.output, two_d_output=args.two_d_output, exc=exc, stage="runtime_preflight")
         raise SystemExit(f"ERROR: {exc}") from exc
 
 
