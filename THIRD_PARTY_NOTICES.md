@@ -10,6 +10,10 @@ is addon-only. Pangolin external source is `aff6883c83f3fd7e8268a9715e84266c42e2
 Bundle `licenses/` retains wheel-supplied texts; SPDX records unknown expressions as NOASSERTION.
 This is an inventory, not a conclusion that all transitive native components can be redistributed.
 
+OpenEXR `3.4.15+g305.1` removes the upstream wheel's stale `/tmp/...` RPATH while preserving
+the ELF instruction section and relative `$ORIGIN` search path. Its dist-info records the
+upstream digest and exact before/after RPATH; `scripts/repack_openexr_rpath.py` reproduces the patch.
+
 Orbbec native SDK 2.9.3 and official udev files are pinned at
 `2f6561c28255d805b34aa00a690199ce40e96c81`. Their verbatim upstream LICENSE and file provenance
 are in `packaging/linux/orbbec-official/`. `pyorbbecsdk2 2.1.2+g305.1` changes only distribution

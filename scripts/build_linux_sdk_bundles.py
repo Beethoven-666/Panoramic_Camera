@@ -111,6 +111,7 @@ def inspect_wheel(path, licenses):
                     "file": file_type,
                     "rpath": rpaths,
                     "needed": re.findall(r"\(NEEDED\).*?\[(.*?)\]", dynamic),
+                    "sha256": hashlib.sha256(archive.read(name)).hexdigest(),
                     "readelf_dynamic": dynamic,
                 }
             )
@@ -168,6 +169,9 @@ def spdx(dependencies, patches, commit, kind):
                     "SPDXID": f"SPDXRef-ELF-{len(files)}",
                     "fileName": dep["wheel"] + "!/" + item["member"],
                     "fileTypes": ["BINARY"],
+                    "checksums": [
+                        {"algorithm": "SHA256", "checksumValue": item["sha256"]}
+                    ],
                     "licenseConcluded": "NOASSERTION",
                     "copyrightText": "NOASSERTION",
                 }
