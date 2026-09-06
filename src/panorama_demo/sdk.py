@@ -18,22 +18,29 @@ from threading import RLock
 from typing import Any, Iterator, Mapping
 
 from .version import __version__
+from .sdk_state import SDKError
 
 
-class PanoramaSDKError(RuntimeError):
+class PanoramaSDKError(SDKError):
     """Base exception raised by the public SDK."""
 
 
 class SDKConfigurationError(PanoramaSDKError, ValueError):
     """The SDK initialization configuration is invalid."""
 
+    default_code = "SDK_CONFIGURATION_ERROR"
+
 
 class SDKInputError(PanoramaSDKError, ValueError):
     """A session, output path or other SDK method argument is invalid."""
 
+    default_code = "SDK_INPUT_ERROR"
+
 
 class PanoramaProcessingError(PanoramaSDKError):
     """The underlying fail-closed pipeline rejected or could not process a task."""
+
+    default_code = "PANORAMA_PROCESSING_ERROR"
 
 
 class CudaMode(str, Enum):

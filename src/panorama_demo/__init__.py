@@ -14,6 +14,16 @@ from .sdk import (
 )
 from .version import __version__
 from .sdk_doctor import SDKDoctorReport
+from .sdk_state import (
+    CaptureError,
+    CompletionState,
+    JobState,
+    RetentionPolicy,
+    SDKBusyError,
+    SDKError,
+    StopReason,
+    ThreeDProcessingError,
+)
 from .video_sdk import (
     Gemini305VideoSDK,
     VideoJobState,
@@ -24,6 +34,14 @@ from .video_sdk import (
 )
 
 __all__ = [
+    "CaptureError",
+    "CompletionState",
+    "JobState",
+    "RetentionPolicy",
+    "SDKBusyError",
+    "SDKError",
+    "StopReason",
+    "ThreeDProcessingError",
     "CudaMode",
     "PanoramaProcessingError",
     "PanoramaResult",
