@@ -53,9 +53,6 @@ generate-panorama-demo = "panorama_demo.synthetic:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.cmdclass]
-build_py = "build_support.BuildPy"
-
 [tool.setuptools.dynamic]
 version = {attr = "panorama_demo.version.__version__"}
 

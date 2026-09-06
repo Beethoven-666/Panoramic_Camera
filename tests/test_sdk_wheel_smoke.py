@@ -26,14 +26,15 @@ def _sha256(data: bytes) -> str:
 
 
 def test_wheel_contains_exact_runtime_resource_bytes(tmp_path: Path) -> None:
-    subprocess.run(
+    completed = subprocess.run(
         [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "--no-build-isolation", "--ignore-requires-python",
          "--wheel-dir", str(tmp_path)],
         cwd=PROJECT_ROOT,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
     wheels = list(tmp_path.glob("gemini305_rgbd_panorama-*.whl"))
     assert len(wheels) == 1
     with zipfile.ZipFile(wheels[0]) as archive:
