@@ -6,6 +6,7 @@ PANGOLIN_COMMIT=aff6883c83f3fd7e8268a9715e84266c42e2efe3
 JOBS=${G305_BUILD_JOBS:-2}
 WORK_ROOT=
 INSTALL_ROOT=
+FINAL_INSTALL_ROOT=
 
 usage() {
   echo "usage: $0 --work-root PATH --install-root PATH" >&2
@@ -23,6 +24,10 @@ done
 
 WORK_ROOT=$(readlink -m -- "$WORK_ROOT")
 INSTALL_ROOT=$(readlink -m -- "$INSTALL_ROOT")
+FINAL_INSTALL_ROOT="$INSTALL_ROOT"
+INSTALL_ROOT="${FINAL_INSTALL_ROOT}.unrelocated"
+[[ ! -e "$FINAL_INSTALL_ROOT" ]] || { echo "Install root already exists" >&2; exit 1; }
+command -v patchelf >/dev/null || { echo "patchelf is required for relative RPATH" >&2; exit 1; }
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PATCH_PATH="$SCRIPT_DIR/patches/orbslam3-g305-headless-runners.patch"
 ORB_SOURCE="$WORK_ROOT/ORB_SLAM3"
@@ -132,4 +137,5 @@ payload["ldd"] = {
 )
 PY
 
-echo "ORB-SLAM3 native Runtime installed at $INSTALL_ROOT"
+python3 "$SCRIPT_DIR/relocate_orb_runtime.py" --source "$INSTALL_ROOT" --output "$FINAL_INSTALL_ROOT"
+echo "Internal ORB-SLAM3 Runtime installed at $FINAL_INSTALL_ROOT; no public distribution approval"
