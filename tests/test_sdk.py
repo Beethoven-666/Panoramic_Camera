@@ -154,5 +154,5 @@ def test_cuda_policy_is_scoped_to_sdk_call(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_version_is_exposed_by_sdk() -> None:
-    assert get_sdk_version() == "0.2.0"
-    assert PanoramaSDK().version == "0.2.0"
+    assert get_sdk_version() == "0.3.0rc1"
+    assert PanoramaSDK().version == "0.3.0rc1"

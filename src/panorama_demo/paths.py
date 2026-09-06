@@ -3,11 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 import os
+from importlib.resources import files
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 _SOURCE_ROOT = PACKAGE_DIR.parents[1]
-_PACKAGED_RUNTIME_ROOT = PACKAGE_DIR / "_runtime"
+_PACKAGED_RUNTIME_ROOT = Path(str(files("panorama_demo").joinpath("_runtime")))
 PROJECT_ROOT = (
     _SOURCE_ROOT
     if (_SOURCE_ROOT / "configs" / "demo.yaml").is_file()

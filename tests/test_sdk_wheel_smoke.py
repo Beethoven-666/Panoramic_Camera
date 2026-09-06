@@ -27,7 +27,7 @@ def _sha256(data: bytes) -> str:
 
 def test_wheel_contains_exact_runtime_resource_bytes(tmp_path: Path) -> None:
     subprocess.run(
-        [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "--no-build-isolation",
+        [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "--no-build-isolation", "--ignore-requires-python",
          "--wheel-dir", str(tmp_path)],
         cwd=PROJECT_ROOT,
         check=True,
@@ -37,6 +37,11 @@ def test_wheel_contains_exact_runtime_resource_bytes(tmp_path: Path) -> None:
     wheels = list(tmp_path.glob("gemini305_rgbd_panorama-*.whl"))
     assert len(wheels) == 1
     with zipfile.ZipFile(wheels[0]) as archive:
+        metadata = archive.read(next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))).decode()
+        assert "Requires-Python: <3.11,>=3.10" in metadata
+        assert "Requires-Dist: open3d" not in metadata
+        assert "Requires-Dist: opencv-python-headless" in metadata
+        assert len(archive.read("panorama_demo/_runtime/source_commit.txt").strip()) == 40
         for relative in RUNTIME_RESOURCES:
             packaged = archive.read(f"panorama_demo/_runtime/{relative}")
             source = (PROJECT_ROOT / relative).read_bytes()

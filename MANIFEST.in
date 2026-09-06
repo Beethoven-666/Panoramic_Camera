@@ -1,0 +1,6 @@
+include build_support.py
+include .g305-source-commit
+include configs/demo.yaml
+recursive-include configs/video_algorithms *.yaml *.json
+recursive-include configs/video_candidates/s013 *.yaml *.json
+include artifacts/S013_M6_1_metrics_baseline_v2/threshold_approval.json

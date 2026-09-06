@@ -7,11 +7,10 @@ name = "gemini305-rgbd-panorama"
 dynamic = ["version"]
 description = "Fail-closed Gemini 305 RGB-D side-scan panorama pipeline"
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.10,<3.11"
 dependencies = [
     "numpy>=1.26",
-    "open3d>=0.19,<0.20",
-    "opencv-python>=4.8",
+    "opencv-python-headless>=4.8,<5",
     "OpenEXR>=3.3,<4",
     "PyYAML>=6.0",
     "xatlas>=0.0.11",
@@ -19,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-capture = ["pyorbbecsdk2>=2.1.1"]
+capture = ["pyorbbecsdk2==2.1.2+g305.1"]
 test = ["pytest>=8.0"]
 cuda13 = ["cupy-cuda13x>=14.1,<15"]
 unistitch-diagnostic = [
@@ -53,6 +52,9 @@ generate-panorama-demo = "panorama_demo.synthetic:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.cmdclass]
+build_py = "build_support.BuildPy"
 
 [tool.setuptools.dynamic]
 version = {attr = "panorama_demo.version.__version__"}
