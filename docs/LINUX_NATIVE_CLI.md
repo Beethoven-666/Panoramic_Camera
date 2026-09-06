@@ -5,13 +5,17 @@ Linux L0 targets Ubuntu 22.04 and executes ORB-SLAM3 as a native ELF process. It
 
 ## Build boundaries
 
+For the 0.3.0rc1 offline base/addon bundles use [INSTALL_LINUX.md](INSTALL_LINUX.md).
+The following source build helpers are developer tools, not the offline installation entry.
+The controlled variant is Ubuntu 22.04 x86_64, CPython 3.10 and sm_120.
+
 The pinned build entry points are:
 
 ```bash
 bash scripts/build_orbslam3_linux.sh
 bash scripts/install_linux_python_runtime.sh
 bash scripts/build_open3d_cuda_linux.sh
-bash scripts/setup_orbbec_linux.sh   # explicit sudo checkpoint
+sudo bash packaging/linux/setup_orbbec_udev.sh   # user explicitly installs official rules
 ```
 
 Set `G305_BUILD_JOBS=1` or `2` for Open3D. The build script also propagates that limit to nested
@@ -20,8 +24,8 @@ third-party Ninja builds through `CMAKE_BUILD_PARALLEL_LEVEL`.
 The ORB build is pinned to commit `4452a3c4ab75b1cde34e5505a36ec3f9edcdc4c4`; the headless
 runner patch is GPL-3.0-or-later and the generated external Runtime is not bundled in the Python
 wheel. Open3D is pinned to `0.19` source commit `1e7b17438687a0b0c1e5a7187321ac7044afe275`, CUDA 12.8,
-and architecture 120 for the RTX 5060 L1 machine. Change only the CUDA architecture when creating
-a documented native-machine Runtime variant.
+and architecture 120 for the RTX 5060 L1 machine. Other architectures require a separate build
+and validation; changing a flag does not qualify another GPU.
 
 The Open3D build also needs the GLFW/X11 development headers even with the GUI disabled:
 
@@ -30,9 +34,9 @@ sudo apt-get install -y --no-install-recommends \
   libxcursor-dev libxinerama-dev libxi-dev libxrandr-dev
 ```
 
-`setup_orbbec_linux.sh` verifies the official Orbbec SDK v2.8.6 commit and invokes its official
-udev installer. It deliberately requires an interactive sudo checkpoint. Do not copy ad-hoc udev
-rules or run capture as root.
+`setup_orbbec_udev.sh` invokes verbatim official v2.9.3 rules from commit
+`2f6561c28255d805b34aa00a690199ce40e96c81`, matching native SDK 2.9.3.
+The ordinary installer never invokes this script or sudo. Do not run capture as root.
 
 ## Runtime configuration
 
@@ -70,7 +74,8 @@ g305-orbslam3-trajectory --help
 or Open3D before 2-D publication. `g305-video-post-3d` runs native ORB and TSDF afterward. A 3-D
 failure writes `3d/video_3d_failure.json` and cannot revoke the existing `video_delivery.json`.
 
-Without a camera, live capture polls every 0.5 seconds and auto-resumes after hot-plug. Use
+Before the first committed frame, live capture can wait for camera hot-plug. After the first
+commit, disconnect stops that session; reconnect cannot append to it. Use
 `--no-wait-for-camera` for immediate failure. Ctrl+C and the SDK job cancellation event stop the
 wait/capture path cooperatively.
 
@@ -80,3 +85,7 @@ Recorded-session replay proves software correctness, pixel equivalence, native O
 that recording. It is not a new physical-camera run. Native non-root Gemini 305 capture, udev,
 metadata/sync readback and five physical SDK runs remain `NOT_EXECUTED/WAITING_FOR_H0` until H0 is
 performed on an Ubuntu machine with the camera attached.
+
+Doctor reports capabilities only; compatibility readiness fields are null. Only the acceptance
+aggregator can issue source/wheel/bundle/variant/platform-bound status artifacts after checking
+the actual raw runs. Phase 2 does not execute native H0 or issue any readiness state.

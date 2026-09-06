@@ -2,7 +2,10 @@
 
 `gemini305-rgbd-panorama` 提供面向 Python 集成的稳定 SDK。照片产品 `PanoramaSDK` 只封装严格 RGB-D 会话校验、合成会话生成和正式全景交付；位姿、接缝和裁剪等安全门限仍由 fail-closed 流水线管理。
 
-当前 SDK 版本：`0.2.0`。Python 版本要求为 3.10–3.12。
+当前候选 SDK 版本：`0.3.0rc1`，Runtime 仅支持 CPython 3.10。
+Linux 离线安装遵循 [INSTALL_LINUX.md](INSTALL_LINUX.md)，受控平台见
+[SUPPORT_MATRIX.md](SUPPORT_MATRIX.md)。下面源码开发示例须在 CPython 3.10 环境使用；
+`capture` extra 的 wrapper metadata variant 应先由离线包安装。
 
 ## 安装
 
@@ -139,4 +142,11 @@ The wheel contains byte-identical immutable V11/baseline locks, configurations a
 resources. It does not contain NVIDIA drivers/toolkit, Orbbec system rules, ORB-SLAM3 binaries or
 Vocabulary. `sdk.doctor()` reports these external requirements separately, and intentionally keeps
 ORB distribution licensing blocked until an approved GPL distribution plan or commercial license
-exists. A missing camera does not by itself negate `SDK_SOFTWARE_READY`.
+exists. Doctor cannot issue or infer software, hardware or release readiness; its compatibility
+fields are fixed to null. Qualification requires independently validated acceptance artifacts.
+The current phase stops at development bundle portability, with all readiness states false.
+
+Typed jobs, errors, cancellation, ownership, salvage/emergency and retention contracts are documented
+in [LINUX_SDK_JOB_LIFECYCLE.md](LINUX_SDK_JOB_LIFECYCLE.md). Emergency output is separate from formal P3.
+Only successful SDK-owned inputs meeting all requested delivery and warning gates can be retained
+or cleaned according to policy; external sessions are never deleted.

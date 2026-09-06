@@ -28,11 +28,11 @@
 
 ```text
 连续 RGB-D 采集
-  → writer 提交帧驱动正式兼容的 S013 M0–M3/P0，实时显示 current P0
+  → 已提交 JPEG 的规范解码驱动有界正式在线 P0，独立非权威 Preview
      （采集期不运行 ORB-SLAM3、Open3D、TSDF 或三维进程）
   → 停止并 join UI 预览、drain writer、追平 committed backlog
   → 闭合 M3 并冻结在线 P0，只重绘尚未定型的尾部
-  → validated-inputs-only handoff 后重新执行完整 P0 → P1 → P2 → P3
+  → 验证 frozen P0 authority 并复用已封闭前缀，完成尾部 P0 与完整 P1 → P2 → P3
   → 只发布正式 P3、provenance、report、timing
   → video_delivery.json 最后原子发布
   → 二维资源释放后，按需启动独立三维子进程运行 ORB-SLAM3 与 Open3D TSDF
@@ -42,7 +42,11 @@
 
 ### 1. 安装当前工作区
 
-正式 Windows 主环境为 `D:\Panoramic_Camera\.conda`，Python 要求 `>=3.10,<3.13`：
+Linux `0.3.0rc1` 候选 Runtime 要求 `>=3.10,<3.11`。离线安装见
+[INSTALL_LINUX.md](docs/INSTALL_LINUX.md)，范围与资格边界见
+[SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md)。base 使用 headless OpenCV，不包含 Open3D/ORB；
+三维由独立 addon 与外部 ORB Runtime 提供。doctor 不签发资格，WSL 不等于原生 H0。
+既有 Windows 开发环境为 `D:\Panoramic_Camera\.conda`；以下源码安装命令须使用 CPython 3.10：
 
 ```powershell
 cd D:\central_strip_Panoramic_Camera

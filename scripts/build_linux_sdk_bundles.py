@@ -394,6 +394,7 @@ def main():
             "scripts",
             "packaging",
             "requirements",
+            "artifacts/S013_M6_1_metrics_baseline_v2/threshold_approval.json",
             "docs",
             "pyproject.toml",
             "setup.py",
@@ -406,7 +407,15 @@ def main():
         ):
             path = args.source / name
             if path.exists():
-                tar.add(path, arcname="source/" + name)
+                tar.add(
+                    path,
+                    arcname="source/" + name,
+                    filter=lambda item: (
+                        None
+                        if "__pycache__" in item.name or ".egg-info/" in item.name
+                        else item
+                    ),
+                )
         for root in roots:
             tar.add(root / "licenses", arcname=root.name + "/licenses")
             tar.add(
