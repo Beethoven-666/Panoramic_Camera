@@ -1,4 +1,4 @@
-"""Read-only VMware H0 host probes; camera access is gated by recorded replay."""
+"""Read-only native H0 host probes; camera access is gated by native replay."""
 from __future__ import annotations
 
 import hashlib
@@ -62,19 +62,9 @@ def collect_host():
             "effective_uid": os.geteuid() if hasattr(os, "geteuid") else None,
             "glibc": command(["getconf", "GNU_LIBC_VERSION"]),
             "virtualization": command(["systemd-detect-virt"]),
-            "dmi": {key: _text(Path("/sys/class/dmi/id") / key)
-                    for key in ("sys_vendor", "product_name", "product_uuid")},
             "proc_version": _text("/proc/version"), "kernel": platform.release(),
             "container_markers": [p for p in ("/.dockerenv", "/run/.containerenv") if Path(p).exists()],
             "pythonpath": os.environ.get("PYTHONPATH"), "g305_cuda": os.environ.get("G305_CUDA")}
-
-
-def is_vmware_guest(host):
-    """Accept measured VMware only; unknown detection never qualifies."""
-    virt = host.get("virtualization", {})
-    return (virt.get("stdout", "").strip() == "vmware" and virt.get("returncode") == 0
-            and not host.get("container_markers")
-            and "microsoft" not in (str(host.get("proc_version")) + str(host.get("kernel"))).lower())
 
 
 def collect_gpu():
@@ -176,12 +166,12 @@ def collect_inventory(output_root, storage_root, lock_root, *, binding=None, rep
     output.mkdir(parents=True, exist_ok=True)
     identity = {key: (binding or {}).get(key) for key in IDENTITY_FIELDS}
     host = collect_host()
-    eligible_host = (host["system"] == "Linux" and host["os_release"].get("ID") == "ubuntu"
+    native = (host["system"] == "Linux" and host["os_release"].get("ID") == "ubuntu"
               and host["os_release"].get("VERSION_ID") == "22.04" and host["architecture"] == "x86_64"
-              and isinstance(host["effective_uid"], int) and host["effective_uid"] > 0
-              and host["python_implementation"] == "CPython" and host["python_version"][:2] == [3, 10]
-              and is_vmware_guest(host))
-    camera = collect_camera(lock_root, replay_verified=replay_verified and eligible_host)
+              and host["effective_uid"] not in {None, 0} and not host["container_markers"]
+              and host["virtualization"].get("stdout", "").strip() == "none"
+              and "microsoft" not in str(host["proc_version"]).lower())
+    camera = collect_camera(lock_root, replay_verified=replay_verified and native)
     if udev_rule:
         path = Path(udev_rule)
         camera["udev_rule"] = {"path": str(path), "sha256": sha256(path), "mode": oct(path.stat().st_mode & 0o777)}
@@ -206,11 +196,13 @@ def inventory_errors(records, binding):
             errors.append(f"{name}: inventory differs from bound raw inventory")
     host = records.get("host", {})
     require(host.get("system") == "Linux" and host.get("os_release", {}).get("ID") == "ubuntu"
-            and host.get("os_release", {}).get("VERSION_ID") == "22.04", "Guest must run Ubuntu 22.04")
+            and host.get("os_release", {}).get("VERSION_ID") == "22.04", "Host must be native Ubuntu 22.04")
     require(host.get("architecture") == "x86_64", "Host must be x86_64")
     require(host.get("python_implementation") == "CPython" and host.get("python_version", [])[:2] == [3, 10], "CPython 3.10 required")
     require(isinstance(host.get("effective_uid"), int) and host["effective_uid"] > 0, "Non-root required")
-    require(is_vmware_guest(host), "Verified VMware guest required; WSL, containers, other or unknown hosts prohibited")
+    virt = host.get("virtualization", {})
+    require(virt.get("stdout", "").strip() == "none" and virt.get("returncode") == 1
+            and not host.get("container_markers") and "microsoft" not in (str(host.get("proc_version")) + str(host.get("kernel"))).lower(), "Bare metal required; virtualization unknown or detected")
     try:
         version = host["glibc"]["stdout"].strip().split()[-1]
         require(tuple(map(int, version.split(".")[:2])) >= (2, 35), "glibc >=2.35 required")

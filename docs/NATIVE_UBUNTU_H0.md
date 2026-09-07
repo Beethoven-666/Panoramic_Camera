@@ -1,4 +1,4 @@
-# VMware Ubuntu H0 — external qualification tools
+# Native Ubuntu H0 — external qualification tools
 
 These tools qualify only SDK `0.3.0rc1`, subject commit
 `2abb132043e7c5ae1805a2ed1dd91516ebf2f874`, runtime variant
@@ -7,19 +7,8 @@ project wheel and all frozen SDK archives remain immutable. Tool fixes require a
 new tools archive and a fresh campaign; SDK/runtime/installer/config fixes stop
 this campaign and require a new `0.3.0rc2` through phases 3, 4 and 5.
 
-The execution requirements are the user-supplied
-`GEMINI305_LINUX_SDK_PHASE_5_NATIVE_H0_CODEX_IMPLEMENTATION_PLAN.md` (phase 5 only),
-as amended by the user's 2026-09-07 instruction: replace native bare-metal H0
-with VMware virtual-machine acceptance. This amendment changes only the host
-environment gate. Ubuntu 22.04, CPython 3.10, non-root execution, real CUDA
-compute capability 12.0, frozen offline Runtime, camera, USB, pixel equivalence,
-quality, performance, fault, retention and duration gates remain mandatory.
-The legacy filenames and v3 schema identifier remain stable; every new binding,
-tools manifest and final status identifies
-`qualification_environment=VMWARE_UBUNTU_22_04` and
-`bare_metal_qualified=false`. A passing `hardware_qualified` is scoped solely
-to this VMware campaign and also requires `vmware_qualified=true`.
-Historical native bindings/tools cannot qualify this amended campaign.
+The normative execution requirements are the user-supplied
+`GEMINI305_LINUX_SDK_PHASE_5_NATIVE_H0_CODEX_IMPLEMENTATION_PLAN.md` (phase 5 only).
 The old `run_sdk_h0_acceptance.py` and `aggregate_sdk_acceptance.py --kind native`
 must not issue phase 5 qualification. Only `aggregate_native_h0_acceptance.py`
 writes `native_acceptance_status.json`, using
@@ -32,20 +21,11 @@ Windows repository suite completed with 2262 passed, 0 failed and 10 explained
 skips; the native-H0 tool suite completed with 138 passed under both Windows
 and Linux CPython 3.10. Ruff, compileall and diff checks passed. The independent
 archive was extracted and its deployed members were checked against its manifest.
-Those counts describe the previous bare-metal tool revision, before the VMware
-amendment. Current revision checks are recorded in the VMware execution report.
-The VMware tool suite passed 161 tests on Windows; focused checks include
-VMware host admission, rejection of old native bindings/tools, and preserving
-the real CUDA and full-campaign gates. Ruff and compileall passed.
-U22 (`E:\VMware\U22\Ubuntu 64 位.vmx`) was started and inspected through VMware
-Tools as normal user `z` (uid 1000). The guest reports Ubuntu 22.04.5,
-CPython 3.10.12 and `systemd-detect-virt=vmware`. Its PCI inventory exposes only
-VMware SVGA II graphics, no NVIDIA PCI device; `nvidia-smi` and `/dev/nvidia*`
-are absent. The required CUDA CC 12.0 is consequently unavailable on this
-configuration. No GPU driver or frozen runtime was modified to disguise this.
-No camera evidence is supplied. Test runs on Windows/WSL are tool development
-checks only. Hardware, performance, scene quality, physical faults, retention
-and endurance remain NOT_EXECUTED until the unchanged compute gate can pass.
+No native camera evidence is supplied with this repository. A VMware VM named
+U22 was offered for execution; it does not meet the explicit bare-metal gate.
+It must not be relabeled as native Ubuntu. Test runs on Windows/WSL are tool
+development checks only. Hardware, performance, scene quality, physical faults,
+retention and endurance remain NOT_EXECUTED until run on eligible hardware.
 
 These checks establish phase 5A tool-development validation only. They do not
 establish native hardware readiness or qualify any of the physical suites.
@@ -84,19 +64,13 @@ support and build time. The tools contain no project/Open3D wheel, ORB executabl
 Vocabulary, capture data or private key. Keep the external manifest and checksum
 file beside the extracted tools, as documented by `--help`.
 
-## VMware preparation and preflight order
+## Native preparation and preflight order
 
-Use a non-root account in a VMware Ubuntu 22.04 guest, x86_64, CPython 3.10,
-glibc >=2.35. `systemd-detect-virt` must return `vmware` with exit code 0;
-bare metal, other hypervisors, WSL, containers and unknown detection block this
-VMware-specific campaign. GPU capability must be 12.0 with the
+Use a non-root account on directly installed Ubuntu 22.04, x86_64, CPython 3.10,
+glibc >=2.35. `systemd-detect-virt` must return `none`; VM, WSL, containers and an
+unknown virtualization result block H0. GPU capability must be 12.0 with the
 frozen private CUDA Open3D and a working CuPy kernel. Local storage must be ext4
 or xfs, with at least 30 GiB free for short tests.
-
-Check the guest's actual PCI/CUDA visibility before transporting large frozen
-archives. A virtual SVGA adapter or host GPU inventory is not CUDA execution
-inside this guest. Missing CUDA stops before recorded replay and camera probe;
-CPU fallback is not authorized by the host-environment amendment.
 
 1. Copy the same base/addon/source archives, candidate index, phase 3 freeze,
    phase 4 software status/binding, recorded session and reference results,

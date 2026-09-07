@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["schema", "status", "milestone", "subject_source_commit", "h0_tool_commit", "software_ready", "hardware_qualified", "long_duration_qualified", "platform", "qualification_environment", "bare_metal_qualified", "vmware_qualified", "release_ready", "signature_status", "orb_distribution_license", "evidence", "errors"],
+  "required": ["schema", "status", "milestone", "subject_source_commit", "h0_tool_commit", "software_ready", "hardware_qualified", "long_duration_qualified", "release_ready", "signature_status", "orb_distribution_license", "evidence", "errors"],
   "properties": {
     "schema": {"const": "gemini305-sdk-native-acceptance/v3"},
     "status": {"enum": ["PASS", "FAIL"]},
@@ -9,17 +9,10 @@
     "software_ready": {"type": "boolean"},
     "hardware_qualified": {"type": "boolean"},
     "long_duration_qualified": {"type": "boolean"},
-    "platform": {"const": "VMWARE_UBUNTU_22_04"},
-    "qualification_environment": {"const": "VMWARE_UBUNTU_22_04"},
-    "bare_metal_qualified": {"const": false},
-    "vmware_qualified": {"type": "boolean"},
     "release_ready": {"const": false},
     "signature_status": {"const": "UNSIGNED"},
     "orb_distribution_license": {"const": "BLOCKED/ORB_LICENSE"},
     "errors": {"type": "array", "items": {"type": "string"}}
   },
-  "allOf": [
-    {"if": {"properties": {"hardware_qualified": {"const": true}}}, "then": {"properties": {"status": {"const": "PASS"}, "milestone": {"const": "SDK_HARDWARE_QUALIFIED"}, "software_ready": {"const": true}, "long_duration_qualified": {"const": true}, "vmware_qualified": {"const": true}, "errors": {"maxItems": 0}}}},
-    {"if": {"properties": {"vmware_qualified": {"const": true}}}, "then": {"properties": {"hardware_qualified": {"const": true}}}}
-  ]
+  "allOf": [{"if": {"properties": {"hardware_qualified": {"const": true}}}, "then": {"properties": {"status": {"const": "PASS"}, "milestone": {"const": "SDK_HARDWARE_QUALIFIED"}, "software_ready": {"const": true}, "long_duration_qualified": {"const": true}, "errors": {"maxItems": 0}}}}]
 }
