@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gemini305-native-h0-campaign/v2",
+  "type": "object",
+  "required": ["schema", "h0_id", "subject_source_commit", "h0_tool_commit", "created_ns", "pid", "root", "planned_sdk_labels"],
+  "properties": {
+    "schema": {"const": "gemini305-native-h0-campaign/v2"},
+    "h0_id": {"type": "string", "minLength": 1},
+    "subject_source_commit": {"const": "2abb132043e7c5ae1805a2ed1dd91516ebf2f874"},
+    "h0_tool_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "created_ns": {"type": "integer", "minimum": 1},
+    "pid": {"type": "integer", "minimum": 1},
+    "root": {"type": "string", "minLength": 1},
+    "planned_sdk_labels": {"const": ["warmup_01", "run_01", "run_02", "run_03", "run_04", "run_05"]}
+  },
+  "additionalProperties": false
+}

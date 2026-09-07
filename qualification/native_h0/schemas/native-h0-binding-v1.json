@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schema", "h0_id", "subject", "qualification_tool", "candidate", "runtime", "installed_project", "installed_open3d", "frozen_session", "platform", "signature_status"],
+  "properties": {
+    "schema": {"const": "gemini305-native-h0-binding/v1"},
+    "h0_id": {"type": "string", "minLength": 1},
+    "subject": {"type": "object", "required": ["source_commit", "sdk_version", "runtime_variant", "base_archive_sha256", "addon_archive_sha256", "source_archive_sha256", "project_wheel_sha256", "candidate_index_sha256", "software_acceptance_status_sha256"], "properties": {"source_commit": {"const": "2abb132043e7c5ae1805a2ed1dd91516ebf2f874"}, "sdk_version": {"const": "0.3.0rc1"}, "runtime_variant": {"const": "ubuntu22.04-x86_64-py310-sm120"}}},
+    "qualification_tool": {"type": "object", "required": ["commit", "archive_sha256", "manifest_sha256"], "properties": {"commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}}},
+    "platform": {"const": "NATIVE_UBUNTU_22_04"},
+    "signature_status": {"const": "UNSIGNED"}
+  }
+}
