@@ -198,10 +198,17 @@ def test_postprocess_runs_orb_before_final_3d_without_preview(
     def fake_orb(frames: tuple[object, ...], *_args: object, **_kwargs: object) -> object:
         calls.append("orb")
         ids = tuple(frame.frame_id for frame in frames)
+        work = Path(_args[1])
+        evidence = {}
+        for key in ("stdout_path", "stderr_path", "trajectory_path", "association_path"):
+            evidence[key] = work / (key + ".txt")
+            evidence[key].write_text("unit fixture: " + key)
         return SimpleNamespace(
             tracked_frame_ids=ids,
             poses_by_frame_id={frame_id: np.eye(4) for frame_id in ids},
             attempt_audit=(),
+            as_dict=lambda **_kwargs: {"backend": "orbslam3_rgbd_native_linux"},
+            **evidence,
         )
 
     def fake_publish(
@@ -226,6 +233,11 @@ def test_postprocess_runs_orb_before_final_3d_without_preview(
     assert result["preview_generated"] is False
     assert (output_3d / "orbslam3_trajectory.lock.json").is_file()
     assert (output_3d / "video_3d_timing.json").is_file()
+    trajectory = json.loads((output_3d / "orbslam3_trajectory.json").read_text())
+    assert trajectory["timestamps_us"] == [0, 150000, 300000]
+    assert trajectory["backend"] == "orbslam3_rgbd_native_linux"
+    for key in ("stdout_file", "stderr_file", "tum_file", "association_file"):
+        assert (output_3d / trajectory[key]).is_file()
     assert not tuple(output_3d.glob("*preview*"))
 
 

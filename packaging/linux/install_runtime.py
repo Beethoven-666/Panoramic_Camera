@@ -23,12 +23,19 @@ def digest(path):
 
 def verify_checksums(bundle):
     path = bundle / "checksums.sha256"
+    covered = set()
     for line in path.read_text(encoding="utf-8").splitlines():
         sha, relative = line.split("  ", 1)
         target = (bundle / relative).resolve()
         target.relative_to(bundle.resolve())
         if not target.is_file() or digest(target) != sha:
             raise ValueError(f"Bundle checksum mismatch: {relative}")
+        covered.add(relative)
+    sidecars = {"checksums.sha256", "checksums.sha256.asc", "checksums.sha256.TEST_ONLY.asc"}
+    for target in bundle.rglob("*"):
+        relative = target.relative_to(bundle).as_posix()
+        if target.is_file() and relative not in covered | sidecars:
+            raise ValueError(f"Undeclared bundle file: {relative}")
     return digest(path)
 
 
@@ -128,6 +135,8 @@ def install(args):
     errors = platform_errors(facts)
     if errors:
         raise ValueError(",".join(errors))
+    if manifest["runtime_variant"] != "ubuntu22.04-x86_64-py310-sm120":
+        raise ValueError("UNSUPPORTED_RUNTIME_VARIANT")
     addon = args.action == "install-addon"
     if manifest["kind"] != ("3d-addon" if addon else "base"):
         raise ValueError("Bundle kind does not match installer action")

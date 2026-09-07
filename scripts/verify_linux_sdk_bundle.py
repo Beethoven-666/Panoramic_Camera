@@ -6,6 +6,17 @@ import hashlib
 import json
 from pathlib import Path
 import zipfile
+import sys
+
+sys.dont_write_bytecode = True
+
+
+def digest(path):
+    result = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024**2), b""):
+            result.update(block)
+    return result.hexdigest()
 
 
 def verify(root):
@@ -15,7 +26,7 @@ def verify(root):
         sha, relative = line.split("  ", 1)
         path = root / relative
         path.resolve().relative_to(root.resolve())
-        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != sha:
+        if relative in covered or not path.is_file() or digest(path) != sha:
             errors.append("CHECKSUM_MISMATCH:" + relative)
         covered.add(relative)
     for path in root.rglob("*"):
@@ -32,6 +43,14 @@ def verify(root):
         ):
             errors.append("UNDECLARED_FILE:" + relative)
     manifest = json.loads((root / "manifests/bundle-manifest.json").read_text())
+    if manifest.get("content_checksums_file"):
+        if digest(root / manifest["content_checksums_file"]) != manifest["content_checksums_sha256"]:
+            errors.append("PAYLOAD_CHECKSUM_INDEX_MISMATCH")
+    blocked = {"ORBvoc.txt", "ORBvoc.bin", "rgbd_tum_headless",
+               "rgbd_g305_stream_headless", "libORB_SLAM3.so"}
+    for path in root.rglob("*"):
+        if path.name in blocked:
+            errors.append("ORB_PUBLIC_DISTRIBUTION_BLOCKED:" + path.name)
     for wheel in (root / "wheels").glob("*.whl"):
         if manifest["kind"] == "base" and wheel.name.lower().startswith("open3d-"):
             errors.append("OPEN3D_IN_BASE")
@@ -57,13 +76,13 @@ def verify(root):
         for key in ("software_ready", "hardware_qualified", "release_ready")
     ):
         errors.append("DEVELOPMENT_BUNDLE_CANNOT_ISSUE_QUALIFICATION")
+    if manifest.get("signature_status") != "UNSIGNED":
+        errors.append("CANDIDATE_MUST_REMAIN_UNSIGNED")
     return {
         "status": "FAIL" if errors else "PASS",
         "errors": errors,
         "source_commit": manifest["source_commit"],
-        "bundle_checksums_sha256": hashlib.sha256(
-            (root / "checksums.sha256").read_bytes()
-        ).hexdigest(),
+        "content_checksums_sha256": digest(root / "checksums.sha256"),
         "software_ready": False,
         "hardware_qualified": False,
         "release_ready": False,

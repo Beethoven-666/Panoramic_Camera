@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_offline_locks_are_exact_hashed_and_base_excludes_3d():
-    for name in ('linux-runtime', 'orbbec-wrapper', 'addon', 'open3d'):
+    for name in ('linux-runtime', 'orbbec-wrapper', 'addon', 'open3d', 'linux-build'):
         path = ROOT / 'requirements' / (name + '-lock-py310.txt')
         lines = [x for x in path.read_text().splitlines() if x and not x.startswith('#')]
         assert lines and all('==' in line and '--hash=sha256:' in line for line in lines)

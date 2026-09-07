@@ -12,7 +12,12 @@ import pytest
 def load_installer(path):
     spec = importlib.util.spec_from_file_location("g305_installer_test", path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
     return module
 
 
@@ -22,7 +27,8 @@ def facts():
 
 
 @pytest.mark.parametrize("field,value,error", [
-    ("os","debian","UNSUPPORTED_PLATFORM"), ("python",[3,12],"UNSUPPORTED_PYTHON_ABI"),
+    ("os","debian","UNSUPPORTED_PLATFORM"), ("release","24.04","UNSUPPORTED_PLATFORM"),
+    ("python",[3,11],"UNSUPPORTED_PYTHON_ABI"), ("python",[3,12],"UNSUPPORTED_PYTHON_ABI"),
     ("gpu_compute_capabilities",["8.6"],"UNSUPPORTED_GPU_VARIANT")])
 def test_installer_rejects_unsupported_platform_abi_gpu(field, value, error):
     module = load_installer(Path(__file__).resolve().parents[1]/"packaging/linux/install_runtime.py")
@@ -37,7 +43,8 @@ def bundle_fixture(tmp_path):
     (root / "wheels").mkdir()
     shutil.copy2(Path(__file__).resolve().parents[1]/"packaging/linux/install_runtime.py", root/"install_runtime.py")
     (root / "manifests/bundle-manifest.json").write_text(json.dumps({
-        "kind":"base", "sdk_version":"0.3.0rc1", "source_commit":"a"*40,"runtime_variant":"test"}))
+        "kind":"base", "sdk_version":"0.3.0rc1", "source_commit":"a"*40,
+        "runtime_variant":"ubuntu22.04-x86_64-py310-sm120"}))
     lines = [hashlib.sha256(p.read_bytes()).hexdigest()+"  "+p.relative_to(root).as_posix()
              for p in root.rglob("*") if p.is_file()]
     (root / "checksums.sha256").write_text("\n".join(lines)+"\n")
@@ -102,3 +109,32 @@ def test_installer_entrypoints_never_invoke_sudo():
     root = Path(__file__).resolve().parents[1]/"packaging/linux"
     for name in ("install.sh","uninstall.sh","install-addon.sh","uninstall-addon.sh","install_runtime.py"):
         assert "sudo" not in (root/name).read_text()
+
+
+@pytest.mark.parametrize("name", ["wheels/numpy-0.0-py3-none-any.whl", "ORBvoc.txt", "acceptance-tools/changed.py"])
+def test_undeclared_file_rejected_before_prefix_creation(tmp_path, name):
+    root, module = bundle_fixture(tmp_path)
+    extra = root / name
+    extra.parent.mkdir(exist_ok=True)
+    extra.write_bytes(b"unapproved file")
+    args = argparse.Namespace(prefix=tmp_path/"install", python=sys.executable, action="install")
+    with pytest.raises(ValueError, match="Undeclared bundle file"):
+        module.install(args)
+    assert not args.prefix.exists()
+
+
+def test_declared_wrong_runtime_variant_is_rejected(tmp_path, monkeypatch):
+    root, module = bundle_fixture(tmp_path)
+    manifest_path = root / "manifests/bundle-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["runtime_variant"] = "ubuntu22.04-x86_64-py310-sm86"
+    manifest_path.write_text(json.dumps(manifest))
+    checksums = root / "checksums.sha256"
+    checksums.write_text("\n".join(
+        module.digest(p) + "  " + p.relative_to(root).as_posix()
+        for p in root.rglob("*") if p.is_file() and p != checksums) + "\n")
+    monkeypatch.setattr(module, "host_facts", facts)
+    args = argparse.Namespace(prefix=tmp_path/"install", python=sys.executable, action="install")
+    with pytest.raises(ValueError, match="UNSUPPORTED_RUNTIME_VARIANT"):
+        module.install(args)
+    assert not args.prefix.exists()

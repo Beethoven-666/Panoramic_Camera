@@ -22,6 +22,10 @@ def test_exporter_writes_only_complete_real_orbslam3_pose_payload(
         stderr_path = Path(_work) / "orbslam3.stderr.txt"
         stdout_path.write_text("tracked all frames\n", encoding="utf-8")
         stderr_path.write_text("", encoding="utf-8")
+        trajectory_path = Path(_work) / "trajectory.txt"
+        association_path = Path(_work) / "association.txt"
+        trajectory_path.write_text("unit fixture: native trajectory")
+        association_path.write_text("unit fixture: source associations")
         poses = {frame.frame_id: np.eye(4, dtype=np.float64) for frame in frames}
         poses[frames[1].frame_id][0, 3] = 10.0
         return SimpleNamespace(
@@ -29,6 +33,8 @@ def test_exporter_writes_only_complete_real_orbslam3_pose_payload(
             poses_by_frame_id=poses,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
+            trajectory_path=trajectory_path,
+            association_path=association_path,
             as_dict=lambda *, input_frame_count: {
                 "backend": "orbslam3_rgbd_wsl",
                 "input_frame_count": input_frame_count,
@@ -56,6 +62,8 @@ def test_exporter_writes_only_complete_real_orbslam3_pose_payload(
     assert isinstance(payload["poses"][1]["timestamp_us"], int)
     assert output.with_suffix(".stdout.txt").read_text(encoding="utf-8") == "tracked all frames\n"
     assert output.with_suffix(".stderr.txt").is_file()
+    assert (output.parent / payload["tum_file"]).read_text() == "unit fixture: native trajectory"
+    assert (output.parent / payload["association_file"]).read_text() == "unit fixture: source associations"
     audit = json.loads(output.with_suffix(".audit.json").read_text(encoding="utf-8"))
     assert audit["tracked_frame_count"] == 3
     assert audit["untracked_frame_ids"] == []

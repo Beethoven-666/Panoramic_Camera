@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import tempfile
 import time
@@ -68,10 +69,12 @@ def _write_trajectory(
     if tracked_ids != requested_ids or set(trajectory.poses_by_frame_id) != set(requested_ids):
         raise RuntimeError("Post-capture ORB-SLAM3 did not return the complete genuine chain")
     payload: dict[str, object] = {
+        **trajectory.as_dict(input_frame_count=len(tracked_frames)),
         "schema": TRAJECTORY_SCHEMA,
         "pose_convention": "camera_to_world",
         "translation_unit": "mm",
         "tracked_frame_ids": tracked_ids,
+        "timestamps_us": [int(frame.timestamp_us) for frame in tracked_frames],
         "camera_to_world": [
             np.asarray(trajectory.poses_by_frame_id[frame_id], dtype=np.float64).tolist()
             for frame_id in tracked_ids
@@ -80,6 +83,14 @@ def _write_trajectory(
         "interpolated_pose_count": 0,
         "extrapolated_pose_count": 0,
     }
+    for key, source, filename in (
+        ("stdout_file", trajectory.stdout_path, "orbslam3.stdout.txt"),
+        ("stderr_file", trajectory.stderr_path, "orbslam3.stderr.txt"),
+        ("tum_file", trajectory.trajectory_path, "orbslam3.tum.txt"),
+        ("association_file", trajectory.association_path, "orbslam3.association.txt"),
+    ):
+        shutil.copyfile(source, output_3d / filename)
+        payload[key] = filename
     trajectory_path = output_3d / "orbslam3_trajectory.json"
     _atomic_json(trajectory_path, payload)
     lock = {
@@ -158,13 +169,13 @@ def run_post_capture_3d(
                 work,
                 config=orb_config,
             )
-        timing["orb_completed_monotonic_ns"] = time.monotonic_ns()
-        trajectory_path = _write_trajectory(
-            destination,
-            session_root=session_root,
-            tracked_frames=tracked_frames,
-            trajectory=trajectory,
-        )
+            timing["orb_completed_monotonic_ns"] = time.monotonic_ns()
+            trajectory_path = _write_trajectory(
+                destination,
+                session_root=session_root,
+                tracked_frames=tracked_frames,
+                trajectory=trajectory,
+            )
         timing["final_3d_started_monotonic_ns"] = time.monotonic_ns()
         result = publish_video_3d(
             destination,

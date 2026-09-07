@@ -7,6 +7,9 @@ import argparse
 import email
 import hashlib
 import json
+import importlib.metadata
+import os
+import platform
 import re
 import shutil
 import subprocess
@@ -21,6 +24,106 @@ VERSION = "0.3.0rc1"
 OPEN3D_COMMIT = "1e7b17438687a0b0c1e5a7187321ac7044afe275"
 ORB_COMMIT = "4452a3c4ab75b1cde34e5505a36ec3f9edcdc4c4"
 PANGOLIN_COMMIT = "aff6883c83f3fd7e8268a9715e84266c42e2efe3"
+ACCEPTANCE_TOOLS = (
+    "run_linux_l1_benchmark.py", "summarize_linux_l1_benchmark.py",
+    "aggregate_sdk_acceptance.py", "verify_linux_sdk_bundle.py",
+    "verify_linux_sdk_archive.py", "create_sdk_acceptance_binding.py",
+    "compare_linux_sdk_builds.py", "verify_s13_v11_live_equivalence.py",
+)
+
+
+def checksum_text(root, excluded=()):
+    return "".join(sha(p) + "  " + p.relative_to(root).as_posix() + "\n"
+                   for p in sorted(root.rglob("*"))
+                   if p.is_file() and p.relative_to(root).as_posix() not in excluded)
+
+
+def deterministic_archive(archive, entries, epoch):
+    """One-thread zstd and canonical tar metadata; never overwrite an artifact."""
+    import zstandard
+
+    with (archive.open("xb") as handle,
+          zstandard.ZstdCompressor(level=6, threads=0).stream_writer(handle) as stream,
+          tarfile.open(fileobj=stream, mode="w|", format=tarfile.PAX_FORMAT) as tar):
+        for path, name in sorted(entries, key=lambda pair: pair[1]):
+            info = tar.gettarinfo(str(path), arcname=name)
+            if not (info.isfile() or info.isdir()):
+                raise ValueError("Only regular files and directories are distributed: " + name)
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            info.mtime = epoch
+            info.mode = 0o755 if info.isdir() or path.suffix == ".sh" else 0o644
+            info.pax_headers = {}
+            if info.isfile():
+                with path.open("rb") as source:
+                    tar.addfile(info, source)
+            else:
+                tar.addfile(info)
+
+
+def tree_entries(root, top):
+    return [(root, top)] + [(p, top + "/" + p.relative_to(root).as_posix())
+                           for p in root.rglob("*")
+                           if "__pycache__" not in p.parts and
+                           not any(x.endswith(".egg-info") for x in p.parts)]
+
+
+def validate_descriptor(args):
+    descriptor = json.loads((args.source / "packaging/linux/release-candidate.json").read_text())
+    version_source = (args.source / "src/panorama_demo/version.py").read_text()
+    if re.search(r'__version__\s*=\s*["\']([^"\']+)', version_source)[1] != descriptor["sdk_version"]:
+        raise ValueError("Descriptor and package version mismatch")
+    lock = json.loads((args.source / "configs/video_algorithms/s013_visual_continuity_v11_production.lock.json").read_text())
+    config = (args.source / "configs/video_algorithms/s013_visual_continuity_v11_production.yaml").read_text()
+    for key in ("algorithm_id", "config_sha256"):
+        if lock[key] != descriptor["production_" + key]:
+            raise ValueError("Production lock differs from candidate descriptor")
+    if ("implementation_id: " + descriptor["production_implementation_id"]) not in config:
+        raise ValueError("Production implementation differs from candidate descriptor")
+    # Run the existing canonical config validator from the exported source without importing the SDK.
+    import yaml
+    parsed = yaml.safe_load(config)
+    canonical = {key: value for key, value in parsed.items() if key != "config_sha256"}
+    if hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest() != lock["config_sha256"]:
+        raise ValueError("Production canonical config SHA mismatch")
+    runtime = json.loads(args.runtime_manifest.read_text())
+    for key in ("runtime_variant", "python_abi", "ubuntu", "architecture", "glibc_minimum", "gpu_compute_capability"):
+        if runtime.get(key) != descriptor[key]:
+            raise ValueError("Runtime manifest mismatch: " + key)
+    for key in ("version", "source_commit", "wheel_sha256"):
+        if runtime["open3d"][key] != descriptor["open3d_" + key]:
+            raise ValueError("Private Open3D identity mismatch: " + key)
+    if (runtime["orb"]["source_commit"] != descriptor["orb_source_commit"] or
+            runtime["orb"]["pangolin_source_commit"] != descriptor["pangolin_source_commit"] or
+            runtime["orb"].get("external_only") is not True):
+        raise ValueError("External ORB Runtime identity mismatch")
+    if sha(args.open3d_wheel) != descriptor["open3d_wheel_sha256"]:
+        raise ValueError("Private Open3D wheel SHA mismatch")
+    locked_wheels(args.source / "requirements/open3d-lock-py310.txt", [args.open3d_wheel])
+    if "-cp310-cp310-" not in args.open3d_wheel.name:
+        raise ValueError("Open3D wheel Python ABI mismatch")
+    if descriptor["signature_status"] != "UNSIGNED" or descriptor["orb_distribution"] != "external_only":
+        raise ValueError("This candidate must remain UNSIGNED with external ORB")
+    return descriptor
+
+
+def build_environment(args, commit, epoch):
+    lock = args.source / "requirements/linux-build-lock-py310.txt"
+    wheels = locked_wheels(lock, list(args.build_wheelhouse.glob("*.whl")))
+    versions = {}
+    for line in lock.read_text().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        name, version = line.split(" --hash=")[0].split("==")
+        if importlib.metadata.version(name) != version:
+            raise ValueError("Build environment does not match exact build lock: " + name)
+        versions[name] = version
+    return {"python_executable": sys.executable, "python_version": sys.version,
+            "versions": versions, "build_lock_sha256": sha(lock),
+            "build_wheels": {p.name: sha(p) for p in wheels},
+            "source_date_epoch": epoch, "source_commit": commit,
+            "os": platform.platform(), "glibc": platform.libc_ver(),
+            "architecture": platform.machine(), "builder_sha256": sha(Path(__file__))}
 
 
 def sha(path):
@@ -232,6 +335,10 @@ def bundle(args, kind, source_commit, wheel):
     root.mkdir(parents=True, exist_ok=False)
     for name in ("wheels", "requirements", "config", "manifests", "docs", "licenses"):
         (root / name).mkdir()
+    if kind == "base":
+        (root / "acceptance-tools").mkdir()
+        for name in ACCEPTANCE_TOOLS:
+            shutil.copyfile(args.source / "scripts" / name, root / "acceptance-tools" / name)
     for path in (args.source / "packaging/linux").iterdir():
         if path.is_file():
             shutil.copy2(path, root / path.name)
@@ -275,9 +382,12 @@ def bundle(args, kind, source_commit, wheel):
     if kind == "base" and any(d["name"].lower() == "open3d" for d in dependencies):
         raise ValueError("Open3D leaked into base")
     patches = [
-        {"path": str(p.relative_to(args.source)), "sha256": sha(p)}
-        for p in (args.source / "scripts/patches").glob("*.patch")
+        {"path": p.relative_to(args.source).as_posix(), "sha256": sha(p)}
+        for p in sorted((args.source / "scripts/patches").glob("*.patch"))
     ]
+    if kind == "base":
+        patches.extend({"path": "acceptance-tools/" + name, "sha256": sha(root / "acceptance-tools" / name)}
+                       for name in ACCEPTANCE_TOOLS)
     variant = json.loads(args.runtime_manifest.read_text())
     variant.update(
         {
@@ -319,6 +429,7 @@ def bundle(args, kind, source_commit, wheel):
             / "configs/video_algorithms/s013_visual_continuity_v11_production.lock.json"
         ).read_text()
     )
+    (root / "payload-checksums.sha256").write_text(checksum_text(root), encoding="utf-8", newline="\n")
     write_json(
         root / "manifests/bundle-manifest.json",
         {
@@ -328,6 +439,8 @@ def bundle(args, kind, source_commit, wheel):
             "source_commit": source_commit,
             "runtime_variant": VARIANT,
             "project_wheel_sha256": sha(wheel),
+            "content_checksums_sha256": sha(root / "payload-checksums.sha256"),
+            "content_checksums_file": "payload-checksums.sha256",
             "production_lock": identity,
             "development_portability_only": True,
             "software_ready": False,
@@ -344,28 +457,41 @@ def bundle(args, kind, source_commit, wheel):
             ],
         },
     )
-    (root / "checksums.sha256").write_text(
-        "".join(
-            sha(p) + "  " + p.relative_to(root).as_posix() + "\n"
-            for p in sorted(root.rglob("*"))
-            if p.is_file()
-        )
-    )
+    (root / "checksums.sha256").write_text(checksum_text(root), encoding="utf-8", newline="\n")
     sign(root / "checksums.sha256", args.signing_key, args.test_only_signature)
     return root
 
 
 def main():
+    global VERSION, VARIANT, OPEN3D_COMMIT, ORB_COMMIT, PANGOLIN_COMMIT
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("source", "output", "wheelhouse", "open3d-wheel", "runtime-manifest"):
+    for name in ("source", "output", "wheelhouse", "build-wheelhouse", "open3d-wheel", "runtime-manifest"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--signing-key")
     parser.add_argument("--test-only-signature", action="store_true")
     args = parser.parse_args()
     if sys.version_info[:2] != (3, 10):
         raise SystemExit("Build requires CPython 3.10")
+    if args.signing_key or args.test_only_signature:
+        raise ValueError("Phase 3 candidates must remain UNSIGNED")
+    args.source = args.source.resolve()
+    args.output = args.output.resolve()
+    if platform.system() != "Linux" or str(args.source).startswith("/mnt/") or str(args.output).startswith("/mnt/"):
+        raise ValueError("Build requires a Linux ext4 checkout and output")
     source_commit = source_identity(args.source)
+    epoch = int(os.environ["SOURCE_DATE_EPOCH"])
+    if epoch < 315532800:
+        raise ValueError("SOURCE_DATE_EPOCH must be ZIP-compatible (1980 or later)")
+    descriptor = validate_descriptor(args)
+    VERSION, VARIANT = descriptor["sdk_version"], descriptor["runtime_variant"]
+    OPEN3D_COMMIT = descriptor["open3d_source_commit"]
+    ORB_COMMIT = descriptor["orb_source_commit"]
+    PANGOLIN_COMMIT = descriptor["pangolin_source_commit"]
+    environment = build_environment(args, source_commit, epoch)
     args.output.mkdir(parents=True, exist_ok=False)
+    write_json(args.output / "build-environment.json", environment)
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+    env.update(PYTHONHASHSEED="0", TZ="UTC")
     with (args.output / "build.log").open("xb") as log:
         subprocess.run(
             [
@@ -381,50 +507,67 @@ def main():
             stdout=log,
             stderr=subprocess.STDOUT,
             check=True,
+            env=env,
         )
     (wheel,) = (args.output / "project-wheel").glob("*.whl")
+    with zipfile.ZipFile(wheel) as archive:
+        metadata = email.message_from_bytes(archive.read(next(n for n in archive.namelist() if n.endswith(".dist-info/METADATA"))))
+        if metadata["Version"] != VERSION or not wheel.name.endswith("-py3-none-any.whl"):
+            raise ValueError("Built wheel metadata/version/ABI mismatch")
     roots = [bundle(args, kind, source_commit, wheel) for kind in ("base", "3d-addon")]
-    import zstandard
-
+    artifacts = {}
+    for key, root in zip(("base", "three_d_addon"), roots):
+        archive_path = args.output / (root.name + ".tar.zst")
+        deterministic_archive(archive_path, tree_entries(root, root.name), epoch)
+        artifacts[key] = {"filename": archive_path.name, "size": archive_path.stat().st_size,
+                          "archive_sha256": sha(archive_path),
+                          "content_checksums_sha256": sha(root / "checksums.sha256")}
     archive = args.output / f"gemini305-sdk-source-compliance-{VERSION}.tar.zst"
-    with (
-        archive.open("xb") as handle,
-        zstandard.ZstdCompressor(level=6).stream_writer(handle) as stream,
-        tarfile.open(fileobj=stream, mode="w|") as tar,
-    ):
+    # A clean git export is the compliance source, including tests and all frozen tools.
+    with tempfile.TemporaryDirectory(prefix="g305-compliance-") as temporary:
+        stage = Path(temporary) / archive.name.removesuffix(".tar.zst")
+        source = stage / "source"
+        source.mkdir(parents=True)
         for name in (
-            "src",
-            "configs",
-            "scripts",
-            "packaging",
-            "requirements",
+            "src", "configs", "scripts", "packaging", "requirements", "tests",
             "artifacts/S013_M6_1_metrics_baseline_v2/threshold_approval.json",
-            "docs",
-            "pyproject.toml",
-            "setup.py",
-            "build_support.py",
-            "MANIFEST.in",
-            "README.md",
-            "THIRD_PARTY_NOTICES.md",
-            "CHANGELOG.md",
-            ".g305-source-commit",
+            "docs", "pyproject.toml", "setup.py", "build_support.py", "MANIFEST.in",
+            "README.md", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "AGENTS.md",
         ):
             path = args.source / name
             if path.exists():
-                tar.add(
-                    path,
-                    arcname="source/" + name,
-                    filter=lambda item: (
-                        None
-                        if "__pycache__" in item.name or ".egg-info/" in item.name
-                        else item
-                    ),
-                )
+                target = source / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if path.is_dir():
+                    shutil.copytree(path, target, ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"))
+                else:
+                    shutil.copyfile(path, target)
+        (source / ".g305-source-commit").write_text(source_commit + "\n")
         for root in roots:
-            tar.add(root / "licenses", arcname=root.name + "/licenses")
-            tar.add(
-                root / "manifests/sbom.spdx.json", arcname=root.name + "/sbom.spdx.json"
-            )
+            shutil.copytree(root / "licenses", stage / root.name / "licenses")
+            shutil.copyfile(root / "manifests/sbom.spdx.json", stage / root.name / "sbom.spdx.json")
+        (stage / "checksums.sha256").write_text(checksum_text(stage), encoding="utf-8", newline="\n")
+        deterministic_archive(archive, tree_entries(stage, stage.name), epoch)
+    artifacts["source_compliance"] = {"filename": archive.name, "size": archive.stat().st_size,
+                                      "archive_sha256": sha(archive)}
+    wrapper = next(p for p in (roots[0] / "wheels").glob("pyorbbecsdk2-*.whl"))
+    index = {"schema": "gemini305-linux-sdk-release-candidate/v2",
+             "candidate_id": f"{epoch}-{source_commit[:12]}", "source_commit": source_commit,
+             "sdk_version": VERSION, "runtime_variant": VARIANT,
+             "project_wheel_filename": wheel.name, "project_wheel_size": wheel.stat().st_size,
+             "project_wheel_sha256": sha(wheel), "artifacts": artifacts,
+             "open3d_wheel_sha256": sha(args.open3d_wheel),
+             "orbbec_wrapper_wheel_sha256": sha(wrapper),
+             "production_lock": json.loads((roots[0] / "manifests/bundle-manifest.json").read_text())["production_lock"],
+             "signature_status": "UNSIGNED", "bundle_frozen": False,
+             "milestone": "RC_BUNDLE_BUILT_PENDING_VERIFICATION",
+             "software_ready": False, "hardware_qualified": False, "release_ready": False}
+    write_json(args.output / "release-candidate-index.json", index)
+    shutil.copyfile(args.source / "scripts/verify_linux_sdk_archive.py", args.output / "verify_linux_sdk_archive.py")
+    release_files = [args.output / item["filename"] for item in artifacts.values()]
+    release_files += [args.output / "release-candidate-index.json", args.output / "verify_linux_sdk_archive.py"]
+    (args.output / "release-candidate-checksums.sha256").write_text(
+        "".join(sha(p) + "  " + p.name + "\n" for p in sorted(release_files)), encoding="utf-8", newline="\n")
     write_json(
         args.output / "build-result.json",
         {
@@ -434,6 +577,8 @@ def main():
             "project_wheel_sha256": sha(wheel),
             "source_compliance_archive": str(archive),
             "source_compliance_sha256": sha(archive),
+            "artifacts": artifacts,
+            "signature_status": "UNSIGNED",
             "software_ready": False,
             "hardware_qualified": False,
             "release_ready": False,

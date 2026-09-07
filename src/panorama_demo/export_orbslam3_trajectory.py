@@ -117,6 +117,8 @@ def export_trajectory(
                 "untracked_frame_ids": [],
                 "stdout_file": stdout_output.name,
                 "stderr_file": stderr_output.name,
+                "tum_file": destination.with_suffix(".tum.txt").name,
+                "association_file": destination.with_suffix(".association.txt").name,
                 "poses": matrices,
             }
         )
@@ -126,6 +128,8 @@ def export_trajectory(
             raise RuntimeError("ORB-SLAM3 did not preserve stdout/stderr audit files")
         _atomic_copy(stdout_source, stdout_output)
         _atomic_copy(stderr_source, stderr_output)
+        _atomic_copy(Path(trajectory.trajectory_path), destination.with_suffix(".tum.txt"))
+        _atomic_copy(Path(trajectory.association_path), destination.with_suffix(".association.txt"))
         pending = destination.parent / f".{destination.name}.pending"
         pending.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(pending, destination)

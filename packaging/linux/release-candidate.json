@@ -1,0 +1,20 @@
+{
+  "schema": "gemini305-linux-sdk-release-candidate-config/v1",
+  "sdk_version": "0.3.0rc1",
+  "runtime_variant": "ubuntu22.04-x86_64-py310-sm120",
+  "python_abi": "cp310",
+  "ubuntu": "22.04",
+  "architecture": "x86_64",
+  "glibc_minimum": "2.35",
+  "gpu_compute_capability": "12.0",
+  "production_algorithm_id": "S013_output_first_progressive_dense_central_slit_v4_cuda_m63_visual_continuity_v11",
+  "production_implementation_id": "s013_m5_disjoint_seam_m63_pair_guard_v11",
+  "production_config_sha256": "3a49f8cbaa622592eff41b2a9e34cb518c6067d74d15574cf01faeea0cc8fafc",
+  "open3d_source_commit": "1e7b17438687a0b0c1e5a7187321ac7044afe275",
+  "open3d_version": "0.19.0+1e7b17438",
+  "open3d_wheel_sha256": "519b660486027ffa244838a394ddd0e82a8bae7348b13bcf373fd24e2f0ef449",
+  "orb_source_commit": "4452a3c4ab75b1cde34e5505a36ec3f9edcdc4c4",
+  "pangolin_source_commit": "aff6883c83f3fd7e8268a9715e84266c42e2efe3",
+  "orb_distribution": "external_only",
+  "signature_status": "UNSIGNED"
+}
