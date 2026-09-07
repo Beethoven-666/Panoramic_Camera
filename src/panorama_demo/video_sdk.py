@@ -355,6 +355,7 @@ class Gemini305VideoSDK:
             raise SDKInputError("preview_window and wait_for_camera must be booleans")
 
         def task(cancel_event: threading.Event) -> VideoPanoramaResult:
+            from .capture_orbbec import _VideoCapturePreflightError
             from .video_live import build_parser, run
 
             site, temporary = self._site_config()
@@ -375,7 +376,19 @@ class Gemini305VideoSDK:
                 args = build_parser().parse_args(arguments)
                 args.cancel_event = cancel_event
                 with _cuda_policy(self._config.cuda_mode):
-                    published = run(args)
+                    while True:
+                        try:
+                            published = run(args)
+                            break
+                        except _VideoCapturePreflightError:
+                            # USB/IP may enumerate the UVC interfaces before
+                            # control transfers or complete RGB-D frames are
+                            # usable. The wait-for-camera contract survives any
+                            # number of pre-formal reconnects and stays
+                            # cooperatively cancellable. Failures after a formal
+                            # frame is accepted are not preflight failures.
+                            if not wait_for_camera or cancel_event.wait(1.0):
+                                raise
                 return VideoPanoramaResult.load(str(published["session"]), output)
             finally:
                 temporary.cleanup()

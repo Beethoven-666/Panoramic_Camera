@@ -40,6 +40,41 @@ class CaptureCancelledError(RuntimeError):
     """A caller cancelled camera discovery or an active continuous capture."""
 
 
+class _VideoCapturePreflightError(RuntimeError):
+    """A video stream failed before any formal frame could be accepted."""
+
+
+class _VideoCameraControlUnavailableError(_VideoCapturePreflightError):
+    """The camera stopped answering control requests before streaming began."""
+
+
+class _VideoWarmupNoFramesError(_VideoCapturePreflightError):
+    """A started video pipeline yielded no complete warmup frames."""
+
+
+def _is_retryable_video_transport_error(exc: BaseException) -> bool:
+    """Identify observed USB/IP camera transport failures, including causes."""
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    messages: list[str] = []
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        messages.append(str(current).lower())
+        current = current.__cause__ or current.__context__
+    detail = " ".join(messages)
+    return any(
+        marker in detail
+        for marker in (
+            "openusbdevice failed",
+            "device is deactivated/disconnected",
+            "setxu failed",
+            "device response size(0)",
+            "connection reset by peer",
+        )
+    )
+
+
 CSV_FIELDS = [
     "frame_id",
     "color_index",
@@ -925,7 +960,7 @@ def _discard_and_verify_post_lock_frames(
 
     def require_time_remaining() -> None:
         if float(clock()) >= deadline:
-            raise RuntimeError(
+            raise _VideoCapturePreflightError(
                 "Post-warmup color-control lock did not receive enough complete "
                 "RGB-D frames for metadata verification"
             )
@@ -1190,7 +1225,12 @@ def _warm_up_video_controls(
     while received < target:
         remaining = deadline - float(clock())
         if remaining <= 0.0:
-            raise RuntimeError(
+            error_type = (
+                _VideoWarmupNoFramesError
+                if received == 0
+                else _VideoCapturePreflightError
+            )
+            raise error_type(
                 f"Capture warmup timed out after receiving {received}/{target} "
                 "complete RGB-D frame sets. Try MJPG color, a lower resolution, "
                 "another USB 3 port, or disable other camera applications."
@@ -1267,7 +1307,7 @@ def _warm_up_video_controls(
             max(0.0, deadline - float(clock())),
         )
         if transition_timeout <= 0.0:
-            raise RuntimeError(
+            raise _VideoCapturePreflightError(
                 f"Capture warmup timed out after receiving {received}/{target} "
                 "complete RGB-D frame sets"
             )
@@ -1402,7 +1442,9 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
     )
     applied["auto_exposure"] = applied_auto_exposure
     if applied_auto_exposure is None or applied_auto_exposure != effective_auto_exposure:
-        raise RuntimeError("The camera did not apply the requested color exposure mode")
+        raise _VideoCameraControlUnavailableError(
+            "The camera did not apply the requested color exposure mode"
+        )
     manual_exposure = fallback_exposure_us if fallback_exposure_us is not None else exposure
     if not effective_auto_exposure and manual_exposure is not None:
         exposure_us = int(manual_exposure)
@@ -1416,7 +1458,9 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
             device, sdk, "OB_PROP_COLOR_EXPOSURE_INT", exposure_units
         )
         if applied_units is None:
-            raise RuntimeError("The camera did not apply the requested color exposure")
+            raise _VideoCameraControlUnavailableError(
+                "The camera did not apply the requested color exposure"
+            )
         if fallback_exposure_us is not None and applied_units > exposure_units:
             raise RuntimeError(
                 "The camera cannot enforce the motion-safe color exposure limit"
@@ -1452,7 +1496,7 @@ def _configure_color(device: Any, sdk: Any, options: dict[str, Any]) -> dict[str
         bool(options.get("lock_color_controls_after_warmup", False))
         and applied["auto_white_balance"] is not auto_white_balance
     ):
-        raise RuntimeError(
+        raise _VideoCameraControlUnavailableError(
             "The camera did not apply the requested color white-balance mode"
         )
     if white_balance is not None:
@@ -2058,11 +2102,24 @@ def _discover_video_device(
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise CaptureCancelledError("Camera discovery was cancelled")
-        device_list = context.query_devices()
-        if device_list.get_count() > 0:
-            if waiting:
-                print("Orbbec camera detected; starting live capture.", flush=True)
-            return context, device_list.get_device_by_index(0)
+        try:
+            device_list = context.query_devices()
+            if device_list.get_count() > 0:
+                device = device_list.get_device_by_index(0)
+                if waiting:
+                    print("Orbbec camera detected; starting live capture.", flush=True)
+                return context, device
+        except Exception as exc:
+            if not wait_for_camera or not _is_retryable_video_transport_error(exc):
+                raise
+            if not waiting:
+                print(
+                    "Orbbec camera was enumerated but is not ready; waiting for "
+                    "USB transport recovery (press Ctrl+C to cancel)...",
+                    flush=True,
+                )
+                waiting = True
+            context = sdk.Context()
         if not wait_for_camera:
             raise RuntimeError("No Orbbec camera found")
         if not waiting:
