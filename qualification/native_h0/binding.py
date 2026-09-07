@@ -10,16 +10,17 @@ from contextlib import contextmanager
 import importlib.metadata as metadata
 import os
 from pathlib import Path, PurePosixPath
-import platform
 import subprocess
 import sys
 import tarfile
 import zipfile
 
 from .common import file_identity, read, require, sha256
+from .inventory import collect_host, is_vmware_guest
 
 SUBJECT_COMMIT = "2abb132043e7c5ae1805a2ed1dd91516ebf2f874"
 RUNTIME_VARIANT = "ubuntu22.04-x86_64-py310-sm120"
+QUALIFICATION_ENVIRONMENT = "VMWARE_UBUNTU_22_04"
 ARCHIVE_SHA = {
     "base": "5e488e8f7145a9aec9da13998a01e507dfac818b9f04d2b1bbbcc72df4eb18e0",
     "three_d_addon": "59db7a1a90178afb2605763510762f3e917707476501f72971ac4594b5fad0c4",
@@ -237,7 +238,9 @@ def verify_tools(archive_path, manifest_path, tools_root=None):
             and all(c in "0123456789abcdef" for c in commit) and commit != SUBJECT_COMMIT,
             "Independent H0 tool commit required")
     require(manifest.get("signature_status") == "UNSIGNED" and manifest.get("requires_python") == ">=3.10,<3.11"
-            and manifest.get("native_acceptance_schema") == "gemini305-sdk-native-acceptance/v3",
+            and manifest.get("native_acceptance_schema") == "gemini305-sdk-native-acceptance/v3"
+            and manifest.get("qualification_environment") == QUALIFICATION_ENVIRONMENT
+            and manifest.get("bare_metal_qualified") is False,
             "H0 tool manifest contract mismatch")
     members = manifest["files"]
     require(members and all(name.startswith(("qualification/native_h0/", "scripts/"))
@@ -267,18 +270,24 @@ def verify_tools(archive_path, manifest_path, tools_root=None):
             "checksums": file_identity(checksums), "root": str(root)}
 
 
+def verify_execution_host():
+    host = collect_host()
+    require(host.get("system") == "Linux" and host.get("python_implementation") == "CPython"
+            and host.get("python_version", [])[:2] == [3, 10]
+            and isinstance(host.get("effective_uid"), int) and host["effective_uid"] > 0,
+            "Linux non-root CPython 3.10 required")
+    require(not os.environ.get("PYTHONPATH") and not os.environ.get("PYTHONHOME"), "PYTHONPATH/PYTHONHOME forbidden")
+    release = host.get("os_release", {})
+    require(release.get("ID") == "ubuntu" and release.get("VERSION_ID") == "22.04"
+            and host.get("architecture") == "x86_64" and is_vmware_guest(host),
+            "VMware Ubuntu 22.04 x86_64 required; WSL and containers prohibited")
+    return host
+
+
 def create_binding(candidate_index, software_acceptance, phase3_freeze, archives, base_root, addon_root,
                    orb_manifest, frozen_session, tools_archive, tools_manifest,
                    host_inventory=None, camera_inventory=None, *, h0_id, usb_inventory=None):
-    require(platform.system() == "Linux" and platform.python_implementation() == "CPython"
-            and sys.version_info[:2] == (3, 10) and os.geteuid() != 0, "Native non-root CPython 3.10 required")
-    require(not os.environ.get("PYTHONPATH") and not os.environ.get("PYTHONHOME"), "PYTHONPATH/PYTHONHOME forbidden")
-    release = platform.freedesktop_os_release()
-    virtual = subprocess.run(["systemd-detect-virt"], capture_output=True, text=True, check=False)
-    require(release.get("ID") == "ubuntu" and release.get("VERSION_ID") == "22.04"
-            and platform.machine() == "x86_64" and virtual.stdout.strip() == "none"
-            and virtual.returncode == 1 and "microsoft" not in platform.release().lower(),
-            "Bare-metal Ubuntu 22.04 x86_64 required")
+    verify_execution_host()
     require(isinstance(h0_id, str) and bool(h0_id.strip()), "Unique H0 ID required")
     candidate = verify_candidate(candidate_index, phase3_freeze, archives, base_root, addon_root, orb_manifest)
     software = verify_software(software_acceptance, candidate)
@@ -318,11 +327,15 @@ def create_binding(candidate_index, software_acceptance, phase3_freeze, archives
         "inventory_inputs": inventories, "camera_serial": serial,
         "usb_port_path": matched_usb[0].get("port_path") if len(matched_usb) == 1 else None,
         "udev_rule_sha256": camera.get("udev_rule", {}).get("sha256"),
-        "platform": "NATIVE_UBUNTU_22_04", "signature_status": "UNSIGNED"}
+        "platform": QUALIFICATION_ENVIRONMENT, "qualification_environment": QUALIFICATION_ENVIRONMENT,
+        "bare_metal_qualified": False, "signature_status": "UNSIGNED"}
 
 
 def revalidate_binding(expected, candidate_index, software_acceptance):
     require(expected.get("schema") == "gemini305-native-h0-binding/v1", "Native binding v1 required")
+    require(expected.get("platform") == QUALIFICATION_ENVIRONMENT
+            and expected.get("qualification_environment") == QUALIFICATION_ENVIRONMENT
+            and expected.get("bare_metal_qualified") is False, "Fresh VMware qualification binding required")
     candidate, tool = expected["candidate"], expected["qualification_tool"]
     inventories = expected.get("inventory_inputs", {})
     paths = {name: record["path"] for name, record in inventories.items()}

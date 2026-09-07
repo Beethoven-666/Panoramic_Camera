@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .binding import RUNTIME_VARIANT, SUBJECT_COMMIT, revalidate_binding, verify_candidate, verify_software
+from .binding import QUALIFICATION_ENVIRONMENT, RUNTIME_VARIANT, SUBJECT_COMMIT, revalidate_binding, verify_candidate, verify_software
 from .common import file_identity, read, write_new
 
 
@@ -74,6 +74,8 @@ def aggregate(raw_root, binding_path, candidate_index, software_acceptance, *, s
             "subject_source_commit": SUBJECT_COMMIT,
             "h0_tool_commit": binding.get("qualification_tool", {}).get("commit"),
             "h0_id": binding.get("h0_id"), "runtime_variant": RUNTIME_VARIANT,
+            "platform": QUALIFICATION_ENVIRONMENT, "qualification_environment": QUALIFICATION_ENVIRONMENT,
+            "bare_metal_qualified": False, "vmware_qualified": passed,
             "software_ready": software_ready, "hardware_qualified": passed, "long_duration_qualified": passed,
             "release_ready": False, "signature_status": "UNSIGNED",
             "native_h0_core": components.get("native_h0_core", "NOT_EXECUTED"),

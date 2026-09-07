@@ -18,6 +18,50 @@ from qualification.native_h0 import binding
 from qualification.native_h0.common import sha256
 
 
+@pytest.mark.parametrize("change,accepted", [
+    ({}, True),
+    ({"virtualization": {"stdout": "none", "returncode": 1}}, False),
+    ({"virtualization": {"stdout": "kvm", "returncode": 0}}, False),
+    ({"virtualization": {"stdout": "vmware", "returncode": 1}}, False),
+    ({"virtualization": {"status": "NOT_EXECUTED"}}, False),
+    ({"kernel": "microsoft-standard-WSL2"}, False),
+    ({"container_markers": ["/.dockerenv"]}, False),
+    ({"os_release": {"ID": "ubuntu", "VERSION_ID": "24.04"}}, False),
+    ({"effective_uid": 0}, False),
+    ({"python_version": [3, 12, 1]}, False),
+])
+def test_binding_execution_host_accepts_only_vmware_profile(monkeypatch, change, accepted):
+    host = {"system": "Linux", "architecture": "x86_64", "python_implementation": "CPython",
+            "python_version": [3, 10, 12], "effective_uid": 1000,
+            "os_release": {"ID": "ubuntu", "VERSION_ID": "22.04"},
+            "virtualization": {"stdout": "vmware\n", "returncode": 0},
+            "kernel": "5.15.0-generic", "container_markers": []}
+    host.update(change)
+    monkeypatch.setattr(binding, "collect_host", lambda: host)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.delenv("PYTHONHOME", raising=False)
+    if accepted:
+        assert binding.verify_execution_host() == host
+    else:
+        with pytest.raises(ValueError, match="required"):
+            binding.verify_execution_host()
+
+
+def test_old_baremetal_binding_requires_fresh_vmware_campaign():
+    with pytest.raises(ValueError, match="Fresh VMware"):
+        binding.revalidate_binding({"schema": "gemini305-native-h0-binding/v1",
+                                    "platform": "NATIVE_UBUNTU_22_04"}, "unused", "unused")
+
+
+def test_old_tools_manifest_cannot_be_reused_for_vmware(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"schema": "gemini305-native-h0-tools/v1", "h0_tool_commit": "a" * 40,
+        "requires_python": ">=3.10,<3.11", "native_acceptance_schema": "gemini305-sdk-native-acceptance/v3",
+        "signature_status": "UNSIGNED"}))
+    with pytest.raises(ValueError, match="manifest contract"):
+        binding.verify_tools(tmp_path / "unused", manifest)
+
+
 def test_extracted_content_mutation_and_extra_file_rejected(tmp_path):
     content = tmp_path / "runtime.txt"
     content.write_text("frozen")
@@ -90,6 +134,7 @@ def tools_fixture(tmp_path):
     source.write_bytes(b"# committed tool\n")
     manifest = {"schema": "gemini305-native-h0-tools/v1", "h0_tool_commit": "a" * 40,
                 "requires_python": ">=3.10,<3.11", "native_acceptance_schema": "gemini305-sdk-native-acceptance/v3",
+                "qualification_environment": "VMWARE_UBUNTU_22_04", "bare_metal_qualified": False,
                 "signature_status": "UNSIGNED", "files": {name: sha256(source)}}
     manifest_path = tmp_path / "native-h0-tools-manifest.json"
     manifest_path.write_text(json.dumps(manifest))

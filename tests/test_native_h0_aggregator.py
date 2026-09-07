@@ -15,6 +15,9 @@ def test_historical_pass_cannot_issue_native_v3(tmp_path):
     assert result["schema"] == "gemini305-sdk-native-acceptance/v3"
     assert result["hardware_qualified"] is False
     assert result["long_duration_qualified"] is False
+    assert result["vmware_qualified"] is False
+    assert result["bare_metal_qualified"] is False
+    assert result["qualification_environment"] == "VMWARE_UBUNTU_22_04"
     assert result["release_ready"] is False
     assert result["signature_status"] == "UNSIGNED"
     assert result["errors"]
@@ -49,7 +52,7 @@ def test_failure_publication_preserves_prior_result(tmp_path):
 
 
 @pytest.mark.parametrize("failed_component", ["validate_campaign", "validate_inventory", "validate_fault_campaign",
-                                            "validate_retention", "validate_endurance", "final_evidence_seal"])
+                                            "validate_retention", "validate_endurance", "final_evidence_seal", None])
 def test_every_required_raw_validator_can_veto_qualification(tmp_path, monkeypatch, failed_component):
     from qualification.native_h0 import aggregator, campaign, inventory, fault_cases, retention, endurance
 
@@ -79,5 +82,13 @@ def test_every_required_raw_validator_can_veto_qualification(tmp_path, monkeypat
     result = aggregate(tmp_path, path, tmp_path / "index", tmp_path / "software")
     assert len(called) == 5
     assert result["software_ready"] is True
-    assert result["hardware_qualified"] is False
-    assert result["long_duration_qualified"] is False
+    assert result["hardware_qualified"] is (failed_component is None)
+    assert result["long_duration_qualified"] is (failed_component is None)
+    assert result["vmware_qualified"] is (failed_component is None)
+    assert result["bare_metal_qualified"] is False
+    assert result["platform"] == result["qualification_environment"] == "VMWARE_UBUNTU_22_04"
+    if failed_component is None:
+        assert result["milestone"] == "SDK_HARDWARE_QUALIFIED"
+        assert result["release_ready"] is False
+        assert result["signature_status"] == "UNSIGNED"
+        assert result["orb_distribution_license"] == "BLOCKED/ORB_LICENSE"

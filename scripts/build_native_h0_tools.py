@@ -44,6 +44,7 @@ def build(repo, output_directory, commit="HEAD"):
                 "subject_source_commit": subject, "requires_python": ">=3.10,<3.11",
                 "candidate_schema": "gemini305-linux-sdk-release-candidate/v2",
                 "native_acceptance_schema": "gemini305-sdk-native-acceptance/v3",
+                "qualification_environment": "VMWARE_UBUNTU_22_04", "bare_metal_qualified": False,
                 "build_time": datetime.fromtimestamp(epoch, timezone.utc).isoformat(),
                 "signature_status": "UNSIGNED",
                 "files": {name: hashlib.sha256(value).hexdigest() for name, value in sorted(payload.items())}}
