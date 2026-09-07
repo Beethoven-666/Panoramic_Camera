@@ -16,14 +16,19 @@ writes `native_acceptance_status.json`, using
 
 ## Status of this implementation
 
-External tools and synthetic negative tests are being implemented and validated.
+External tools and synthetic negative tests are implemented. The clean-tree
+Windows repository suite completed with 2262 passed, 0 failed and 10 explained
+skips; the native-H0 tool suite completed with 138 passed under both Windows
+and Linux CPython 3.10. Ruff, compileall and diff checks passed. The independent
+archive was extracted and its deployed members were checked against its manifest.
 No native camera evidence is supplied with this repository. A VMware VM named
 U22 was offered for execution; it does not meet the explicit bare-metal gate.
 It must not be relabeled as native Ubuntu. Test runs on Windows/WSL are tool
 development checks only. Hardware, performance, scene quality, physical faults,
 retention and endurance remain NOT_EXECUTED until run on eligible hardware.
 
-Do not infer H0_TOOLING_VERIFIED or hardware readiness from a passing unit test.
+These checks establish phase 5A tool-development validation only. They do not
+establish native hardware readiness or qualify any of the physical suites.
 The final implementation report records the exact implemented and unverified
 parts, complete test counts, tool commit, archive identity, and blockers.
 
